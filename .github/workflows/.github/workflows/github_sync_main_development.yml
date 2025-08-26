@@ -1,0 +1,59 @@
+name: Sync Main to Development
+
+on:
+  pull_request:
+    types:
+      - closed
+
+jobs:
+  sync-main-to-development:
+    if: github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout the repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Importante para obtener todo el historial
+
+      # Set up Git user
+      - name: Set up Git User
+        uses: fregante/setup-git-user@v2
+
+      # Fetch all branches and tags
+      - name: Fetch all branches and tags
+        run: git fetch --all
+
+      # Check if branches are up to date
+      - name: Check if branches are up to date
+        shell: bash
+        id: checkBranches
+        run: |
+          git checkout development
+          BASE=$(git merge-base origin/main HEAD || echo "")
+          if [ -z "$BASE" ]; then
+            echo "mergeRequired=true" >> $GITHUB_ENV
+          elif [ "$BASE" = "$(git rev-parse origin/main)" ]; then
+            echo "mergeRequired=false" >> $GITHUB_ENV
+          else
+            echo "mergeRequired=true" >> $GITHUB_ENV
+          fi
+
+      # Merge main into development if needed
+      - name: Merge main into development
+        if: env.mergeRequired == 'true'
+        shell: bash
+        run: |
+          git merge --ff-only origin/main
+          if [ $? -ne 0 ]; then
+            echo "Merge conflict detected. Please resolve conflicts manually."
+            exit 1
+          fi
+
+      # Push changes to development branch
+      - name: Push changes
+        if: env.mergeRequired == 'true'
+        run: git push origin development
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
