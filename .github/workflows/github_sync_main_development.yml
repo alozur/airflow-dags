@@ -1,4 +1,4 @@
-name: Sync Main to Development
+name: Sync Main to Dev
 
 on:
   pull_request:
@@ -6,7 +6,7 @@ on:
       - closed
 
 jobs:
-  sync-main-to-development:
+  sync-main-to-dev:
     if: github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main'
     runs-on: ubuntu-latest
 
@@ -30,7 +30,7 @@ jobs:
         shell: bash
         id: checkBranches
         run: |
-          git checkout development
+          git checkout dev
           BASE=$(git merge-base origin/main HEAD || echo "")
           if [ -z "$BASE" ]; then
             echo "mergeRequired=true" >> $GITHUB_ENV
@@ -40,8 +40,8 @@ jobs:
             echo "mergeRequired=true" >> $GITHUB_ENV
           fi
 
-      # Merge main into development if needed
-      - name: Merge main into development
+      # Merge main into dev if needed
+      - name: Merge main into dev
         if: env.mergeRequired == 'true'
         shell: bash
         run: |
@@ -51,9 +51,9 @@ jobs:
             exit 1
           fi
 
-      # Push changes to development branch
+      # Push changes to dev branch
       - name: Push changes
         if: env.mergeRequired == 'true'
-        run: git push origin development
+        run: git push origin dev
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
