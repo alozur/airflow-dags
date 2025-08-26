@@ -5,6 +5,9 @@ on:
     types:
       - closed
 
+permissions:
+contents: write   # 👈 This gives GITHUB_TOKEN permission to push
+
 jobs:
   sync-main-to-dev:
     if: github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main'
