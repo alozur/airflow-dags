@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-import congreso_utils as cu
+from congreso_youtube import congreso_utils as cu
 from bs4 import BeautifulSoup
 
 def task_construct_url(**context):
