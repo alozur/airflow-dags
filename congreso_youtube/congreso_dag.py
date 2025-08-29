@@ -4,47 +4,15 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator, BranchPythonOperator
 from congreso_youtube import congreso_utils as cu
 from bs4 import BeautifulSoup
-
-def task_construct_url(**context):
-    url = cu.construct_url(days_back=1)
-    context['ti'].xcom_push(key='constructed_url', value=url)
-
-def task_get_soup(**context):
-    url = context['ti'].xcom_pull(key='constructed_url')
-    soup = cu.get_soup(url)
-    context['ti'].xcom_push(key='soup_html', value=str(soup))
-
-def branch_check_plenary(**context):
-    soup_html = context['ti'].xcom_pull(key='soup_html')
-    result = cu.has_plenary_session(BeautifulSoup(soup_html, "html.parser"))
-    context['ti'].xcom_push(key='has_plenary', value=result)
-
-    if result:
-        return "get_session_number"  # task_id to run if plenary exists
-    else:
-        return "no_plenary"  # task_id to run if no plenary
-
-def task_get_session_number(**context):
-    soup_html = context['ti'].xcom_pull(key='soup_html')
-    session_number = cu.get_session_number(BeautifulSoup(soup_html, "html.parser"))
-    context['ti'].xcom_push(key='session_number', value=session_number)
-
-def task_construct_session_link(**context):
-    session_number = context['ti'].xcom_pull(key='session_number')
-    if session_number:
-        link = cu.construct_session_link(session_number, days_back=1)
-        context['ti'].xcom_push(key='session_link', value=link)
-
-def task_no_plenary():
-    print("No plenary session today. DAG execution stopped.")
+from utils.airflow_helpers import xcom_task  # 👈 import helper
 
 default_args = {
-'owner': 'airflow',
-'depends_on_past': False,
-'email_on_failure': False,
-'email_on_retry': False,
-'retries': 1,
-'retry_delay': timedelta(minutes=5),
+  'owner': 'airflow',
+  'depends_on_past': False,
+  'email_on_failure': False,
+  'email_on_retry': False,
+  'retries': 1,
+  'retry_delay': timedelta(minutes=5),
 }
 
 with DAG(
@@ -58,35 +26,64 @@ with DAG(
 
   t1 = PythonOperator(
       task_id='construct_url',
-      python_callable=task_construct_url,
+      python_callable=lambda ti: xcom_task(
+          ti, lambda: cu.construct_url(days_back=1), 'constructed_url'
+      ),
   )
 
   t2 = PythonOperator(
       task_id='get_soup',
-      python_callable=task_get_soup,
+      python_callable=lambda ti: xcom_task(
+          ti, lambda url: str(cu.get_soup(url)), 'soup_html', input_key='constructed_url'
+      ),
   )
 
   t3 = BranchPythonOperator(
       task_id='check_plenary',
-      python_callable=branch_check_plenary,
+      python_callable=lambda ti: xcom_task(
+          ti,
+          lambda html: "get_session_number" if cu.has_plenary_session(BeautifulSoup(html, "html.parser")) else "no_plenary",
+          'has_plenary',
+          input_key='soup_html',
+          branch=True
+      ),
   )
 
   t4 = PythonOperator(
       task_id='get_session_number',
-      python_callable=task_get_session_number,
+      python_callable=lambda ti: xcom_task(
+          ti,
+          lambda html: cu.get_session_number(BeautifulSoup(html, "html.parser")),
+          'session_number',
+          input_key='soup_html'
+      ),
   )
 
   t5 = PythonOperator(
       task_id='construct_session_link',
-      python_callable=task_construct_session_link,
+      python_callable=lambda ti: xcom_task(
+          ti,
+          lambda num: cu.construct_session_link(num, days_back=1),
+          'session_link',
+          input_key='session_number'
+      ),
   )
 
   t6 = PythonOperator(
-      task_id='no_plenary',
-      python_callable=task_no_plenary,
+      task_id='get_soup_from_session_link',
+      python_callable=lambda ti: xcom_task(
+          ti,
+          lambda link: str(cu.get_soup(link)),
+          'session_soup_html',
+          input_key='session_link'
+      ),
   )
 
-  # DAG flow with branching
+  t7 = PythonOperator(
+      task_id='no_plenary',
+      python_callable=lambda: print("No plenary session today. DAG execution stopped."),
+  )
+
   t1 >> t2 >> t3
-  t3 >> t4 >> t5
-  t3 >> t6
+  t3 >> t4 >> t5 >> t6
+  t3 >> t7
