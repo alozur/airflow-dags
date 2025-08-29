@@ -24,21 +24,30 @@ logging.basicConfig(level=logging.INFO)
 # Functions
 # -------------------------
 
-def construct_url(days_back=1):
-    """Constructs the Congreso audiovisual archive URL for a given date."""
-    target_date = datetime.now() - timedelta(days=days_back)
-    day, month, year = target_date.day, target_date.month, target_date.year
+def construct_url(target_date=None):
+  """
+  Constructs the Congreso audiovisual archive URL for a given date.
+  If target_date is None, defaults to yesterday.
+  target_date can be a datetime object or 'YYYY-MM-DD' string.
+  """
+  if target_date:
+      if isinstance(target_date, str):
+          target_date = datetime.strptime(target_date, "%Y-%m-%d")
+  else:
+      target_date = datetime.now() - timedelta(days=1)  # default: yesterday
 
-    url = (
-        f"{BASE_ARCHIVE_URL}"
-        f"?p_p_id=emisiones&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view"
-        f"&_emisiones_idLegislaturaElegida={LEGISLATURE_ID}"
-        f"&_emisiones_dia={day:02d}"
-        f"&_emisiones_mes={month:02d}"
-        f"&_emisiones_anio={year}"
-    )
-    logging.info(f"Constructed URL: {url}")
-    return url
+  day, month, year = target_date.day, target_date.month, target_date.year
+
+  url = (
+      f"{BASE_ARCHIVE_URL}"
+      f"?p_p_id=emisiones&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view"
+      f"&_emisiones_idLegislaturaElegida={LEGISLATURE_ID}"
+      f"&_emisiones_dia={day:02d}"
+      f"&_emisiones_mes={month:02d}"
+      f"&_emisiones_anio={year}"
+  )
+  logging.info(f"Constructed URL: {url}")
+  return url
 
 def get_soup(url):
     """Fetches and parses HTML from a given URL."""
@@ -73,17 +82,26 @@ def get_session_number(soup):
                 return match.group(1)
     return None
 
-def construct_session_link(cod_sesion, days_back=1):
-    """Constructs the direct session link."""
-    target_date = datetime.now() - timedelta(days=days_back)
-    sesion_date = target_date.strftime("%d/%m/%Y")
+def construct_session_link(cod_sesion, target_date=None):
+  """
+  Constructs the direct session link.
+  If target_date is None, defaults to yesterday.
+  target_date can be a datetime object or 'YYYY-MM-DD' string.
+  """
+  if target_date:
+      if isinstance(target_date, str):
+          target_date = datetime.strptime(target_date, "%Y-%m-%d")
+  else:
+      target_date = datetime.now() - timedelta(days=1)  # default: yesterday
 
-    url = (
-        f"{BASE_SESSION_URL}?"
-        f"codOrgano={ORGANO_ID}"
-        f"&codSesion={cod_sesion}"
-        f"&idLegislaturaElegida={LEGISLATURE_ID}"
-        f"&fechaSesion={sesion_date}"
-    )
-    logging.info(f"Constructed session link: {url}")
-    return url
+  sesion_date = target_date.strftime("%d/%m/%Y")
+
+  url = (
+      f"{BASE_SESSION_URL}?"
+      f"codOrgano={ORGANO_ID}"
+      f"&codSesion={cod_sesion}"
+      f"&idLegislaturaElegida={LEGISLATURE_ID}"
+      f"&fechaSesion={sesion_date}"
+  )
+  logging.info(f"Constructed session link: {url}")
+  return url

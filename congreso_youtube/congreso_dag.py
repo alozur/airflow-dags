@@ -6,6 +6,9 @@ from congreso_youtube import congreso_utils as cu
 from bs4 import BeautifulSoup
 from utils.airflow_helpers import xcom_task  # 👈 import helper
 
+
+yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
 default_args = {
   'owner': 'airflow',
   'depends_on_past': False,
@@ -22,12 +25,19 @@ with DAG(
   schedule_interval='@daily',
   start_date=datetime(2025, 8, 28),
   catchup=False,
+  params={   # Default to yesterday
+      "target_date": yesterday_str
+  }
 ) as dag:
 
   t1 = PythonOperator(
       task_id='construct_url',
-      python_callable=lambda ti: xcom_task(
-          ti, lambda: cu.construct_url(days_back=1), 'constructed_url'
+      python_callable=lambda ti, **context: xcom_task(
+          ti,
+          lambda: cu.construct_url(
+              target_date=context["params"].get("target_date")
+          ),
+          'constructed_url'
       ),
   )
 
@@ -61,9 +71,12 @@ with DAG(
 
   t5 = PythonOperator(
       task_id='construct_session_link',
-      python_callable=lambda ti: xcom_task(
+      python_callable=lambda ti, **context: xcom_task(
           ti,
-          lambda num: cu.construct_session_link(num, days_back=1),
+          lambda num: cu.construct_session_link(
+              num,
+              target_date=context["params"].get("target_date")
+          ),
           'session_link',
           input_key='session_number'
       ),
