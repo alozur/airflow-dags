@@ -105,3 +105,43 @@ def construct_session_link(cod_sesion, target_date=None):
   )
   logging.info(f"Constructed session link: {url}")
   return url
+
+def extract_video_data(html_string):
+    """
+    Extracts video data from the session HTML.
+    Returns a list of dictionaries with asunto, video, and link_ficha.
+    """
+    soup = BeautifulSoup(html_string, 'html.parser')
+    results = []
+    
+    rows = soup.find_all('tr')
+    
+    for row in rows:
+        row_html = str(row)
+        
+        asunto_match = re.search(r'<a id="\d+"[^>]*?>([\s\S]*?)</a>', row_html, re.IGNORECASE)
+        if not asunto_match:
+            continue
+        
+        asunto = re.sub(r'<[^>]+>', '', asunto_match.group(1))
+        asunto = re.sub(r'\s+', ' ', asunto).strip()
+        
+        link_ficha = None
+        ficha_match = re.search(r'href="(https://www\.congreso\.es/busqueda-de-diputados[^"]+)"', row_html, re.IGNORECASE)
+        if ficha_match:
+            link_ficha = ficha_match.group(1).replace('&amp;', '&')
+        
+        video_match = re.search(r'href="(https://static\.congreso\.es/[^"]+\.mp4)"', row_html, re.IGNORECASE)
+        if not video_match:
+            continue
+        
+        video = video_match.group(1)
+        
+        results.append({
+            'asunto': asunto,
+            'video': video,
+            'link_ficha': link_ficha
+        })
+    
+    logging.info(f"Extracted {len(results)} video items from HTML")
+    return results

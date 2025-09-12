@@ -93,10 +93,20 @@ with DAG(
   )
 
   t7 = PythonOperator(
+      task_id='extract_video_data',
+      python_callable=lambda ti: xcom_task(
+          ti,
+          lambda html: cu.extract_video_data(html),
+          'video_data',
+          input_key='session_soup_html'
+      ),
+  )
+
+  t8 = PythonOperator(
       task_id='no_plenary',
       python_callable=lambda: print("No plenary session today. DAG execution stopped."),
   )
 
   t1 >> t2 >> t3
-  t3 >> t4 >> t5 >> t6
-  t3 >> t7
+  t3 >> t4 >> t5 >> t6 >> t7
+  t3 >> t8
