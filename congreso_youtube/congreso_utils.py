@@ -109,39 +109,104 @@ def construct_session_link(cod_sesion, target_date=None):
 def extract_video_data(html_string):
     """
     Extracts video data from the session HTML.
-    Returns a list of dictionaries with asunto, video, and link_ficha.
+    Returns a list of dictionaries with speaker_name, video_url, and profile_link.
     """
     soup = BeautifulSoup(html_string, 'html.parser')
     results = []
     
+    # Log the total number of rows found
     rows = soup.find_all('tr')
+    logging.info(f"Found {len(rows)} total <tr> elements in HTML")
     
-    for row in rows:
+    for idx, row in enumerate(rows):
         row_html = str(row)
         
-        asunto_match = re.search(r'<a id="\d+"[^>]*?>([\s\S]*?)</a>', row_html, re.IGNORECASE)
-        if not asunto_match:
+        # Debug logging for all rows to see what we're dealing with
+        logging.debug(f"Row {idx}: checking for video data...")
+        
+        # Look for any <a> tag with an ID and onclick that contains directopartes
+        # This is more flexible to handle variations in the HTML
+        all_links = row.find_all('a')
+        
+        speaker_info = None
+        entry_id = None
+        
+        for link in all_links:
+            link_str = str(link)
+            # Check if this link has an ID and onclick with directopartes
+            if 'id=' in link_str and 'onclick=' in link_str and 'directopartes' in link_str:
+                # Extract the ID
+                id_match = re.search(r'id="(\d+)"', link_str)
+                if id_match:
+                    entry_id = id_match.group(1)
+                    
+                # Extract the text content (speaker name or question)
+                span = link.find('span')
+                if span:
+                    speaker_info = span.get_text(strip=True)
+                    logging.info(f"Found speaker/question with ID {entry_id}: {speaker_info[:50]}...")
+                    break
+        
+        if not speaker_info:
+            logging.debug(f"Row {idx}: No speaker info found, skipping")
             continue
         
-        asunto = re.sub(r'<[^>]+>', '', asunto_match.group(1))
-        asunto = re.sub(r'\s+', ' ', asunto).strip()
+        # Process the speaker info to extract the actual name
+        if "PREGUNTA" in speaker_info or "Pregunta" in speaker_info:
+            # This is a question, extract the person asking
+            name_match = re.search(r'(?:Diputad[oa]|Sr\.|Sra\.|D\.|Dña\.)\s+([^,]+)', speaker_info)
+            if name_match:
+                speaker_name = name_match.group(1).strip()
+            else:
+                # Just use the whole text if we can't extract a specific name
+                speaker_name = speaker_info
+        else:
+            # This is a direct speaker name (e.g., "Núñez Feijóo, Alberto (GP)")
+            speaker_name = speaker_info
         
-        link_ficha = None
-        ficha_match = re.search(r'href="(https://www\.congreso\.es/busqueda-de-diputados[^"]+)"', row_html, re.IGNORECASE)
-        if ficha_match:
-            link_ficha = ficha_match.group(1).replace('&amp;', '&')
+        # Look for MP4 video download link in the same row
+        video_url = None
+        for link in all_links:
+            href = link.get('href', '')
+            if 'static.congreso.es' in href and '.mp4' in href:
+                video_url = href
+                logging.info(f"Found video URL: {video_url[:80]}...")
+                break
         
-        video_match = re.search(r'href="(https://static\.congreso\.es/[^"]+\.mp4)"', row_html, re.IGNORECASE)
-        if not video_match:
+        if not video_url:
+            logging.debug(f"No MP4 link found for: {speaker_name}")
             continue
         
-        video = video_match.group(1)
+        # Look for profile/ficha link
+        profile_link = None
+        for link in all_links:
+            href = link.get('href', '')
+            if 'busqueda-de-diputados' in href:
+                profile_link = href.replace('&amp;', '&')
+                logging.debug(f"Found profile link: {profile_link[:80]}...")
+                break
         
-        results.append({
-            'asunto': asunto,
-            'video': video,
-            'link_ficha': link_ficha
-        })
+        # Check if we also have a role/position (e.g., "Presidente del Gobierno")
+        role = None
+        if "(Presidente" in row_html or "(Vicepresidente" in row_html:
+            role_match = re.search(r'\((Presidente[^)]*|Vicepresidente[^)]*)\)', row_html)
+            if role_match:
+                role = role_match.group(1)
+                logging.debug(f"Found role: {role}")
+        
+        # Create the result entry
+        result_entry = {
+            'speaker_name': speaker_name,
+            'video_url': video_url,
+            'profile_link': profile_link,
+            'entry_id': entry_id
+        }
+        
+        if role:
+            result_entry['role'] = role
+        
+        results.append(result_entry)
+        logging.info(f"Added entry: {speaker_name} - ID: {entry_id}")
     
-    logging.info(f"Extracted {len(results)} video items from HTML")
+    logging.info(f"Successfully extracted {len(results)} video items from HTML")
     return results
