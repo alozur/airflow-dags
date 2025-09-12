@@ -103,10 +103,20 @@ with DAG(
   )
 
   t8 = PythonOperator(
+      task_id='organize_video_groups',
+      python_callable=lambda ti: xcom_task(
+          ti,
+          lambda data: cu.organize_video_groups(data),
+          'organized_video_groups',
+          input_key='video_data'
+      ),
+  )
+
+  t9 = PythonOperator(
       task_id='no_plenary',
       python_callable=lambda: print("No plenary session today. DAG execution stopped."),
   )
 
   t1 >> t2 >> t3
-  t3 >> t4 >> t5 >> t6 >> t7
-  t3 >> t8
+  t3 >> t4 >> t5 >> t6 >> t7 >> t8
+  t3 >> t9
