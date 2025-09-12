@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python test:*)",
+      "Bash(conda create:*)",
+      "Bash(conda activate:*)",
+      "Bash(pip install:*)",
+      "Bash(conda run:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
