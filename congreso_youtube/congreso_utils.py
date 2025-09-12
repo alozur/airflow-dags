@@ -210,3 +210,98 @@ def extract_video_data(html_string):
     
     logging.info(f"Successfully extracted {len(results)} video items from HTML")
     return results
+
+def organize_video_groups(video_items):
+    """
+    Organizes video items into logical groups based on speakers and topics.
+    
+    Groups items by:
+    - Speaker interventions (items with profile links)
+    - Topics/propositions discussed (items without profile links following a speaker)
+    - Procedural items (Votaciones, etc.)
+    
+    Args:
+        video_items: List of dictionaries from extract_video_data()
+    
+    Returns:
+        List of organized groups with speakers and their related topics
+    """
+    if not video_items:
+        return []
+    
+    organized_groups = []
+    current_group = None
+    
+    for idx, item in enumerate(video_items):
+        has_profile = item.get('profile_link') is not None
+        speaker_name = item.get('speaker_name', '')
+        
+        # Check if this is a topic/proposition (usually longer text without profile)
+        is_topic = (not has_profile and 
+                   ('Del Grupo Parlamentario' in speaker_name or 
+                    'relativa a' in speaker_name or
+                    'para el impulso' in speaker_name or
+                    'PREGUNTA' in speaker_name or
+                    'Proposición' in speaker_name or
+                    len(speaker_name) > 60))
+        
+        # Check if this is a procedural item
+        is_procedural = (not has_profile and 
+                        speaker_name in ['Votaciones', 'Minuto de silencio', 
+                                        'Juramento o promesa de acatamiento de la Constitución'])
+        
+        if has_profile:
+            # Speaker with profile - start a new group
+            if current_group:
+                organized_groups.append(current_group)
+            
+            current_group = {
+                'type': 'speaker_group',
+                'main_speaker': {
+                    'name': speaker_name,
+                    'entry_id': item.get('entry_id'),
+                    'profile_link': item.get('profile_link'),
+                    'video_url': item.get('video_url'),
+                    'role': item.get('role')
+                },
+                'items': []  # Related topics/content
+            }
+            
+        elif is_topic and current_group:
+            # Topic - add to current speaker's group
+            current_group['items'].append({
+                'type': 'topic',
+                'content': speaker_name,
+                'entry_id': item.get('entry_id'),
+                'video_url': item.get('video_url')
+            })
+            
+        elif is_procedural:
+            # Procedural items get their own group
+            if current_group:
+                organized_groups.append(current_group)
+                current_group = None
+            
+            organized_groups.append({
+                'type': 'procedural',
+                'content': speaker_name,
+                'entry_id': item.get('entry_id'),
+                'video_url': item.get('video_url')
+            })
+            
+        else:
+            # Other items without profile - treat as continuation
+            if current_group:
+                current_group['items'].append({
+                    'type': 'continuation',
+                    'content': speaker_name,
+                    'entry_id': item.get('entry_id'),
+                    'video_url': item.get('video_url')
+                })
+    
+    # Don't forget the last group
+    if current_group:
+        organized_groups.append(current_group)
+    
+    logging.info(f"Organized {len(video_items)} items into {len(organized_groups)} groups")
+    return organized_groups
