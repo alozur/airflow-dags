@@ -77,7 +77,7 @@ def get_session_number(soup):
         cells = row.find_all("td")
         if len(cells) > 1:
             session_text = cells[1].get_text(strip=True)
-            match = re.search(r"Sesión número:\s*(\d+)", session_text)
+            match = re.search(r"Sesión Plenaria \(Sesión número:\s*(\d+)", session_text)
             if match:
                 return match.group(1)
     return None
