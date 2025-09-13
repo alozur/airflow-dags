@@ -1,0 +1,106 @@
+version: '3.8'
+
+networks:
+  postgres_infra_network:
+    external: true
+  airflow_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
+
+volumes:
+  airflow_logs:
+  airflow_plugins:
+  airflow_dags:
+  git_dags:
+  airflow_data:
+
+x-airflow-common:
+  &airflow-common
+  image: apache/airflow:2.10.2
+  restart: unless-stopped
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_password@postgres_shared:5432/airflow_db
+    AIRFLOW__CORE__FERNET_KEY: "${AIRFLOW__CORE__FERNET_KEY}"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    _PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-postgres"
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags/repo
+    AIRFLOW__CORE__PARALLELISM: 4
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: 2
+    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: 1
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: Europe/Madrid
+    AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 30
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 30
+  volumes:
+    - airflow_logs:/opt/airflow/logs
+    - airflow_plugins:/opt/airflow/plugins
+    - airflow_dags:/opt/airflow/dags
+    - git_dags:/opt/airflow/dags:ro
+    - airflow_data:/opt/airflow/data
+  networks:
+    - postgres_infra_network
+    - airflow_network
+  mem_limit: 1.5g
+  mem_reservation: 1g
+
+services:
+  init-perms:
+    image: busybox
+    command: ["sh", "-c", "chown -R 65533:65533 /git && chown -R 50000:0 /data"]
+    volumes:
+      - git_dags:/git
+      - airflow_data:/data
+
+  git-sync:
+    image: k8s.gcr.io/git-sync/git-sync:v3.6.5
+    container_name: airflow-git-sync
+    user: "65533:65533"
+    restart: unless-stopped
+    depends_on:
+      - init-perms
+    environment:
+      GIT_SYNC_REPO: "https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${GITHUB_REPO}.git"
+      GIT_SYNC_BRANCH: "dev"
+      GIT_SYNC_WAIT: "15"
+      GIT_SYNC_ROOT: "/git"
+      GIT_SYNC_DEST: "repo"
+    volumes:
+      - git_dags:/git
+    networks:
+      - postgres_infra_network
+      - airflow_network
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    depends_on:
+      - airflow-init
+      - init-perms
+      - git-sync
+    ports:
+      - "8081:8080"
+    command: webserver
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    depends_on:
+      - airflow-init
+      - init-perms
+      - git-sync
+    command: scheduler
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    restart: "no"
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+
+        exec airflow db migrate
+    user: "50000:50000"
