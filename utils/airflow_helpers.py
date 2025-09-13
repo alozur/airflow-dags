@@ -1,6 +1,7 @@
 # dags/repo/utils/airflow_helpers.py
 from typing import Callable, Optional
 from airflow.models.taskinstance import TaskInstance
+import os
 
 def xcom_task(
   ti: TaskInstance,
@@ -31,3 +32,22 @@ def xcom_task(
   # If this is a branch task, return the branch decision
   if branch:
       return result
+
+
+def ensure_project_data_directory(project_name: str, base_data_path: str = "/opt/airflow/data") -> str:
+  """
+  Check if a project-specific data directory exists and create it if not.
+  
+  :param project_name: Name of the project (e.g., 'congreso_youtube')
+  :param base_data_path: Base path for data directories (default: '/opt/airflow/data')
+  :return: Full path to the project data directory
+  """
+  project_data_path = os.path.join(base_data_path, project_name)
+  
+  if not os.path.exists(project_data_path):
+      os.makedirs(project_data_path, exist_ok=True)
+      print(f"Created project data directory: {project_data_path}")
+  else:
+      print(f"Project data directory already exists: {project_data_path}")
+  
+  return project_data_path

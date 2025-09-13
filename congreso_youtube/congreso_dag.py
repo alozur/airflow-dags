@@ -4,7 +4,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator, BranchPythonOperator
 from congreso_youtube import congreso_utils as cu
 from bs4 import BeautifulSoup
-from utils.airflow_helpers import xcom_task  # 👈 import helper
+from utils.airflow_helpers import xcom_task, ensure_project_data_directory  # 👈 import helpers
 
 
 yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -29,6 +29,15 @@ with DAG(
       "target_date": yesterday_str
   }
 ) as dag:
+
+  t0 = PythonOperator(
+      task_id='ensure_data_directory',
+      python_callable=lambda ti: xcom_task(
+          ti,
+          lambda: ensure_project_data_directory('congreso_youtube'),
+          'data_directory_path'
+      ),
+  )
 
   t1 = PythonOperator(
       task_id='construct_url',
@@ -127,6 +136,6 @@ with DAG(
       python_callable=lambda: print("No plenary session today. DAG execution stopped."),
   )
 
-  t1 >> t2 >> t3
+  t0 >> t1 >> t2 >> t3
   t3 >> t4 >> t5 >> t6 >> t7 >> t8 >> t9
   t3 >> t10
