@@ -113,10 +113,20 @@ with DAG(
   )
 
   t9 = PythonOperator(
+      task_id='enrich_with_metadata',
+      python_callable=lambda ti: xcom_task(
+          ti,
+          lambda groups: cu.enrich_with_metadata(groups),
+          'enriched_video_groups',
+          input_key='organized_video_groups'
+      ),
+  )
+
+  t10 = PythonOperator(
       task_id='no_plenary',
       python_callable=lambda: print("No plenary session today. DAG execution stopped."),
   )
 
   t1 >> t2 >> t3
-  t3 >> t4 >> t5 >> t6 >> t7 >> t8
-  t3 >> t9
+  t3 >> t4 >> t5 >> t6 >> t7 >> t8 >> t9
+  t3 >> t10

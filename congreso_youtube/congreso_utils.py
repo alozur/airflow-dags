@@ -5,6 +5,8 @@ from bs4 import BeautifulSoup
 import logging
 import re
 import urllib3
+import json
+from urllib.parse import urlparse
 
 # -------------------------
 # Constants
@@ -306,3 +308,137 @@ def organize_video_groups(video_items):
     logging.info(f"Found {total_topics} main topics with {total_interventions} total interventions")
     
     return organized_groups
+
+def extract_video_metadata(video_url):
+    """
+    Extracts essential metadata from a video URL by making a HEAD request.
+    
+    Args:
+        video_url: The MP4 video URL to analyze
+    
+    Returns:
+        Dictionary containing: url, file_size_bytes, file_size_mb, last_modified, 
+        filename, duration_estimated, duration_seconds, error
+    """
+    metadata = {
+        "url": video_url,
+        "file_size_bytes": None,
+        "file_size_mb": None,
+        "last_modified": None,
+        "filename": None,
+        "duration_estimated": None,
+        "duration_seconds": None,
+        "error": None
+    }
+    
+    try:
+        # Extract filename from URL
+        parsed_url = urlparse(video_url)
+        metadata["filename"] = parsed_url.path.split('/')[-1] if parsed_url.path else None
+        
+        # Make HEAD request to get basic metadata
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "video/mp4,video/*;q=0.9,*/*;q=0.8",
+            "Accept-Language": "es,en;q=0.9",
+            "Accept-Encoding": "identity"
+        }
+        
+        logging.debug(f"Making HEAD request to: {video_url}")
+        response = requests.head(video_url, headers=headers, timeout=15, verify=False)
+        
+        if response.status_code == 200:
+            # Extract only required headers
+            metadata["last_modified"] = response.headers.get('last-modified')
+            
+            # Extract file size
+            if 'content-length' in response.headers:
+                file_size = int(response.headers['content-length'])
+                metadata["file_size_bytes"] = file_size
+                metadata["file_size_mb"] = round(file_size / (1024 * 1024), 2)
+                
+                # Better duration estimation based on Congressional video analysis
+                # From actual test: 74.24MB = ~7 minutes 28 seconds (448 seconds)
+                # This gives us approximately 0.166MB per second or 9.96MB per minute
+                if metadata["file_size_mb"]:
+                    estimated_seconds = round(metadata["file_size_mb"] / 0.166)
+                    metadata["duration_seconds"] = estimated_seconds
+                    
+                    minutes = estimated_seconds // 60
+                    seconds = estimated_seconds % 60
+                    metadata["duration_estimated"] = f"{minutes}:{seconds:02d}"
+                    
+                    logging.info(f"Duration estimated: {minutes}:{seconds:02d} for {metadata['file_size_mb']}MB")
+            
+            logging.info(f"Video metadata extracted successfully: {metadata['file_size_mb']}MB, Duration: {metadata.get('duration_estimated', 'unknown')}")
+            
+        else:
+            metadata["error"] = f"HTTP {response.status_code}: {response.reason}"
+            logging.warning(f"Failed to access video: {metadata['error']}")
+            
+    except requests.exceptions.Timeout:
+        metadata["error"] = "Request timeout"
+        logging.warning(f"Timeout accessing video: {video_url}")
+    except requests.exceptions.RequestException as e:
+        metadata["error"] = str(e)
+        logging.warning(f"Request error for video {video_url}: {e}")
+    except Exception as e:
+        metadata["error"] = f"Unexpected error: {str(e)}"
+        logging.error(f"Unexpected error extracting metadata for {video_url}: {e}")
+    
+    return metadata
+
+def enrich_with_metadata(organized_groups):
+    """
+    Enriches organized video groups with metadata for each video URL.
+    
+    Args:
+        organized_groups: List of organized groups from organize_video_groups()
+    
+    Returns:
+        Enriched groups with metadata_url field added to each video entry
+    """
+    enriched_groups = []
+    total_videos = 0
+    successful_extractions = 0
+    
+    for group in organized_groups:
+        enriched_group = group.copy()
+        
+        if group['type'] == 'topic_group':
+            # Extract metadata for main topic video
+            main_topic = enriched_group['main_topic'].copy()
+            if main_topic.get('video_url'):
+                logging.info(f"Extracting metadata for main topic: {main_topic.get('content', 'Unknown')[:50]}...")
+                main_topic['metadata_url'] = extract_video_metadata(main_topic['video_url'])
+                total_videos += 1
+                if main_topic['metadata_url']['accessible']:
+                    successful_extractions += 1
+            enriched_group['main_topic'] = main_topic
+            
+            # Extract metadata for intervention videos
+            enriched_interventions = []
+            for intervention in group.get('interventions', []):
+                enriched_intervention = intervention.copy()
+                if enriched_intervention.get('video_url'):
+                    logging.info(f"Extracting metadata for speaker: {enriched_intervention.get('speaker_name', 'Unknown')}")
+                    enriched_intervention['metadata_url'] = extract_video_metadata(enriched_intervention['video_url'])
+                    total_videos += 1
+                    if enriched_intervention['metadata_url']['accessible']:
+                        successful_extractions += 1
+                enriched_interventions.append(enriched_intervention)
+            enriched_group['interventions'] = enriched_interventions
+            
+        elif group['type'] == 'standalone':
+            # Extract metadata for standalone video
+            if enriched_group.get('video_url'):
+                logging.info(f"Extracting metadata for standalone: {enriched_group.get('content', 'Unknown')[:50]}...")
+                enriched_group['metadata_url'] = extract_video_metadata(enriched_group['video_url'])
+                total_videos += 1
+                if enriched_group['metadata_url']['accessible']:
+                    successful_extractions += 1
+        
+        enriched_groups.append(enriched_group)
+    
+    logging.info(f"Metadata extraction complete: {successful_extractions}/{total_videos} videos successfully processed")
+    return enriched_groups
