@@ -412,7 +412,7 @@ def enrich_with_metadata(organized_groups):
                 logging.info(f"Extracting metadata for main topic: {main_topic.get('content', 'Unknown')[:50]}...")
                 main_topic['metadata_url'] = extract_video_metadata(main_topic['video_url'])
                 total_videos += 1
-                if main_topic['metadata_url']['accessible']:
+                if main_topic['metadata_url']['error'] is None:
                     successful_extractions += 1
             enriched_group['main_topic'] = main_topic
             
@@ -424,7 +424,7 @@ def enrich_with_metadata(organized_groups):
                     logging.info(f"Extracting metadata for speaker: {enriched_intervention.get('speaker_name', 'Unknown')}")
                     enriched_intervention['metadata_url'] = extract_video_metadata(enriched_intervention['video_url'])
                     total_videos += 1
-                    if enriched_intervention['metadata_url']['accessible']:
+                    if enriched_intervention['metadata_url']['error'] is None:
                         successful_extractions += 1
                 enriched_interventions.append(enriched_intervention)
             enriched_group['interventions'] = enriched_interventions
@@ -435,7 +435,7 @@ def enrich_with_metadata(organized_groups):
                 logging.info(f"Extracting metadata for standalone: {enriched_group.get('content', 'Unknown')[:50]}...")
                 enriched_group['metadata_url'] = extract_video_metadata(enriched_group['video_url'])
                 total_videos += 1
-                if enriched_group['metadata_url']['accessible']:
+                if enriched_group['metadata_url']['error'] is None:
                     successful_extractions += 1
         
         enriched_groups.append(enriched_group)
