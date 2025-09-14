@@ -168,11 +168,12 @@ with DAG(
 
   t12 = PythonOperator(
       task_id='generate_youtube_metadata',
-      python_callable=lambda ti: xcom_task(
+      python_callable=lambda ti, **context: xcom_task(
           ti,
           lambda: cu.generate_youtube_metadata_for_topics(
               ti.xcom_pull(key='download_results'),
-              ti.xcom_pull(key='session_number')
+              ti.xcom_pull(key='session_number'),
+              context["params"].get("target_date")
           ),
           'youtube_metadata_results'
       ),

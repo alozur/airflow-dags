@@ -762,7 +762,7 @@ Genera solo el título, sin explicaciones adicionales.
             "error": error_msg
         }
 
-def generate_youtube_description(main_topic_content, speakers_info, video_metadata, session_number):
+def generate_youtube_description(main_topic_content, speakers_info, video_metadata, session_number, target_date=None):
     """
     Generates a YouTube-optimized description for a congressional video using OpenAI.
 
@@ -771,74 +771,98 @@ def generate_youtube_description(main_topic_content, speakers_info, video_metada
         speakers_info: List of speaker information including names and roles
         video_metadata: Video file metadata (duration, size, etc.)
         session_number: Congressional session number
+        target_date: Date of the session for generating session link
 
     Returns:
         Dict with generated description and metadata
     """
     try:
-        # Prepare speaker list
-        speaker_list = ""
+        # Generate session link
+        session_link = ""
+        if session_number and target_date:
+            try:
+                session_link = construct_session_link(session_number, target_date)
+            except Exception as e:
+                logging.warning(f"Could not generate session link: {e}")
+                session_link = "https://www.congreso.es"
+
+        # Prepare speaker list for prompt
+        speaker_context = ""
         if speakers_info:
-            speaker_list = "\nParticipantes:\n"
-            for i, speaker in enumerate(speakers_info, 1):
+            speaker_names = []
+            for speaker in speakers_info[:4]:  # Limit to 4 speakers for prompt
                 name = speaker.get('speaker_name', 'Unknown')
                 role = speaker.get('role', '')
-                speaker_list += f"{i}. {name}"
                 if role:
-                    speaker_list += f" - {role}"
-                speaker_list += "\n"
+                    speaker_names.append(f"{name} ({role})")
+                else:
+                    speaker_names.append(name)
+            speaker_context = f"Participantes principales: {', '.join(speaker_names)}"
 
         # Prepare video info
         duration = video_metadata.get('duration_estimated', 'N/A')
-        video_info = f"\n🎥 Duración: {duration}" if duration != 'N/A' else ""
+        duration_info = f"Duración: {duration}" if duration != 'N/A' else ""
 
         prompt = f"""
-Genera una descripción optimizada para YouTube de un vídeo del Congreso de España. La descripción debe:
-- Ser informativa y atractiva
-- Incluir contexto del debate
-- Ser accesible para audiencia general
-- Incluir hashtags relevantes al final
-- Longitud: 200-500 palabras
+Crea una descripción para YouTube de un debate del Congreso español. La descripción debe:
 
-Contenido del debate: {main_topic_content}
+- Ser natural y conversacional (no robótica)
+- Usar saltos de línea para separar secciones claramente
+- Explicar el contexto político de forma accesible
+- Incluir emojis relevantes para hacer más atractivo el contenido
+- Terminar con hashtags españoles relevantes
 
-Sesión número: {session_number}
-{speaker_list}
-{video_info}
+CONTENIDO DEL DEBATE:
+{main_topic_content}
 
-Estructura sugerida:
-1. Introducción del tema
-2. Contexto político relevante
-3. Participantes principales
-4. Información técnica
-5. Hashtags relevantes
+INFORMACIÓN ADICIONAL:
+- Sesión número: {session_number}
+- {speaker_context}
+- {duration_info}
 
-Genera solo la descripción, sin títulos de sección.
+ESTRUCTURA REQUERIDA:
+1. Párrafo introductorio explicando el tema (con emojis)
+2. Salto de línea doble
+3. Contexto político o relevancia del debate
+4. Salto de línea doble
+5. Información sobre los participantes
+6. Salto de línea doble
+7. Hashtags relevantes (mínimo 5)
+
+Escribe de forma natural, como si fueras un periodista explicando el debate a ciudadanos interesados en política.
 """
 
         response = openai.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "Eres un experto en crear descripciones atractivas para contenido político español en YouTube. Tu objetivo es hacer accesible la política a la ciudadanía."},
+                {"role": "system", "content": "Eres un periodista político español experto en comunicar de forma clara y atractiva. Usas un lenguaje natural, cercano pero profesional, y estructuras bien el contenido con saltos de línea."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=800,
+            max_tokens=1000,
             temperature=0.7
         )
 
-        generated_description = response.choices[0].message.content.strip()
+        ai_generated_content = response.choices[0].message.content.strip()
 
-        # Add technical info and credits
-        technical_info = f"\n\n📹 INFORMACIÓN TÉCNICA:"
-        if video_info:
-            technical_info += video_info
-        technical_info += f"\n📅 Sesión: {session_number}"
-        technical_info += f"\n🏛️ Fuente: Congreso de los Diputados de España"
-        technical_info += f"\n🔗 Contenido original disponible en www.congreso.es"
+        # Build final structured description
+        final_description = ai_generated_content
 
-        final_description = generated_description + technical_info
+        # Add technical information section with proper formatting
+        final_description += "\n\n" + "─" * 40
+        final_description += "\n📺 INFORMACIÓN DE LA SESIÓN\n"
 
-        logging.info(f"Generated YouTube description ({len(final_description)} chars)")
+        if duration != 'N/A':
+            final_description += f"⏱️ Duración: {duration}\n"
+
+        final_description += f"🏛️ Sesión Plenaria Nº {session_number}\n"
+
+        if session_link and session_link != "https://www.congreso.es":
+            final_description += f"🔗 Ver sesión completa: {session_link}\n"
+
+        final_description += f"📜 Fuente oficial: Congreso de los Diputados\n"
+        final_description += f"🌐 www.congreso.es"
+
+        logging.info(f"Generated structured YouTube description ({len(final_description)} chars)")
 
         return {
             "description": final_description,
@@ -851,16 +875,19 @@ Genera solo la descripción, sin títulos de sección.
         error_msg = f"Error generating YouTube description: {str(e)}"
         logging.error(error_msg)
 
-        # Fallback description
-        fallback_description = f"""Debate del Congreso de los Diputados de España.
+        # Fallback description with better structure
+        fallback_description = f"""🏛️ Debate en el Congreso de los Diputados
 
-{main_topic_content[:300] if main_topic_content else 'Contenido del debate no disponible.'}
+{main_topic_content[:200] if main_topic_content else 'En esta sesión parlamentaria se abordan temas de actualidad política nacional.'}
 
-📅 Sesión: {session_number}
-🏛️ Fuente: Congreso de los Diputados de España
-🔗 www.congreso.es
+Este vídeo forma parte de las sesiones de control al Gobierno, donde los diputados formulan preguntas y el Ejecutivo responde sobre diversos asuntos de interés público.
 
-#CongresoEspaña #Política #Debate #Democracia"""
+📺 INFORMACIÓN DE LA SESIÓN
+🏛️ Sesión Plenaria Nº {session_number}
+📜 Fuente oficial: Congreso de los Diputados
+🌐 www.congreso.es
+
+#CongresoEspaña #Política #Debate #Democracia #SesiónPlenaria"""
 
         return {
             "description": fallback_description,
@@ -869,13 +896,14 @@ Genera solo la descripción, sin títulos de sección.
             "error": error_msg
         }
 
-def generate_youtube_metadata_for_topics(download_results, session_number):
+def generate_youtube_metadata_for_topics(download_results, session_number, target_date=None):
     """
     Generates YouTube metadata (titles and descriptions) for all downloaded topics.
 
     Args:
         download_results: Results from download_main_topic_videos function
         session_number: Congressional session number
+        target_date: Date of the session for generating session links
 
     Returns:
         Dict with metadata for each topic
@@ -923,7 +951,7 @@ def generate_youtube_metadata_for_topics(download_results, session_number):
         logging.info(f"Generating YouTube metadata for topic {topic_entry_id}")
         title_result = generate_youtube_title(main_topic_content, speakers_info)
         description_result = generate_youtube_description(
-            main_topic_content, speakers_info, video_metadata, session_number
+            main_topic_content, speakers_info, video_metadata, session_number, target_date
         )
 
         topic_metadata = {
