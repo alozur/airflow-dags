@@ -8,6 +8,7 @@ import urllib3
 import json
 import os
 from urllib.parse import urlparse
+import openai
 
 # -------------------------
 # Constants
@@ -22,6 +23,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
+
+# OpenAI Configuration - gets API key from Airflow environment
+openai.api_key = os.getenv('OPENAI_API_KEY')
 
 # -------------------------
 # Functions
@@ -649,3 +653,264 @@ def download_main_topic_videos(enriched_video_groups, session_folder_path):
 
     logging.info(f"Download summary: {download_results['successful_downloads']}/{download_results['total_topics']} topics processed successfully")
     return download_results
+
+def generate_youtube_title(main_topic_content, speakers_info, max_length=100):
+    """
+    Generates a YouTube-optimized title for a congressional video using OpenAI.
+
+    Args:
+        main_topic_content: The main topic/question content
+        speakers_info: List of speaker information including names and roles
+        max_length: Maximum title length (YouTube recommends under 100 characters)
+
+    Returns:
+        Dict with generated title and metadata
+    """
+    try:
+        # Prepare speaker context
+        speaker_context = ""
+        if speakers_info:
+            main_speakers = [
+                f"{s.get('speaker_name', 'Unknown')}" +
+                (f" ({s.get('role')})" if s.get('role') else "")
+                for s in speakers_info[:3]  # Limit to first 3 speakers
+            ]
+            speaker_context = f" Participan: {', '.join(main_speakers)}"
+
+        prompt = f"""
+Genera un título optimizado para YouTube de un vídeo del Congreso de España. El título debe ser:
+- Atractivo y claro para audiencia general
+- Máximo {max_length} caracteres
+- Incluir palabras clave relevantes
+- Evitar jerga política compleja
+
+Contenido del debate: {main_topic_content}
+{speaker_context}
+
+Genera solo el título, sin explicaciones adicionales.
+"""
+
+        response = openai.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Eres un experto en crear títulos atractivos para contenido político español en YouTube."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=150,
+            temperature=0.7
+        )
+
+        generated_title = response.choices[0].message.content.strip()
+
+        # Ensure title doesn't exceed max_length
+        if len(generated_title) > max_length:
+            generated_title = generated_title[:max_length-3] + "..."
+
+        logging.info(f"Generated YouTube title ({len(generated_title)} chars): {generated_title}")
+
+        return {
+            "title": generated_title,
+            "character_count": len(generated_title),
+            "within_limit": len(generated_title) <= max_length,
+            "error": None
+        }
+
+    except Exception as e:
+        error_msg = f"Error generating YouTube title: {str(e)}"
+        logging.error(error_msg)
+
+        # Fallback title
+        fallback_title = "Debate en el Congreso de España"
+        if main_topic_content and "PREGUNTA" in main_topic_content:
+            fallback_title = "Sesión de Control al Gobierno - Congreso"
+
+        return {
+            "title": fallback_title,
+            "character_count": len(fallback_title),
+            "within_limit": True,
+            "error": error_msg
+        }
+
+def generate_youtube_description(main_topic_content, speakers_info, video_metadata, session_number):
+    """
+    Generates a YouTube-optimized description for a congressional video using OpenAI.
+
+    Args:
+        main_topic_content: The main topic/question content
+        speakers_info: List of speaker information including names and roles
+        video_metadata: Video file metadata (duration, size, etc.)
+        session_number: Congressional session number
+
+    Returns:
+        Dict with generated description and metadata
+    """
+    try:
+        # Prepare speaker list
+        speaker_list = ""
+        if speakers_info:
+            speaker_list = "\nParticipantes:\n"
+            for i, speaker in enumerate(speakers_info, 1):
+                name = speaker.get('speaker_name', 'Unknown')
+                role = speaker.get('role', '')
+                speaker_list += f"{i}. {name}"
+                if role:
+                    speaker_list += f" - {role}"
+                speaker_list += "\n"
+
+        # Prepare video info
+        duration = video_metadata.get('duration_estimated', 'N/A')
+        video_info = f"\n🎥 Duración: {duration}" if duration != 'N/A' else ""
+
+        prompt = f"""
+Genera una descripción optimizada para YouTube de un vídeo del Congreso de España. La descripción debe:
+- Ser informativa y atractiva
+- Incluir contexto del debate
+- Ser accesible para audiencia general
+- Incluir hashtags relevantes al final
+- Longitud: 200-500 palabras
+
+Contenido del debate: {main_topic_content}
+
+Sesión número: {session_number}
+{speaker_list}
+{video_info}
+
+Estructura sugerida:
+1. Introducción del tema
+2. Contexto político relevante
+3. Participantes principales
+4. Información técnica
+5. Hashtags relevantes
+
+Genera solo la descripción, sin títulos de sección.
+"""
+
+        response = openai.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Eres un experto en crear descripciones atractivas para contenido político español en YouTube. Tu objetivo es hacer accesible la política a la ciudadanía."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=800,
+            temperature=0.7
+        )
+
+        generated_description = response.choices[0].message.content.strip()
+
+        # Add technical info and credits
+        technical_info = f"\n\n📹 INFORMACIÓN TÉCNICA:"
+        if video_info:
+            technical_info += video_info
+        technical_info += f"\n📅 Sesión: {session_number}"
+        technical_info += f"\n🏛️ Fuente: Congreso de los Diputados de España"
+        technical_info += f"\n🔗 Contenido original disponible en www.congreso.es"
+
+        final_description = generated_description + technical_info
+
+        logging.info(f"Generated YouTube description ({len(final_description)} chars)")
+
+        return {
+            "description": final_description,
+            "character_count": len(final_description),
+            "word_count": len(final_description.split()),
+            "error": None
+        }
+
+    except Exception as e:
+        error_msg = f"Error generating YouTube description: {str(e)}"
+        logging.error(error_msg)
+
+        # Fallback description
+        fallback_description = f"""Debate del Congreso de los Diputados de España.
+
+{main_topic_content[:300] if main_topic_content else 'Contenido del debate no disponible.'}
+
+📅 Sesión: {session_number}
+🏛️ Fuente: Congreso de los Diputados de España
+🔗 www.congreso.es
+
+#CongresoEspaña #Política #Debate #Democracia"""
+
+        return {
+            "description": fallback_description,
+            "character_count": len(fallback_description),
+            "word_count": len(fallback_description.split()),
+            "error": error_msg
+        }
+
+def generate_youtube_metadata_for_topics(download_results, session_number):
+    """
+    Generates YouTube metadata (titles and descriptions) for all downloaded topics.
+
+    Args:
+        download_results: Results from download_main_topic_videos function
+        session_number: Congressional session number
+
+    Returns:
+        Dict with metadata for each topic
+    """
+    metadata_results = {
+        "total_topics": len(download_results.get('download_details', [])),
+        "successful_generations": 0,
+        "failed_generations": 0,
+        "topic_metadata": []
+    }
+
+    for detail in download_results.get('download_details', []):
+        if not detail.get('success'):
+            # Skip topics that weren't downloaded successfully
+            continue
+
+        topic_entry_id = detail.get('topic_entry_id')
+
+        # Read the info file to get topic and speaker data
+        info_file_path = detail.get('info_file_path')
+        main_topic_content = ""
+        speakers_info = []
+
+        if info_file_path and os.path.exists(info_file_path):
+            try:
+                with open(info_file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    # Extract main topic (basic parsing)
+                    if "MAIN TOPIC:" in content:
+                        topic_start = content.find("MAIN TOPIC:") + len("MAIN TOPIC:")
+                        topic_end = content.find("SPEAKERS AND INTERVENTIONS:")
+                        if topic_end == -1:
+                            topic_end = len(content)
+                        main_topic_content = content[topic_start:topic_end].strip().replace("-----------", "").strip()
+
+            except Exception as e:
+                logging.warning(f"Could not read info file {info_file_path}: {e}")
+
+        # Get video metadata if available
+        video_metadata = {}
+        if 'metadata' in detail:
+            video_metadata = detail['metadata']
+
+        # Generate title
+        logging.info(f"Generating YouTube metadata for topic {topic_entry_id}")
+        title_result = generate_youtube_title(main_topic_content, speakers_info)
+        description_result = generate_youtube_description(
+            main_topic_content, speakers_info, video_metadata, session_number
+        )
+
+        topic_metadata = {
+            "topic_entry_id": topic_entry_id,
+            "video_file_path": detail.get('output_path'),
+            "info_file_path": info_file_path,
+            "title": title_result,
+            "description": description_result,
+            "main_topic_content": main_topic_content,
+            "generation_success": title_result.get('error') is None and description_result.get('error') is None
+        }
+
+        metadata_results["topic_metadata"].append(topic_metadata)
+
+        if topic_metadata["generation_success"]:
+            metadata_results["successful_generations"] += 1
+        else:
+            metadata_results["failed_generations"] += 1
+
+    logging.info(f"YouTube metadata generation complete: {metadata_results['successful_generations']}/{metadata_results['total_topics']} topics processed successfully")
+    return metadata_results

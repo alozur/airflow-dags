@@ -154,10 +154,22 @@ with DAG(
   )
 
   t12 = PythonOperator(
+      task_id='generate_youtube_metadata',
+      python_callable=lambda ti: xcom_task(
+          ti,
+          lambda: cu.generate_youtube_metadata_for_topics(
+              ti.xcom_pull(key='download_results'),
+              ti.xcom_pull(key='session_number')
+          ),
+          'youtube_metadata_results'
+      ),
+  )
+
+  t13 = PythonOperator(
       task_id='no_plenary',
       python_callable=lambda: print("No plenary session today. DAG execution stopped."),
   )
 
   t0 >> t1 >> t2 >> t3
-  t3 >> t4 >> t5 >> t6 >> t7 >> t8 >> t9 >> t10 >> t11
-  t3 >> t12
+  t3 >> t4 >> t5 >> t6 >> t7 >> t8 >> t9 >> t10 >> t11 >> t12
+  t3 >> t13
