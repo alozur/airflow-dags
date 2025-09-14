@@ -132,10 +132,32 @@ with DAG(
   )
 
   t10 = PythonOperator(
+      task_id='create_session_folder',
+      python_callable=lambda ti: xcom_task(
+          ti,
+          lambda session_num: cu.create_session_folder(session_num),
+          'session_folder_path',
+          input_key='session_number'
+      ),
+  )
+
+  t11 = PythonOperator(
+      task_id='download_main_topic_videos',
+      python_callable=lambda ti: xcom_task(
+          ti,
+          lambda _: cu.download_main_topic_videos(
+              ti.xcom_pull(key='enriched_video_groups'),
+              ti.xcom_pull(key='session_folder_path')
+          ),
+          'download_results'
+      ),
+  )
+
+  t12 = PythonOperator(
       task_id='no_plenary',
       python_callable=lambda: print("No plenary session today. DAG execution stopped."),
   )
 
   t0 >> t1 >> t2 >> t3
-  t3 >> t4 >> t5 >> t6 >> t7 >> t8 >> t9
-  t3 >> t10
+  t3 >> t4 >> t5 >> t6 >> t7 >> t8 >> t9 >> t10 >> t11
+  t3 >> t12
