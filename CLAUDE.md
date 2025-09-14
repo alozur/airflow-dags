@@ -62,5 +62,5 @@ The `utils/` folder contains common functionality shared across all DAG projects
 - **Conda Environment**: Use the `airflow` conda environment for all testing and development
 - **Run Python scripts**: `conda run -n airflow python <script.py>`
 - **Install dependencies**: `conda run -n airflow pip install <package>`
-- **Required packages**: beautifulsoup4, requests, urllib3, apache-airflow (when needed)
+- **Required packages**: beautifulsoup4, requests, urllib3, apache-airflow, openai (when needed)
 - Always use the conda environment to ensure consistent dependencies and avoid module conflicts

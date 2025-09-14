@@ -26,7 +26,7 @@ x-airflow-common:
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_password@postgres_shared:5432/airflow_db
     AIRFLOW__CORE__FERNET_KEY: "${AIRFLOW__CORE__FERNET_KEY}"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-    _PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-postgres"
+    _PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-postgres openai beautifulsoup4 requests urllib3"
     AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags/repo
     AIRFLOW__CORE__PARALLELISM: 4
     AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: 2
@@ -34,6 +34,7 @@ x-airflow-common:
     AIRFLOW__CORE__DEFAULT_TIMEZONE: Europe/Madrid
     AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 30
     AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 30
+    OPENAI_API_KEY: "${OPENAI_API_KEY}"
   volumes:
     - airflow_logs:/opt/airflow/logs
     - airflow_plugins:/opt/airflow/plugins
