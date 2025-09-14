@@ -448,6 +448,37 @@ def enrich_with_metadata(organized_groups):
     logging.info(f"Metadata extraction complete: {successful_extractions}/{total_videos} videos successfully processed")
     return enriched_groups
 
+def limit_enriched_groups_for_testing(enriched_groups, max_topics=2):
+    """
+    Limits enriched video groups to a specified number of main topics for testing purposes.
+
+    Args:
+        enriched_groups: List of enriched groups from enrich_with_metadata()
+        max_topics: Maximum number of topic groups to keep (default: 2)
+
+    Returns:
+        Limited list of enriched groups containing only the specified number of topic groups
+    """
+    if not enriched_groups:
+        return enriched_groups
+
+    # Filter only topic groups (not standalone entries)
+    topic_groups = [group for group in enriched_groups if group.get('type') == 'topic_group']
+    standalone_groups = [group for group in enriched_groups if group.get('type') != 'topic_group']
+
+    # Limit topic groups to max_topics
+    limited_topic_groups = topic_groups[:max_topics]
+
+    # Combine limited topic groups with any standalone entries
+    limited_groups = limited_topic_groups + standalone_groups
+
+    original_count = len(topic_groups)
+    limited_count = len(limited_topic_groups)
+
+    logging.info(f"Testing mode: Limited enriched groups from {original_count} to {limited_count} main topics")
+
+    return limited_groups
+
 def create_session_folder(session_number, base_data_path="/opt/airflow/data"):
     """
     Creates a session folder inside the congreso_youtube data directory.

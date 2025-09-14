@@ -9,6 +9,15 @@ from utils.airflow_helpers import xcom_task, ensure_project_data_directory  # ðŸ
 
 yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
+def _enrich_and_limit_if_testing(organized_groups, is_testing):
+    """Helper function to enrich metadata and limit groups if in testing mode."""
+    enriched_groups = cu.enrich_with_metadata(organized_groups)
+
+    if is_testing:
+        enriched_groups = cu.limit_enriched_groups_for_testing(enriched_groups, max_topics=2)
+
+    return enriched_groups
+
 default_args = {
   'owner': 'airflow',
   'depends_on_past': False,
@@ -26,7 +35,8 @@ with DAG(
   start_date=datetime(2025, 8, 28),
   catchup=False,
   params={   # Default to yesterday
-      "target_date": yesterday_str
+      "target_date": yesterday_str,
+      "isTesting": False  # When True, limits to 2 main topics only
   }
 ) as dag:
 
@@ -123,9 +133,12 @@ with DAG(
 
   t9 = PythonOperator(
       task_id='enrich_with_metadata',
-      python_callable=lambda ti: xcom_task(
+      python_callable=lambda ti, **context: xcom_task(
           ti,
-          lambda groups: cu.enrich_with_metadata(groups),
+          lambda groups: _enrich_and_limit_if_testing(
+              groups,
+              context["params"].get("isTesting", False)
+          ),
           'enriched_video_groups',
           input_key='organized_video_groups'
       ),
