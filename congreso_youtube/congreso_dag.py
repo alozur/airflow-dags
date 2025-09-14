@@ -145,7 +145,7 @@ with DAG(
       task_id='download_main_topic_videos',
       python_callable=lambda ti: xcom_task(
           ti,
-          lambda _: cu.download_main_topic_videos(
+          lambda: cu.download_main_topic_videos(
               ti.xcom_pull(key='enriched_video_groups'),
               ti.xcom_pull(key='session_folder_path')
           ),
