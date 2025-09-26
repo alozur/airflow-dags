@@ -179,11 +179,37 @@ with DAG(
       ),
   )
 
+  # Future task for YouTube upload (placeholder for when you're ready)
+  t14 = PythonOperator(
+      task_id='upload_to_youtube',
+      python_callable=lambda ti: xcom_task(
+          ti,
+          lambda: print("Ready for YouTube upload with metadata:",
+                       ti.xcom_pull(key='youtube_metadata_results')),
+          'upload_results'
+      ),
+  )
+
   t13 = PythonOperator(
       task_id='no_plenary',
       python_callable=lambda: print("No plenary session today. DAG execution stopped."),
   )
 
+  # Sequential flow until we get session_number
   t0 >> t1 >> t2 >> t3
-  t3 >> t4 >> t5 >> t6 >> t7 >> t8 >> t9 >> t10 >> t11 >> t12
+
+  # Branch: no plenary session
   t3 >> t13
+
+  # Branch: plenary session found - parallel execution opportunities
+  t3 >> t4
+
+  # Two parallel branches from session_number:
+  # 1. Create session folder (can start immediately)
+  t4 >> t10
+
+  # 2. Get session data pipeline
+  t4 >> t5 >> t6 >> t7 >> t8 >> t9
+
+  # Download requires both session folder and enriched groups
+  [t9, t10] >> t11 >> t12 >> t14
