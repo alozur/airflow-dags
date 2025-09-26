@@ -608,14 +608,27 @@ def create_topic_info_file(topic_entry_id, main_topic, interventions, topic_fold
 
 def download_main_topic_videos(enriched_video_groups, session_folder_path):
     """
-    Downloads main topic videos and creates folder structure for each topic.
+    Downloads ONLY main topic videos and creates folder structure for each topic.
+
+    IMPORTANT: This function downloads only the main topic videos (tema principal)
+    from each topic group. Individual intervention videos (intervenciones de diputados)
+    are NOT downloaded - they are processed for metadata only.
+
+    For each topic group:
+    - Downloads: 1 main topic video per group
+    - Skips: All intervention videos within that group
+    - Creates: Topic folder structure and info files
 
     Args:
         enriched_video_groups: Enriched video groups from previous task
         session_folder_path: Path to the session folder
 
     Returns:
-        Dict with download results and summary
+        Dict with download results and summary containing:
+        - successful_downloads: Number of main topic videos downloaded successfully
+        - failed_downloads: Number of main topic videos that failed to download
+        - total_topics: Total number of topic groups processed
+        - download_details: List of detailed results per topic
     """
     download_results = {
         "successful_downloads": 0,

@@ -154,6 +154,8 @@ with DAG(
       ),
   )
 
+  # Downloads ONLY main topic videos (NOT individual interventions)
+  # For a session with 5 topics and 20 interventions, only 5 videos are downloaded
   t11 = PythonOperator(
       task_id='download_main_topic_videos',
       python_callable=lambda ti: xcom_task(
