@@ -5,6 +5,11 @@ from airflow.operators.python import PythonOperator, BranchPythonOperator
 from congreso_youtube import congreso_utils as cu
 from bs4 import BeautifulSoup
 from utils.airflow_helpers import xcom_task, ensure_project_data_directory  # 👈 import helpers
+from utils.postgres_operators import PostgreSQLOperator
+
+# Load environment variables
+from utils.env_loader import load_env_if_local
+load_env_if_local()
 
 
 yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -17,6 +22,7 @@ def _enrich_and_limit_if_testing(organized_groups, is_testing):
         enriched_groups = cu.limit_enriched_groups_for_testing(enriched_groups, max_topics=2)
 
     return enriched_groups
+
 
 default_args = {
   'owner': 'airflow',
@@ -181,6 +187,31 @@ with DAG(
       ),
   )
 
+  # Database operations using custom PostgreSQLOperator
+  t13_db = PostgreSQLOperator(
+      task_id='create_session_in_db',
+      operation='create_session',
+      output_xcom_key='db_session_id'
+  )
+
+  t14_db = PostgreSQLOperator(
+      task_id='save_topics_to_db',
+      operation='save_topics',
+      output_xcom_key='db_topic_ids'
+  )
+
+  t15_db = PostgreSQLOperator(
+      task_id='update_download_status_in_db',
+      operation='update_downloads',
+      output_xcom_key='db_download_updates'
+  )
+
+  t16_db = PostgreSQLOperator(
+      task_id='save_youtube_metadata_to_db',
+      operation='save_metadata',
+      output_xcom_key='db_metadata_updates'
+  )
+
   # Future task for YouTube upload (placeholder for when you're ready)
   t14 = PythonOperator(
       task_id='upload_to_youtube',
@@ -214,4 +245,20 @@ with DAG(
   t4 >> t5 >> t6 >> t7 >> t8 >> t9
 
   # Download requires both session folder and enriched groups
-  [t9, t10] >> t11 >> t12 >> t14
+  [t9, t10] >> t11 >> t12
+
+  # Database operations pipeline
+  # Create session in DB after we have session number and link
+  [t4, t5] >> t13_db
+
+  # Save topics to DB after enrichment
+  [t9, t13_db] >> t14_db
+
+  # Update download status after downloads complete
+  [t11, t14_db] >> t15_db
+
+  # Save YouTube metadata after metadata generation
+  [t12, t15_db] >> t16_db
+
+  # YouTube upload depends on all database operations being complete
+  t16_db >> t14
