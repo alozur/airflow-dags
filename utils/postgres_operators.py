@@ -104,18 +104,54 @@ class PostgreSQLOperator(BaseOperator):
             result = {'updated_topics': updated_count, 'total_processed': len(download_details)}
 
         elif self.operation == 'save_metadata':
-            metadata_results = ti.xcom_pull(key=self.xcom_keys.get('metadata_results', 'youtube_metadata_results'))
+            metadata_results_raw = ti.xcom_pull(key=self.xcom_keys.get('metadata_results', 'youtube_metadata_results'))
             topic_ids = ti.xcom_pull(key=self.xcom_keys.get('topic_ids', 'db_topic_ids'))
 
-            updated_count = 0
-            for i, result_item in enumerate(metadata_results):
-                if i < len(topic_ids) and result_item.get('openai_data'):
-                    topic_id = topic_ids[i]
-                    openai_data = result_item['openai_data']
-                    db.update_openai_classification(topic_id, openai_data)
-                    updated_count += 1
+            # Debug logging
+            print(f"DEBUG: metadata_results_raw type: {type(metadata_results_raw)}")
+            print(f"DEBUG: topic_ids type: {type(topic_ids)}")
 
-            result = {'updated_topics': updated_count}
+            # Handle the metadata_results structure from congreso_utils
+            if isinstance(metadata_results_raw, dict) and 'topic_metadata' in metadata_results_raw:
+                topic_metadata = metadata_results_raw['topic_metadata']
+                print(f"DEBUG: Extracted topic_metadata with {len(topic_metadata)} items")
+            elif isinstance(metadata_results_raw, list):
+                topic_metadata = metadata_results_raw
+                print(f"DEBUG: Using metadata_results_raw as list with {len(topic_metadata)} items")
+            else:
+                print(f"ERROR: Unexpected metadata_results format: {type(metadata_results_raw)}")
+                result = {'updated_topics': 0, 'error': 'Invalid metadata_results format'}
+                return result
+
+            # Ensure topic_ids is a list
+            if not isinstance(topic_ids, list):
+                print(f"ERROR: topic_ids is not a list, got: {type(topic_ids)}")
+                result = {'updated_topics': 0, 'error': 'topic_ids must be a list'}
+                return result
+
+            updated_count = 0
+            for i, result_item in enumerate(topic_metadata):
+                if i < len(topic_ids):
+                    if isinstance(result_item, dict):
+                        openai_data = result_item.get('openai_data')
+                        topic_entry_id = result_item.get('topic_entry_id')
+
+                        print(f"DEBUG: Processing metadata item {i}: topic_entry_id={topic_entry_id}, has_openai_data={bool(openai_data)}")
+
+                        if openai_data:
+                            topic_id = topic_ids[i]
+                            try:
+                                db.update_openai_classification(topic_id, openai_data)
+                                updated_count += 1
+                                print(f"✅ Successfully updated OpenAI data for topic ID {topic_id}")
+                            except Exception as e:
+                                print(f"❌ ERROR updating OpenAI data for topic ID {topic_id}: {e}")
+                        else:
+                            print(f"⚠️ Skipping item {i}: no OpenAI data found")
+                    else:
+                        print(f"WARNING: result_item {i} is not a dict: {type(result_item)}")
+
+            result = {'updated_topics': updated_count, 'total_processed': len(topic_metadata)}
 
         else:
             raise ValueError(f"Unknown operation: {self.operation}")
