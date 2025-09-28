@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS video_topics (
     youtube_video_id VARCHAR(50), -- YouTube video ID once uploaded
     youtube_upload_date TIMESTAMP,
     upload_eligible BOOLEAN DEFAULT TRUE, -- can be set to false manually
+    is_main_topic BOOLEAN DEFAULT FALSE, -- indicates if this is a main topic
 
     -- Note: Age-based filtering handled in views and queries
     -- Cannot use generated column with subqueries in PostgreSQL

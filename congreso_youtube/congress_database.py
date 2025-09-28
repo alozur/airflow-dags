@@ -74,6 +74,7 @@ class CongressionalVideoDB:
                             video_file_path = %s,
                             file_size_bytes = %s,
                             duration_seconds = %s,
+                            is_main_topic = %s,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = %s
                         RETURNING id
@@ -84,6 +85,7 @@ class CongressionalVideoDB:
                         topic_data.get('video_file_path'),
                         topic_data.get('file_size_bytes'),
                         topic_data.get('duration_seconds'),
+                        topic_data.get('is_main_topic', False),
                         existing['id']
                     ))
                     topic_id = existing['id']
@@ -93,8 +95,8 @@ class CongressionalVideoDB:
                     cur.execute("""
                         INSERT INTO video_topics
                         (session_id, entry_id, topic_title, topic_content, video_url,
-                         video_file_path, file_size_bytes, duration_seconds)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                         video_file_path, file_size_bytes, duration_seconds, is_main_topic)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING id
                     """, (
                         session_id,
@@ -104,7 +106,8 @@ class CongressionalVideoDB:
                         topic_data.get('video_url'),
                         topic_data.get('video_file_path'),
                         topic_data.get('file_size_bytes'),
-                        topic_data.get('duration_seconds')
+                        topic_data.get('duration_seconds'),
+                        topic_data.get('is_main_topic', False)
                     ))
                     result = cur.fetchone()
                     topic_id = result['id']
@@ -221,3 +224,26 @@ class CongressionalVideoDB:
                     WHERE id = %s
                 """, (file_path, file_size, duration, video_topic_id))
                 logger.info(f"Updated download info for video topic ID {video_topic_id}")
+
+    def update_main_topic_status(self, video_topic_id: int, is_main_topic: bool):
+        """Update the is_main_topic status for a video topic"""
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE video_topics SET
+                        is_main_topic = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                """, (is_main_topic, video_topic_id))
+                logger.info(f"Updated main topic status for video topic ID {video_topic_id} to {is_main_topic}")
+
+    def get_main_topics_by_session(self, session_id: int) -> List[Dict]:
+        """Get all main topics for a session"""
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT * FROM video_topics
+                    WHERE session_id = %s AND is_main_topic = TRUE
+                    ORDER BY created_at
+                """, (session_id,))
+                return cur.fetchall()
