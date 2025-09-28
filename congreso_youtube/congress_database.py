@@ -247,3 +247,17 @@ class CongressionalVideoDB:
                     ORDER BY created_at
                 """, (session_id,))
                 return cur.fetchall()
+
+    def update_youtube_metadata(self, video_topic_id: int, youtube_title: str, youtube_description: str):
+        """Update YouTube metadata for a video topic"""
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE video_topics SET
+                        youtube_title = %s,
+                        youtube_description = %s,
+                        youtube_metadata_generated_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                """, (youtube_title, youtube_description, video_topic_id))
+                logger.info(f"Updated YouTube metadata for video topic ID {video_topic_id}")

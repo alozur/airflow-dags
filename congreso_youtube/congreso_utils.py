@@ -269,7 +269,8 @@ def organize_video_groups(video_items):
                     'content': speaker_name,  # Full question/topic text
                     'entry_id': item.get('entry_id'),
                     'video_url': item.get('video_url'),
-                    'profile_link': item.get('profile_link')
+                    'profile_link': item.get('profile_link'),
+                    'is_bold': True  # Preserve the main topic flag
                 },
                 'interventions': []  # Children - speakers discussing this topic
             }
@@ -909,9 +910,81 @@ Este vídeo forma parte de las sesiones de control al Gobierno, donde los diputa
             "error": error_msg
         }
 
+def generate_youtube_metadata_from_enriched_groups(enriched_video_groups, session_number, target_date=None):
+    """
+    Generates YouTube metadata (titles and descriptions) directly from enriched video groups.
+    This function works without requiring downloads to be completed first.
+
+    Args:
+        enriched_video_groups: Enriched video groups from enrich_with_metadata function
+        session_number: Congressional session number
+        target_date: Date of the session for generating session links
+
+    Returns:
+        Dict with metadata for each topic
+    """
+    metadata_results = {
+        "total_topics": 0,
+        "successful_generations": 0,
+        "failed_generations": 0,
+        "topic_metadata": []
+    }
+
+    for group in enriched_video_groups:
+        if group.get('type') == 'topic_group':
+            metadata_results["total_topics"] += 1
+
+            main_topic = group.get('main_topic', {})
+            topic_entry_id = main_topic.get('entry_id')
+            main_topic_content = main_topic.get('content', '')
+
+            # Extract speakers info from interventions
+            speakers_info = []
+            for intervention in group.get('interventions', []):
+                speakers_info.append({
+                    'speaker_name': intervention.get('speaker_name', ''),
+                    'role': intervention.get('role', '')
+                })
+
+            # Get video metadata from the enriched data
+            video_metadata = main_topic.get('metadata_url', {})
+
+            # Generate title and description
+            logging.info(f"Generating YouTube metadata for topic {topic_entry_id}")
+            title_result = generate_youtube_title(main_topic_content, speakers_info)
+            description_result = generate_youtube_description(
+                main_topic_content, speakers_info, video_metadata, session_number, target_date
+            )
+
+            topic_metadata = {
+                "topic_entry_id": topic_entry_id,
+                "video_file_path": None,  # Will be set later after download
+                "info_file_path": None,   # Will be set later after download
+                "title": title_result,
+                "description": description_result,
+                "main_topic_content": main_topic_content,
+                "video_url": main_topic.get('video_url'),
+                "video_metadata": video_metadata,
+                "speakers_info": speakers_info,
+                "generation_success": title_result.get('error') is None and description_result.get('error') is None
+            }
+
+            metadata_results["topic_metadata"].append(topic_metadata)
+
+            if topic_metadata["generation_success"]:
+                metadata_results["successful_generations"] += 1
+            else:
+                metadata_results["failed_generations"] += 1
+
+    logging.info(f"YouTube metadata generation complete: {metadata_results['successful_generations']}/{metadata_results['total_topics']} topics processed successfully")
+    return metadata_results
+
 def generate_youtube_metadata_for_topics(download_results, session_number, target_date=None):
     """
     Generates YouTube metadata (titles and descriptions) for all downloaded topics.
+
+    DEPRECATED: Use generate_youtube_metadata_from_enriched_groups instead.
+    This function is kept for backward compatibility.
 
     Args:
         download_results: Results from download_main_topic_videos function

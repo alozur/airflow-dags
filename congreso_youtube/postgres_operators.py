@@ -61,7 +61,8 @@ class PostgreSQLOperator(BaseOperator):
                         'video_url': topic_data.get('video_url'),
                         'video_file_path': None,  # Will be updated later by download task
                         'file_size_bytes': None,  # Will be updated later
-                        'duration_seconds': None  # Will be updated later
+                        'duration_seconds': None,  # Will be updated later
+                        'is_main_topic': topic_data.get('is_bold', False)  # Map is_bold to is_main_topic
                     }
 
                     print(f"DEBUG: mapped_topic_data: {mapped_topic_data}")
@@ -182,6 +183,64 @@ class PostgreSQLOperator(BaseOperator):
                                 print(f"❌ ERROR updating OpenAI data for topic ID {topic_id}: {e}")
                         else:
                             print(f"⚠️ Skipping item {i}: no OpenAI data found")
+                    else:
+                        print(f"WARNING: result_item {i} is not a dict: {type(result_item)}")
+
+            result = {'updated_topics': updated_count, 'total_processed': len(topic_metadata)}
+
+        elif self.operation == 'save_youtube_metadata':
+            metadata_results_raw = ti.xcom_pull(key=self.xcom_keys.get('metadata_results', 'youtube_metadata_results'))
+            topic_ids = ti.xcom_pull(key=self.xcom_keys.get('topic_ids', 'db_topic_ids'))
+
+            # Debug logging
+            print(f"DEBUG: metadata_results_raw type: {type(metadata_results_raw)}")
+            print(f"DEBUG: topic_ids type: {type(topic_ids)}")
+
+            # Handle the metadata_results structure from the new function
+            if isinstance(metadata_results_raw, dict) and 'topic_metadata' in metadata_results_raw:
+                topic_metadata = metadata_results_raw['topic_metadata']
+                print(f"DEBUG: Extracted topic_metadata with {len(topic_metadata)} items")
+            elif isinstance(metadata_results_raw, list):
+                topic_metadata = metadata_results_raw
+                print(f"DEBUG: Using metadata_results_raw as list with {len(topic_metadata)} items")
+            else:
+                print(f"ERROR: Unexpected metadata_results format: {type(metadata_results_raw)}")
+                result = {'updated_topics': 0, 'error': 'Invalid metadata_results format'}
+                return result
+
+            # Ensure topic_ids is a list
+            if not isinstance(topic_ids, list):
+                print(f"ERROR: topic_ids is not a list, got: {type(topic_ids)}")
+                result = {'updated_topics': 0, 'error': 'topic_ids must be a list'}
+                return result
+
+            updated_count = 0
+            for i, result_item in enumerate(topic_metadata):
+                if i < len(topic_ids):
+                    if isinstance(result_item, dict):
+                        topic_entry_id = result_item.get('topic_entry_id')
+                        title_result = result_item.get('title', {})
+                        description_result = result_item.get('description', {})
+
+                        print(f"DEBUG: Processing YouTube metadata item {i}: topic_entry_id={topic_entry_id}")
+
+                        if title_result.get('title') and description_result.get('description'):
+                            topic_id = topic_ids[i]
+
+                            youtube_title = title_result.get('title')
+                            youtube_description = description_result.get('description')
+
+                            print(f"DEBUG: Saving YouTube metadata - Title: {youtube_title[:50]}...")
+                            print(f"DEBUG: Description length: {len(youtube_description)} chars")
+
+                            try:
+                                db.update_youtube_metadata(topic_id, youtube_title, youtube_description)
+                                updated_count += 1
+                                print(f"✅ Successfully updated YouTube metadata for topic ID {topic_id}")
+                            except Exception as e:
+                                print(f"❌ ERROR updating YouTube metadata for topic ID {topic_id}: {e}")
+                        else:
+                            print(f"⚠️ Skipping item {i}: missing title or description")
                     else:
                         print(f"WARNING: result_item {i} is not a dict: {type(result_item)}")
 

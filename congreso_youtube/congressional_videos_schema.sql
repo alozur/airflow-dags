@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS video_topics (
     upload_eligible BOOLEAN DEFAULT TRUE, -- can be set to false manually
     is_main_topic BOOLEAN DEFAULT FALSE, -- indicates if this is a main topic
 
+    -- YouTube Metadata (generated content for upload)
+    youtube_title TEXT, -- AI-generated YouTube title
+    youtube_description TEXT, -- AI-generated YouTube description
+    youtube_metadata_generated_at TIMESTAMP, -- when metadata was generated
+
     -- Note: Age-based filtering handled in views and queries
     -- Cannot use generated column with subqueries in PostgreSQL
 

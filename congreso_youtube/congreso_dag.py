@@ -178,8 +178,8 @@ with DAG(
       task_id='generate_youtube_metadata',
       python_callable=lambda ti, **context: xcom_task(
           ti,
-          lambda: cu.generate_youtube_metadata_for_topics(
-              ti.xcom_pull(key='download_results'),
+          lambda: cu.generate_youtube_metadata_from_enriched_groups(
+              ti.xcom_pull(key='enriched_video_groups'),
               ti.xcom_pull(key='session_number'),
               context["params"].get("target_date")
           ),
@@ -208,7 +208,7 @@ with DAG(
 
   t16_db = PostgreSQLOperator(
       task_id='save_youtube_metadata_to_db',
-      operation='save_metadata',
+      operation='save_youtube_metadata',
       output_xcom_key='db_metadata_updates'
   )
 
@@ -237,28 +237,28 @@ with DAG(
   # Branch: plenary session found - parallel execution opportunities
   t3 >> t4
 
-  # Two parallel branches from session_number:
-  # 1. Create session folder (can start immediately)
-  t4 >> t10
-
-  # 2. Get session data pipeline
+  # Main data processing pipeline (no downloads yet)
   t4 >> t5 >> t6 >> t7 >> t8 >> t9
 
-  # Download requires both session folder and enriched groups
-  [t9, t10] >> t11 >> t12
-
-  # Database operations pipeline
+  # Database operations pipeline (save all data without downloads)
   # Create session in DB after we have session number and link
   [t4, t5] >> t13_db
 
-  # Save topics to DB after enrichment
+  # Save topics to DB after enrichment (no download data needed)
   [t9, t13_db] >> t14_db
 
+  # Generate YouTube metadata directly from enriched groups (without downloads)
+  [t9, t14_db] >> t12
+
+  # Save YouTube metadata to DB
+  t12 >> t16_db
+
+  # NOW do downloads near the end - create session folder and download
+  t16_db >> t10  # Create session folder when we're ready to download
+  [t10, t16_db] >> t11  # Download videos
+
   # Update download status after downloads complete
-  [t11, t14_db] >> t15_db
+  t11 >> t15_db
 
-  # Save YouTube metadata after metadata generation
-  [t12, t15_db] >> t16_db
-
-  # YouTube upload depends on all database operations being complete
-  t16_db >> t14
+  # YouTube upload depends on all operations being complete
+  t15_db >> t14
