@@ -5,7 +5,7 @@ from airflow.operators.python import PythonOperator, BranchPythonOperator
 from congreso_youtube import congreso_utils as cu
 from bs4 import BeautifulSoup
 from utils.airflow_helpers import xcom_task, ensure_project_data_directory  # 👈 import helpers
-from utils.postgres_operators import PostgreSQLOperator
+from congreso_youtube.postgres_operators import PostgreSQLOperator
 
 # Load environment variables
 from utils.env_loader import load_env_if_local

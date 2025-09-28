@@ -1,8 +1,8 @@
-# utils/postgres_operators.py
+# congreso_youtube/postgres_operators.py
 from airflow.models import BaseOperator
 from airflow.utils.decorators import apply_defaults
 from typing import Any, Dict, List, Optional
-from congreso_youtube.congress_database import CongressionalVideoDB
+from .congress_database import CongressionalVideoDB
 from datetime import datetime
 
 class PostgreSQLOperator(BaseOperator):
@@ -41,12 +41,34 @@ class PostgreSQLOperator(BaseOperator):
             session_id = ti.xcom_pull(key=self.xcom_keys.get('session_id', 'db_session_id'))
             video_groups = ti.xcom_pull(key=self.xcom_keys.get('video_groups', 'enriched_video_groups'))
 
+            print(f"DEBUG: session_id = {session_id}")
+            print(f"DEBUG: video_groups type = {type(video_groups)}")
+            print(f"DEBUG: video_groups length = {len(video_groups) if video_groups else 0}")
+
             topic_ids = []
-            for group in video_groups:
+            for i, group in enumerate(video_groups):
+                print(f"DEBUG: Group {i} keys: {list(group.keys()) if isinstance(group, dict) else 'Not a dict'}")
+
                 if 'main_topic' in group:
                     topic_data = group['main_topic']
-                    topic_id = db.upsert_video_topic(session_id, topic_data.get('entry_id'), topic_data)
+                    print(f"DEBUG: main_topic keys: {list(topic_data.keys()) if isinstance(topic_data, dict) else 'Not a dict'}")
+                    print(f"DEBUG: main_topic data: {topic_data}")
+
+                    # Map the fields correctly from the actual data structure
+                    mapped_topic_data = {
+                        'topic_title': topic_data.get('content'),  # 'content' -> 'topic_title'
+                        'topic_content': topic_data.get('content'),  # Use content for both title and content
+                        'video_url': topic_data.get('video_url'),
+                        'video_file_path': None,  # Will be updated later by download task
+                        'file_size_bytes': None,  # Will be updated later
+                        'duration_seconds': None  # Will be updated later
+                    }
+
+                    print(f"DEBUG: mapped_topic_data: {mapped_topic_data}")
+
+                    topic_id = db.upsert_video_topic(session_id, topic_data.get('entry_id'), mapped_topic_data)
                     topic_ids.append(topic_id)
+                    print(f"✅ Successfully saved topic {topic_data.get('entry_id')} with ID {topic_id}")
 
             db.update_session_total_topics(session_id)
             result = topic_ids
@@ -140,8 +162,20 @@ class PostgreSQLOperator(BaseOperator):
 
                         if openai_data:
                             topic_id = topic_ids[i]
+
+                            # Map OpenAI data fields correctly
+                            mapped_openai_data = {
+                                'category': openai_data.get('category'),
+                                'summary': openai_data.get('summary'),
+                                'keywords': openai_data.get('keywords', []),
+                                'priority_score': openai_data.get('priority_score')
+                            }
+
+                            print(f"DEBUG: openai_data received: {openai_data}")
+                            print(f"DEBUG: mapped_openai_data: {mapped_openai_data}")
+
                             try:
-                                db.update_openai_classification(topic_id, openai_data)
+                                db.update_openai_classification(topic_id, mapped_openai_data)
                                 updated_count += 1
                                 print(f"✅ Successfully updated OpenAI data for topic ID {topic_id}")
                             except Exception as e:
