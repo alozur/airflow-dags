@@ -52,22 +52,56 @@ class PostgreSQLOperator(BaseOperator):
             result = topic_ids
 
         elif self.operation == 'update_downloads':
-            download_results = ti.xcom_pull(key=self.xcom_keys.get('download_results', 'download_results'))
+            download_results_raw = ti.xcom_pull(key=self.xcom_keys.get('download_results', 'download_results'))
             topic_ids = ti.xcom_pull(key=self.xcom_keys.get('topic_ids', 'db_topic_ids'))
 
-            updated_count = 0
-            for i, result_item in enumerate(download_results):
-                if i < len(topic_ids) and result_item.get('success'):
-                    topic_id = topic_ids[i]
-                    db.update_download_info(
-                        topic_id,
-                        result_item.get('file_path'),
-                        result_item.get('file_size'),
-                        result_item.get('duration')
-                    )
-                    updated_count += 1
+            # Debug logging
+            print(f"DEBUG: download_results_raw type: {type(download_results_raw)}")
+            print(f"DEBUG: topic_ids type: {type(topic_ids)}")
 
-            result = {'updated_topics': updated_count}
+            # Handle the download_results structure from congreso_utils
+            if isinstance(download_results_raw, dict) and 'download_details' in download_results_raw:
+                download_details = download_results_raw['download_details']
+                print(f"DEBUG: Extracted download_details with {len(download_details)} items")
+            elif isinstance(download_results_raw, list):
+                download_details = download_results_raw
+                print(f"DEBUG: Using download_results_raw as list with {len(download_details)} items")
+            else:
+                print(f"ERROR: Unexpected download_results format: {type(download_results_raw)}")
+                result = {'updated_topics': 0, 'error': 'Invalid download_results format'}
+                return result
+
+            # Ensure topic_ids is a list
+            if not isinstance(topic_ids, list):
+                print(f"ERROR: topic_ids is not a list, got: {type(topic_ids)}")
+                result = {'updated_topics': 0, 'error': 'topic_ids must be a list'}
+                return result
+
+            updated_count = 0
+            for i, result_item in enumerate(download_details):
+                if i < len(topic_ids):
+                    if isinstance(result_item, dict):
+                        success = result_item.get('success', False)
+                        file_path = result_item.get('file_path')
+                        file_size = result_item.get('file_size')
+                        duration = result_item.get('duration')
+
+                        print(f"DEBUG: Processing item {i}: success={success}, file_path={file_path}")
+
+                        if success and file_path:
+                            topic_id = topic_ids[i]
+                            try:
+                                db.update_download_info(topic_id, file_path, file_size, duration)
+                                updated_count += 1
+                                print(f"✅ Successfully updated topic ID {topic_id}")
+                            except Exception as e:
+                                print(f"❌ ERROR updating topic ID {topic_id}: {e}")
+                        else:
+                            print(f"⚠️ Skipping item {i}: success={success}, file_path={file_path}")
+                    else:
+                        print(f"WARNING: result_item {i} is not a dict: {type(result_item)}")
+
+            result = {'updated_topics': updated_count, 'total_processed': len(download_details)}
 
         elif self.operation == 'save_metadata':
             metadata_results = ti.xcom_pull(key=self.xcom_keys.get('metadata_results', 'youtube_metadata_results'))
