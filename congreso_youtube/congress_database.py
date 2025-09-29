@@ -69,9 +69,11 @@ class CongressionalVideoDB:
                     cur.execute("""
                         UPDATE video_topics SET
                             topic_title = %s,
-                            topic_content = %s,
                             video_url = %s,
                             video_file_path = %s,
+                            speaker_name = %s,
+                            role = %s,
+                            profile_link = %s,
                             file_size_bytes = %s,
                             duration_seconds = %s,
                             is_main_topic = %s,
@@ -80,9 +82,11 @@ class CongressionalVideoDB:
                         RETURNING id
                     """, (
                         topic_data.get('topic_title'),
-                        topic_data.get('topic_content'),
                         topic_data.get('video_url'),
                         topic_data.get('video_file_path'),
+                        topic_data.get('speaker_name'),
+                        topic_data.get('role'),
+                        topic_data.get('profile_link'),
                         topic_data.get('file_size_bytes'),
                         topic_data.get('duration_seconds'),
                         topic_data.get('is_main_topic', False),
@@ -94,17 +98,19 @@ class CongressionalVideoDB:
                     # Insert new topic
                     cur.execute("""
                         INSERT INTO video_topics
-                        (session_id, entry_id, topic_title, topic_content, video_url,
-                         video_file_path, file_size_bytes, duration_seconds, is_main_topic)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        (session_id, entry_id, topic_title, video_url, video_file_path,
+                         speaker_name, role, profile_link, file_size_bytes, duration_seconds, is_main_topic)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING id
                     """, (
                         session_id,
                         entry_id,
                         topic_data.get('topic_title'),
-                        topic_data.get('topic_content'),
                         topic_data.get('video_url'),
                         topic_data.get('video_file_path'),
+                        topic_data.get('speaker_name'),
+                        topic_data.get('role'),
+                        topic_data.get('profile_link'),
                         topic_data.get('file_size_bytes'),
                         topic_data.get('duration_seconds'),
                         topic_data.get('is_main_topic', False)

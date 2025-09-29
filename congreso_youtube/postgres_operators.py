@@ -57,11 +57,13 @@ class PostgreSQLOperator(BaseOperator):
                     # Map the fields correctly from the actual data structure
                     mapped_topic_data = {
                         'topic_title': topic_data.get('content'),  # 'content' -> 'topic_title'
-                        'topic_content': topic_data.get('content'),  # Use content for both title and content
                         'video_url': topic_data.get('video_url'),
                         'video_file_path': None,  # Will be updated later by download task
+                        'speaker_name': topic_data.get('speaker_name'),
+                        'role': topic_data.get('role'),
+                        'profile_link': topic_data.get('profile_link'),
                         'file_size_bytes': None,  # Will be updated later
-                        'duration_seconds': None,  # Will be updated later
+                        'duration_seconds': topic_data.get('duration_seconds'),
                         'is_main_topic': topic_data.get('is_bold', False)  # Map is_bold to is_main_topic
                     }
 

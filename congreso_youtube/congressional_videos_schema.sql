@@ -26,9 +26,13 @@ CREATE TABLE IF NOT EXISTS video_topics (
     -- Video identification
     entry_id VARCHAR(100) NOT NULL, -- from congreso website
     topic_title TEXT,
-    topic_content TEXT,
     video_url VARCHAR(500),
     video_file_path VARCHAR(500), -- local download path
+
+    -- Speaker information
+    speaker_name VARCHAR(200),
+    role VARCHAR(200),
+    profile_link VARCHAR(500),
 
     -- OpenAI Classification
     openai_category VARCHAR(100), -- classified category (e.g., "Economy", "Health", "Education")
