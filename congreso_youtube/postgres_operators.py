@@ -63,6 +63,7 @@ class PostgreSQLOperator(BaseOperator):
                         'speaker_name': topic_data.get('speaker_name'),
                         'role': topic_data.get('role'),
                         'profile_link': topic_data.get('profile_link'),
+                        'main_topic_id': None,  # Main topics don't have a parent
                         'file_size_bytes': None,  # Will be updated later
                         'duration_seconds': topic_data.get('metadata_url', {}).get('duration_seconds'),
                         'is_main_topic': topic_data.get('is_bold', False)  # Map is_bold to is_main_topic
@@ -89,6 +90,7 @@ class PostgreSQLOperator(BaseOperator):
                             'speaker_name': intervention.get('speaker_name'),
                             'role': intervention.get('role'),
                             'profile_link': intervention.get('profile_link'),
+                            'main_topic_id': topic_id,  # Link intervention to its main topic
                             'file_size_bytes': None,  # Will be updated later
                             'duration_seconds': intervention.get('metadata_url', {}).get('duration_seconds'),
                             'is_main_topic': False  # Interventions are never main topics

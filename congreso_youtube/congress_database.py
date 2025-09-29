@@ -74,6 +74,7 @@ class CongressionalVideoDB:
                             speaker_name = %s,
                             role = %s,
                             profile_link = %s,
+                            main_topic_id = %s,
                             file_size_bytes = %s,
                             duration_seconds = %s,
                             is_main_topic = %s,
@@ -87,6 +88,7 @@ class CongressionalVideoDB:
                         topic_data.get('speaker_name'),
                         topic_data.get('role'),
                         topic_data.get('profile_link'),
+                        topic_data.get('main_topic_id'),
                         topic_data.get('file_size_bytes'),
                         topic_data.get('duration_seconds'),
                         topic_data.get('is_main_topic', False),
@@ -99,8 +101,8 @@ class CongressionalVideoDB:
                     cur.execute("""
                         INSERT INTO video_topics
                         (session_id, entry_id, topic_title, video_url, video_file_path,
-                         speaker_name, role, profile_link, file_size_bytes, duration_seconds, is_main_topic)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         speaker_name, role, profile_link, main_topic_id, file_size_bytes, duration_seconds, is_main_topic)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING id
                     """, (
                         session_id,
@@ -111,6 +113,7 @@ class CongressionalVideoDB:
                         topic_data.get('speaker_name'),
                         topic_data.get('role'),
                         topic_data.get('profile_link'),
+                        topic_data.get('main_topic_id'),
                         topic_data.get('file_size_bytes'),
                         topic_data.get('duration_seconds'),
                         topic_data.get('is_main_topic', False)
@@ -267,3 +270,14 @@ class CongressionalVideoDB:
                     WHERE id = %s
                 """, (youtube_title, youtube_description, video_topic_id))
                 logger.info(f"Updated YouTube metadata for video topic ID {video_topic_id}")
+
+    def get_interventions_by_main_topic(self, main_topic_id: int) -> List[Dict]:
+        """Get all interventions for a specific main topic"""
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT * FROM video_topics
+                    WHERE main_topic_id = %s AND is_main_topic = FALSE
+                    ORDER BY created_at
+                """, (main_topic_id,))
+                return cur.fetchall()

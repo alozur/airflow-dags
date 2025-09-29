@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS video_topics (
     speaker_name VARCHAR(200),
     role VARCHAR(200),
     profile_link VARCHAR(500),
+    main_topic_id INTEGER REFERENCES video_topics(id) ON DELETE CASCADE, -- Links interventions to their main topic
 
     -- OpenAI Classification
     openai_category VARCHAR(100), -- classified category (e.g., "Economy", "Health", "Education")
