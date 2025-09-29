@@ -50,6 +50,7 @@ class PostgreSQLOperator(BaseOperator):
                 print(f"DEBUG: Group {i} keys: {list(group.keys()) if isinstance(group, dict) else 'Not a dict'}")
 
                 if 'main_topic' in group:
+                    # Save main topic
                     topic_data = group['main_topic']
                     print(f"DEBUG: main_topic keys: {list(topic_data.keys()) if isinstance(topic_data, dict) else 'Not a dict'}")
                     print(f"DEBUG: main_topic data: {topic_data}")
@@ -63,7 +64,7 @@ class PostgreSQLOperator(BaseOperator):
                         'role': topic_data.get('role'),
                         'profile_link': topic_data.get('profile_link'),
                         'file_size_bytes': None,  # Will be updated later
-                        'duration_seconds': topic_data.get('duration_seconds'),
+                        'duration_seconds': topic_data.get('metadata_url', {}).get('duration_seconds'),
                         'is_main_topic': topic_data.get('is_bold', False)  # Map is_bold to is_main_topic
                     }
 
@@ -71,7 +72,31 @@ class PostgreSQLOperator(BaseOperator):
 
                     topic_id = db.upsert_video_topic(session_id, topic_data.get('entry_id'), mapped_topic_data)
                     topic_ids.append(topic_id)
-                    print(f"✅ Successfully saved topic {topic_data.get('entry_id')} with ID {topic_id}")
+                    print(f"✅ Successfully saved main topic {topic_data.get('entry_id')} with ID {topic_id}")
+
+                    # Save interventions (individual speaker videos)
+                    interventions = group.get('interventions', [])
+                    print(f"DEBUG: Found {len(interventions)} interventions for this topic")
+
+                    for j, intervention in enumerate(interventions):
+                        print(f"DEBUG: Intervention {j} keys: {list(intervention.keys()) if isinstance(intervention, dict) else 'Not a dict'}")
+
+                        # Map intervention data
+                        mapped_intervention_data = {
+                            'topic_title': intervention.get('content', f"Intervención de {intervention.get('speaker_name', 'Unknown')}"),
+                            'video_url': intervention.get('video_url'),
+                            'video_file_path': None,  # Will be updated later by download task
+                            'speaker_name': intervention.get('speaker_name'),
+                            'role': intervention.get('role'),
+                            'profile_link': intervention.get('profile_link'),
+                            'file_size_bytes': None,  # Will be updated later
+                            'duration_seconds': intervention.get('metadata_url', {}).get('duration_seconds'),
+                            'is_main_topic': False  # Interventions are never main topics
+                        }
+
+                        intervention_id = db.upsert_video_topic(session_id, intervention.get('entry_id'), mapped_intervention_data)
+                        topic_ids.append(intervention_id)
+                        print(f"✅ Successfully saved intervention {intervention.get('entry_id')} with ID {intervention_id}")
 
             db.update_session_total_topics(session_id)
             result = topic_ids
