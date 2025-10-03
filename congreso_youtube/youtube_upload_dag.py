@@ -36,7 +36,7 @@ with DAG(
     default_args=default_args,
     description='Daily YouTube upload: Select top 5 videos by AI score, generate metadata, download, and upload',
     schedule_interval='0 10 * * *',  # Run at 10:00 AM daily
-    start_date=datetime(2025, 10, 4),
+    start_date=datetime(2025, 10, 3),
     catchup=False,
     params={
         "max_videos": 5,  # Maximum number of videos to upload per day
