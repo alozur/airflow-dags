@@ -1377,11 +1377,12 @@ def download_videos_for_upload(top_videos, data_directory_path):
         session_number = video.get('session_number')
 
         # Create session folder
-        session_folder = create_session_folder(session_number)
+        session_folder = create_session_folder(str(session_number))
 
         # Download video
         logging.info(f"Downloading video {entry_id} from {video_url}")
-        download_result = download_video(video_url, session_folder, entry_id)
+        output_path = os.path.join(session_folder, f"{entry_id}.mp4")
+        download_result = download_video_file(video_url, output_path)
 
         download_detail = {
             "entry_id": entry_id,
