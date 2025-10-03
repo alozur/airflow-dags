@@ -1059,3 +1059,252 @@ def generate_youtube_metadata_for_topics(download_results, session_number, targe
 
     logging.info(f"YouTube metadata generation complete: {metadata_results['successful_generations']}/{metadata_results['total_topics']} topics processed successfully")
     return metadata_results
+
+def evaluate_video_interest_with_ai(enriched_video_groups):
+    """
+    Evaluates video interest for YouTube upload using OpenAI.
+
+    For main topics: Considers the speakers participating in the topic
+    For interventions: Considers the main topic description/context
+
+    Args:
+        enriched_video_groups: Enriched video groups from enrich_with_metadata function
+
+    Returns:
+        Dict with evaluation results for each video
+    """
+    evaluation_results = {
+        "total_videos_evaluated": 0,
+        "successful_evaluations": 0,
+        "failed_evaluations": 0,
+        "evaluations": []
+    }
+
+    for group in enriched_video_groups:
+        if group.get('type') == 'topic_group':
+            main_topic = group.get('main_topic', {})
+            main_topic_content = main_topic.get('content', '')
+            main_topic_entry_id = main_topic.get('entry_id')
+
+            # Collect speakers from interventions for main topic evaluation
+            speakers_info = []
+            for intervention in group.get('interventions', []):
+                speakers_info.append({
+                    'speaker_name': intervention.get('speaker_name', 'Desconocido'),
+                    'role': intervention.get('role', 'Sin rol especificado')
+                })
+
+            # Evaluate main topic
+            main_topic_score = _evaluate_main_topic_interest(
+                main_topic_content,
+                speakers_info,
+                main_topic.get('metadata_url', {})
+            )
+
+            evaluation_results["evaluations"].append({
+                "entry_id": main_topic_entry_id,
+                "video_type": "main_topic",
+                "interest_score": main_topic_score.get('score', 5),
+                "reasoning": main_topic_score.get('reasoning', ''),
+                "evaluation_success": main_topic_score.get('error') is None,
+                "error": main_topic_score.get('error')
+            })
+
+            evaluation_results["total_videos_evaluated"] += 1
+            if main_topic_score.get('error') is None:
+                evaluation_results["successful_evaluations"] += 1
+            else:
+                evaluation_results["failed_evaluations"] += 1
+
+            # Evaluate interventions
+            for intervention in group.get('interventions', []):
+                intervention_entry_id = intervention.get('entry_id')
+                intervention_score = _evaluate_intervention_interest(
+                    intervention.get('speaker_name', 'Desconocido'),
+                    intervention.get('role', 'Sin rol especificado'),
+                    main_topic_content,  # Use main topic as context
+                    intervention.get('metadata_url', {})
+                )
+
+                evaluation_results["evaluations"].append({
+                    "entry_id": intervention_entry_id,
+                    "video_type": "intervention",
+                    "interest_score": intervention_score.get('score', 5),
+                    "reasoning": intervention_score.get('reasoning', ''),
+                    "evaluation_success": intervention_score.get('error') is None,
+                    "error": intervention_score.get('error')
+                })
+
+                evaluation_results["total_videos_evaluated"] += 1
+                if intervention_score.get('error') is None:
+                    evaluation_results["successful_evaluations"] += 1
+                else:
+                    evaluation_results["failed_evaluations"] += 1
+
+    logging.info(f"Video interest evaluation complete: {evaluation_results['successful_evaluations']}/{evaluation_results['total_videos_evaluated']} videos evaluated successfully")
+    return evaluation_results
+
+def _evaluate_main_topic_interest(topic_content, speakers_info, video_metadata):
+    """
+    Evaluates the interest level of a main topic video for YouTube upload.
+
+    Args:
+        topic_content: The main topic title/description
+        speakers_info: List of speakers participating in this topic
+        video_metadata: Video metadata (duration, etc.)
+
+    Returns:
+        Dict with score (1-10) and reasoning
+    """
+    try:
+        # Format speakers list
+        speakers_text = "\n".join([
+            f"- {speaker['speaker_name']} ({speaker['role']})"
+            for speaker in speakers_info[:10]  # Limit to first 10 speakers
+        ])
+
+        if len(speakers_info) > 10:
+            speakers_text += f"\n... y {len(speakers_info) - 10} participantes más"
+
+        duration_minutes = video_metadata.get('duration_seconds', 0) // 60
+
+        prompt = f"""Evalúa el interés de este vídeo del Congreso de los Diputados para subirlo a YouTube.
+
+TEMA: {topic_content}
+
+PARTICIPANTES:
+{speakers_text}
+
+DURACIÓN: {duration_minutes} minutos
+
+Criterios de evaluación:
+1. Relevancia política y social (0-3 puntos)
+2. Notoriedad de los participantes (0-3 puntos)
+3. Potencial de debate público (0-2 puntos)
+4. Interés mediático (0-2 puntos)
+
+Responde SOLO con un JSON en este formato:
+{{"score": <número del 1-10>, "reasoning": "<explicación breve en español>"}}"""
+
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Eres un experto en política española y contenido viral para YouTube. Evalúas objetivamente el interés público de debates parlamentarios."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=200
+        )
+
+        result_text = response.choices[0].message.content.strip()
+
+        # Try to parse JSON response
+        try:
+            # Remove markdown code blocks if present
+            if result_text.startswith("```"):
+                result_text = result_text.split("```")[1]
+                if result_text.startswith("json"):
+                    result_text = result_text[4:]
+
+            result = json.loads(result_text)
+            score = int(result.get('score', 5))
+            score = max(1, min(10, score))  # Clamp between 1-10
+
+            return {
+                "score": score,
+                "reasoning": result.get('reasoning', 'Sin justificación'),
+                "error": None
+            }
+        except json.JSONDecodeError:
+            logging.warning(f"Failed to parse AI response as JSON: {result_text}")
+            return {
+                "score": 5,
+                "reasoning": "Error al procesar la evaluación de IA",
+                "error": "JSON parse error"
+            }
+
+    except Exception as e:
+        logging.error(f"Error evaluating main topic interest: {str(e)}")
+        return {
+            "score": 5,
+            "reasoning": f"Error en evaluación: {str(e)}",
+            "error": str(e)
+        }
+
+def _evaluate_intervention_interest(speaker_name, speaker_role, main_topic_context, video_metadata):
+    """
+    Evaluates the interest level of an intervention video for YouTube upload.
+
+    Args:
+        speaker_name: Name of the speaker
+        speaker_role: Role/position of the speaker
+        main_topic_context: Description of the main topic this intervention belongs to
+        video_metadata: Video metadata (duration, etc.)
+
+    Returns:
+        Dict with score (1-10) and reasoning
+    """
+    try:
+        duration_minutes = video_metadata.get('duration_seconds', 0) // 60
+
+        prompt = f"""Evalúa el interés de esta intervención parlamentaria individual para subirla a YouTube.
+
+CONTEXTO DEL TEMA: {main_topic_context}
+
+INTERVINIENTE: {speaker_name}
+CARGO: {speaker_role}
+DURACIÓN: {duration_minutes} minutos
+
+Criterios de evaluación:
+1. Relevancia del tema (0-3 puntos)
+2. Notoriedad del interviniente (0-3 puntos)
+3. Duración apropiada para YouTube (0-2 puntos)
+4. Potencial de interés público (0-2 puntos)
+
+Responde SOLO con un JSON en este formato:
+{{"score": <número del 1-10>, "reasoning": "<explicación breve en español>"}}"""
+
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Eres un experto en política española y contenido viral para YouTube. Evalúas objetivamente el interés público de intervenciones parlamentarias."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=200
+        )
+
+        result_text = response.choices[0].message.content.strip()
+
+        # Try to parse JSON response
+        try:
+            # Remove markdown code blocks if present
+            if result_text.startswith("```"):
+                result_text = result_text.split("```")[1]
+                if result_text.startswith("json"):
+                    result_text = result_text[4:]
+
+            result = json.loads(result_text)
+            score = int(result.get('score', 5))
+            score = max(1, min(10, score))  # Clamp between 1-10
+
+            return {
+                "score": score,
+                "reasoning": result.get('reasoning', 'Sin justificación'),
+                "error": None
+            }
+        except json.JSONDecodeError:
+            logging.warning(f"Failed to parse AI response as JSON: {result_text}")
+            return {
+                "score": 5,
+                "reasoning": "Error al procesar la evaluación de IA",
+                "error": "JSON parse error"
+            }
+
+    except Exception as e:
+        logging.error(f"Error evaluating intervention interest: {str(e)}")
+        return {
+            "score": 5,
+            "reasoning": f"Error en evaluación: {str(e)}",
+            "error": str(e)
+        }

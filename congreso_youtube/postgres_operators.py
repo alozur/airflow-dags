@@ -275,6 +275,59 @@ class PostgreSQLOperator(BaseOperator):
 
             result = {'updated_topics': updated_count, 'total_processed': len(topic_metadata)}
 
+        elif self.operation == 'save_ai_evaluations':
+            ai_evaluation_results = ti.xcom_pull(key=self.xcom_keys.get('evaluation_results', 'ai_evaluation_results'))
+            topic_ids = ti.xcom_pull(key=self.xcom_keys.get('topic_ids', 'db_topic_ids'))
+
+            # Debug logging
+            print(f"DEBUG: ai_evaluation_results type: {type(ai_evaluation_results)}")
+            print(f"DEBUG: topic_ids type: {type(topic_ids)}")
+
+            # Extract evaluations list
+            if isinstance(ai_evaluation_results, dict) and 'evaluations' in ai_evaluation_results:
+                evaluations = ai_evaluation_results['evaluations']
+                print(f"DEBUG: Extracted evaluations with {len(evaluations)} items")
+            elif isinstance(ai_evaluation_results, list):
+                evaluations = ai_evaluation_results
+                print(f"DEBUG: Using ai_evaluation_results as list with {len(evaluations)} items")
+            else:
+                print(f"ERROR: Unexpected ai_evaluation_results format: {type(ai_evaluation_results)}")
+                result = {'updated_topics': 0, 'error': 'Invalid ai_evaluation_results format'}
+                return result
+
+            # Ensure topic_ids is a list
+            if not isinstance(topic_ids, list):
+                print(f"ERROR: topic_ids is not a list, got: {type(topic_ids)}")
+                result = {'updated_topics': 0, 'error': 'topic_ids must be a list'}
+                return result
+
+            # Create a mapping from entry_id to evaluation for faster lookup
+            evaluation_map = {eval_item['entry_id']: eval_item for eval_item in evaluations if isinstance(eval_item, dict)}
+
+            updated_count = 0
+            for entry_id in topic_ids:
+                if entry_id in evaluation_map:
+                    evaluation = evaluation_map[entry_id]
+
+                    if evaluation.get('evaluation_success'):
+                        interest_score = evaluation.get('interest_score', 5)
+                        reasoning = evaluation.get('reasoning', '')
+
+                        print(f"DEBUG: Saving AI evaluation for {entry_id}: score={interest_score}")
+
+                        try:
+                            db.update_ai_interest_evaluation(entry_id, interest_score, reasoning)
+                            updated_count += 1
+                            print(f"✅ Successfully updated AI evaluation for topic {entry_id}")
+                        except Exception as e:
+                            print(f"❌ ERROR updating AI evaluation for topic {entry_id}: {e}")
+                    else:
+                        print(f"⚠️ Skipping {entry_id}: evaluation failed with error: {evaluation.get('error')}")
+                else:
+                    print(f"⚠️ No evaluation found for entry_id: {entry_id}")
+
+            result = {'updated_topics': updated_count, 'total_evaluations': len(evaluations)}
+
         else:
             raise ValueError(f"Unknown operation: {self.operation}")
 

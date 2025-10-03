@@ -45,6 +45,11 @@ CREATE TABLE IF NOT EXISTS development.video_topics (
     openai_priority_score INTEGER CHECK (openai_priority_score BETWEEN 1 AND 10), -- 1-10 priority
     openai_processed_at TIMESTAMP,
 
+    -- AI Interest Evaluation for YouTube Upload
+    ai_interest_score INTEGER CHECK (ai_interest_score BETWEEN 1 AND 10), -- 1-10 interest score for YouTube
+    ai_interest_reasoning TEXT, -- AI reasoning for the interest score
+    ai_interest_evaluated_at TIMESTAMP, -- when the interest evaluation was performed
+
     -- YouTube Upload Management
     is_uploaded_to_youtube BOOLEAN DEFAULT FALSE,
     youtube_video_id VARCHAR(50), -- YouTube video ID once uploaded

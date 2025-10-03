@@ -285,3 +285,17 @@ class CongressionalVideoDB:
                     ORDER BY created_at
                 """, (main_topic_entry_id,))
                 return cur.fetchall()
+
+    def update_ai_interest_evaluation(self, video_topic_entry_id: str, interest_score: int, reasoning: str):
+        """Update AI interest evaluation for a video topic"""
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    UPDATE {self.topics_table} SET
+                        ai_interest_score = %s,
+                        ai_interest_reasoning = %s,
+                        ai_interest_evaluated_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE entry_id = %s
+                """, (interest_score, reasoning, video_topic_entry_id))
+                logger.info(f"Updated AI interest evaluation for video topic {video_topic_entry_id}: score={interest_score}")
