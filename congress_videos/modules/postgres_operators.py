@@ -1,9 +1,12 @@
-# congreso_youtube/postgres_operators.py
+"""Custom PostgreSQL operators for Airflow."""
+
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 from airflow.models import BaseOperator
 from airflow.utils.decorators import apply_defaults
-from typing import Any, Dict, List, Optional
-from .congress_database import CongressionalVideoDB
-from datetime import datetime
+
+from .database import CongressionalVideoDB
 
 class PostgreSQLOperator(BaseOperator):
     """Custom operator for PostgreSQL operations with XCom integration"""
