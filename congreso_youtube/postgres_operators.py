@@ -38,10 +38,10 @@ class PostgreSQLOperator(BaseOperator):
             result = db.create_or_update_session(session_number, session_date_obj, target_date_obj, session_link)
 
         elif self.operation == 'save_topics':
-            session_id = ti.xcom_pull(key=self.xcom_keys.get('session_id', 'db_session_id'))
+            session_number = ti.xcom_pull(key=self.xcom_keys.get('session_number', 'db_session_id'))
             video_groups = ti.xcom_pull(key=self.xcom_keys.get('video_groups', 'enriched_video_groups'))
 
-            print(f"DEBUG: session_id = {session_id}")
+            print(f"DEBUG: session_number = {session_number}")
             print(f"DEBUG: video_groups type = {type(video_groups)}")
             print(f"DEBUG: video_groups length = {len(video_groups) if video_groups else 0}")
 
@@ -71,7 +71,7 @@ class PostgreSQLOperator(BaseOperator):
 
                     print(f"DEBUG: mapped_topic_data: {mapped_topic_data}")
 
-                    topic_entry_id = db.upsert_video_topic(session_id, topic_data.get('entry_id'), mapped_topic_data)
+                    topic_entry_id = db.upsert_video_topic(session_number, topic_data.get('entry_id'), mapped_topic_data)
                     topic_ids.append(topic_entry_id)
                     print(f"✅ Successfully saved main topic {topic_entry_id}")
 
@@ -96,11 +96,11 @@ class PostgreSQLOperator(BaseOperator):
                             'is_main_topic': False  # Interventions are never main topics
                         }
 
-                        intervention_entry_id = db.upsert_video_topic(session_id, intervention.get('entry_id'), mapped_intervention_data)
+                        intervention_entry_id = db.upsert_video_topic(session_number, intervention.get('entry_id'), mapped_intervention_data)
                         topic_ids.append(intervention_entry_id)
                         print(f"✅ Successfully saved intervention {intervention_entry_id}")
 
-            db.update_session_total_topics(session_id)
+            db.update_session_total_topics(session_number)
             result = topic_ids
 
         elif self.operation == 'update_downloads':

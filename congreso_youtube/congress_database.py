@@ -24,7 +24,7 @@ class CongressionalVideoDB:
                                target_date: date, session_url: str = None) -> int:
         """
         Create or update a congressional session record
-        Returns the session ID
+        Returns the session_number
         """
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
@@ -33,28 +33,28 @@ class CongressionalVideoDB:
                     UPDATE {self.sessions_table}
                     SET session_url = %s, updated_at = CURRENT_TIMESTAMP
                     WHERE session_number = %s AND session_date = %s
-                    RETURNING id
+                    RETURNING session_number
                 """, (session_url, session_number, session_date))
 
                 result = cur.fetchone()
                 if result:
-                    logger.info(f"Updated existing session {session_number} with ID {result['id']}")
-                    return result['id']
+                    logger.info(f"Updated existing session {session_number}")
+                    return result['session_number']
 
                 # Insert new session if not found
                 cur.execute(f"""
                     INSERT INTO {self.sessions_table}
                     (session_number, session_date, target_date, session_url)
                     VALUES (%s, %s, %s, %s)
-                    RETURNING id
+                    RETURNING session_number
                 """, (session_number, session_date, target_date, session_url))
 
                 result = cur.fetchone()
-                session_id = result['id']
-                logger.info(f"Created new session {session_number} with ID {session_id}")
-                return session_id
+                returned_session_number = result['session_number']
+                logger.info(f"Created new session {returned_session_number}")
+                return returned_session_number
 
-    def upsert_video_topic(self, session_id: int, entry_id: str, topic_data: Dict[str, Any]) -> str:
+    def upsert_video_topic(self, session_number: int, entry_id: str, topic_data: Dict[str, Any]) -> str:
         """
         Insert or update a video topic record
         Returns the video topic entry_id
@@ -73,7 +73,7 @@ class CongressionalVideoDB:
                     # Update existing topic
                     cur.execute(f"""
                         UPDATE {self.topics_table} SET
-                            session_id = %s,
+                            session_number = %s,
                             topic_title = %s,
                             video_url = %s,
                             video_file_path = %s,
@@ -88,7 +88,7 @@ class CongressionalVideoDB:
                         WHERE entry_id = %s
                         RETURNING entry_id
                     """, (
-                        session_id,
+                        session_number,
                         topic_data.get('topic_title'),
                         topic_data.get('video_url'),
                         topic_data.get('video_file_path'),
@@ -106,13 +106,13 @@ class CongressionalVideoDB:
                     # Insert new topic
                     cur.execute(f"""
                         INSERT INTO {self.topics_table}
-                        (entry_id, session_id, topic_title, video_url, video_file_path,
+                        (entry_id, session_number, topic_title, video_url, video_file_path,
                          speaker_name, role, profile_link, main_topic_entry_id, file_size_bytes, duration_seconds, is_main_topic)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING entry_id
                     """, (
                         entry_id,
-                        session_id,
+                        session_number,
                         topic_data.get('topic_title'),
                         topic_data.get('video_url'),
                         topic_data.get('video_file_path'),
@@ -198,18 +198,18 @@ class CongressionalVideoDB:
                 """, (session_number, session_date))
                 return cur.fetchone()
 
-    def get_video_topics_by_session(self, session_id: int) -> List[Dict]:
+    def get_video_topics_by_session(self, session_number: int) -> List[Dict]:
         """Get all video topics for a session"""
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(f"""
                     SELECT * FROM {self.topics_table}
-                    WHERE session_id = %s
+                    WHERE session_number = %s
                     ORDER BY created_at
-                """, (session_id,))
+                """, (session_number,))
                 return cur.fetchall()
 
-    def update_session_total_topics(self, session_id: int):
+    def update_session_total_topics(self, session_number: int):
         """Update the total_topics count for a session"""
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
@@ -217,12 +217,12 @@ class CongressionalVideoDB:
                     UPDATE {self.sessions_table} SET
                         total_topics = (
                             SELECT COUNT(*) FROM {self.topics_table}
-                            WHERE session_id = %s
+                            WHERE session_number = %s
                         ),
                         updated_at = CURRENT_TIMESTAMP
-                    WHERE id = %s
-                """, (session_id, session_id))
-                logger.info(f"Updated total_topics count for session ID {session_id}")
+                    WHERE session_number = %s
+                """, (session_number, session_number))
+                logger.info(f"Updated total_topics count for session {session_number}")
 
     def update_download_info(self, video_topic_entry_id: str, file_path: str, file_size: int = None, duration: int = None):
         """Update download information for a video topic"""
@@ -250,15 +250,15 @@ class CongressionalVideoDB:
                 """, (is_main_topic, video_topic_entry_id))
                 logger.info(f"Updated main topic status for video topic {video_topic_entry_id} to {is_main_topic}")
 
-    def get_main_topics_by_session(self, session_id: int) -> List[Dict]:
+    def get_main_topics_by_session(self, session_number: int) -> List[Dict]:
         """Get all main topics for a session"""
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(f"""
                     SELECT * FROM {self.topics_table}
-                    WHERE session_id = %s AND is_main_topic = TRUE
+                    WHERE session_number = %s AND is_main_topic = TRUE
                     ORDER BY created_at
-                """, (session_id,))
+                """, (session_number,))
                 return cur.fetchall()
 
     def update_youtube_metadata(self, video_topic_entry_id: str, youtube_title: str, youtube_description: str):
