@@ -299,3 +299,49 @@ class CongressionalVideoDB:
                     WHERE entry_id = %s
                 """, (interest_score, reasoning, video_topic_entry_id))
                 logger.info(f"Updated AI interest evaluation for video topic {video_topic_entry_id}: score={interest_score}")
+
+    def get_top_videos_for_upload(self, max_videos: int = 5, min_score: int = 6) -> List[Dict]:
+        """
+        Get top videos by AI interest score for YouTube upload.
+        Only returns videos that:
+        - Are main topics (not interventions)
+        - Have not been uploaded yet
+        - Have AI interest score >= min_score
+        - Are upload eligible
+
+        Args:
+            max_videos: Maximum number of videos to return
+            min_score: Minimum AI interest score
+
+        Returns:
+            List of video records ordered by AI interest score (highest first)
+        """
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT * FROM {self.topics_table}
+                    WHERE is_main_topic = TRUE
+                      AND is_uploaded_to_youtube = FALSE
+                      AND upload_eligible = TRUE
+                      AND ai_interest_score >= %s
+                      AND ai_interest_score IS NOT NULL
+                    ORDER BY ai_interest_score DESC, created_at DESC
+                    LIMIT %s
+                """, (min_score, max_videos))
+                videos = cur.fetchall()
+                logger.info(f"Found {len(videos)} videos for upload (max={max_videos}, min_score={min_score})")
+                return videos
+
+    def update_youtube_upload_status(self, video_topic_entry_id: str, youtube_video_id: str):
+        """Mark a video as uploaded to YouTube with the YouTube video ID"""
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    UPDATE {self.topics_table} SET
+                        is_uploaded_to_youtube = TRUE,
+                        youtube_video_id = %s,
+                        youtube_upload_date = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE entry_id = %s
+                """, (youtube_video_id, video_topic_entry_id))
+                logger.info(f"Marked video {video_topic_entry_id} as uploaded to YouTube: {youtube_video_id}")

@@ -1283,3 +1283,188 @@ Responde SOLO con un JSON en este formato:
             "reasoning": f"Error en evaluación: {str(e)}",
             "error": str(e)
         }
+
+def generate_youtube_metadata_for_selected_videos(top_videos):
+    """
+    Generates YouTube metadata (titles and descriptions) for a list of selected videos.
+
+    Args:
+        top_videos: List of video records from database (from get_top_videos_for_upload)
+
+    Returns:
+        Dict with metadata for each video
+    """
+    metadata_results = {
+        "total_videos": len(top_videos) if top_videos else 0,
+        "successful_generations": 0,
+        "failed_generations": 0,
+        "topic_metadata": []
+    }
+
+    if not top_videos:
+        logging.warning("No videos provided for metadata generation")
+        return metadata_results
+
+    for video in top_videos:
+        topic_entry_id = video.get('entry_id')
+        topic_title = video.get('topic_title', '')
+        session_number = video.get('session_number')
+
+        # Get session info for generating session link
+        from congreso_youtube.congress_database import CongressionalVideoDB
+        db = CongressionalVideoDB()
+
+        # For now, use empty speakers info - we'll need to query interventions if needed
+        speakers_info = []
+        video_metadata = {
+            'duration_seconds': video.get('duration_seconds', 0)
+        }
+
+        # Generate title and description
+        logging.info(f"Generating YouTube metadata for video {topic_entry_id}")
+        title_result = generate_youtube_title(topic_title, speakers_info)
+        description_result = generate_youtube_description(
+            topic_title, speakers_info, video_metadata, session_number, None
+        )
+
+        topic_metadata = {
+            "topic_entry_id": topic_entry_id,
+            "video_file_path": video.get('video_file_path'),
+            "title": title_result,
+            "description": description_result,
+            "main_topic_content": topic_title,
+            "video_url": video.get('video_url'),
+            "session_number": session_number,
+            "ai_interest_score": video.get('ai_interest_score'),
+            "generation_success": title_result.get('error') is None and description_result.get('error') is None
+        }
+
+        metadata_results["topic_metadata"].append(topic_metadata)
+
+        if topic_metadata["generation_success"]:
+            metadata_results["successful_generations"] += 1
+        else:
+            metadata_results["failed_generations"] += 1
+
+    logging.info(f"YouTube metadata generation complete: {metadata_results['successful_generations']}/{metadata_results['total_videos']} videos processed successfully")
+    return metadata_results
+
+def download_videos_for_upload(top_videos, data_directory_path):
+    """
+    Downloads videos selected for YouTube upload.
+
+    Args:
+        top_videos: List of video records from database
+        data_directory_path: Base directory for downloads
+
+    Returns:
+        Dict with download results
+    """
+    download_results = {
+        "total_videos": len(top_videos) if top_videos else 0,
+        "successful_downloads": 0,
+        "failed_downloads": 0,
+        "download_details": []
+    }
+
+    if not top_videos:
+        logging.warning("No videos provided for download")
+        return download_results
+
+    for video in top_videos:
+        entry_id = video.get('entry_id')
+        video_url = video.get('video_url')
+        session_number = video.get('session_number')
+
+        # Create session folder
+        session_folder = create_session_folder(session_number)
+
+        # Download video
+        logging.info(f"Downloading video {entry_id} from {video_url}")
+        download_result = download_video(video_url, session_folder, entry_id)
+
+        download_detail = {
+            "entry_id": entry_id,
+            "success": download_result.get('success', False),
+            "file_path": download_result.get('file_path'),
+            "file_size": download_result.get('file_size'),
+            "duration": download_result.get('duration'),
+            "error": download_result.get('error')
+        }
+
+        download_results["download_details"].append(download_detail)
+
+        if download_detail["success"]:
+            download_results["successful_downloads"] += 1
+        else:
+            download_results["failed_downloads"] += 1
+
+    logging.info(f"Download complete: {download_results['successful_downloads']}/{download_results['total_videos']} videos downloaded successfully")
+    return download_results
+
+def upload_videos_to_youtube(download_results, is_testing=False):
+    """
+    Uploads downloaded videos to YouTube.
+
+    Args:
+        download_results: Results from download_videos_for_upload
+        is_testing: If True, simulates upload without actually uploading
+
+    Returns:
+        Dict with upload results
+    """
+    upload_results = {
+        "total_videos": 0,
+        "successful_uploads": 0,
+        "failed_uploads": 0,
+        "skipped_uploads": 0,
+        "upload_details": []
+    }
+
+    if not download_results or not download_results.get('download_details'):
+        logging.warning("No download results provided for upload")
+        return upload_results
+
+    download_details = download_results['download_details']
+    upload_results["total_videos"] = len(download_details)
+
+    for download_detail in download_details:
+        entry_id = download_detail.get('entry_id')
+        file_path = download_detail.get('file_path')
+        success = download_detail.get('success', False)
+
+        if not success or not file_path:
+            logging.warning(f"Skipping upload for {entry_id}: download failed or no file path")
+            upload_results["skipped_uploads"] += 1
+            upload_results["upload_details"].append({
+                "entry_id": entry_id,
+                "success": False,
+                "youtube_video_id": None,
+                "error": "Download failed or no file path"
+            })
+            continue
+
+        if is_testing:
+            logging.info(f"TESTING MODE: Would upload video {entry_id} from {file_path}")
+            upload_results["successful_uploads"] += 1
+            upload_results["upload_details"].append({
+                "entry_id": entry_id,
+                "success": True,
+                "youtube_video_id": f"TEST_{entry_id}",
+                "testing": True
+            })
+        else:
+            # TODO: Implement actual YouTube upload logic here
+            # This would use the YouTube Data API v3 to upload the video
+            logging.info(f"Would upload video {entry_id} from {file_path} to YouTube")
+            logging.warning("YouTube upload not yet implemented - placeholder")
+            upload_results["skipped_uploads"] += 1
+            upload_results["upload_details"].append({
+                "entry_id": entry_id,
+                "success": False,
+                "youtube_video_id": None,
+                "error": "YouTube upload not yet implemented"
+            })
+
+    logging.info(f"Upload complete: {upload_results['successful_uploads']}/{upload_results['total_videos']} videos uploaded successfully")
+    return upload_results

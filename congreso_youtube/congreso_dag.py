@@ -36,7 +36,7 @@ default_args = {
 with DAG(
   'congreso_plenary_checker',
   default_args=default_args,
-  description='Check Congreso plenary sessions',
+  description='Check Congreso plenary sessions, extract topics, and evaluate with AI',
   schedule_interval='@daily',
   start_date=datetime(2025, 8, 28),
   catchup=False,
@@ -150,30 +150,7 @@ with DAG(
       ),
   )
 
-  t10 = PythonOperator(
-      task_id='create_session_folder',
-      python_callable=lambda ti: xcom_task(
-          ti,
-          lambda session_num: cu.create_session_folder(session_num),
-          'session_folder_path',
-          input_key='session_number'
-      ),
-  )
-
-  # Downloads ONLY main topic videos (NOT individual interventions)
-  # For a session with 5 topics and 20 interventions, only 5 videos are downloaded
-  t11 = PythonOperator(
-      task_id='download_main_topic_videos',
-      python_callable=lambda ti: xcom_task(
-          ti,
-          lambda: cu.download_main_topic_videos(
-              ti.xcom_pull(key='enriched_video_groups'),
-              ti.xcom_pull(key='session_folder_path')
-          ),
-          'download_results'
-      ),
-  )
-
+  # AI Evaluation task
   t11_ai = PythonOperator(
       task_id='evaluate_videos_with_ai',
       python_callable=lambda ti: xcom_task(
@@ -182,19 +159,6 @@ with DAG(
               ti.xcom_pull(key='enriched_video_groups')
           ),
           'ai_evaluation_results'
-      ),
-  )
-
-  t12 = PythonOperator(
-      task_id='generate_youtube_metadata',
-      python_callable=lambda ti, **context: xcom_task(
-          ti,
-          lambda: cu.generate_youtube_metadata_from_enriched_groups(
-              ti.xcom_pull(key='enriched_video_groups'),
-              ti.xcom_pull(key='session_number'),
-              context["params"].get("target_date")
-          ),
-          'youtube_metadata_results'
       ),
   )
 
@@ -217,28 +181,19 @@ with DAG(
       output_xcom_key='db_ai_evaluation_updates'
   )
 
-  t15_db = PostgreSQLOperator(
-      task_id='update_download_status_in_db',
-      operation='update_downloads',
-      output_xcom_key='db_download_updates'
-  )
-
-  t16_db = PostgreSQLOperator(
-      task_id='save_youtube_metadata_to_db',
-      operation='save_youtube_metadata',
-      output_xcom_key='db_metadata_updates'
-  )
-
-  # Future task for YouTube upload (placeholder for when you're ready)
-  t14 = PythonOperator(
-      task_id='upload_to_youtube',
-      python_callable=lambda ti: xcom_task(
-          ti,
-          lambda: print("Ready for YouTube upload with metadata:",
-                       ti.xcom_pull(key='youtube_metadata_results')),
-          'upload_results'
-      ),
-  )
+  # NOTE: The following tasks have been removed from this DAG:
+  # - create_session_folder (t10)
+  # - download_main_topic_videos (t11)
+  # - generate_youtube_metadata (t12)
+  # - update_download_status_in_db (t15_db)
+  # - save_youtube_metadata_to_db (t16_db)
+  # - upload_to_youtube (t14)
+  #
+  # These will be handled by a separate daily DAG that:
+  # 1. Queries the top 5 videos by ai_interest_score
+  # 2. Generates YouTube metadata for those videos
+  # 3. Downloads the videos
+  # 4. Uploads them to YouTube
 
   t13 = PythonOperator(
       task_id='no_plenary',
@@ -254,35 +209,18 @@ with DAG(
   # Branch: plenary session found - parallel execution opportunities
   t3 >> t4
 
-  # Main data processing pipeline (no downloads yet)
+  # Main data processing pipeline
   t4 >> t5 >> t6 >> t7 >> t8 >> t9
 
-  # Database operations pipeline (save all data without downloads)
+  # Database operations pipeline
   # Create session in DB after we have session number and link
   [t4, t5] >> t13_db
 
-  # Save topics to DB after enrichment (no download data needed)
+  # Save topics to DB after enrichment
   [t9, t13_db] >> t14_db
 
-  # AI Evaluation - runs in parallel with YouTube metadata generation
+  # AI Evaluation - evaluate all main topics for YouTube upload interest
   [t9, t14_db] >> t11_ai
 
-  # Save AI evaluations to DB
+  # Save AI evaluations to DB - FINAL TASK
   t11_ai >> t14_ai_db
-
-  # Generate YouTube metadata directly from enriched groups (without downloads)
-  [t9, t14_db] >> t12
-
-  # Save YouTube metadata to DB
-  t12 >> t16_db
-
-  # NOW do downloads near the end - create session folder and download
-  # Wait for both AI evaluations and YouTube metadata to be saved
-  [t14_ai_db, t16_db] >> t10  # Create session folder when we're ready to download
-  [t10, t14_ai_db, t16_db] >> t11  # Download videos
-
-  # Update download status after downloads complete
-  t11 >> t15_db
-
-  # YouTube upload depends on all operations being complete
-  t15_db >> t14

@@ -328,6 +328,53 @@ class PostgreSQLOperator(BaseOperator):
 
             result = {'updated_topics': updated_count, 'total_evaluations': len(evaluations)}
 
+        elif self.operation == 'get_top_videos_for_upload':
+            max_videos = context["params"].get("max_videos", 5)
+            min_score = context["params"].get("min_interest_score", 6)
+
+            print(f"DEBUG: Getting top {max_videos} videos with min_score >= {min_score}")
+
+            result = db.get_top_videos_for_upload(max_videos, min_score)
+            print(f"✅ Retrieved {len(result)} videos for upload")
+
+        elif self.operation == 'update_youtube_status':
+            upload_results = ti.xcom_pull(key=self.xcom_keys.get('upload_results', 'upload_results'))
+
+            # Debug logging
+            print(f"DEBUG: upload_results type: {type(upload_results)}")
+
+            # Extract upload details
+            if isinstance(upload_results, dict) and 'upload_details' in upload_results:
+                upload_details = upload_results['upload_details']
+                print(f"DEBUG: Extracted upload_details with {len(upload_details)} items")
+            elif isinstance(upload_results, list):
+                upload_details = upload_results
+                print(f"DEBUG: Using upload_results as list with {len(upload_details)} items")
+            else:
+                print(f"ERROR: Unexpected upload_results format: {type(upload_results)}")
+                result = {'updated_videos': 0, 'error': 'Invalid upload_results format'}
+                return result
+
+            updated_count = 0
+            for upload_detail in upload_details:
+                if isinstance(upload_detail, dict) and upload_detail.get('success'):
+                    entry_id = upload_detail.get('entry_id')
+                    youtube_video_id = upload_detail.get('youtube_video_id')
+
+                    if entry_id and youtube_video_id:
+                        try:
+                            db.update_youtube_upload_status(entry_id, youtube_video_id)
+                            updated_count += 1
+                            print(f"✅ Successfully updated YouTube status for {entry_id}")
+                        except Exception as e:
+                            print(f"❌ ERROR updating YouTube status for {entry_id}: {e}")
+                    else:
+                        print(f"⚠️ Skipping: missing entry_id or youtube_video_id")
+                else:
+                    print(f"⚠️ Skipping failed upload")
+
+            result = {'updated_videos': updated_count, 'total_uploads': len(upload_details)}
+
         else:
             raise ValueError(f"Unknown operation: {self.operation}")
 
