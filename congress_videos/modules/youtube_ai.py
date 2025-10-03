@@ -8,7 +8,7 @@ and to evaluate video interest scores for upload prioritization.
 import logging
 import os
 
-from congreso_youtube.ai_prompts import (
+from congress_videos.config.ai_prompts import (
     VIDEO_INTEREST_INTERVENTION_SYSTEM_PROMPT,
     VIDEO_INTEREST_INTERVENTION_USER_PROMPT_TEMPLATE,
     VIDEO_INTEREST_MAIN_TOPIC_SYSTEM_PROMPT,
@@ -18,8 +18,11 @@ from congreso_youtube.ai_prompts import (
     YOUTUBE_TITLE_SYSTEM_PROMPT,
     YOUTUBE_TITLE_USER_PROMPT_TEMPLATE,
 )
-from congreso_youtube.speaker_helpers import format_speaker_context, format_speaker_list
-from congreso_youtube.web_scraping import construct_session_link
+from congress_videos.modules.speaker_helpers import (
+    format_speaker_context,
+    format_speaker_list,
+)
+from congress_videos.modules.web_scraping import construct_session_link
 from utils.ai_helpers import (
     clamp_value,
     generate_chat_completion,

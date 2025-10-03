@@ -1,6 +1,5 @@
-# dags/congreso_youtube/youtube_upload_dag.py
 """
-Daily YouTube Upload DAG
+Congress YouTube Uploader DAG
 
 This DAG runs daily to:
 1. Query the top 5 videos by AI interest score from the database
@@ -8,17 +7,20 @@ This DAG runs daily to:
 3. Download the selected videos
 4. Upload them to YouTube
 
-Runs independently from the congreso_plenary_checker DAG.
+Runs independently from the congress_session_processor DAG.
 """
+
 from datetime import datetime, timedelta
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from congreso_youtube import congreso_utils as cu
-from utils.airflow_helpers import xcom_task, ensure_project_data_directory
-from congreso_youtube.postgres_operators import PostgreSQLOperator
+
+from congress_videos.modules import utils as cv_utils
+from congress_videos.modules.postgres_operators import PostgreSQLOperator
+from utils.airflow_helpers import ensure_project_data_directory, xcom_task
+from utils.env_loader import load_env_if_local
 
 # Load environment variables
-from utils.env_loader import load_env_if_local
 load_env_if_local()
 
 
@@ -32,9 +34,9 @@ default_args = {
 }
 
 with DAG(
-    'youtube_daily_upload',
+    'congress_youtube_uploader',
     default_args=default_args,
-    description='Daily YouTube upload: Select top 5 videos by AI score, generate metadata, download, and upload',
+    description='Daily YouTube upload: Select top Congress videos by AI score, generate metadata, download, and upload',
     schedule_interval='0 10 * * *',  # Run at 10:00 AM daily
     start_date=datetime(2025, 10, 3),
     catchup=False,
@@ -49,7 +51,7 @@ with DAG(
         task_id='ensure_data_directory',
         python_callable=lambda ti: xcom_task(
             ti,
-            lambda: ensure_project_data_directory('congreso_youtube'),
+            lambda: ensure_project_data_directory('congress_videos'),
             'data_directory_path'
         ),
     )
@@ -66,7 +68,7 @@ with DAG(
         task_id='generate_youtube_metadata',
         python_callable=lambda ti, **context: xcom_task(
             ti,
-            lambda: cu.generate_youtube_metadata_for_selected_videos(
+            lambda: cv_utils.generate_youtube_metadata_for_selected_videos(
                 ti.xcom_pull(key='top_videos')
             ),
             'youtube_metadata_results'
@@ -85,7 +87,7 @@ with DAG(
         task_id='download_selected_videos',
         python_callable=lambda ti: xcom_task(
             ti,
-            lambda: cu.download_videos_for_upload(
+            lambda: cv_utils.download_videos_for_upload(
                 ti.xcom_pull(key='top_videos'),
                 ti.xcom_pull(key='data_directory_path')
             ),

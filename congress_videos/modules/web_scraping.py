@@ -12,7 +12,7 @@ import re
 import requests
 from bs4 import BeautifulSoup
 
-from congreso_youtube.constants import (
+from congress_videos.config.constants import (
     BASE_ARCHIVE_URL,
     BASE_SESSION_URL,
     LEGISLATURE_ID,

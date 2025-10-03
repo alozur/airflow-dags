@@ -7,12 +7,12 @@ from the specific modules instead.
 
 DEPRECATED: This file will be maintained for backward compatibility only.
 For new code, import from:
-- congreso_youtube.constants
-- congreso_youtube.web_scraping
-- congreso_youtube.video_extraction
-- congreso_youtube.file_operations
-- congreso_youtube.youtube_ai
-- congreso_youtube.youtube_upload
+- congress_videos.config.constants
+- congress_videos.modules.web_scraping
+- congress_videos.modules.video_extraction
+- congress_videos.modules.file_operations
+- congress_videos.modules.youtube_ai
+- congress_videos.modules.youtube_upload
 """
 
 import logging
@@ -21,7 +21,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 # Re-export constants for backward compatibility
-from congreso_youtube.constants import (
+from congress_videos.config.constants import (
     BASE_ARCHIVE_URL,
     BASE_SESSION_URL,
     LEGISLATURE_ID,
@@ -29,7 +29,7 @@ from congreso_youtube.constants import (
 )
 
 # Re-export web scraping functions
-from congreso_youtube.web_scraping import (
+from congress_videos.modules.web_scraping import (
     construct_session_link,
     construct_url,
     get_session_number,
@@ -38,7 +38,7 @@ from congreso_youtube.web_scraping import (
 )
 
 # Re-export video extraction functions
-from congreso_youtube.video_extraction import (
+from congress_videos.modules.video_extraction import (
     enrich_with_metadata,
     extract_video_data,
     extract_video_metadata,
@@ -47,7 +47,7 @@ from congreso_youtube.video_extraction import (
 )
 
 # Re-export file operations functions
-from congreso_youtube.file_operations import (
+from congress_videos.modules.file_operations import (
     create_session_folder,
     create_topic_info_file,
     download_main_topic_videos,
@@ -56,7 +56,7 @@ from congreso_youtube.file_operations import (
 )
 
 # Re-export YouTube AI functions
-from congreso_youtube.youtube_ai import (
+from congress_videos.modules.youtube_ai import (
     evaluate_video_interest_with_ai,
     generate_youtube_description,
     generate_youtube_metadata_for_selected_videos,
@@ -66,10 +66,10 @@ from congreso_youtube.youtube_ai import (
 )
 
 # Re-export YouTube upload functions
-from congreso_youtube.youtube_upload import upload_videos_to_youtube
+from congress_videos.modules.youtube_upload import upload_videos_to_youtube
 
 # Private functions (internal use only - not re-exported)
-from congreso_youtube.youtube_ai import (
+from congress_videos.modules.youtube_ai import (
     _evaluate_intervention_interest,
     _evaluate_main_topic_interest,
 )
