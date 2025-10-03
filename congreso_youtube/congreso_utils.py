@@ -1064,14 +1064,14 @@ def evaluate_video_interest_with_ai(enriched_video_groups):
     """
     Evaluates video interest for YouTube upload using OpenAI.
 
+    ONLY evaluates main topics (not interventions).
     For main topics: Considers the speakers participating in the topic
-    For interventions: Considers the main topic description/context
 
     Args:
         enriched_video_groups: Enriched video groups from enrich_with_metadata function
 
     Returns:
-        Dict with evaluation results for each video
+        Dict with evaluation results for each main topic
     """
     evaluation_results = {
         "total_videos_evaluated": 0,
@@ -1094,7 +1094,7 @@ def evaluate_video_interest_with_ai(enriched_video_groups):
                     'role': intervention.get('role', 'Sin rol especificado')
                 })
 
-            # Evaluate main topic
+            # Evaluate ONLY main topic (not interventions)
             main_topic_score = _evaluate_main_topic_interest(
                 main_topic_content,
                 speakers_info,
@@ -1116,32 +1116,7 @@ def evaluate_video_interest_with_ai(enriched_video_groups):
             else:
                 evaluation_results["failed_evaluations"] += 1
 
-            # Evaluate interventions
-            for intervention in group.get('interventions', []):
-                intervention_entry_id = intervention.get('entry_id')
-                intervention_score = _evaluate_intervention_interest(
-                    intervention.get('speaker_name', 'Desconocido'),
-                    intervention.get('role', 'Sin rol especificado'),
-                    main_topic_content,  # Use main topic as context
-                    intervention.get('metadata_url', {})
-                )
-
-                evaluation_results["evaluations"].append({
-                    "entry_id": intervention_entry_id,
-                    "video_type": "intervention",
-                    "interest_score": intervention_score.get('score', 5),
-                    "reasoning": intervention_score.get('reasoning', ''),
-                    "evaluation_success": intervention_score.get('error') is None,
-                    "error": intervention_score.get('error')
-                })
-
-                evaluation_results["total_videos_evaluated"] += 1
-                if intervention_score.get('error') is None:
-                    evaluation_results["successful_evaluations"] += 1
-                else:
-                    evaluation_results["failed_evaluations"] += 1
-
-    logging.info(f"Video interest evaluation complete: {evaluation_results['successful_evaluations']}/{evaluation_results['total_videos_evaluated']} videos evaluated successfully")
+    logging.info(f"Main topic evaluation complete: {evaluation_results['successful_evaluations']}/{evaluation_results['total_videos_evaluated']} main topics evaluated successfully")
     return evaluation_results
 
 def _evaluate_main_topic_interest(topic_content, speakers_info, video_metadata):
