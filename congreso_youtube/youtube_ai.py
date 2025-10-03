@@ -5,22 +5,27 @@ This module uses OpenAI to generate YouTube titles and descriptions,
 and to evaluate video interest scores for upload prioritization.
 """
 
-import json
 import logging
 import os
 
-try:
-    import openai
-
-    # OpenAI Configuration - gets API key from Airflow environment
-    openai.api_key = os.getenv("OPENAI_API_KEY")
-except ImportError:
-    openai = None
-    logging.warning(
-        "OpenAI module not installed. AI functions will not work. Install with: pip install openai"
-    )
-
+from congreso_youtube.ai_prompts import (
+    VIDEO_INTEREST_INTERVENTION_SYSTEM_PROMPT,
+    VIDEO_INTEREST_INTERVENTION_USER_PROMPT_TEMPLATE,
+    VIDEO_INTEREST_MAIN_TOPIC_SYSTEM_PROMPT,
+    VIDEO_INTEREST_MAIN_TOPIC_USER_PROMPT_TEMPLATE,
+    YOUTUBE_DESCRIPTION_SYSTEM_PROMPT,
+    YOUTUBE_DESCRIPTION_USER_PROMPT_TEMPLATE,
+    YOUTUBE_TITLE_SYSTEM_PROMPT,
+    YOUTUBE_TITLE_USER_PROMPT_TEMPLATE,
+)
+from congreso_youtube.speaker_helpers import format_speaker_context, format_speaker_list
 from congreso_youtube.web_scraping import construct_session_link
+from utils.ai_helpers import (
+    clamp_value,
+    generate_chat_completion,
+    generate_json_completion,
+    truncate_text,
+)
 
 
 def generate_youtube_title(main_topic_content, speakers_info, max_length=100):
@@ -41,46 +46,32 @@ def generate_youtube_title(main_topic_content, speakers_info, max_length=100):
     """
     try:
         # Prepare speaker context
-        speaker_context = ""
-        if speakers_info:
-            main_speakers = [
-                f"{s.get('speaker_name', 'Unknown')}"
-                + (f" ({s.get('role')})" if s.get("role") else "")
-                for s in speakers_info[:3]  # Limit to first 3 speakers
-            ]
-            speaker_context = f" Participan: {', '.join(main_speakers)}"
+        speaker_context = format_speaker_context(speakers_info, max_speakers=3)
 
-        prompt = f"""
-Genera un título optimizado para YouTube de un vídeo del Congreso de España. El título debe ser:
-- Atractivo y claro para audiencia general
-- Máximo {max_length} caracteres
-- Incluir palabras clave relevantes
-- Evitar jerga política compleja
-
-Contenido del debate: {main_topic_content}
-{speaker_context}
-
-Genera solo el título, sin explicaciones adicionales.
-"""
-
-        response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Eres un experto en crear títulos atractivos para contenido político español en YouTube.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=150,
-            temperature=0.7,
+        # Format user prompt
+        user_prompt = YOUTUBE_TITLE_USER_PROMPT_TEMPLATE.format(
+            max_length=max_length,
+            main_topic_content=main_topic_content,
+            speaker_context=speaker_context,
         )
 
-        generated_title = response.choices[0].message.content.strip()
+        # Generate title
+        result = generate_chat_completion(
+            system_prompt=YOUTUBE_TITLE_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            model="gpt-3.5-turbo",
+            temperature=0.7,
+            max_tokens=150,
+        )
+
+        if result["error"]:
+            raise Exception(result["error"])
+
+        generated_title = result["content"]
 
         # Ensure title doesn't exceed max_length
         if len(generated_title) > max_length:
-            generated_title = generated_title[: max_length - 3] + "..."
+            generated_title = truncate_text(generated_title, max_length)
 
         logging.info(
             f"Generated YouTube title ({len(generated_title)} chars): {generated_title}"
@@ -140,66 +131,36 @@ def generate_youtube_description(
                 logging.warning(f"Could not generate session link: {e}")
                 session_link = "https://www.congreso.es"
 
-        # Prepare speaker list for prompt
-        speaker_context = ""
-        if speakers_info:
-            speaker_names = []
-            for speaker in speakers_info[:4]:  # Limit to 4 speakers for prompt
-                name = speaker.get("speaker_name", "Unknown")
-                role = speaker.get("role", "")
-                if role:
-                    speaker_names.append(f"{name} ({role})")
-                else:
-                    speaker_names.append(name)
-            speaker_context = f"Participantes principales: {', '.join(speaker_names)}"
+        # Prepare speaker context
+        speaker_context = format_speaker_context(
+            speakers_info, max_speakers=4, prefix="Participantes principales"
+        )
 
         # Prepare video info
         duration = video_metadata.get("duration_estimated", "N/A")
         duration_info = f"Duración: {duration}" if duration != "N/A" else ""
 
-        prompt = f"""
-Crea una descripción para YouTube de un debate del Congreso español. La descripción debe:
-
-- Ser natural y conversacional (no robótica)
-- Usar saltos de línea para separar secciones claramente
-- Explicar el contexto político de forma accesible
-- Incluir emojis relevantes para hacer más atractivo el contenido
-- Terminar con hashtags españoles relevantes
-
-CONTENIDO DEL DEBATE:
-{main_topic_content}
-
-INFORMACIÓN ADICIONAL:
-- Sesión número: {session_number}
-- {speaker_context}
-- {duration_info}
-
-ESTRUCTURA REQUERIDA:
-1. Párrafo introductorio explicando el tema (con emojis)
-2. Salto de línea doble
-3. Contexto político o relevancia del debate
-4. Salto de línea doble
-5. Información sobre los participantes
-6. Salto de línea doble
-7. Hashtags relevantes (mínimo 5)
-
-Escribe de forma natural, como si fueras un periodista explicando el debate a ciudadanos interesados en política.
-"""
-
-        response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Eres un periodista político español experto en comunicar de forma clara y atractiva. Usas un lenguaje natural, cercano pero profesional, y estructuras bien el contenido con saltos de línea.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=1000,
-            temperature=0.7,
+        # Format user prompt
+        user_prompt = YOUTUBE_DESCRIPTION_USER_PROMPT_TEMPLATE.format(
+            main_topic_content=main_topic_content,
+            session_number=session_number,
+            speaker_context=speaker_context,
+            duration_info=duration_info,
         )
 
-        ai_generated_content = response.choices[0].message.content.strip()
+        # Generate description
+        result = generate_chat_completion(
+            system_prompt=YOUTUBE_DESCRIPTION_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            model="gpt-3.5-turbo",
+            temperature=0.7,
+            max_tokens=1000,
+        )
+
+        if result["error"]:
+            raise Exception(result["error"])
+
+        ai_generated_content = result["content"]
 
         # Build final structured description
         final_description = ai_generated_content
@@ -519,75 +480,43 @@ def _evaluate_main_topic_interest(topic_content, speakers_info, video_metadata):
     """
     try:
         # Format speakers list
-        speakers_text = "\n".join(
-            [
-                f"- {speaker['speaker_name']} ({speaker['role']})"
-                for speaker in speakers_info[:10]  # Limit to first 10 speakers
-            ]
-        )
-
-        if len(speakers_info) > 10:
-            speakers_text += f"\n... y {len(speakers_info) - 10} participantes más"
+        speakers_text = format_speaker_list(speakers_info, max_speakers=10)
 
         duration_minutes = video_metadata.get("duration_seconds", 0) // 60
 
-        prompt = f"""Evalúa el interés de este vídeo del Congreso de los Diputados para subirlo a YouTube.
+        # Format user prompt
+        user_prompt = VIDEO_INTEREST_MAIN_TOPIC_USER_PROMPT_TEMPLATE.format(
+            topic_content=topic_content,
+            speakers_text=speakers_text,
+            duration_minutes=duration_minutes,
+        )
 
-TEMA: {topic_content}
-
-PARTICIPANTES:
-{speakers_text}
-
-DURACIÓN: {duration_minutes} minutos
-
-Criterios de evaluación:
-1. Relevancia política y social (0-3 puntos)
-2. Notoriedad de los participantes (0-3 puntos)
-3. Potencial de debate público (0-2 puntos)
-4. Interés mediático (0-2 puntos)
-
-Responde SOLO con un JSON en este formato:
-{{"score": <número del 1-10>, "reasoning": "<explicación breve en español>"}}"""
-
-        response = openai.chat.completions.create(
+        # Generate JSON evaluation
+        result = generate_json_completion(
+            system_prompt=VIDEO_INTEREST_MAIN_TOPIC_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
             model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Eres un experto en política española y contenido viral para YouTube. Evalúas objetivamente el interés público de debates parlamentarios.",
-                },
-                {"role": "user", "content": prompt},
-            ],
             temperature=0.3,
             max_tokens=200,
         )
 
-        result_text = response.choices[0].message.content.strip()
-
-        # Try to parse JSON response
-        try:
-            # Remove markdown code blocks if present
-            if result_text.startswith("```"):
-                result_text = result_text.split("```")[1]
-                if result_text.startswith("json"):
-                    result_text = result_text[4:]
-
-            result = json.loads(result_text)
-            score = int(result.get("score", 5))
-            score = max(1, min(10, score))  # Clamp between 1-10
-
-            return {
-                "score": score,
-                "reasoning": result.get("reasoning", "Sin justificación"),
-                "error": None,
-            }
-        except json.JSONDecodeError:
-            logging.warning(f"Failed to parse AI response as JSON: {result_text}")
+        if result["error"]:
+            logging.warning(f"Failed to parse AI response: {result['error']}")
             return {
                 "score": 5,
                 "reasoning": "Error al procesar la evaluación de IA",
-                "error": "JSON parse error",
+                "error": result["error"],
             }
+
+        data = result["data"]
+        score = int(data.get("score", 5))
+        score = clamp_value(score, 1, 10)
+
+        return {
+            "score": score,
+            "reasoning": data.get("reasoning", "Sin justificación"),
+            "error": None,
+        }
 
     except Exception as e:
         logging.error(f"Error evaluating main topic interest: {str(e)}")
@@ -616,62 +545,40 @@ def _evaluate_intervention_interest(
     try:
         duration_minutes = video_metadata.get("duration_seconds", 0) // 60
 
-        prompt = f"""Evalúa el interés de esta intervención parlamentaria individual para subirla a YouTube.
+        # Format user prompt
+        user_prompt = VIDEO_INTEREST_INTERVENTION_USER_PROMPT_TEMPLATE.format(
+            main_topic_context=main_topic_context,
+            speaker_name=speaker_name,
+            speaker_role=speaker_role,
+            duration_minutes=duration_minutes,
+        )
 
-CONTEXTO DEL TEMA: {main_topic_context}
-
-INTERVINIENTE: {speaker_name}
-CARGO: {speaker_role}
-DURACIÓN: {duration_minutes} minutos
-
-Criterios de evaluación:
-1. Relevancia del tema (0-3 puntos)
-2. Notoriedad del interviniente (0-3 puntos)
-3. Duración apropiada para YouTube (0-2 puntos)
-4. Potencial de interés público (0-2 puntos)
-
-Responde SOLO con un JSON en este formato:
-{{"score": <número del 1-10>, "reasoning": "<explicación breve en español>"}}"""
-
-        response = openai.chat.completions.create(
+        # Generate JSON evaluation
+        result = generate_json_completion(
+            system_prompt=VIDEO_INTEREST_INTERVENTION_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
             model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Eres un experto en política española y contenido viral para YouTube. Evalúas objetivamente el interés público de intervenciones parlamentarias.",
-                },
-                {"role": "user", "content": prompt},
-            ],
             temperature=0.3,
             max_tokens=200,
         )
 
-        result_text = response.choices[0].message.content.strip()
-
-        # Try to parse JSON response
-        try:
-            # Remove markdown code blocks if present
-            if result_text.startswith("```"):
-                result_text = result_text.split("```")[1]
-                if result_text.startswith("json"):
-                    result_text = result_text[4:]
-
-            result = json.loads(result_text)
-            score = int(result.get("score", 5))
-            score = max(1, min(10, score))  # Clamp between 1-10
-
-            return {
-                "score": score,
-                "reasoning": result.get("reasoning", "Sin justificación"),
-                "error": None,
-            }
-        except json.JSONDecodeError:
-            logging.warning(f"Failed to parse AI response as JSON: {result_text}")
+        if result["error"]:
+            logging.warning(f"Failed to parse AI response: {result['error']}")
             return {
                 "score": 5,
                 "reasoning": "Error al procesar la evaluación de IA",
-                "error": "JSON parse error",
+                "error": result["error"],
             }
+
+        data = result["data"]
+        score = int(data.get("score", 5))
+        score = clamp_value(score, 1, 10)
+
+        return {
+            "score": score,
+            "reasoning": data.get("reasoning", "Sin justificación"),
+            "error": None,
+        }
 
     except Exception as e:
         logging.error(f"Error evaluating intervention interest: {str(e)}")
