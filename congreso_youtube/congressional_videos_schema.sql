@@ -1,11 +1,15 @@
 -- PostgreSQL Database Schema for Congressional Video Management
 -- This schema supports OpenAI classification, upload tracking, and age-based filtering
+-- All tables are created in the 'development' schema
+
+-- Create development schema
+CREATE SCHEMA IF NOT EXISTS development;
+SET search_path TO development, public;
 
 -- Table: congressional_sessions
 -- Stores session metadata
-CREATE TABLE IF NOT EXISTS congressional_sessions (
-    id SERIAL PRIMARY KEY,
-    session_number INTEGER NOT NULL UNIQUE,
+CREATE TABLE IF NOT EXISTS development.congressional_sessions (
+    session_number INTEGER PRIMARY KEY, -- Now the primary key instead of id
     session_date DATE NOT NULL,
     target_date DATE NOT NULL, -- Original target date used for processing
     session_url VARCHAR(500),
@@ -14,17 +18,16 @@ CREATE TABLE IF NOT EXISTS congressional_sessions (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     -- Indexes for performance
-    CONSTRAINT unique_session_date UNIQUE(session_date, session_number)
+    CONSTRAINT unique_session_date UNIQUE(session_date)
 );
 
 -- Table: video_topics
 -- Stores individual topic videos with metadata and classification
-CREATE TABLE IF NOT EXISTS video_topics (
-    id SERIAL PRIMARY KEY,
-    session_id INTEGER REFERENCES congressional_sessions(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS development.video_topics (
+    entry_id VARCHAR(100) PRIMARY KEY, -- from congreso website - now the primary key
+    session_number INTEGER REFERENCES development.congressional_sessions(session_number) ON DELETE CASCADE,
 
     -- Video identification
-    entry_id VARCHAR(100) NOT NULL, -- from congreso website
     topic_title TEXT,
     video_url VARCHAR(500),
     video_file_path VARCHAR(500), -- local download path
@@ -33,7 +36,7 @@ CREATE TABLE IF NOT EXISTS video_topics (
     speaker_name VARCHAR(200),
     role VARCHAR(200),
     profile_link VARCHAR(500),
-    main_topic_id INTEGER REFERENCES video_topics(id) ON DELETE CASCADE, -- Links interventions to their main topic
+    main_topic_entry_id VARCHAR(100) REFERENCES development.video_topics(entry_id) ON DELETE CASCADE, -- Links interventions to their main topic
 
     -- OpenAI Classification
     openai_category VARCHAR(100), -- classified category (e.g., "Economy", "Health", "Education")
@@ -61,17 +64,15 @@ CREATE TABLE IF NOT EXISTS video_topics (
     file_size_bytes BIGINT,
     duration_seconds INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 
-    -- Constraints
-    CONSTRAINT unique_topic_per_session UNIQUE(session_id, entry_id)
+    -- Note: entry_id is now the primary key, so no need for unique constraint
 );
 
 -- Table: upload_queue
 -- Manages the queue of videos ready for YouTube upload
-CREATE TABLE IF NOT EXISTS upload_queue (
-    id SERIAL PRIMARY KEY,
-    video_topic_id INTEGER REFERENCES video_topics(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS development.upload_queue (
+    video_topic_entry_id VARCHAR(100) PRIMARY KEY REFERENCES development.video_topics(entry_id) ON DELETE CASCADE,
     queue_priority INTEGER DEFAULT 5, -- 1 (highest) to 10 (lowest)
     queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     attempted_uploads INTEGER DEFAULT 0,
@@ -82,15 +83,14 @@ CREATE TABLE IF NOT EXISTS upload_queue (
 
 -- Indexes for performance
 -- Note: Session date index handled by JOIN queries, no functional index needed
-CREATE INDEX idx_video_topics_upload_status ON video_topics(is_uploaded_to_youtube, upload_eligible);
-CREATE INDEX idx_video_topics_openai_category ON video_topics(openai_category);
-CREATE INDEX idx_upload_queue_status ON upload_queue(upload_status, queue_priority);
+CREATE INDEX idx_video_topics_upload_status ON development.video_topics(is_uploaded_to_youtube, upload_eligible);
+CREATE INDEX idx_video_topics_openai_category ON development.video_topics(openai_category);
+CREATE INDEX idx_upload_queue_status ON development.upload_queue(upload_status, queue_priority);
 
 -- View: uploadable_videos
 -- Shows videos that are eligible for YouTube upload
-CREATE OR REPLACE VIEW uploadable_videos AS
+CREATE OR REPLACE VIEW development.uploadable_videos AS
 SELECT
-    vt.id,
     vt.entry_id,
     vt.topic_title,
     vt.openai_category,
@@ -100,8 +100,8 @@ SELECT
     vt.video_file_path,
     vt.file_size_bytes,
     CURRENT_DATE - cs.session_date AS days_old
-FROM video_topics vt
-JOIN congressional_sessions cs ON vt.session_id = cs.id
+FROM development.video_topics vt
+JOIN development.congressional_sessions cs ON vt.session_number = cs.session_number
 WHERE
     vt.is_uploaded_to_youtube = FALSE
     AND vt.upload_eligible = TRUE
@@ -121,9 +121,9 @@ $$ language 'plpgsql';
 
 -- Triggers for automatic timestamp updates
 CREATE TRIGGER update_congressional_sessions_updated_at
-    BEFORE UPDATE ON congressional_sessions
+    BEFORE UPDATE ON development.congressional_sessions
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_video_topics_updated_at
-    BEFORE UPDATE ON video_topics
+    BEFORE UPDATE ON development.video_topics
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

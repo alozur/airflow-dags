@@ -14,6 +14,7 @@ class PostgresConnection:
         self.database = os.getenv('POSTGRES_DB')
         self.user = os.getenv('POSTGRES_USER')
         self.password = os.getenv('POSTGRES_PASSWORD')
+        self.schema = os.getenv('POSTGRES_SCHEMA', 'public')  # Default to 'public' if not set
 
         # Validate required environment variables
         required_vars = ['POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_DB', 'POSTGRES_USER', 'POSTGRES_PASSWORD']
@@ -32,5 +33,17 @@ class PostgresConnection:
             password=self.password,
             cursor_factory=RealDictCursor
         )
+
+    def get_qualified_table(self, table_name: str) -> str:
+        """
+        Return schema-qualified table name.
+
+        Args:
+            table_name: The table name without schema
+
+        Returns:
+            Schema-qualified table name (e.g., 'development.congressional_sessions')
+        """
+        return f"{self.schema}.{table_name}"
 
 

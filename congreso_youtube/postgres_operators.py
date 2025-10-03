@@ -63,7 +63,7 @@ class PostgreSQLOperator(BaseOperator):
                         'speaker_name': topic_data.get('speaker_name'),
                         'role': topic_data.get('role'),
                         'profile_link': topic_data.get('profile_link'),
-                        'main_topic_id': None,  # Main topics don't have a parent
+                        'main_topic_entry_id': None,  # Main topics don't have a parent
                         'file_size_bytes': None,  # Will be updated later
                         'duration_seconds': topic_data.get('metadata_url', {}).get('duration_seconds'),
                         'is_main_topic': topic_data.get('is_bold', False)  # Map is_bold to is_main_topic
@@ -71,9 +71,9 @@ class PostgreSQLOperator(BaseOperator):
 
                     print(f"DEBUG: mapped_topic_data: {mapped_topic_data}")
 
-                    topic_id = db.upsert_video_topic(session_id, topic_data.get('entry_id'), mapped_topic_data)
-                    topic_ids.append(topic_id)
-                    print(f"✅ Successfully saved main topic {topic_data.get('entry_id')} with ID {topic_id}")
+                    topic_entry_id = db.upsert_video_topic(session_id, topic_data.get('entry_id'), mapped_topic_data)
+                    topic_ids.append(topic_entry_id)
+                    print(f"✅ Successfully saved main topic {topic_entry_id}")
 
                     # Save interventions (individual speaker videos)
                     interventions = group.get('interventions', [])
@@ -90,15 +90,15 @@ class PostgreSQLOperator(BaseOperator):
                             'speaker_name': intervention.get('speaker_name'),
                             'role': intervention.get('role'),
                             'profile_link': intervention.get('profile_link'),
-                            'main_topic_id': topic_id,  # Link intervention to its main topic
+                            'main_topic_entry_id': topic_entry_id,  # Link intervention to its main topic
                             'file_size_bytes': None,  # Will be updated later
                             'duration_seconds': intervention.get('metadata_url', {}).get('duration_seconds'),
                             'is_main_topic': False  # Interventions are never main topics
                         }
 
-                        intervention_id = db.upsert_video_topic(session_id, intervention.get('entry_id'), mapped_intervention_data)
-                        topic_ids.append(intervention_id)
-                        print(f"✅ Successfully saved intervention {intervention.get('entry_id')} with ID {intervention_id}")
+                        intervention_entry_id = db.upsert_video_topic(session_id, intervention.get('entry_id'), mapped_intervention_data)
+                        topic_ids.append(intervention_entry_id)
+                        print(f"✅ Successfully saved intervention {intervention_entry_id}")
 
             db.update_session_total_topics(session_id)
             result = topic_ids
@@ -141,13 +141,13 @@ class PostgreSQLOperator(BaseOperator):
                         print(f"DEBUG: Processing item {i}: success={success}, file_path={file_path}")
 
                         if success and file_path:
-                            topic_id = topic_ids[i]
+                            topic_entry_id = topic_ids[i]
                             try:
-                                db.update_download_info(topic_id, file_path, file_size, duration)
+                                db.update_download_info(topic_entry_id, file_path, file_size, duration)
                                 updated_count += 1
-                                print(f"✅ Successfully updated topic ID {topic_id}")
+                                print(f"✅ Successfully updated topic {topic_entry_id}")
                             except Exception as e:
-                                print(f"❌ ERROR updating topic ID {topic_id}: {e}")
+                                print(f"❌ ERROR updating topic {topic_entry_id}: {e}")
                         else:
                             print(f"⚠️ Skipping item {i}: success={success}, file_path={file_path}")
                     else:
@@ -191,7 +191,7 @@ class PostgreSQLOperator(BaseOperator):
                         print(f"DEBUG: Processing metadata item {i}: topic_entry_id={topic_entry_id}, has_openai_data={bool(openai_data)}")
 
                         if openai_data:
-                            topic_id = topic_ids[i]
+                            topic_entry_id = topic_ids[i]
 
                             # Map OpenAI data fields correctly
                             mapped_openai_data = {
@@ -205,11 +205,11 @@ class PostgreSQLOperator(BaseOperator):
                             print(f"DEBUG: mapped_openai_data: {mapped_openai_data}")
 
                             try:
-                                db.update_openai_classification(topic_id, mapped_openai_data)
+                                db.update_openai_classification(topic_entry_id, mapped_openai_data)
                                 updated_count += 1
-                                print(f"✅ Successfully updated OpenAI data for topic ID {topic_id}")
+                                print(f"✅ Successfully updated OpenAI data for topic {topic_entry_id}")
                             except Exception as e:
-                                print(f"❌ ERROR updating OpenAI data for topic ID {topic_id}: {e}")
+                                print(f"❌ ERROR updating OpenAI data for topic {topic_entry_id}: {e}")
                         else:
                             print(f"⚠️ Skipping item {i}: no OpenAI data found")
                     else:
@@ -254,7 +254,7 @@ class PostgreSQLOperator(BaseOperator):
                         print(f"DEBUG: Processing YouTube metadata item {i}: topic_entry_id={topic_entry_id}")
 
                         if title_result.get('title') and description_result.get('description'):
-                            topic_id = topic_ids[i]
+                            topic_entry_id = topic_ids[i]
 
                             youtube_title = title_result.get('title')
                             youtube_description = description_result.get('description')
@@ -263,11 +263,11 @@ class PostgreSQLOperator(BaseOperator):
                             print(f"DEBUG: Description length: {len(youtube_description)} chars")
 
                             try:
-                                db.update_youtube_metadata(topic_id, youtube_title, youtube_description)
+                                db.update_youtube_metadata(topic_entry_id, youtube_title, youtube_description)
                                 updated_count += 1
-                                print(f"✅ Successfully updated YouTube metadata for topic ID {topic_id}")
+                                print(f"✅ Successfully updated YouTube metadata for topic {topic_entry_id}")
                             except Exception as e:
-                                print(f"❌ ERROR updating YouTube metadata for topic ID {topic_id}: {e}")
+                                print(f"❌ ERROR updating YouTube metadata for topic {topic_entry_id}: {e}")
                         else:
                             print(f"⚠️ Skipping item {i}: missing title or description")
                     else:
