@@ -100,25 +100,25 @@ with DAG(
         output_xcom_key='db_download_updates'
     )
 
-    # Upload videos to YouTube
-    t6 = PythonOperator(
-        task_id='upload_to_youtube',
-        python_callable=lambda ti, **context: xcom_task(
-            ti,
-            lambda: cu.upload_videos_to_youtube(
-                ti.xcom_pull(key='download_results'),
-                is_testing=context["params"].get("isTesting", False)
-            ),
-            'upload_results'
-        ),
-    )
+    # # Upload videos to YouTube
+    # t6 = PythonOperator(
+    #     task_id='upload_to_youtube',
+    #     python_callable=lambda ti, **context: xcom_task(
+    #         ti,
+    #         lambda: cu.upload_videos_to_youtube(
+    #             ti.xcom_pull(key='download_results'),
+    #             is_testing=context["params"].get("isTesting", False)
+    #         ),
+    #         'upload_results'
+    #     ),
+    # )
 
-    # Update YouTube upload status in database
-    t7_db = PostgreSQLOperator(
-        task_id='update_youtube_status_in_db',
-        operation='update_youtube_status',
-        output_xcom_key='db_youtube_updates'
-    )
+    # # Update YouTube upload status in database
+    # t7_db = PostgreSQLOperator(
+    #     task_id='update_youtube_status_in_db',
+    #     operation='update_youtube_status',
+    #     output_xcom_key='db_youtube_updates'
+    # )
 
     # Task dependencies
-    t0 >> t1_db >> t2 >> t3_db >> t4 >> t5_db >> t6 >> t7_db
+    t0 >> t1_db >> t2 >> t3_db >> t4 >> t5_db
