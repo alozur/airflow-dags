@@ -66,7 +66,7 @@ from congress_videos.modules.youtube_ai import (
 )
 
 # Re-export YouTube upload functions
-from congress_videos.modules.youtube_upload import upload_videos_to_youtube
+from congress_videos.modules.youtube_upload import prepare_youtube_upload_config
 
 # Private functions (internal use only - not re-exported)
 from congress_videos.modules.youtube_ai import (
