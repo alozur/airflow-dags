@@ -10,11 +10,13 @@ This DAG runs daily to:
 Runs independently from the congress_session_processor DAG.
 """
 
+import logging
 from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 
 from congress_videos.modules import utils as cv_utils
 from congress_videos.modules import youtube_upload as yt_upload
@@ -118,19 +120,44 @@ with DAG(
         ),
     )
 
-    # Trigger the generic YouTube uploader DAG
-    def get_upload_config(**context):
-        """Get upload config from XCom and return as dict for TriggerDagRunOperator."""
-        ti = context['ti']
-        config = ti.xcom_pull(task_ids='prepare_upload_config', key='upload_config')
-        return config
+    # Trigger the generic YouTube uploader DAG with config from XCom
+    def trigger_upload_with_config(ti, **context):
+        """Trigger the generic YouTube uploader DAG with config from XCom."""
+        import time
+        from airflow.models import DagRun
 
-    t6_trigger = TriggerDagRunOperator(
+        # Get config from XCom
+        config = ti.xcom_pull(task_ids='prepare_upload_config', key='upload_config')
+
+        if not config:
+            logging.warning("No upload config found, skipping upload")
+            return None
+
+        # Trigger the DAG
+        logging.info(f"Triggering generic_youtube_uploader with config: {config}")
+        dag_run = trigger_dag_api(
+            dag_id='generic_youtube_uploader',
+            conf=config,
+            run_id=f"triggered_from_congress_{context['run_id']}",
+        )
+
+        logging.info(f"Triggered DAG run: {dag_run.run_id}")
+
+        # Wait for completion
+        logging.info("Waiting for upload to complete...")
+        while True:
+            time.sleep(10)
+            dag_run.refresh_from_db()
+
+            if dag_run.state in ['success', 'failed']:
+                logging.info(f"Upload DAG completed with state: {dag_run.state}")
+                if dag_run.state == 'failed':
+                    raise Exception(f"Upload DAG failed: {dag_run.run_id}")
+                return dag_run.run_id
+
+    t6_trigger = PythonOperator(
         task_id='trigger_youtube_upload',
-        trigger_dag_id='generic_youtube_uploader',
-        conf=get_upload_config,
-        wait_for_completion=True,
-        poke_interval=30,
+        python_callable=trigger_upload_with_config,
     )
 
     # Update YouTube upload status in database
