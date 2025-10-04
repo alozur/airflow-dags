@@ -119,14 +119,18 @@ with DAG(
     )
 
     # Trigger the generic YouTube uploader DAG
+    def get_upload_config(**context):
+        """Get upload config from XCom and return as dict for TriggerDagRunOperator."""
+        ti = context['ti']
+        config = ti.xcom_pull(task_ids='prepare_upload_config', key='upload_config')
+        return config
+
     t6_trigger = TriggerDagRunOperator(
         task_id='trigger_youtube_upload',
         trigger_dag_id='generic_youtube_uploader',
-        conf="{{ ti.xcom_pull(task_ids='prepare_upload_config', key='upload_config') }}",
+        conf=get_upload_config,
         wait_for_completion=True,
         poke_interval=30,
-        execution_date="{{ ds }}",
-        reset_dag_run=True,
     )
 
     # Update YouTube upload status in database

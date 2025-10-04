@@ -35,6 +35,13 @@ x-airflow-common:
     AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 30
     AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 30
     OPENAI_API_KEY: "${OPENAI_API_KEY}"
+    # PostgreSQL connection for congress_videos project
+    POSTGRES_HOST: "${POSTGRES_HOST}"
+    POSTGRES_PORT: "${POSTGRES_PORT}"
+    POSTGRES_DB: "${POSTGRES_DB}"
+    POSTGRES_USER: "${POSTGRES_USER}"
+    POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    POSTGRES_SCHEMA: "${POSTGRES_SCHEMA}"
   volumes:
     - airflow_logs:/opt/airflow/logs
     - airflow_plugins:/opt/airflow/plugins
