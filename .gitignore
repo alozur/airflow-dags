@@ -209,3 +209,9 @@ __marimo__/
 .vscode
 
 congreso_youtube/examples/*
+
+# YouTube API Tokens - NEVER commit these!
+**/youtube_token.pickle
+*youtube_token*.pickle
+*_youtube_token.pickle
+client_secret*.json

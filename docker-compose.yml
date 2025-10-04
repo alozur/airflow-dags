@@ -26,7 +26,7 @@ x-airflow-common:
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_password@postgres_shared:5432/airflow_db
     AIRFLOW__CORE__FERNET_KEY: "${AIRFLOW__CORE__FERNET_KEY}"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-    _PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-postgres openai beautifulsoup4 requests urllib3"
+    _PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-postgres openai beautifulsoup4 requests urllib3 google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client"
     AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags/repo
     AIRFLOW__CORE__PARALLELISM: 4
     AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: 2
@@ -41,6 +41,9 @@ x-airflow-common:
     - airflow_dags:/opt/airflow/dags
     - git_dags:/opt/airflow/dags:ro
     - airflow_data:/opt/airflow/data
+    # Mount YouTube token securely from NAS (not in git)
+    # Mounted to /opt/airflow/data (non-symlinked path)
+    - /volume1/docker/airflow/congress_youtube_token.pickle:/opt/airflow/data/congress_youtube_token.pickle:ro
   networks:
     - postgres_infra_network
     - airflow_network

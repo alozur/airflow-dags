@@ -1,93 +1,77 @@
 """
-YouTube video upload operations.
+YouTube video upload operations for Congressional videos.
 
-This module handles uploading videos to YouTube.
-Currently implements placeholder/testing logic.
+This module handles preparing upload configuration for the generic
+YouTube uploader DAG.
 """
 
 import logging
+import os
 
 
-def upload_videos_to_youtube(download_results, is_testing=False):
+def prepare_youtube_upload_config(download_results, youtube_metadata_results, is_testing=False):
     """
-    Uploads downloaded videos to YouTube.
+    Prepare configuration for the generic YouTube uploader DAG.
+
+    Converts download results and metadata into the format expected by
+    the generic_youtube_uploader DAG.
 
     Args:
         download_results: Results from download_videos_for_upload
-        is_testing: If True, simulates upload without actually uploading
+        youtube_metadata_results: Results from generate_youtube_metadata_for_selected_videos
+        is_testing: If True, uploads as private; if False, uploads as public
 
     Returns:
-        Dict with upload results containing:
-        - total_videos: Total number of videos to upload
-        - successful_uploads: Number of successful uploads
-        - failed_uploads: Number of failed uploads
-        - skipped_uploads: Number of skipped uploads
-        - upload_details: List of detailed results per video
+        Dict configuration for generic_youtube_uploader DAG:
+        - token_file: Path to YouTube token pickle file
+        - videos: List of video objects with upload parameters
+        Returns None if no videos to upload
     """
-    upload_results = {
-        "total_videos": 0,
-        "successful_uploads": 0,
-        "failed_uploads": 0,
-        "skipped_uploads": 0,
-        "upload_details": [],
-    }
+    if not download_results or not download_results.get('download_details'):
+        logging.warning("No download results to upload")
+        return None
 
-    if not download_results or not download_results.get("download_details"):
-        logging.warning("No download results provided for upload")
-        return upload_results
+    # Create metadata lookup by entry_id
+    metadata_lookup = {}
+    if youtube_metadata_results and youtube_metadata_results.get('metadata_results'):
+        for metadata in youtube_metadata_results['metadata_results']:
+            entry_id = metadata.get('entry_id')
+            if entry_id:
+                metadata_lookup[entry_id] = metadata
 
-    download_details = download_results["download_details"]
-    upload_results["total_videos"] = len(download_details)
-
-    for download_detail in download_details:
-        entry_id = download_detail.get("entry_id")
-        file_path = download_detail.get("file_path")
-        success = download_detail.get("success", False)
-
-        if not success or not file_path:
-            logging.warning(
-                f"Skipping upload for {entry_id}: download failed or no file path"
-            )
-            upload_results["skipped_uploads"] += 1
-            upload_results["upload_details"].append(
-                {
-                    "entry_id": entry_id,
-                    "success": False,
-                    "youtube_video_id": None,
-                    "error": "Download failed or no file path",
-                }
-            )
+    # Build videos list for generic uploader
+    videos = []
+    for download_detail in download_results['download_details']:
+        if not download_detail.get('success') or not download_detail.get('file_path'):
             continue
 
-        if is_testing:
-            logging.info(
-                f"TESTING MODE: Would upload video {entry_id} from {file_path}"
-            )
-            upload_results["successful_uploads"] += 1
-            upload_results["upload_details"].append(
-                {
-                    "entry_id": entry_id,
-                    "success": True,
-                    "youtube_video_id": f"TEST_{entry_id}",
-                    "testing": True,
-                }
-            )
-        else:
-            # TODO: Implement actual YouTube upload logic here
-            # This would use the YouTube Data API v3 to upload the video
-            logging.info(f"Would upload video {entry_id} from {file_path} to YouTube")
-            logging.warning("YouTube upload not yet implemented - placeholder")
-            upload_results["skipped_uploads"] += 1
-            upload_results["upload_details"].append(
-                {
-                    "entry_id": entry_id,
-                    "success": False,
-                    "youtube_video_id": None,
-                    "error": "YouTube upload not yet implemented",
-                }
-            )
+        entry_id = download_detail.get('entry_id')
+        metadata = metadata_lookup.get(entry_id, {})
 
-    logging.info(
-        f"Upload complete: {upload_results['successful_uploads']}/{upload_results['total_videos']} videos uploaded successfully"
-    )
-    return upload_results
+        videos.append({
+            'video_file': download_detail['file_path'],
+            'title': metadata.get('youtube_title', f'Congressional Video {entry_id}'),
+            'description': metadata.get('youtube_description', ''),
+            'category_id': '25',  # News & Politics
+            'privacy_status': 'private' if is_testing else 'public',
+            'tags': metadata.get('youtube_tags', ['congress', 'politics']),
+            'made_for_kids': False,
+        })
+
+    if not videos:
+        logging.warning("No valid videos to upload")
+        return None
+
+    # Configuration for generic uploader
+    # Token is mounted from NAS to /opt/airflow/data (non-symlinked path)
+    token_file = '/opt/airflow/data/congress_youtube_token.pickle'
+
+    config = {
+        'token_file': token_file,
+        'videos': videos
+    }
+
+    logging.info(f"Prepared upload config for {len(videos)} videos")
+    logging.info(f"Privacy status: {'private' if is_testing else 'public'} (is_testing={is_testing})")
+
+    return config

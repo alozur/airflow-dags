@@ -14,8 +14,10 @@ from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 from congress_videos.modules import utils as cv_utils
+from congress_videos.modules import youtube_upload as yt_upload
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from utils.airflow_helpers import ensure_project_data_directory, xcom_task
 from utils.env_loader import load_env_if_local
@@ -102,25 +104,37 @@ with DAG(
         output_xcom_key='db_download_updates'
     )
 
-    # # Upload videos to YouTube
-    # t6 = PythonOperator(
-    #     task_id='upload_to_youtube',
-    #     python_callable=lambda ti, **context: xcom_task(
-    #         ti,
-    #         lambda: cu.upload_videos_to_youtube(
-    #             ti.xcom_pull(key='download_results'),
-    #             is_testing=context["params"].get("isTesting", False)
-    #         ),
-    #         'upload_results'
-    #     ),
-    # )
+    # Prepare upload configuration for generic YouTube uploader DAG
+    t6_prep = PythonOperator(
+        task_id='prepare_upload_config',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: yt_upload.prepare_youtube_upload_config(
+                ti.xcom_pull(key='download_results'),
+                ti.xcom_pull(key='youtube_metadata_results'),
+                is_testing=context["params"].get("isTesting", False)
+            ),
+            'upload_config'
+        ),
+    )
 
-    # # Update YouTube upload status in database
-    # t7_db = PostgreSQLOperator(
-    #     task_id='update_youtube_status_in_db',
-    #     operation='update_youtube_status',
-    #     output_xcom_key='db_youtube_updates'
-    # )
+    # Trigger the generic YouTube uploader DAG
+    t6_trigger = TriggerDagRunOperator(
+        task_id='trigger_youtube_upload',
+        trigger_dag_id='generic_youtube_uploader',
+        conf="{{ ti.xcom_pull(task_ids='prepare_upload_config', key='upload_config') }}",
+        wait_for_completion=True,
+        poke_interval=30,
+        execution_date="{{ ds }}",
+        reset_dag_run=True,
+    )
+
+    # Update YouTube upload status in database
+    t7_db = PostgreSQLOperator(
+        task_id='update_youtube_status_in_db',
+        operation='update_youtube_status',
+        output_xcom_key='db_youtube_updates'
+    )
 
     # Task dependencies
-    t0 >> t1_db >> t2 >> t3_db >> t4 >> t5_db
+    t0 >> t1_db >> t2 >> t3_db >> t4 >> t5_db >> t6_prep >> t6_trigger >> t7_db
