@@ -411,14 +411,25 @@ class CongressionalVideoDB:
         """
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(f"""
-                    UPDATE {self.queue_table} SET
-                        upload_status = %s,
-                        error_message = %s,
-                        last_attempt_at = CURRENT_TIMESTAMP,
-                        attempted_uploads = attempted_uploads + 1
-                    WHERE video_topic_entry_id = %s
-                """, (status, error_message, video_topic_entry_id))
+                # Only increment attempted_uploads for actual upload attempts (completed or failed)
+                # Don't increment for 'processing' (just downloaded) or 'pending'
+                if status in ('completed', 'failed'):
+                    cur.execute(f"""
+                        UPDATE {self.queue_table} SET
+                            upload_status = %s,
+                            error_message = %s,
+                            last_attempt_at = CURRENT_TIMESTAMP,
+                            attempted_uploads = attempted_uploads + 1
+                        WHERE video_topic_entry_id = %s
+                    """, (status, error_message, video_topic_entry_id))
+                else:
+                    cur.execute(f"""
+                        UPDATE {self.queue_table} SET
+                            upload_status = %s,
+                            error_message = %s,
+                            last_attempt_at = CURRENT_TIMESTAMP
+                        WHERE video_topic_entry_id = %s
+                    """, (status, error_message, video_topic_entry_id))
                 logger.info(f"Updated upload queue status for {video_topic_entry_id}: {status}")
 
     def remove_from_upload_queue(self, video_topic_entry_id: str):
