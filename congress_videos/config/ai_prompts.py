@@ -20,7 +20,7 @@ Genera un título optimizado para YouTube de un vídeo del Congreso de España. 
 Contenido del debate: {main_topic_content}
 {speaker_context}
 
-Genera solo el título, sin explicaciones adicionales.
+Genera solo el título, sin explicaciones adicionales y sin comillas.
 """
 
 # YouTube Description Generation

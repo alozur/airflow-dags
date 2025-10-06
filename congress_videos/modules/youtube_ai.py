@@ -72,6 +72,9 @@ def generate_youtube_title(main_topic_content, speakers_info, max_length=100):
 
         generated_title = result["content"]
 
+        # Strip any surrounding quotes (single or double)
+        generated_title = generated_title.strip().strip('"').strip("'").strip()
+
         # Ensure title doesn't exceed max_length
         if len(generated_title) > max_length:
             generated_title = truncate_text(generated_title, max_length)
