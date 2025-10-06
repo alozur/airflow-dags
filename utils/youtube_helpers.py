@@ -271,6 +271,7 @@ def upload_multiple_videos(
 
             results['upload_details'].append({
                 "video_file": video_file,
+                "entry_id": video_info.get('entry_id'),  # Include entry_id for database updates
                 **upload_result,
             })
 

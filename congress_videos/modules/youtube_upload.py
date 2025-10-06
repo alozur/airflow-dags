@@ -58,6 +58,7 @@ def prepare_youtube_upload_config(download_results, youtube_metadata_results, is
         logging.info(f"Video {entry_id}: Using title='{title[:50]}...' (metadata found: {bool(metadata)})")
 
         videos.append({
+            'entry_id': entry_id,  # Include entry_id for tracking in upload results
             'video_file': download_detail['file_path'],
             'title': title,
             'description': description,

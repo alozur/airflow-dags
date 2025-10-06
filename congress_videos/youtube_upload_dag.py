@@ -155,13 +155,15 @@ with DAG(
     def trigger_upload_with_config(ti, **context):
         """Trigger the generic YouTube uploader DAG with config from XCom."""
         import time
-        from airflow.models import DagRun
+        from airflow.models import DagRun, TaskInstance
 
         # Get config from XCom
         config = ti.xcom_pull(task_ids='prepare_upload_config', key='upload_config')
 
         if not config:
             logging.warning("No upload config found, skipping upload")
+            # Return empty results structure
+            ti.xcom_push(key='upload_results', value={'upload_details': []})
             return None
 
         # Trigger the DAG
@@ -182,8 +184,40 @@ with DAG(
 
             if dag_run.state in ['success', 'failed']:
                 logging.info(f"Upload DAG completed with state: {dag_run.state}")
+
+                # Pull upload results from the triggered DAG
+                from airflow.models import XCom
+                upload_results = XCom.get_many(
+                    execution_date=dag_run.execution_date,
+                    dag_ids=['generic_youtube_uploader'],
+                    task_ids=['upload_videos'],
+                    key='return_value',
+                    limit=1
+                )
+
+                if upload_results:
+                    results_data = upload_results[0].value
+                    logging.info(f"Retrieved upload results: {results_data}")
+                    # Push to XCom for next task
+                    ti.xcom_push(key='upload_results', value=results_data)
+                else:
+                    logging.warning("No upload results found from triggered DAG")
+                    # Create results based on config and DAG state
+                    upload_details = []
+                    for video_config in config.get('videos', []):
+                        upload_details.append({
+                            'entry_id': video_config.get('entry_id'),  # Use entry_id from config
+                            'video_file': video_config.get('video_file'),
+                            'success': dag_run.state == 'success',
+                            'video_id': None,  # Can't get without actual results
+                            'youtube_video_id': None,  # Can't get without actual results
+                            'error': 'Upload failed - no results available' if dag_run.state == 'failed' else None
+                        })
+                    ti.xcom_push(key='upload_results', value={'upload_details': upload_details})
+
                 if dag_run.state == 'failed':
                     raise Exception(f"Upload DAG failed: {dag_run.run_id}")
+
                 return dag_run.run_id
 
     t9_trigger = PythonOperator(
