@@ -38,13 +38,6 @@ CREATE TABLE IF NOT EXISTS development.video_topics (
     profile_link VARCHAR(500),
     main_topic_entry_id VARCHAR(100) REFERENCES development.video_topics(entry_id) ON DELETE CASCADE, -- Links interventions to their main topic
 
-    -- OpenAI Classification
-    openai_category VARCHAR(100), -- classified category (e.g., "Economy", "Health", "Education")
-    openai_summary TEXT, -- AI-generated summary
-    openai_keywords TEXT[], -- array of keywords
-    openai_priority_score INTEGER CHECK (openai_priority_score BETWEEN 1 AND 10), -- 1-10 priority
-    openai_processed_at TIMESTAMP,
-
     -- AI Interest Evaluation for YouTube Upload
     ai_interest_score INTEGER CHECK (ai_interest_score BETWEEN 1 AND 10), -- 1-10 interest score for YouTube
     ai_interest_reasoning TEXT, -- AI reasoning for the interest score
@@ -54,7 +47,7 @@ CREATE TABLE IF NOT EXISTS development.video_topics (
     is_uploaded_to_youtube BOOLEAN DEFAULT FALSE,
     youtube_video_id VARCHAR(50), -- YouTube video ID once uploaded
     youtube_upload_date TIMESTAMP,
-    upload_eligible BOOLEAN DEFAULT TRUE, -- can be set to false manually
+    upload_eligible BOOLEAN DEFAULT FALSE, -- only TRUE for main topics eligible for upload
     is_main_topic BOOLEAN DEFAULT FALSE, -- indicates if this is a main topic
 
     -- YouTube Metadata (generated content for upload)
@@ -89,7 +82,6 @@ CREATE TABLE IF NOT EXISTS development.upload_queue (
 -- Indexes for performance
 -- Note: Session date index handled by JOIN queries, no functional index needed
 CREATE INDEX idx_video_topics_upload_status ON development.video_topics(is_uploaded_to_youtube, upload_eligible);
-CREATE INDEX idx_video_topics_openai_category ON development.video_topics(openai_category);
 CREATE INDEX idx_upload_queue_status ON development.upload_queue(upload_status, queue_priority);
 
 -- View: uploadable_videos

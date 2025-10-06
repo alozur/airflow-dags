@@ -71,6 +71,10 @@ class CongressionalVideoDB:
 
                 if existing:
                     # Update existing topic
+                    is_main_topic = topic_data.get('is_main_topic', False)
+                    # upload_eligible is TRUE only for main topics
+                    upload_eligible = is_main_topic
+
                     cur.execute(f"""
                         UPDATE {self.topics_table} SET
                             session_number = %s,
@@ -84,6 +88,7 @@ class CongressionalVideoDB:
                             file_size_bytes = %s,
                             duration_seconds = %s,
                             is_main_topic = %s,
+                            upload_eligible = %s,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE entry_id = %s
                         RETURNING entry_id
@@ -98,17 +103,22 @@ class CongressionalVideoDB:
                         topic_data.get('main_topic_entry_id'),
                         topic_data.get('file_size_bytes'),
                         topic_data.get('duration_seconds'),
-                        topic_data.get('is_main_topic', False),
+                        is_main_topic,
+                        upload_eligible,
                         entry_id
                     ))
                     logger.info(f"Updated video topic {entry_id}")
                 else:
                     # Insert new topic
+                    is_main_topic = topic_data.get('is_main_topic', False)
+                    # upload_eligible is TRUE only for main topics
+                    upload_eligible = is_main_topic
+
                     cur.execute(f"""
                         INSERT INTO {self.topics_table}
                         (entry_id, session_number, topic_title, video_url, video_file_path,
-                         speaker_name, role, profile_link, main_topic_entry_id, file_size_bytes, duration_seconds, is_main_topic)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         speaker_name, role, profile_link, main_topic_entry_id, file_size_bytes, duration_seconds, is_main_topic, upload_eligible)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING entry_id
                     """, (
                         entry_id,
@@ -122,33 +132,17 @@ class CongressionalVideoDB:
                         topic_data.get('main_topic_entry_id'),
                         topic_data.get('file_size_bytes'),
                         topic_data.get('duration_seconds'),
-                        topic_data.get('is_main_topic', False)
+                        is_main_topic,
+                        upload_eligible
                     ))
                     logger.info(f"Created new video topic {entry_id}")
 
                 return entry_id
 
-    def update_openai_classification(self, video_topic_entry_id: str, openai_data: Dict[str, Any]):
-        """Update OpenAI classification data for a video topic"""
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(f"""
-                    UPDATE {self.topics_table} SET
-                        openai_category = %s,
-                        openai_summary = %s,
-                        openai_keywords = %s,
-                        openai_priority_score = %s,
-                        openai_processed_at = CURRENT_TIMESTAMP,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE entry_id = %s
-                """, (
-                    openai_data.get('category'),
-                    openai_data.get('summary'),
-                    openai_data.get('keywords', []),
-                    openai_data.get('priority_score'),
-                    video_topic_entry_id
-                ))
-                logger.info(f"Updated OpenAI classification for video topic {video_topic_entry_id}")
+    # REMOVED: update_openai_classification() - OpenAI classification fields removed from schema
+    # The following fields were removed from video_topics table:
+    # - openai_category, openai_summary, openai_keywords, openai_priority_score, openai_processed_at
+    # Only ai_interest_score is used now for YouTube upload prioritization
 
     def mark_video_uploaded(self, video_topic_entry_id: str, youtube_video_id: str):
         """Mark a video as uploaded to YouTube"""
