@@ -64,6 +64,7 @@ with DAG(
     schedule_interval='0 10 * * *',  # Run at 10:00 AM daily
     start_date=datetime(2025, 10, 3),
     catchup=False,
+    tags=['congress'],
     params={
         "max_videos": 5,  # Maximum number of videos to upload per day
         "min_interest_score": 6,  # Minimum AI interest score to consider

@@ -53,6 +53,7 @@ with DAG(
   schedule_interval='@daily',
   start_date=datetime(2025, 8, 28),
   catchup=False,
+  tags=['congress'],
   params={   # Default to yesterday
       "target_date": yesterday_str,
       "isTesting": IS_DEVELOPMENT  # True in development (limits to 2 topics), False in production (all topics)
