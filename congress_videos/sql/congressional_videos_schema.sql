@@ -90,17 +90,11 @@ DROP VIEW IF EXISTS development.uploadable_videos;
 CREATE VIEW development.uploadable_videos AS
 SELECT
     vt.entry_id,
-    vt.topic_title,
-    vt.video_url,
     vt.video_file_path,
     vt.ai_interest_score,
     vt.ai_interest_reasoning,
     vt.youtube_title,
     vt.youtube_description,
-    vt.duration_seconds,
-    vt.file_size_bytes,
-    cs.session_date,
-    cs.session_number,
     uq.queue_priority,
     uq.upload_status,
     uq.queued_at,
@@ -119,7 +113,7 @@ WHERE
     AND vt.is_uploaded_to_youtube = FALSE
     AND vt.upload_eligible = TRUE
     AND vt.is_main_topic = TRUE  -- Only main topics, not interventions
-ORDER BY effective_priority DESC, uq.queued_at ASC;  -- Highest effective priority first
+ORDER BY effective_priority DESC, uq.queued_at ASC; 
 
 -- Function: update_timestamps
 CREATE OR REPLACE FUNCTION update_updated_at_column()
