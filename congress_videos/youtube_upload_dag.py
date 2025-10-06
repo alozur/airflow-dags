@@ -26,6 +26,7 @@ Runs independently from the congress_session_processor DAG.
 """
 
 import logging
+import os
 from datetime import datetime, timedelta
 
 from airflow import DAG
@@ -41,6 +42,10 @@ from utils.env_loader import load_env_if_local
 
 # Load environment variables
 load_env_if_local()
+
+# Check if running in development environment
+POSTGRES_SCHEMA = os.getenv('POSTGRES_SCHEMA', 'development')
+IS_DEVELOPMENT = POSTGRES_SCHEMA == 'development'
 
 
 default_args = {
@@ -62,7 +67,7 @@ with DAG(
     params={
         "max_videos": 5,  # Maximum number of videos to upload per day
         "min_interest_score": 6,  # Minimum AI interest score to consider
-        "isTesting": False  # When True, skips actual YouTube upload
+        "isTesting": IS_DEVELOPMENT  # True in development (uploads as private), False in production (uploads as public)
     }
 ) as dag:
 

@@ -5,6 +5,7 @@ This DAG checks for plenary sessions, extracts video data, organizes topics,
 enriches metadata, evaluates videos with AI, and saves to database.
 """
 
+import os
 from datetime import datetime, timedelta
 
 from airflow import DAG
@@ -18,6 +19,10 @@ from utils.env_loader import load_env_if_local
 
 # Load environment variables
 load_env_if_local()
+
+# Check if running in development environment
+POSTGRES_SCHEMA = os.getenv('POSTGRES_SCHEMA', 'development')
+IS_DEVELOPMENT = POSTGRES_SCHEMA == 'development'
 
 
 yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -50,7 +55,7 @@ with DAG(
   catchup=False,
   params={   # Default to yesterday
       "target_date": yesterday_str,
-      "isTesting": False  # When True, limits to 2 main topics only
+      "isTesting": IS_DEVELOPMENT  # True in development (limits to 2 topics), False in production (all topics)
   }
 ) as dag:
 
