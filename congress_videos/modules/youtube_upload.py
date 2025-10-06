@@ -33,9 +33,9 @@ def prepare_youtube_upload_config(download_results, youtube_metadata_results, is
 
     # Create metadata lookup by entry_id
     metadata_lookup = {}
-    if youtube_metadata_results and youtube_metadata_results.get('metadata_results'):
-        for metadata in youtube_metadata_results['metadata_results']:
-            entry_id = metadata.get('entry_id')
+    if youtube_metadata_results and youtube_metadata_results.get('topic_metadata'):
+        for metadata in youtube_metadata_results['topic_metadata']:
+            entry_id = metadata.get('topic_entry_id')
             if entry_id:
                 metadata_lookup[entry_id] = metadata
 
@@ -48,13 +48,22 @@ def prepare_youtube_upload_config(download_results, youtube_metadata_results, is
         entry_id = download_detail.get('entry_id')
         metadata = metadata_lookup.get(entry_id, {})
 
+        # Extract title and description from nested dicts
+        title_data = metadata.get('title', {})
+        description_data = metadata.get('description', {})
+
+        title = title_data.get('title', f'Congressional Video {entry_id}') if isinstance(title_data, dict) else str(title_data)
+        description = description_data.get('description', '') if isinstance(description_data, dict) else str(description_data)
+
+        logging.info(f"Video {entry_id}: Using title='{title[:50]}...' (metadata found: {bool(metadata)})")
+
         videos.append({
             'video_file': download_detail['file_path'],
-            'title': metadata.get('youtube_title', f'Congressional Video {entry_id}'),
-            'description': metadata.get('youtube_description', ''),
+            'title': title,
+            'description': description,
             'category_id': '25',  # News & Politics
             'privacy_status': 'private' if is_testing else 'public',
-            'tags': metadata.get('youtube_tags', ['congress', 'politics']),
+            'tags': ['congress', 'politics', 'españa', 'congreso'],
             'made_for_kids': False,
         })
 
