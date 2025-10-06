@@ -370,26 +370,25 @@ class CongressionalVideoDB:
     def add_videos_to_upload_queue(self, video_entry_ids: List[str], base_priority: int = 5):
         """
         Add multiple videos to the upload queue.
-        Uses AI interest score to adjust priority (higher score = higher priority = lower number).
+        Queue priority matches AI interest score directly (1-10, where 10 = highest priority).
 
         Args:
             video_entry_ids: List of entry_ids to add to queue
-            base_priority: Base priority value (will be adjusted by AI score)
+            base_priority: Base priority value (used as fallback if no AI score)
         """
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
                 for entry_id in video_entry_ids:
-                    # Get AI interest score to calculate priority
+                    # Get AI interest score to use as priority
                     cur.execute(f"""
                         SELECT ai_interest_score FROM {self.topics_table}
                         WHERE entry_id = %s
                     """, (entry_id,))
                     result = cur.fetchone()
-                    ai_score = result['ai_interest_score'] if result else 5
+                    ai_score = result['ai_interest_score'] if result and result['ai_interest_score'] else base_priority
 
-                    # Calculate priority: higher AI score = lower priority number (1 is highest)
-                    # AI score is 1-10, so priority = 11 - ai_score (score 10 -> priority 1)
-                    priority = max(1, min(10, 11 - ai_score))
+                    # Priority = AI score directly (1-10, where 10 is highest)
+                    priority = max(1, min(10, ai_score))
 
                     cur.execute(f"""
                         INSERT INTO {self.queue_table} (video_topic_entry_id, queue_priority)

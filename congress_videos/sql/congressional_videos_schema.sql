@@ -114,7 +114,11 @@ SELECT
     uq.queued_at,
     uq.attempted_uploads,
     uq.last_attempt_at,
-    CURRENT_DATE - cs.session_date AS days_old
+    CURRENT_DATE - cs.session_date AS days_old,
+    -- Effective priority: queue_priority adjusted by video age
+    -- Newer videos get higher priority, older videos get downgraded
+    -- Loses 0.2 priority points per day (5 days = -1 point, 10 days = -2 points)
+    CAST(uq.queue_priority - ((CURRENT_DATE - cs.session_date) * 0.2) AS NUMERIC(5,2)) AS effective_priority
 FROM development.upload_queue uq
 JOIN development.video_topics vt ON uq.video_topic_entry_id = vt.entry_id
 JOIN development.congressional_sessions cs ON vt.session_number = cs.session_number
@@ -123,7 +127,7 @@ WHERE
     AND vt.is_uploaded_to_youtube = FALSE
     AND vt.upload_eligible = TRUE
     AND vt.is_main_topic = TRUE  -- Only main topics, not interventions
-ORDER BY uq.queue_priority ASC, uq.queued_at ASC;
+ORDER BY effective_priority DESC, uq.queued_at ASC;  -- Highest effective priority first
 
 -- Function: update_timestamps
 CREATE OR REPLACE FUNCTION update_updated_at_column()
