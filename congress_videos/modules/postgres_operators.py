@@ -390,14 +390,14 @@ class PostgreSQLOperator(BaseOperator):
                 upload_details = upload_results.get('upload_details', [])
                 for detail in upload_details:
                     entry_id = detail.get('entry_id')
-                    youtube_video_id = detail.get('youtube_video_id')
+                    video_id = detail.get('video_id')  # YouTube API returns 'video_id', not 'youtube_video_id'
 
                     if entry_id:
-                        if detail.get('success') and youtube_video_id:
+                        if detail.get('success') and video_id:
                             # Mark as completed (keep in queue for history)
                             db.update_upload_queue_status(entry_id, 'completed')
                             updated_count += 1
-                            print(f"✅ Marked {entry_id} as completed in queue")
+                            print(f"✅ Marked {entry_id} as completed in queue (YouTube ID: {video_id})")
                         else:
                             error_msg = detail.get('error', 'Upload failed')
                             db.update_upload_queue_status(entry_id, 'failed', error_msg)
@@ -428,17 +428,17 @@ class PostgreSQLOperator(BaseOperator):
             for upload_detail in upload_details:
                 if isinstance(upload_detail, dict) and upload_detail.get('success'):
                     entry_id = upload_detail.get('entry_id')
-                    youtube_video_id = upload_detail.get('youtube_video_id')
+                    video_id = upload_detail.get('video_id')  # YouTube API returns 'video_id'
 
-                    if entry_id and youtube_video_id:
+                    if entry_id and video_id:
                         try:
-                            db.update_youtube_upload_status(entry_id, youtube_video_id)
+                            db.update_youtube_upload_status(entry_id, video_id)
                             updated_count += 1
-                            print(f"✅ Successfully updated YouTube status for {entry_id}")
+                            print(f"✅ Successfully updated YouTube status for {entry_id} (video_id: {video_id})")
                         except Exception as e:
                             print(f"❌ ERROR updating YouTube status for {entry_id}: {e}")
                     else:
-                        print(f"⚠️ Skipping: missing entry_id or youtube_video_id")
+                        print(f"⚠️ Skipping: missing entry_id or video_id")
                 else:
                     print(f"⚠️ Skipping failed upload")
 
