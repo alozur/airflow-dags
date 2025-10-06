@@ -93,27 +93,37 @@ CREATE INDEX idx_video_topics_openai_category ON development.video_topics(openai
 CREATE INDEX idx_upload_queue_status ON development.upload_queue(upload_status, queue_priority);
 
 -- View: uploadable_videos
--- Shows videos that are eligible for YouTube upload
-CREATE OR REPLACE VIEW development.uploadable_videos AS
+-- Shows videos that are eligible for YouTube upload (from upload_queue)
+DROP VIEW IF EXISTS development.uploadable_videos;
+CREATE VIEW development.uploadable_videos AS
 SELECT
     vt.entry_id,
     vt.topic_title,
-    vt.openai_category,
-    vt.openai_priority_score,
+    vt.video_url,
+    vt.video_file_path,
+    vt.ai_interest_score,
+    vt.ai_interest_reasoning,
+    vt.youtube_title,
+    vt.youtube_description,
+    vt.duration_seconds,
+    vt.file_size_bytes,
     cs.session_date,
     cs.session_number,
-    vt.video_file_path,
-    vt.file_size_bytes,
+    uq.queue_priority,
+    uq.upload_status,
+    uq.queued_at,
+    uq.attempted_uploads,
+    uq.last_attempt_at,
     CURRENT_DATE - cs.session_date AS days_old
-FROM development.video_topics vt
+FROM development.upload_queue uq
+JOIN development.video_topics vt ON uq.video_topic_entry_id = vt.entry_id
 JOIN development.congressional_sessions cs ON vt.session_number = cs.session_number
 WHERE
-    vt.is_uploaded_to_youtube = FALSE
+    uq.upload_status IN ('pending', 'failed')  -- Only pending or failed (for retry)
+    AND vt.is_uploaded_to_youtube = FALSE
     AND vt.upload_eligible = TRUE
-    AND cs.session_date >= CURRENT_DATE - INTERVAL '14 days'
-    AND vt.video_file_path IS NOT NULL
-    AND vt.openai_processed_at IS NOT NULL
-ORDER BY vt.openai_priority_score ASC, cs.session_date DESC;
+    AND vt.is_main_topic = TRUE  -- Only main topics, not interventions
+ORDER BY uq.queue_priority ASC, uq.queued_at ASC;
 
 -- Function: update_timestamps
 CREATE OR REPLACE FUNCTION update_updated_at_column()

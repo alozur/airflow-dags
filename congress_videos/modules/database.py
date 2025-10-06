@@ -345,3 +345,89 @@ class CongressionalVideoDB:
                     WHERE entry_id = %s
                 """, (youtube_video_id, video_topic_entry_id))
                 logger.info(f"Marked video {video_topic_entry_id} as uploaded to YouTube: {youtube_video_id}")
+
+    def get_videos_from_upload_queue(self, limit: int = 5) -> List[Dict]:
+        """
+        Get videos from upload queue with status 'pending' or 'failed'.
+        Returns videos ordered by priority (lowest number = highest priority).
+
+        Args:
+            limit: Maximum number of videos to return
+
+        Returns:
+            List of video records from the uploadable_videos view
+        """
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT * FROM {self.uploadable_view}
+                    LIMIT %s
+                """, (limit,))
+                videos = cur.fetchall()
+                logger.info(f"Retrieved {len(videos)} videos from upload queue (limit={limit})")
+                return videos
+
+    def add_videos_to_upload_queue(self, video_entry_ids: List[str], base_priority: int = 5):
+        """
+        Add multiple videos to the upload queue.
+        Uses AI interest score to adjust priority (higher score = higher priority = lower number).
+
+        Args:
+            video_entry_ids: List of entry_ids to add to queue
+            base_priority: Base priority value (will be adjusted by AI score)
+        """
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                for entry_id in video_entry_ids:
+                    # Get AI interest score to calculate priority
+                    cur.execute(f"""
+                        SELECT ai_interest_score FROM {self.topics_table}
+                        WHERE entry_id = %s
+                    """, (entry_id,))
+                    result = cur.fetchone()
+                    ai_score = result['ai_interest_score'] if result else 5
+
+                    # Calculate priority: higher AI score = lower priority number (1 is highest)
+                    # AI score is 1-10, so priority = 11 - ai_score (score 10 -> priority 1)
+                    priority = max(1, min(10, 11 - ai_score))
+
+                    cur.execute(f"""
+                        INSERT INTO {self.queue_table} (video_topic_entry_id, queue_priority)
+                        VALUES (%s, %s)
+                        ON CONFLICT (video_topic_entry_id) DO UPDATE SET
+                            queue_priority = EXCLUDED.queue_priority,
+                            upload_status = 'pending',
+                            queued_at = CURRENT_TIMESTAMP
+                    """, (entry_id, priority))
+                    logger.info(f"Added {entry_id} to upload queue with priority {priority} (AI score: {ai_score})")
+
+    def update_upload_queue_status(self, video_topic_entry_id: str, status: str, error_message: str = None):
+        """
+        Update the status of a video in the upload queue.
+
+        Args:
+            video_topic_entry_id: The entry_id of the video
+            status: New status ('pending', 'processing', 'completed', 'failed', 'skipped')
+            error_message: Optional error message for failed uploads
+        """
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    UPDATE {self.queue_table} SET
+                        upload_status = %s,
+                        error_message = %s,
+                        last_attempt_at = CURRENT_TIMESTAMP,
+                        attempted_uploads = attempted_uploads + 1
+                    WHERE video_topic_entry_id = %s
+                """, (status, error_message, video_topic_entry_id))
+                logger.info(f"Updated upload queue status for {video_topic_entry_id}: {status}")
+
+    def remove_from_upload_queue(self, video_topic_entry_id: str):
+        """Remove a video from the upload queue (after successful upload)"""
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    DELETE FROM {self.queue_table}
+                    WHERE video_topic_entry_id = %s
+                """, (video_topic_entry_id,))
+                logger.info(f"Removed {video_topic_entry_id} from upload queue")

@@ -340,6 +340,72 @@ class PostgreSQLOperator(BaseOperator):
             result = db.get_top_videos_for_upload(max_videos, min_score)
             print(f"✅ Retrieved {len(result)} videos for upload")
 
+        elif self.operation == 'add_to_upload_queue':
+            top_videos = ti.xcom_pull(key=self.xcom_keys.get('top_videos', 'top_videos'))
+
+            print(f"DEBUG: Adding {len(top_videos) if top_videos else 0} videos to upload queue")
+
+            if top_videos:
+                video_entry_ids = [video['entry_id'] for video in top_videos]
+                db.add_videos_to_upload_queue(video_entry_ids)
+                result = {'queued_videos': len(video_entry_ids), 'entry_ids': video_entry_ids}
+                print(f"✅ Added {len(video_entry_ids)} videos to upload queue")
+            else:
+                result = {'queued_videos': 0, 'entry_ids': []}
+                print("⚠️ No videos to add to queue")
+
+        elif self.operation == 'get_from_upload_queue':
+            max_videos = context["params"].get("max_videos", 5)
+
+            print(f"DEBUG: Getting up to {max_videos} videos from upload queue")
+
+            result = db.get_videos_from_upload_queue(max_videos)
+            print(f"✅ Retrieved {len(result)} videos from upload queue")
+
+        elif self.operation == 'update_queue_status':
+            upload_results = ti.xcom_pull(key=self.xcom_keys.get('upload_results', 'upload_results'))
+            download_results = ti.xcom_pull(key=self.xcom_keys.get('download_results', 'download_results'))
+
+            # Handle both upload and download updates
+            updated_count = 0
+
+            # Update queue status based on download results
+            if download_results and isinstance(download_results, dict):
+                download_details = download_results.get('download_details', [])
+                for detail in download_details:
+                    entry_id = detail.get('entry_id')
+                    if entry_id:
+                        if detail.get('success'):
+                            db.update_upload_queue_status(entry_id, 'processing')
+                            updated_count += 1
+                            print(f"✅ Updated queue status to 'processing' for {entry_id}")
+                        else:
+                            error_msg = detail.get('error', 'Download failed')
+                            db.update_upload_queue_status(entry_id, 'failed', error_msg)
+                            updated_count += 1
+                            print(f"❌ Marked {entry_id} as failed: {error_msg}")
+
+            # Update queue status based on upload results
+            if upload_results and isinstance(upload_results, dict):
+                upload_details = upload_results.get('upload_details', [])
+                for detail in upload_details:
+                    entry_id = detail.get('entry_id')
+                    youtube_video_id = detail.get('youtube_video_id')
+
+                    if entry_id:
+                        if detail.get('success') and youtube_video_id:
+                            # Mark as completed (keep in queue for history)
+                            db.update_upload_queue_status(entry_id, 'completed')
+                            updated_count += 1
+                            print(f"✅ Marked {entry_id} as completed in queue")
+                        else:
+                            error_msg = detail.get('error', 'Upload failed')
+                            db.update_upload_queue_status(entry_id, 'failed', error_msg)
+                            updated_count += 1
+                            print(f"❌ Marked {entry_id} as failed: {error_msg}")
+
+            result = {'updated_items': updated_count}
+
         elif self.operation == 'update_youtube_status':
             upload_results = ti.xcom_pull(key=self.xcom_keys.get('upload_results', 'upload_results'))
 
