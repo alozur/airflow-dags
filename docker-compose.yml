@@ -28,9 +28,9 @@ x-airflow-common:
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     _PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-postgres openai beautifulsoup4 requests urllib3 google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client"
     AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags/repo
-    AIRFLOW__CORE__PARALLELISM: 4
-    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: 2
-    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: 1
+    AIRFLOW__CORE__PARALLELISM: 8
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: 4
+    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: 3
     AIRFLOW__CORE__DEFAULT_TIMEZONE: Europe/Madrid
     AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 30
     AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 30
@@ -50,7 +50,8 @@ x-airflow-common:
     - airflow_data:/opt/airflow/data
     # Mount YouTube token securely from NAS (not in git)
     # Mounted to /opt/airflow/data (non-symlinked path)
-    - /volume1/docker/airflow/congress_youtube_token.pickle:/opt/airflow/data/congress_youtube_token.pickle:ro
+    # Note: Must be writable for token auto-refresh
+    - /volume1/docker/airflow/congress_youtube_token.pickle:/opt/airflow/data/congress_youtube_token.pickle
   networks:
     - postgres_infra_network
     - airflow_network
@@ -60,10 +61,11 @@ x-airflow-common:
 services:
   init-perms:
     image: busybox
-    command: ["sh", "-c", "chown -R 65533:65533 /git && chown -R 50000:0 /data"]
+    command: ["sh", "-c", "chown -R 65533:65533 /git && chown -R 50000:0 /data && chmod 666 /token/congress_youtube_token.pickle"]
     volumes:
       - git_dags:/git
       - airflow_data:/data
+      - /volume1/docker/airflow/congress_youtube_token.pickle:/token/congress_youtube_token.pickle
 
   git-sync:
     image: k8s.gcr.io/git-sync/git-sync:v3.6.5
