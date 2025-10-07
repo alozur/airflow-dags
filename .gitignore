@@ -215,3 +215,11 @@ congreso_youtube/examples/*
 *youtube_token*.pickle
 *_youtube_token.pickle
 client_secret*.json
+
+# Congress videos assets (stored on NAS, not in git)
+congress_videos/fonts/
+congress_chamber_background.png
+congress_channel_logo.png
+channels4_profile.jpg
+test_thumbnail*.jpg
+thumbnail_*.jpg
