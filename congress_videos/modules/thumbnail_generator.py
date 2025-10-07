@@ -407,39 +407,49 @@ def create_thumbnail(
         }
 
 
-def generate_thumbnail_text_for_videos(queued_videos, youtube_metadata):
+def generate_thumbnail_text_for_videos(queued_videos, youtube_metadata_results):
     """
     Generate short, attention-grabbing text for thumbnails using AI.
 
     Args:
         queued_videos: List of videos from queue
-        youtube_metadata: List of generated YouTube metadata
+        youtube_metadata_results: Results dict from generate_youtube_metadata_for_selected_videos
+                                  containing 'topic_metadata' list
 
     Returns:
         Dict with thumbnail text results
     """
-    if not queued_videos or not youtube_metadata:
+    if not queued_videos or not youtube_metadata_results:
         logging.warning("No videos or metadata for thumbnail text generation")
+        return {"results": []}
+
+    # Extract the topic_metadata list from the results dict
+    topic_metadata = youtube_metadata_results.get('topic_metadata', [])
+    if not topic_metadata:
+        logging.warning("No topic_metadata in youtube_metadata_results")
         return {"results": []}
 
     results = []
     for video in queued_videos:
-        video_id = video.get('video_id')
+        entry_id = video.get('entry_id')
 
-        # Find metadata for this video
-        metadata = next((m for m in youtube_metadata if m.get('video_id') == video_id), None)
+        # Find metadata for this video by topic_entry_id
+        metadata = next((m for m in topic_metadata if m.get('topic_entry_id') == entry_id), None)
 
         if metadata:
-            title = metadata.get('youtube_title', '')
-            description = metadata.get('youtube_description', '')
+            # Extract title and description from nested dicts
+            title_data = metadata.get('title', {})
+            description_data = metadata.get('description', {})
+
+            title = title_data.get('title', '') if isinstance(title_data, dict) else str(title_data)
+            description = description_data.get('description', '') if isinstance(description_data, dict) else str(description_data)
 
             # Generate impactful thumbnail text
             result = generate_thumbnail_text(title, description, max_length=40)
-            result['video_id'] = video_id
-            result['entry_id'] = video.get('entry_id')
+            result['entry_id'] = entry_id
             results.append(result)
         else:
-            logging.warning(f"No metadata found for video {video_id}")
+            logging.warning(f"No metadata found for video {entry_id}")
 
     return {"results": results}
 
