@@ -36,6 +36,7 @@ from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 
 from congress_videos.modules import utils as cv_utils
 from congress_videos.modules import youtube_upload as yt_upload
+from congress_videos.modules import thumbnail_generator as thumb_gen
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from utils.airflow_helpers import ensure_project_data_directory, xcom_task
 from utils.env_loader import load_env_if_local
@@ -132,6 +133,34 @@ with DAG(
                 ti.xcom_pull(key='data_directory_path')
             ),
             'download_results'
+        ),
+    )
+
+    # Step 6a: Generate thumbnail text using AI (short, impactful 3-6 words)
+    t6a = PythonOperator(
+        task_id='generate_thumbnail_text',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: thumb_gen.generate_thumbnail_text_for_videos(
+                ti.xcom_pull(key='queued_videos'),
+                ti.xcom_pull(key='youtube_metadata_results')
+            ),
+            'thumbnail_text_results'
+        ),
+    )
+
+    # Step 6b: Generate thumbnails with impactful text
+    t6b = PythonOperator(
+        task_id='generate_thumbnails',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: thumb_gen.generate_video_thumbnails(
+                ti.xcom_pull(key='queued_videos'),
+                ti.xcom_pull(key='thumbnail_text_results'),
+                ti.xcom_pull(key='download_results'),
+                ti.xcom_pull(key='data_directory_path')
+            ),
+            'thumbnail_results'
         ),
     )
 
@@ -246,5 +275,5 @@ with DAG(
         output_xcom_key='db_youtube_updates'
     )
 
-    # Task dependencies - Queue-based workflow
-    t0 >> t1_db >> t2_db >> t3_db >> t4 >> t5_db >> t6 >> t7_db >> t8_prep >> t9_trigger >> t10_db >> t11_db
+    # Task dependencies - Queue-based workflow with thumbnail generation
+    t0 >> t1_db >> t2_db >> t3_db >> t4 >> t5_db >> t6 >> t6a >> t6b >> t7_db >> t8_prep >> t9_trigger >> t10_db >> t11_db
