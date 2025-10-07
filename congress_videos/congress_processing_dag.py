@@ -50,7 +50,7 @@ with DAG(
   'congress_session_processor',
   default_args=default_args,
   description='Process Spanish Congress plenary sessions: extract videos, evaluate with AI, save to database',
-  schedule_interval='@daily',
+  schedule_interval='0 10 * * *',  # Run daily at 10:00 AM
   start_date=datetime(2025, 8, 28),
   catchup=False,
   tags=['congress'],

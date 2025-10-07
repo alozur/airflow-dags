@@ -62,7 +62,7 @@ with DAG(
     'congress_youtube_uploader',
     default_args=default_args,
     description='Daily YouTube upload: Select top Congress videos by AI score, generate metadata, download, and upload',
-    schedule_interval='0 10 * * *',  # Run at 10:00 AM daily
+    schedule_interval='0 11 * * *',  # Run at 11:00 AM daily (1 hour after processing)
     start_date=datetime(2025, 10, 3),
     catchup=False,
     tags=['congress'],
