@@ -15,18 +15,51 @@ import os
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from openai import OpenAI
+from congress_videos.config.ai_prompts import (
+    THUMBNAIL_TEXT_SYSTEM_PROMPT,
+    THUMBNAIL_TEXT_USER_PROMPT_TEMPLATE
+)
 
 
-def generate_thumbnail_text(video_title, video_description, max_length=40):
+def truncate_to_complete_words(text, max_length):
+    """
+    Truncate text to fit within max_length without cutting words.
+
+    Args:
+        text: Text to truncate
+        max_length: Maximum character length
+
+    Returns:
+        Truncated text with complete words only
+    """
+    if len(text) <= max_length:
+        return text
+
+    # Find the last space before max_length
+    truncated = text[:max_length]
+    last_space = truncated.rfind(' ')
+
+    if last_space > 0:
+        # Truncate at the last complete word
+        return truncated[:last_space].strip()
+    else:
+        # No space found, return first word only
+        first_word = text.split()[0] if text.split() else text
+        return first_word[:max_length].strip()
+
+
+def generate_thumbnail_text(video_title, video_description, max_length=40, max_attempts=5):
     """
     Generate short, impactful text for thumbnail using AI (3-6 words max).
 
     Focuses on creating attention-grabbing phrases that encourage clicks.
+    Retries if AI generates text longer than max_length.
 
     Args:
         video_title: Original video title
         video_description: Video description for context
         max_length: Maximum character length (default 40)
+        max_attempts: Maximum number of AI generation attempts (default 5)
 
     Returns:
         Dict with thumbnail_text and metadata
@@ -34,51 +67,55 @@ def generate_thumbnail_text(video_title, video_description, max_length=40):
     try:
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-        system_prompt = """Eres un experto en crear texto impactante para miniaturas de YouTube.
-Tu objetivo es crear frases MUY CORTAS (3-6 palabras) que capten atención y generen clics."""
-
-        user_prompt = f"""Crea una frase ULTRA CORTA para miniatura de YouTube de un vídeo del Congreso.
-
-Título: {video_title}
-Contexto: {video_description[:200]}
-
-REQUISITOS CRÍTICOS:
-- MÁXIMO 3-6 palabras
-- Máximo {max_length} caracteres en total
-- Lenguaje directo e impactante
-- Generar curiosidad o urgencia
-- Sin signos de interrogación ni comillas
-- Palabras clave que llamen la atención
-
-Ejemplos de buen estilo:
-- "REFORMA PENSIONES: ¡DEBATE EXPLOSIVO!"
-- "CRISIS ENERGÉTICA REVELADA"
-- "GOBIERNO: POLÍTICAS SECRETAS"
-
-Devuelve SOLO la frase, sin explicaciones."""
-
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.9,  # Higher creativity for attention-grabbing
-            max_tokens=30
+        # Use prompts from config file
+        user_prompt = THUMBNAIL_TEXT_USER_PROMPT_TEMPLATE.format(
+            video_title=video_title,
+            video_description=video_description[:200],  # Truncate description for context
+            max_length=max_length
         )
 
-        thumbnail_text = response.choices[0].message.content.strip()
+        thumbnail_text = None
 
-        # Remove quotes if AI added them
-        thumbnail_text = thumbnail_text.strip('"').strip("'").strip()
+        # Retry loop: ask AI again if text is too long
+        for attempt in range(1, max_attempts + 1):
+            logging.info(f"Generating thumbnail text (attempt {attempt}/{max_attempts})...")
 
-        # Truncate if too long
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": THUMBNAIL_TEXT_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.9,  # Higher creativity for attention-grabbing
+                max_tokens=30
+            )
+
+            thumbnail_text = response.choices[0].message.content.strip()
+
+            # Remove quotes if AI added them
+            thumbnail_text = thumbnail_text.strip('"').strip("'").strip()
+
+            # Check if it fits within max_length
+            if len(thumbnail_text) <= max_length:
+                logging.info(f"✓ Generated valid thumbnail text on attempt {attempt}: '{thumbnail_text}' ({len(thumbnail_text)} chars)")
+                break
+            else:
+                logging.warning(f"✗ Attempt {attempt} too long: '{thumbnail_text}' ({len(thumbnail_text)} chars > {max_length}). Retrying...")
+
+                # Update prompt to be more strict for next attempt
+                user_prompt = THUMBNAIL_TEXT_USER_PROMPT_TEMPLATE.format(
+                    video_title=video_title,
+                    video_description=video_description[:200],
+                    max_length=max_length
+                ) + f"\n\nINTENTO {attempt+1}: Tu intento anterior fue demasiado largo ({len(thumbnail_text)} caracteres). ¡Hazlo MÁS CORTO!"
+
+        # If all attempts failed, truncate smartly
         if len(thumbnail_text) > max_length:
-            thumbnail_text = thumbnail_text[:max_length].strip()
+            logging.warning(f"All {max_attempts} attempts exceeded {max_length} chars. Truncating: '{thumbnail_text}'")
+            thumbnail_text = truncate_to_complete_words(thumbnail_text, max_length)
+            logging.info(f"Truncated to: '{thumbnail_text}' ({len(thumbnail_text)} chars)")
 
         word_count = len(thumbnail_text.split())
-
-        logging.info(f"Generated thumbnail text: '{thumbnail_text}' ({word_count} words, {len(thumbnail_text)} chars)")
 
         return {
             "thumbnail_text": thumbnail_text.upper(),  # Uppercase for impact
@@ -95,12 +132,13 @@ Devuelve SOLO la frase, sin explicaciones."""
         words = video_title.split()[:5]
         fallback_text = " ".join(words).upper()
 
+        # Smart truncation for fallback too
         if len(fallback_text) > max_length:
-            fallback_text = fallback_text[:max_length].strip()
+            fallback_text = truncate_to_complete_words(fallback_text, max_length)
 
         return {
             "thumbnail_text": fallback_text,
-            "word_count": len(words),
+            "word_count": len(fallback_text.split()),
             "char_count": len(fallback_text),
             "success": False,
             "error": str(e)

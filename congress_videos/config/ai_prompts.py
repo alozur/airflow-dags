@@ -104,3 +104,32 @@ Criterios de evaluación:
 
 Responde SOLO con un JSON en este formato:
 {{"score": <número del 1-10>, "reasoning": "<explicación breve en español>"}}"""
+
+# Thumbnail Text Generation
+THUMBNAIL_TEXT_SYSTEM_PROMPT = (
+    "Eres un experto en crear texto impactante para miniaturas de YouTube. "
+    "Tu objetivo es crear frases MUY CORTAS (3-6 palabras) que capten atención y generen clics."
+)
+
+THUMBNAIL_TEXT_USER_PROMPT_TEMPLATE = """Crea una frase ULTRA CORTA para miniatura de YouTube de un vídeo del Congreso.
+
+Título: {video_title}
+Contexto: {video_description}
+
+REQUISITOS CRÍTICOS:
+- MÁXIMO 3-6 palabras
+- Máximo {max_length} caracteres en total (incluyendo espacios)
+- Lenguaje directo e impactante
+- Generar curiosidad o urgencia
+- Sin signos de interrogación ni comillas
+- Palabras clave que llamen la atención
+- NO CORTAR PALABRAS: el texto debe caber en {max_length} caracteres sin cortar ninguna palabra
+
+Ejemplos de buen estilo:
+- "REFORMA PENSIONES: ¡DEBATE EXPLOSIVO!"
+- "CRISIS ENERGÉTICA REVELADA"
+- "GOBIERNO: POLÍTICAS SECRETAS"
+
+IMPORTANTE: Si la frase supera {max_length} caracteres, acórtala eliminando palabras completas, NUNCA cortando palabras a la mitad.
+
+Devuelve SOLO la frase, sin explicaciones."""
