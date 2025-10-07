@@ -9,22 +9,23 @@ import logging
 import os
 
 
-def prepare_youtube_upload_config(download_results, youtube_metadata_results, is_testing=False):
+def prepare_youtube_upload_config(download_results, youtube_metadata_results, thumbnail_results=None, is_testing=False):
     """
     Prepare configuration for the generic YouTube uploader DAG.
 
-    Converts download results and metadata into the format expected by
+    Converts download results, metadata, and thumbnails into the format expected by
     the generic_youtube_uploader DAG.
 
     Args:
         download_results: Results from download_videos_for_upload
         youtube_metadata_results: Results from generate_youtube_metadata_for_selected_videos
+        thumbnail_results: (optional) Results from generate_video_thumbnails
         is_testing: If True, uploads as private; if False, uploads as public
 
     Returns:
         Dict configuration for generic_youtube_uploader DAG:
         - token_file: Path to YouTube token pickle file
-        - videos: List of video objects with upload parameters
+        - videos: List of video objects with upload parameters (including thumbnail_file)
         Returns None if no videos to upload
     """
     if not download_results or not download_results.get('download_details'):
@@ -39,6 +40,14 @@ def prepare_youtube_upload_config(download_results, youtube_metadata_results, is
             if entry_id:
                 metadata_lookup[entry_id] = metadata
 
+    # Create thumbnail lookup by entry_id
+    thumbnail_lookup = {}
+    if thumbnail_results and thumbnail_results.get('results'):
+        for thumbnail in thumbnail_results['results']:
+            entry_id = thumbnail.get('entry_id')
+            if entry_id and thumbnail.get('success'):
+                thumbnail_lookup[entry_id] = thumbnail.get('output_path')
+
     # Build videos list for generic uploader
     videos = []
     for download_detail in download_results['download_details']:
@@ -47,6 +56,7 @@ def prepare_youtube_upload_config(download_results, youtube_metadata_results, is
 
         entry_id = download_detail.get('entry_id')
         metadata = metadata_lookup.get(entry_id, {})
+        thumbnail_file = thumbnail_lookup.get(entry_id)
 
         # Extract title and description from nested dicts
         title_data = metadata.get('title', {})
@@ -55,9 +65,9 @@ def prepare_youtube_upload_config(download_results, youtube_metadata_results, is
         title = title_data.get('title', f'Congressional Video {entry_id}') if isinstance(title_data, dict) else str(title_data)
         description = description_data.get('description', '') if isinstance(description_data, dict) else str(description_data)
 
-        logging.info(f"Video {entry_id}: Using title='{title[:50]}...' (metadata found: {bool(metadata)})")
+        logging.info(f"Video {entry_id}: Using title='{title[:50]}...' (metadata found: {bool(metadata)}, thumbnail: {bool(thumbnail_file)})")
 
-        videos.append({
+        video_config = {
             'entry_id': entry_id,  # Include entry_id for tracking in upload results
             'video_file': download_detail['file_path'],
             'title': title,
@@ -66,7 +76,13 @@ def prepare_youtube_upload_config(download_results, youtube_metadata_results, is
             'privacy_status': 'private' if is_testing else 'public',
             'tags': ['congress', 'politics', 'españa', 'congreso'],
             'made_for_kids': False,
-        })
+        }
+
+        # Add thumbnail if available
+        if thumbnail_file:
+            video_config['thumbnail_file'] = thumbnail_file
+
+        videos.append(video_config)
 
     if not videos:
         logging.warning("No valid videos to upload")

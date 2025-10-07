@@ -77,9 +77,10 @@ def upload_video_to_youtube(
     privacy_status: str = 'private',
     tags: Optional[List[str]] = None,
     made_for_kids: bool = False,
+    thumbnail_file: Optional[str] = None,
 ) -> Dict:
     """
-    Upload a single video to YouTube.
+    Upload a single video to YouTube with optional custom thumbnail.
 
     Args:
         youtube: Authenticated YouTube API service
@@ -90,12 +91,14 @@ def upload_video_to_youtube(
         privacy_status: Privacy status ('private', 'unlisted', 'public')
         tags: List of tags for the video
         made_for_kids: Whether video is made for kids (COPPA requirement)
+        thumbnail_file: (optional) Path to custom thumbnail image
 
     Returns:
         Dict with upload result:
         - success: Boolean indicating if upload succeeded
         - video_id: YouTube video ID (if successful)
         - video_url: YouTube video URL (if successful)
+        - thumbnail_success: Boolean indicating if thumbnail upload succeeded (if provided)
         - error: Error message (if failed)
 
     YouTube Category IDs:
@@ -177,12 +180,24 @@ def upload_video_to_youtube(
         logging.info(f"Upload successful! Video ID: {video_id}")
         logging.info(f"Video URL: {video_url}")
 
-        return {
+        result = {
             "success": True,
             "video_id": video_id,
             "video_url": video_url,
+            "thumbnail_success": None,
             "error": None,
         }
+
+        # Upload custom thumbnail if provided
+        if thumbnail_file:
+            logging.info(f"Uploading custom thumbnail for video {video_id}")
+            thumbnail_result = set_thumbnail_for_video(youtube, video_id, thumbnail_file)
+            result["thumbnail_success"] = thumbnail_result["success"]
+
+            if not thumbnail_result["success"]:
+                logging.warning(f"Thumbnail upload failed: {thumbnail_result.get('error')}")
+
+        return result
 
     except Exception as e:
         error_msg = f"Upload failed: {str(e)}"
@@ -195,12 +210,66 @@ def upload_video_to_youtube(
         }
 
 
+def set_thumbnail_for_video(youtube, video_id: str, thumbnail_file: str) -> Dict:
+    """
+    Set a custom thumbnail for a YouTube video.
+
+    Args:
+        youtube: Authenticated YouTube API service
+        video_id: YouTube video ID
+        thumbnail_file: Path to the thumbnail image file (JPG, PNG)
+
+    Returns:
+        Dict with result:
+        - success: Boolean indicating if thumbnail upload succeeded
+        - error: Error message (if failed)
+
+    Note:
+        Thumbnail requirements:
+        - Format: JPG, GIF, PNG
+        - Max size: 2MB
+        - Recommended resolution: 1280x720 (16:9 aspect ratio)
+        - Minimum width: 640px
+    """
+    if not os.path.exists(thumbnail_file):
+        error_msg = f"Thumbnail file not found: {thumbnail_file}"
+        logging.error(error_msg)
+        return {
+            "success": False,
+            "error": error_msg,
+        }
+
+    try:
+        logging.info(f"Setting thumbnail for video {video_id}: {thumbnail_file}")
+
+        # Upload thumbnail
+        request = youtube.thumbnails().set(
+            videoId=video_id,
+            media_body=MediaFileUpload(thumbnail_file, chunksize=-1, resumable=True)
+        )
+        response = request.execute()
+
+        logging.info(f"Thumbnail set successfully for video {video_id}")
+        return {
+            "success": True,
+            "error": None,
+        }
+
+    except Exception as e:
+        error_msg = f"Thumbnail upload failed: {str(e)}"
+        logging.error(error_msg)
+        return {
+            "success": False,
+            "error": error_msg,
+        }
+
+
 def upload_multiple_videos(
     token_file: str,
     videos: List[Dict],
 ) -> Dict:
     """
-    Upload multiple videos to YouTube.
+    Upload multiple videos to YouTube with optional custom thumbnails.
 
     Args:
         token_file: Path to the YouTube token pickle file
@@ -212,6 +281,7 @@ def upload_multiple_videos(
             - privacy_status: (optional) Privacy (default: 'private')
             - tags: (optional) List of tags
             - made_for_kids: (optional) COPPA setting (default: False)
+            - thumbnail_file: (optional) Path to custom thumbnail image
 
     Returns:
         Dict with upload results:
@@ -251,7 +321,7 @@ def upload_multiple_videos(
                 })
                 continue
 
-            # Upload video
+            # Upload video (with optional custom thumbnail)
             upload_result = upload_video_to_youtube(
                 youtube=youtube,
                 video_file=video_file,
@@ -261,6 +331,7 @@ def upload_multiple_videos(
                 privacy_status=video_info.get('privacy_status', 'private'),
                 tags=video_info.get('tags', []),
                 made_for_kids=video_info.get('made_for_kids', False),
+                thumbnail_file=video_info.get('thumbnail_file'),
             )
 
             # Track results

@@ -191,6 +191,7 @@ with DAG(
             lambda: yt_upload.prepare_youtube_upload_config(
                 ti.xcom_pull(key='download_results'),
                 ti.xcom_pull(key='youtube_metadata_results'),
+                ti.xcom_pull(key='thumbnail_results'),
                 is_testing=context["params"].get("isTesting", False)
             ),
             'upload_config'
@@ -302,10 +303,11 @@ with DAG(
     # After thumbnails are generated, save to DB
     t6b >> t6c_db
 
-    # After download, run these in parallel:
-    # - Update queue status (t7_db)
-    # - Prepare upload config (t8_prep)
-    t6 >> [t7_db, t8_prep]
+    # After download, update queue status
+    t6 >> t7_db
+
+    # After thumbnails are generated, prepare upload config (needs thumbnail paths)
+    t6b >> t8_prep
 
     # Upload needs thumbnails saved, queue status update, and config ready
     [t6c_db, t7_db, t8_prep] >> t9_trigger

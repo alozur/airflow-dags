@@ -134,5 +134,6 @@ with DAG(
 #   - privacy_status: (optional) 'private', 'unlisted', 'public' (default: 'private')
 #   - tags: (optional) List of tags
 #   - made_for_kids: (optional) COPPA compliance (default: False)
+#   - thumbnail_file: (optional) Path to custom thumbnail image (JPG/PNG, 1280x720 recommended)
 #
 # =============================================================================
