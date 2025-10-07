@@ -90,7 +90,10 @@ DROP VIEW IF EXISTS development.uploadable_videos;
 CREATE VIEW development.uploadable_videos AS
 SELECT
     vt.entry_id,
+    vt.session_number,
+    vt.video_url,
     vt.video_file_path,
+    vt.topic_title,
     vt.ai_interest_score,
     vt.ai_interest_reasoning,
     vt.youtube_title,
