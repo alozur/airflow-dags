@@ -275,5 +275,26 @@ with DAG(
         output_xcom_key='db_youtube_updates'
     )
 
-    # Task dependencies - Queue-based workflow with thumbnail generation
-    t0 >> t1_db >> t2_db >> t3_db >> t4 >> t5_db >> t6 >> t6a >> t6b >> t7_db >> t8_prep >> t9_trigger >> t10_db >> t11_db
+    # Task dependencies - Optimized with parallel execution where possible
+    # Initial sequential flow to get queued videos and metadata
+    t0 >> t1_db >> t2_db >> t3_db >> t4
+
+    # After metadata generation (t4), run these in parallel:
+    # - Save metadata to DB (t5_db)
+    # - Download videos (t6)
+    # - Generate thumbnail text (t6a)
+    t4 >> [t5_db, t6, t6a]
+
+    # Thumbnail generation needs both download and text
+    [t6, t6a] >> t6b
+
+    # After download, run these in parallel:
+    # - Update queue status (t7_db)
+    # - Prepare upload config (t8_prep)
+    t6 >> [t7_db, t8_prep]
+
+    # Upload needs thumbnails, queue status update, and config ready
+    [t6b, t7_db, t8_prep] >> t9_trigger
+
+    # Final status updates run sequentially
+    t9_trigger >> t10_db >> t11_db

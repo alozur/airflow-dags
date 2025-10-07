@@ -493,9 +493,9 @@ def generate_video_thumbnails(queued_videos, thumbnail_texts, download_results, 
     for video in queued_videos:
         video_copy = video.copy()
 
-        # Find thumbnail text for this video
+        # Find thumbnail text for this video by entry_id
         text_result = next(
-            (t for t in thumbnail_texts.get('results', []) if t.get('video_id') == video.get('video_id')),
+            (t for t in thumbnail_texts.get('results', []) if t.get('entry_id') == video.get('entry_id')),
             None
         )
 
@@ -517,13 +517,14 @@ def generate_thumbnails_for_videos(videos, data_directory, video_folder=None):
 
     Args:
         videos: List of video dicts with metadata
-        data_directory: Base data directory for assets
+        data_directory: Base data directory for assets (already the congress_videos folder)
         video_folder: Folder where videos are saved (thumbnails will be saved here)
 
     Returns:
         Dict with thumbnail generation results
     """
-    assets_dir = os.path.join(data_directory, 'congress_videos')
+    # data_directory is already the congress_videos folder, no need to add it again
+    assets_dir = data_directory
     background_path = os.path.join(assets_dir, 'congress_chamber_background.png')
     logo_path = os.path.join(assets_dir, 'congress_channel_logo.png')
 
@@ -534,13 +535,13 @@ def generate_thumbnails_for_videos(videos, data_directory, video_folder=None):
 
     for video in videos:
         try:
-            video_id = video.get('video_id')
             entry_id = video.get('entry_id')
+            video_id = video.get('video_id', entry_id)  # Fallback to entry_id if no video_id
             session_number = video.get('session_number', 133)
             thumbnail_text = video.get('thumbnail_text', video.get('youtube_title', ''))[:40]
 
             # Output path for thumbnail (in the same folder as videos)
-            output_filename = f"thumbnail_{video_id}.jpg"
+            output_filename = f"thumbnail_{entry_id}.jpg"
             output_path = os.path.join(thumbnail_output_dir, output_filename)
 
             # Generate thumbnail
@@ -557,7 +558,7 @@ def generate_thumbnails_for_videos(videos, data_directory, video_folder=None):
             results.append(result)
 
         except Exception as e:
-            logging.error(f"Error generating thumbnail for video {video.get('video_id')}: {e}")
+            logging.error(f"Error generating thumbnail for video {video.get('entry_id')}: {e}")
             results.append({
                 "video_id": video.get('video_id'),
                 "entry_id": video.get('entry_id'),
