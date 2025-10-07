@@ -269,6 +269,20 @@ class CongressionalVideoDB:
                 """, (youtube_title, youtube_description, video_topic_entry_id))
                 logger.info(f"Updated YouTube metadata for video topic {video_topic_entry_id}")
 
+    def update_thumbnail_info(self, video_topic_entry_id: str, thumbnail_text: str, thumbnail_path: str):
+        """Update thumbnail information for a video topic"""
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    UPDATE {self.topics_table} SET
+                        thumbnail_text = %s,
+                        thumbnail_path = %s,
+                        thumbnail_generated_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE entry_id = %s
+                """, (thumbnail_text, thumbnail_path, video_topic_entry_id))
+                logger.info(f"Updated thumbnail info for video topic {video_topic_entry_id}")
+
     def get_interventions_by_main_topic(self, main_topic_entry_id: str) -> List[Dict]:
         """Get all interventions for a specific main topic"""
         with self.pg_conn.get_connection() as conn:

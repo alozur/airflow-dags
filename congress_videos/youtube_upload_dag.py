@@ -164,6 +164,17 @@ with DAG(
         ),
     )
 
+    # Step 6c: Save thumbnail info to database
+    t6c_db = PostgreSQLOperator(
+        task_id='save_thumbnail_info_to_db',
+        operation='save_thumbnail_info',
+        xcom_keys={
+            'thumbnail_text_results': 'thumbnail_text_results',
+            'thumbnail_results': 'thumbnail_results'
+        },
+        output_xcom_key='db_thumbnail_updates'
+    )
+
     # Step 7: Update queue status after download (mark as processing or failed)
     t7_db = PostgreSQLOperator(
         task_id='update_queue_after_download',
@@ -288,13 +299,16 @@ with DAG(
     # Thumbnail generation needs both download and text
     [t6, t6a] >> t6b
 
+    # After thumbnails are generated, save to DB
+    t6b >> t6c_db
+
     # After download, run these in parallel:
     # - Update queue status (t7_db)
     # - Prepare upload config (t8_prep)
     t6 >> [t7_db, t8_prep]
 
-    # Upload needs thumbnails, queue status update, and config ready
-    [t6b, t7_db, t8_prep] >> t9_trigger
+    # Upload needs thumbnails saved, queue status update, and config ready
+    [t6c_db, t7_db, t8_prep] >> t9_trigger
 
     # Final status updates run sequentially
     t9_trigger >> t10_db >> t11_db

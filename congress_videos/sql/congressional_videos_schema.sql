@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS development.video_topics (
     youtube_description TEXT, -- AI-generated YouTube description
     youtube_metadata_generated_at TIMESTAMP, -- when metadata was generated
 
+    -- Thumbnail Information
+    thumbnail_text VARCHAR(100), -- AI-generated text for thumbnail (max 40 chars typically)
+    thumbnail_path VARCHAR(500), -- Path to generated thumbnail image
+    thumbnail_generated_at TIMESTAMP, -- when thumbnail was generated
+
     -- Note: Age-based filtering handled in views and queries
     -- Cannot use generated column with subqueries in PostgreSQL
 
@@ -98,6 +103,8 @@ SELECT
     vt.ai_interest_reasoning,
     vt.youtube_title,
     vt.youtube_description,
+    vt.thumbnail_text,
+    vt.thumbnail_path,
     uq.queue_priority,
     uq.upload_status,
     uq.queued_at,

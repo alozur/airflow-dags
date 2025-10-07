@@ -219,6 +219,44 @@ class PostgreSQLOperator(BaseOperator):
 
             result = {'updated_topics': updated_count, 'total_processed': len(topic_metadata)}
 
+        elif self.operation == 'save_thumbnail_info':
+            thumbnail_text_results = ti.xcom_pull(key=self.xcom_keys.get('thumbnail_text_results', 'thumbnail_text_results'))
+            thumbnail_results = ti.xcom_pull(key=self.xcom_keys.get('thumbnail_results', 'thumbnail_results'))
+
+            # Debug logging
+            print(f"DEBUG: thumbnail_text_results type: {type(thumbnail_text_results)}")
+            print(f"DEBUG: thumbnail_results type: {type(thumbnail_results)}")
+
+            # Extract results lists
+            thumbnail_texts = thumbnail_text_results.get('results', []) if isinstance(thumbnail_text_results, dict) else []
+            thumbnails = thumbnail_results.get('results', []) if isinstance(thumbnail_results, dict) else []
+
+            print(f"DEBUG: Processing {len(thumbnail_texts)} thumbnail texts and {len(thumbnails)} thumbnails")
+
+            # Create lookups by entry_id
+            text_lookup = {item.get('entry_id'): item for item in thumbnail_texts if isinstance(item, dict)}
+            thumbnail_lookup = {item.get('entry_id'): item for item in thumbnails if isinstance(item, dict)}
+
+            updated_count = 0
+            for entry_id in text_lookup.keys():
+                text_item = text_lookup.get(entry_id, {})
+                thumbnail_item = thumbnail_lookup.get(entry_id, {})
+
+                thumbnail_text = text_item.get('thumbnail_text', '')
+                thumbnail_path = thumbnail_item.get('output_path', '')
+
+                if thumbnail_text and thumbnail_path and thumbnail_item.get('success'):
+                    try:
+                        db.update_thumbnail_info(entry_id, thumbnail_text, thumbnail_path)
+                        updated_count += 1
+                        print(f"✅ Successfully updated thumbnail info for topic {entry_id}")
+                    except Exception as e:
+                        print(f"❌ ERROR updating thumbnail info for topic {entry_id}: {e}")
+                else:
+                    print(f"⚠️ Skipping {entry_id}: missing text or thumbnail failed")
+
+            result = {'updated_topics': updated_count, 'total_processed': len(text_lookup)}
+
         elif self.operation == 'save_ai_evaluations':
             ai_evaluation_results = ti.xcom_pull(key=self.xcom_keys.get('evaluation_results', 'ai_evaluation_results'))
             topic_ids = ti.xcom_pull(key=self.xcom_keys.get('topic_ids', 'db_topic_ids'))
