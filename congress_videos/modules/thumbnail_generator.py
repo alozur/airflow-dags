@@ -19,6 +19,12 @@ from congress_videos.config.ai_prompts import (
     THUMBNAIL_TEXT_SYSTEM_PROMPT,
     THUMBNAIL_TEXT_USER_PROMPT_TEMPLATE
 )
+from congress_videos.config.paths import (
+    FONT_BOLD,
+    FONT_REGULAR,
+    BACKGROUND_IMAGE,
+    CHANNEL_LOGO
+)
 
 
 def truncate_to_complete_words(text, max_length):
@@ -184,7 +190,7 @@ def calculate_font_size_multiline(text, image_width, image_height, max_width_rat
 
     # Font paths for Linux (Docker environment)
     font_paths = [
-        "/opt/airflow/data/congress_videos/fonts/LiberationSans-Bold.ttf",  # Project fonts folder
+        FONT_BOLD,  # Project fonts folder (centralized config)
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",  # System fallback
         "C:/Windows/Fonts/ariblk.ttf",  # Windows fallback (for local testing)
     ]
@@ -352,7 +358,7 @@ def create_thumbnail(
 
         # Session font (lighter, regular weight for Linux)
         session_font_paths = [
-            "/opt/airflow/data/congress_videos/fonts/LiberationSans-Regular.ttf",  # Project fonts folder
+            FONT_REGULAR,  # Project fonts folder (centralized config)
             "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",  # System fallback
             "C:/Windows/Fonts/calibri.ttf",  # Windows fallback (for local testing)
         ]
@@ -561,10 +567,9 @@ def generate_thumbnails_for_videos(videos, data_directory, video_folder=None):
     Returns:
         Dict with thumbnail generation results
     """
-    # data_directory is already the congress_videos folder, no need to add it again
-    assets_dir = data_directory
-    background_path = os.path.join(assets_dir, 'congress_chamber_background.png')
-    logo_path = os.path.join(assets_dir, 'congress_channel_logo.png')
+    # Use centralized asset paths from config
+    background_path = BACKGROUND_IMAGE
+    logo_path = CHANNEL_LOGO
 
     # Use video_folder if provided, otherwise use data_directory
     thumbnail_output_dir = video_folder if video_folder else data_directory

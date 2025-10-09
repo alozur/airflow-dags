@@ -11,21 +11,22 @@ from urllib.parse import urlparse
 
 import requests
 
+from congress_videos.config.paths import get_session_path, ensure_directory_exists
 
-def create_session_folder(session_number, base_data_path="/opt/airflow/data"):
+
+def create_session_folder(session_number, base_data_path=None):
     """
-    Creates a session folder inside the congreso_youtube data directory.
+    Creates a session folder inside the congreso_youtube/videos data directory.
 
     Args:
         session_number: The session number from get_session_number task
-        base_data_path: Base path for data directories (default: '/opt/airflow/data')
+        base_data_path: Deprecated - kept for compatibility, but not used
 
     Returns:
         Full path to the created session directory
     """
-    session_folder_path = os.path.join(
-        base_data_path, "congreso_youtube", session_number
-    )
+    # Use centralized path configuration
+    session_folder_path = get_session_path(session_number)
 
     if not os.path.exists(session_folder_path):
         os.makedirs(session_folder_path, exist_ok=True)

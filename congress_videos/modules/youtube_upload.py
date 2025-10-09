@@ -8,6 +8,8 @@ YouTube uploader DAG.
 import logging
 import os
 
+from congress_videos.config.paths import YOUTUBE_TOKEN_FILE
+
 
 def prepare_youtube_upload_config(download_results, youtube_metadata_results, thumbnail_results=None, is_testing=False):
     """
@@ -89,11 +91,9 @@ def prepare_youtube_upload_config(download_results, youtube_metadata_results, th
         return None
 
     # Configuration for generic uploader
-    # Token is mounted from NAS to /opt/airflow/data (non-symlinked path)
-    token_file = '/opt/airflow/data/congress_youtube_token.pickle'
-
+    # Token is mounted from NAS to /opt/airflow/data (using centralized config)
     config = {
-        'token_file': token_file,
+        'token_file': YOUTUBE_TOKEN_FILE,
         'videos': videos
     }
 

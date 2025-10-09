@@ -13,7 +13,6 @@ networks:
 volumes:
   airflow_logs:
   airflow_plugins:
-  airflow_dags:
   git_dags:
   airflow_data:
 
@@ -45,14 +44,10 @@ x-airflow-common:
   volumes:
     - airflow_logs:/opt/airflow/logs
     - airflow_plugins:/opt/airflow/plugins
-    - airflow_dags:/opt/airflow/dags
     - git_dags:/opt/airflow/dags:ro
     - airflow_data:/opt/airflow/data
-    # Mount YouTube token securely from NAS (not in git)
-    # Mounted to /opt/airflow/data (non-symlinked path)
-    # Note: Must be writable for token auto-refresh
-    - /volume1/docker/airflow/congress_youtube_token.pickle:/opt/airflow/data/congress_youtube_token.pickle
-    # Mount congress_videos assets (background image, logo, fonts) from NAS
+    # Mount congress_videos directory from NAS (includes token, assets, videos, fonts)
+    # Note: Token file must be writable for auto-refresh
     - /volume1/docker/airflow/congress_videos:/opt/airflow/data/congress_videos
   networks:
     - postgres_infra_network
@@ -63,12 +58,20 @@ x-airflow-common:
 services:
   init-perms:
     image: busybox
-    command: ["sh", "-c", "chown -R 65533:65533 /git && chown -R 50000:0 /data && chmod 666 /token/congress_youtube_token.pickle && chmod -R 755 /assets"]
+    command:
+      - sh
+      - -c
+      - |
+        chown -R 65533:65533 /git
+        chown -R 50000:0 /data
+        chown -R 50000:0 /congress_videos
+        chmod -R 755 /congress_videos/assets
+        chmod 666 /congress_videos/congress_youtube_token.pickle
+        chmod -R 775 /congress_videos/videos
     volumes:
       - git_dags:/git
       - airflow_data:/data
-      - /volume1/docker/airflow/congress_youtube_token.pickle:/token/congress_youtube_token.pickle
-      - /volume1/docker/airflow/congress_videos:/assets
+      - /volume1/docker/airflow/congress_videos:/congress_videos
 
   git-sync:
     image: k8s.gcr.io/git-sync/git-sync:v3.6.5
