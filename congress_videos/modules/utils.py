@@ -54,24 +54,44 @@ from congress_videos.modules.file_operations import (
     download_videos_for_upload,
 )
 
-# Re-export YouTube AI functions
-from congress_videos.modules.youtube import (
-    evaluate_video_interest_with_ai,
-    generate_youtube_description,
-    generate_youtube_metadata_for_selected_videos,
-    generate_youtube_metadata_for_topics,
-    generate_youtube_metadata_from_enriched_groups,
-    generate_youtube_title,
-)
+# Re-export YouTube AI functions (lazy imports to avoid DAG import timeout)
+def evaluate_video_interest_with_ai(*args, **kwargs):
+    from congress_videos.modules.youtube import evaluate_video_interest_with_ai as _func
+    return _func(*args, **kwargs)
 
-# Re-export YouTube upload functions
-from congress_videos.modules.youtube import prepare_youtube_upload_config
+def generate_youtube_description(*args, **kwargs):
+    from congress_videos.modules.youtube import generate_youtube_description as _func
+    return _func(*args, **kwargs)
+
+def generate_youtube_metadata_for_selected_videos(*args, **kwargs):
+    from congress_videos.modules.youtube import generate_youtube_metadata_for_selected_videos as _func
+    return _func(*args, **kwargs)
+
+def generate_youtube_metadata_for_topics(*args, **kwargs):
+    from congress_videos.modules.youtube import generate_youtube_metadata_for_topics as _func
+    return _func(*args, **kwargs)
+
+def generate_youtube_metadata_from_enriched_groups(*args, **kwargs):
+    from congress_videos.modules.youtube import generate_youtube_metadata_from_enriched_groups as _func
+    return _func(*args, **kwargs)
+
+def generate_youtube_title(*args, **kwargs):
+    from congress_videos.modules.youtube import generate_youtube_title as _func
+    return _func(*args, **kwargs)
+
+# Re-export YouTube upload functions (lazy import)
+def prepare_youtube_upload_config(*args, **kwargs):
+    from congress_videos.modules.youtube import prepare_youtube_upload_config as _func
+    return _func(*args, **kwargs)
 
 # Private functions (internal use only - not re-exported)
-from congress_videos.modules.youtube.youtube_ai import (
-    _evaluate_intervention_interest,
-    _evaluate_main_topic_interest,
-)
+def _evaluate_intervention_interest(*args, **kwargs):
+    from congress_videos.modules.youtube.youtube_ai import _evaluate_intervention_interest as _func
+    return _func(*args, **kwargs)
+
+def _evaluate_main_topic_interest(*args, **kwargs):
+    from congress_videos.modules.youtube.youtube_ai import _evaluate_main_topic_interest as _func
+    return _func(*args, **kwargs)
 
 
 # All function implementations have been moved to specialized modules.
