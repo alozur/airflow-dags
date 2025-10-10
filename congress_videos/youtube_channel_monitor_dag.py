@@ -139,8 +139,44 @@ with DAG(
         ),
     )
 
-    # Step 3c: Download video from YouTube (FUTURE - currently commented)
-    # t3c = PythonOperator(
+    # Step 4: Parse description links (Nota de prensa and Orden del día)
+    t4 = PythonOperator(
+        task_id='parse_description_links',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: yt_channel.parse_description_links(
+                ti.xcom_pull(key='video_descriptions')
+            ),
+            'parsed_links'
+        ),
+    )
+
+    # Step 5a: Scrape press release (Nota de prensa) - runs in parallel with agenda download
+    t5a = PythonOperator(
+        task_id='scrape_press_release',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: yt_channel.scrape_press_release(
+                ti.xcom_pull(key='parsed_links')
+            ),
+            'press_releases'
+        ),
+    )
+
+    # Step 5b: Download and read agenda PDF (Orden del día) - runs in parallel with press release scraping
+    t5b = PythonOperator(
+        task_id='download_and_read_agenda',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: yt_channel.download_and_read_agenda(
+                ti.xcom_pull(key='parsed_links')
+            ),
+            'agendas'
+        ),
+    )
+
+    # Step 6: Download video from YouTube (FUTURE - currently commented)
+    # t6 = PythonOperator(
     #     task_id='download_video',
     #     python_callable=lambda ti: xcom_task(
     #         ti,
@@ -157,13 +193,15 @@ with DAG(
         python_callable=lambda: logging.info("No plenary sessions found. DAG execution stopped."),
     )
 
-    # Step 4: Save to database (FUTURE - currently commented)
-    # t4_db = PostgreSQLOperator(
+    # Step 7: Save to database (FUTURE - currently commented)
+    # t7_db = PostgreSQLOperator(
     #     task_id='save_youtube_videos_to_db',
     #     operation='save_youtube_source_videos',
     #     xcom_keys={
     #         'video_details': 'video_details',
     #         'video_descriptions': 'video_descriptions',
+    #         'press_releases': 'press_releases',
+    #         'agendas': 'agendas',
     #         'downloaded_videos': 'downloaded_videos'
     #     },
     #     output_xcom_key='db_youtube_videos'
@@ -177,4 +215,13 @@ with DAG(
 
     # Branch: plenary sessions found - process in parallel
     # get_video_details and get_video_descriptions run in parallel
-    t2a >> [t3a, t3b]  # >> t3c (when uncommented, add to list for parallel execution)
+    t2a >> [t3a, t3b]
+
+    # After getting descriptions, parse links from description
+    t3b >> t4
+
+    # After parsing links, scrape press release and download agenda in parallel
+    t4 >> [t5a, t5b]
+
+    # Future: Add download video task
+    # t2a >> t6 (can run in parallel with t3a, t3b)

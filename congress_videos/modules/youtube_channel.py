@@ -9,8 +9,12 @@ import logging
 import os
 import re
 from datetime import datetime
+from urllib.parse import urlparse
 
+import requests
+from bs4 import BeautifulSoup
 from googleapiclient.discovery import build
+from PyPDF2 import PdfReader
 
 
 def fetch_youtube_channel_videos(channel_id: str, max_results: int = 10):
@@ -290,3 +294,237 @@ def get_video_descriptions(plenary_videos):
         error_msg = f"Error getting video descriptions: {e}"
         logging.error(error_msg)
         raise RuntimeError(error_msg) from e
+
+
+def parse_description_links(video_descriptions):
+    """
+    Parse video descriptions to extract Nota de prensa and Orden del día links.
+
+    Args:
+        video_descriptions: Results from get_video_descriptions
+
+    Returns:
+        Dict with extracted links:
+        - total_videos: Number of videos processed
+        - videos: List with video_id, press_release_link, agenda_link
+    """
+    if not video_descriptions or not video_descriptions.get('videos'):
+        logging.warning("No video descriptions to parse")
+        return {'total_videos': 0, 'videos': []}
+
+    # Patterns to find links
+    # Look for "Nota de prensa:" followed by URL
+    press_release_pattern = r'Nota de prensa:\s*(https?://[^\s]+)'
+    # Look for "Orden del día:" followed by URL (PDF)
+    agenda_pattern = r'Orden del día:\s*(https?://[^\s]+)'
+
+    parsed_videos = []
+    for video in video_descriptions['videos']:
+        description = video.get('description', '')
+        video_id = video['video_id']
+
+        # Find press release link
+        press_match = re.search(press_release_pattern, description, re.IGNORECASE)
+        press_link = press_match.group(1) if press_match else None
+
+        # Find agenda link
+        agenda_match = re.search(agenda_pattern, description, re.IGNORECASE)
+        agenda_link = agenda_match.group(1) if agenda_match else None
+
+        parsed_data = {
+            'video_id': video_id,
+            'title': video['title'],
+            'press_release_link': press_link,
+            'agenda_link': agenda_link,
+        }
+
+        logging.info(f"Links parsed for {video['title']}: Press={bool(press_link)}, Agenda={bool(agenda_link)}")
+        parsed_videos.append(parsed_data)
+
+    logging.info(f"Total videos parsed: {len(parsed_videos)}")
+    return {
+        'total_videos': len(parsed_videos),
+        'videos': parsed_videos
+    }
+
+
+def scrape_press_release(parsed_links):
+    """
+    Scrape Nota de prensa (press release) websites.
+
+    Follows shortened URLs (ow.ly) to the actual press release page and extracts content.
+
+    Args:
+        parsed_links: Results from parse_description_links
+
+    Returns:
+        Dict with scraped press releases:
+        - total_scraped: Number of press releases scraped
+        - videos: List with video_id, press_release_url, press_release_content
+    """
+    if not parsed_links or not parsed_links.get('videos'):
+        logging.warning("No parsed links to scrape")
+        return {'total_scraped': 0, 'videos': []}
+
+    scraped_releases = []
+    for video in parsed_links['videos']:
+        video_id = video['video_id']
+        press_link = video.get('press_release_link')
+
+        if not press_link:
+            logging.info(f"No press release link for {video['title']}")
+            continue
+
+        try:
+            # Follow redirects to get actual URL
+            logging.info(f"Fetching press release from {press_link}")
+            response = requests.get(press_link, timeout=10, allow_redirects=True, verify=False)
+            response.raise_for_status()
+
+            actual_url = response.url
+            logging.info(f"Resolved to: {actual_url}")
+
+            # Parse HTML content
+            soup = BeautifulSoup(response.content, 'html.parser')
+
+            # Extract main content (adjust selectors based on actual site structure)
+            # Try common content containers
+            content = None
+            for selector in ['article', 'main', '.content', '#content', '.post-content']:
+                element = soup.select_one(selector)
+                if element:
+                    content = element.get_text(strip=True, separator='\n')
+                    break
+
+            if not content:
+                # Fallback: get all paragraph text
+                paragraphs = soup.find_all('p')
+                content = '\n'.join([p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)])
+
+            # Extract title
+            title_tag = soup.find('h1') or soup.find('title')
+            page_title = title_tag.get_text(strip=True) if title_tag else "No title"
+
+            scraped_data = {
+                'video_id': video_id,
+                'video_title': video['title'],
+                'press_release_url': actual_url,
+                'press_release_title': page_title,
+                'press_release_content': content,
+                'content_length': len(content) if content else 0
+            }
+
+            logging.info(f"Press release scraped: {page_title} ({len(content) if content else 0} chars)")
+            scraped_releases.append(scraped_data)
+
+        except Exception as e:
+            logging.error(f"Error scraping press release for {video_id}: {e}")
+            scraped_releases.append({
+                'video_id': video_id,
+                'video_title': video['title'],
+                'press_release_url': press_link,
+                'error': str(e)
+            })
+
+    logging.info(f"Total press releases scraped: {len(scraped_releases)}")
+    return {
+        'total_scraped': len(scraped_releases),
+        'videos': scraped_releases
+    }
+
+
+def download_and_read_agenda(parsed_links):
+    """
+    Download and read Orden del día (agenda) PDFs.
+
+    Args:
+        parsed_links: Results from parse_description_links
+
+    Returns:
+        Dict with agenda content:
+        - total_downloaded: Number of PDFs downloaded
+        - videos: List with video_id, agenda_url, agenda_file_path, agenda_text
+    """
+    if not parsed_links or not parsed_links.get('videos'):
+        logging.warning("No parsed links to download")
+        return {'total_downloaded': 0, 'videos': []}
+
+    # Get data directory path
+    from congress_videos.config.paths import PROJECT_DATA_DIR, ensure_directory_exists
+
+    # Create agenda directory
+    agenda_dir = f"{PROJECT_DATA_DIR}/agendas"
+    ensure_directory_exists(agenda_dir)
+
+    downloaded_agendas = []
+    for video in parsed_links['videos']:
+        video_id = video['video_id']
+        agenda_link = video.get('agenda_link')
+
+        if not agenda_link:
+            logging.info(f"No agenda link for {video['title']}")
+            continue
+
+        try:
+            # Follow redirects to get actual URL
+            logging.info(f"Downloading agenda from {agenda_link}")
+            response = requests.get(agenda_link, timeout=30, allow_redirects=True, verify=False)
+            response.raise_for_status()
+
+            actual_url = response.url
+            logging.info(f"Resolved to: {actual_url}")
+
+            # Save PDF
+            pdf_filename = f"{video_id}_agenda.pdf"
+            pdf_path = f"{agenda_dir}/{pdf_filename}"
+
+            with open(pdf_path, 'wb') as f:
+                f.write(response.content)
+
+            logging.info(f"PDF saved: {pdf_path} ({len(response.content)} bytes)")
+
+            # Read PDF content
+            try:
+                reader = PdfReader(pdf_path)
+                text_content = ""
+                for page_num, page in enumerate(reader.pages):
+                    text_content += f"\n--- Page {page_num + 1} ---\n"
+                    text_content += page.extract_text()
+
+                agenda_data = {
+                    'video_id': video_id,
+                    'video_title': video['title'],
+                    'agenda_url': actual_url,
+                    'agenda_file_path': pdf_path,
+                    'agenda_text': text_content,
+                    'pdf_pages': len(reader.pages),
+                    'text_length': len(text_content)
+                }
+
+                logging.info(f"PDF read: {len(reader.pages)} pages, {len(text_content)} chars")
+                downloaded_agendas.append(agenda_data)
+
+            except Exception as pdf_error:
+                logging.error(f"Error reading PDF {pdf_path}: {pdf_error}")
+                downloaded_agendas.append({
+                    'video_id': video_id,
+                    'video_title': video['title'],
+                    'agenda_url': actual_url,
+                    'agenda_file_path': pdf_path,
+                    'error': f"PDF read error: {str(pdf_error)}"
+                })
+
+        except Exception as e:
+            logging.error(f"Error downloading agenda for {video_id}: {e}")
+            downloaded_agendas.append({
+                'video_id': video_id,
+                'video_title': video['title'],
+                'agenda_url': agenda_link,
+                'error': str(e)
+            })
+
+    logging.info(f"Total agendas downloaded: {len(downloaded_agendas)}")
+    return {
+        'total_downloaded': len(downloaded_agendas),
+        'videos': downloaded_agendas
+    }
