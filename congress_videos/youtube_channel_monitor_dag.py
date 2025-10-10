@@ -228,17 +228,31 @@ with DAG(
         ),
     )
 
-    # Step 6: Download video from YouTube (FUTURE - currently commented)
-    # t6 = PythonOperator(
-    #     task_id='download_video',
-    #     python_callable=lambda ti: xcom_task(
-    #         ti,
-    #         lambda: yt_channel.download_youtube_video(
-    #             ti.xcom_pull(key='plenary_videos')
-    #         ),
-    #         'downloaded_videos'
-    #     ),
-    # )
+    # Step 6: Transcribe audio with timestamps (after audio extraction)
+    t6 = PythonOperator(
+        task_id='transcribe_audio_with_timestamps',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: yt_channel.transcribe_video_audio(
+                ti.xcom_pull(key='extracted_audio'),
+                target_date=context["params"].get("target_date")
+            ),
+            'transcription_results'
+        ),
+    )
+
+    # Step 6a: Export transcripts to SRT format (optional)
+    t6a = PythonOperator(
+        task_id='export_transcripts_to_srt',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: yt_channel.export_transcript_to_srt(
+                ti.xcom_pull(key='transcription_results'),
+                output_dir=f"/opt/airflow/data/congress_videos/downloads/{context['params'].get('target_date')}/transcripts"
+            ),
+            'srt_export_results'
+        ),
+    )
 
     # End task for when no plenary sessions found
     t_end = PythonOperator(
@@ -272,7 +286,14 @@ with DAG(
     t2a >> [t3a, t3b]
 
     # After getting video details, download video and extract audio in parallel
-    t3a >> [t3c, t3d]
+    # t3a >> [t3c, t3d] commented out video download for now
+    t3a >>  t3d
+
+    # After audio extraction, transcribe with timestamps
+    t3d >> t6
+
+    # After transcription, export to SRT format
+    t6 >> t6a
 
     # After getting descriptions, parse links from description
     t3b >> t4
