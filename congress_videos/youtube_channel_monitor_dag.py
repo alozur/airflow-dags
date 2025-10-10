@@ -175,6 +175,19 @@ with DAG(
         ),
     )
 
+    # Step 5c: Extract session number and target date agenda section
+    t5c = PythonOperator(
+        task_id='extract_session_date',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: yt_channel.extract_session_date(
+                ti.xcom_pull(key='agendas'),
+                target_date=context["params"].get("target_date")
+            ),
+            'session_date'
+        ),
+    )
+
     # Step 6: Download video from YouTube (FUTURE - currently commented)
     # t6 = PythonOperator(
     #     task_id='download_video',
@@ -201,7 +214,7 @@ with DAG(
     #         'video_details': 'video_details',
     #         'video_descriptions': 'video_descriptions',
     #         'press_releases': 'press_releases',
-    #         'agendas': 'agendas',
+    #         'session_date': 'session_date',
     #         'downloaded_videos': 'downloaded_videos'
     #     },
     #     output_xcom_key='db_youtube_videos'
@@ -222,6 +235,9 @@ with DAG(
 
     # After parsing links, scrape press release and download agenda in parallel
     t4 >> [t5a, t5b]
+
+    # After downloading agenda, extract session date (session number + target date agenda)
+    t5b >> t5c
 
     # Future: Add download video task
     # t2a >> t6 (can run in parallel with t3a, t3b)
