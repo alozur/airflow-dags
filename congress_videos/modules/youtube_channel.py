@@ -620,18 +620,17 @@ def extract_session_date(agendas, target_date: str):
                 'video_id': video_id,
                 'video_title': video.get('video_title'),
                 'target_date': target_date,
+                'session_number': base_session_number,
                 'base_session_number': base_session_number,
-                'calculated_session_number': base_session_number,
                 'date_offset': 0,
-                'warning': 'Could not parse date headers, using base session number'
+                'agenda_section': agenda_text,
+                'warning': 'Could not parse date headers, using base session number and full agenda'
             })
             continue
 
-        # Find which date index matches our target date
-        date_offset = 0
-        found_target = False
-
-        for i, match in enumerate(date_matches):
+        # Step 1: Extract all dates from the agenda and parse them
+        parsed_dates = []
+        for match in date_matches:
             day_name = match.group(1).lower()
             day_num = int(match.group(2))
             month_name = match.group(3).lower()
@@ -645,48 +644,18 @@ def extract_session_date(agendas, target_date: str):
 
             try:
                 section_date = datetime(year, month_num, day_num).date()
-
-                # Check if this section matches our target date
-                if section_date == target_date_obj.date():
-                    date_offset = i  # 0 for first date, 1 for second date, etc.
-                    found_target = True
-                    logging.info(f"Target date is at position {date_offset} (offset from first date)")
-                    break
-
+                parsed_dates.append({
+                    'date': section_date,
+                    'day_name': day_name,
+                    'match': match,
+                    'original_index': len(parsed_dates)
+                })
             except ValueError as e:
                 logging.warning(f"Invalid date in agenda: {day_num}/{month_num}/{year} - {e}")
                 continue
 
-        # Now extract the agenda section for the target date
-        target_section = None
-        target_match_index = None
-
-        # Find the match that corresponds to our target date
-        for i, match in enumerate(date_matches):
-            day_name = match.group(1).lower()
-            day_num = int(match.group(2))
-            month_name = match.group(3).lower()
-            year = int(match.group(4)) if match.group(4) else target_date_obj.year
-
-            month_num = spanish_months.get(month_name)
-            if not month_num:
-                continue
-
-            try:
-                section_date = datetime(year, month_num, day_num).date()
-                if section_date == target_date_obj.date():
-                    target_match_index = i
-                    # Extract text from this date header to the next date header (or end)
-                    start_pos = match.start()
-                    end_pos = date_matches[i + 1].start() if i + 1 < len(date_matches) else len(agenda_text)
-                    target_section = agenda_text[start_pos:end_pos].strip()
-                    logging.info(f"Found target date section: {day_name.upper()}, {day_num} de {month_name}")
-                    break
-            except ValueError:
-                continue
-
-        if not found_target:
-            logging.warning(f"Target date {target_date} not found in agenda dates")
+        if not parsed_dates:
+            logging.warning(f"Could not parse any dates in agenda for {video_id}")
             session_results.append({
                 'video_id': video_id,
                 'video_title': video.get('video_title'),
@@ -694,13 +663,54 @@ def extract_session_date(agendas, target_date: str):
                 'session_number': base_session_number,
                 'base_session_number': base_session_number,
                 'date_offset': 0,
-                'agenda_section': agenda_text,  # Return full text as fallback
-                'warning': f'Target date {target_date} not found, using base session number and full agenda'
+                'agenda_section': agenda_text,
+                'warning': 'Could not parse dates, using base session number and full agenda'
+            })
+            continue
+
+        # Step 2: Sort dates chronologically
+        sorted_dates = sorted(parsed_dates, key=lambda x: x['date'])
+
+        # Log all dates found
+        logging.info(f"Found {len(sorted_dates)} dates in agenda:")
+        for i, date_info in enumerate(sorted_dates):
+            logging.info(f"  Position {i}: {date_info['day_name'].upper()}, {date_info['date']}")
+
+        # Step 3: Find target date position in sorted list
+        date_offset = None
+        target_date_info = None
+        found_target = False
+
+        for i, date_info in enumerate(sorted_dates):
+            if date_info['date'] == target_date_obj.date():
+                date_offset = i  # 0 for first date, 1 for second date, etc.
+                target_date_info = date_info
+                found_target = True
+                logging.info(f"Target date {target_date} found at position {i} (offset = {date_offset})")
+                break
+
+        # Step 4: Build result
+        if not found_target:
+            logging.warning(f"Target date {target_date} not found in agenda dates")
+            all_dates_str = ", ".join([str(d['date']) for d in sorted_dates])
+            session_results.append({
+                'video_id': video_id,
+                'video_title': video.get('video_title'),
+                'target_date': target_date,
+                'session_number': base_session_number,
+                'base_session_number': base_session_number,
+                'date_offset': 0,
+                'agenda_dates_found': all_dates_str,
+                'full_agenda_file_path': video.get('agenda_file_path'),
+                'warning': f'Target date {target_date} not found in agenda. Found dates: {all_dates_str}'
             })
             continue
 
         # Calculate final session number: base + offset
         calculated_session_number = base_session_number + date_offset
+
+        # List all dates found in the agenda
+        all_dates_list = [str(d['date']) for d in sorted_dates]
 
         result = {
             'video_id': video_id,
@@ -709,23 +719,174 @@ def extract_session_date(agendas, target_date: str):
             'session_number': calculated_session_number,
             'base_session_number': base_session_number,
             'date_offset': date_offset,
+            'agenda_dates': all_dates_list,  # List of all dates in the agenda
             'full_agenda_file_path': video.get('agenda_file_path')
         }
 
-        if target_section:
-            result['agenda_section'] = target_section
-            result['section_length'] = len(target_section)
-            logging.info(f"Session {calculated_session_number}: Extracted {len(target_section)} chars for target date")
-        else:
-            result['agenda_section'] = agenda_text
-            result['warning'] = 'Could not extract specific date section, returning full agenda'
-            logging.warning(f"Could not extract section for target date, returning full agenda")
-
         session_results.append(result)
-        logging.info(f"Session number calculated: {base_session_number} + {date_offset} = {calculated_session_number}")
+        logging.info(f"✓ Session {calculated_session_number} (base {base_session_number} + offset {date_offset})")
+        logging.info(f"  Target date {target_date} is at position {date_offset} of {len(all_dates_list)} dates")
 
     logging.info(f"Total session dates processed: {len(session_results)}")
     return {
         'total_processed': len(session_results),
         'videos': session_results
+    }
+
+
+def extract_agenda_section(agendas, session_date_info):
+    """
+    Extract the specific agenda section for the target date.
+
+    Takes the full agenda text and extracts only the section between the target date
+    header and the next date header (or end of document).
+
+    Args:
+        agendas: Results from download_and_read_agenda (contains full agenda text)
+        session_date_info: Results from extract_session_date (contains target date info)
+
+    Returns:
+        Dict with agenda sections:
+        - total_extracted: Number of agenda sections extracted
+        - videos: List with video_id, target_date, agenda_section
+    """
+    if not agendas or not agendas.get('videos'):
+        logging.warning("No agendas to extract sections from")
+        return {'total_extracted': 0, 'videos': []}
+
+    if not session_date_info or not session_date_info.get('videos'):
+        logging.warning("No session date info provided")
+        return {'total_extracted': 0, 'videos': []}
+
+    # Parse target date
+    target_date_obj = datetime.strptime(
+        session_date_info['videos'][0]['target_date'],
+        "%Y-%m-%d"
+    )
+
+    # Spanish month names (lowercase)
+    spanish_months = {
+        'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4,
+        'mayo': 5, 'junio': 6, 'julio': 7, 'agosto': 8,
+        'septiembre': 9, 'octubre': 10, 'noviembre': 11, 'diciembre': 12
+    }
+
+    extracted_sections = []
+
+    # Match agenda with session_date by video_id
+    for session_info in session_date_info['videos']:
+        video_id = session_info['video_id']
+        target_date = session_info['target_date']
+
+        # Find corresponding agenda
+        agenda_item = None
+        for agenda in agendas['videos']:
+            if agenda['video_id'] == video_id:
+                agenda_item = agenda
+                break
+
+        if not agenda_item:
+            logging.warning(f"No agenda found for video_id {video_id}")
+            extracted_sections.append({
+                'video_id': video_id,
+                'target_date': target_date,
+                'error': 'No agenda found for this video'
+            })
+            continue
+
+        agenda_text = agenda_item.get('agenda_text', '')
+        if not agenda_text or 'error' in agenda_item:
+            logging.warning(f"No agenda text for {video_id}")
+            extracted_sections.append({
+                'video_id': video_id,
+                'target_date': target_date,
+                'error': 'No agenda text available'
+            })
+            continue
+
+        # Pattern to match Spanish date headers like "MARTES, 7 DE OCTUBRE"
+        date_pattern = r'([A-ZÁÉÍÓÚÑ]+),\s*(\d{1,2})\s+[Dd][Ee]\s+([a-záéíóúñ]+)(?:\s+[Dd][Ee]\s+(\d{4}))?'
+
+        # Find all date sections in the agenda
+        date_matches = list(re.finditer(date_pattern, agenda_text))
+
+        if not date_matches:
+            logging.warning(f"No date headers found in agenda for {video_id}")
+            extracted_sections.append({
+                'video_id': video_id,
+                'video_title': session_info.get('video_title'),
+                'target_date': target_date,
+                'session_number': session_info.get('session_number'),
+                'agenda_section': agenda_text,  # Return full text as fallback
+                'warning': 'Could not parse date headers, returning full agenda'
+            })
+            continue
+
+        # Find the match that corresponds to our target date
+        target_section = None
+        target_date_dt = datetime.strptime(target_date, "%Y-%m-%d").date()
+
+        for i, match in enumerate(date_matches):
+            day_name = match.group(1).lower()
+            day_num = int(match.group(2))
+            month_name = match.group(3).lower()
+            year = int(match.group(4)) if match.group(4) else target_date_dt.year
+
+            # Convert Spanish date to datetime
+            month_num = spanish_months.get(month_name)
+            if not month_num:
+                continue
+
+            try:
+                section_date = datetime(year, month_num, day_num).date()
+
+                # Check if this section matches our target date
+                if section_date == target_date_dt:
+                    # Extract text from this date header to the next date header (or end)
+                    start_pos = match.start()
+
+                    # Find next match after this one
+                    next_match = None
+                    for other_match in date_matches:
+                        if other_match.start() > start_pos:
+                            if next_match is None or other_match.start() < next_match.start():
+                                next_match = other_match
+
+                    end_pos = next_match.start() if next_match else len(agenda_text)
+                    target_section = agenda_text[start_pos:end_pos].strip()
+
+                    logging.info(f"Extracted agenda section for {day_name.upper()}, {day_num} de {month_name}")
+                    logging.info(f"  Section: {len(target_section)} chars (lines {start_pos} to {end_pos})")
+                    break
+
+            except ValueError as e:
+                logging.warning(f"Invalid date: {day_num}/{month_num}/{year} - {e}")
+                continue
+
+        if target_section:
+            extracted_sections.append({
+                'video_id': video_id,
+                'video_title': session_info.get('video_title'),
+                'target_date': target_date,
+                'session_number': session_info.get('session_number'),
+                'agenda_section': target_section,
+                'section_length': len(target_section),
+                'full_agenda_file_path': agenda_item.get('agenda_file_path')
+            })
+            logging.info(f"✓ Extracted agenda for session {session_info.get('session_number')}, date {target_date}")
+        else:
+            logging.warning(f"Could not find section for target date {target_date}")
+            extracted_sections.append({
+                'video_id': video_id,
+                'video_title': session_info.get('video_title'),
+                'target_date': target_date,
+                'session_number': session_info.get('session_number'),
+                'agenda_section': agenda_text,  # Fallback to full text
+                'warning': f'Could not find section for {target_date}, returning full agenda'
+            })
+
+    logging.info(f"Total agenda sections extracted: {len(extracted_sections)}")
+    return {
+        'total_extracted': len(extracted_sections),
+        'videos': extracted_sections
     }

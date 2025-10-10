@@ -175,7 +175,7 @@ with DAG(
         ),
     )
 
-    # Step 5c: Extract session number and target date agenda section
+    # Step 5c: Extract session number based on target date position
     t5c = PythonOperator(
         task_id='extract_session_date',
         python_callable=lambda ti, **context: xcom_task(
@@ -185,6 +185,19 @@ with DAG(
                 target_date=context["params"].get("target_date")
             ),
             'session_date'
+        ),
+    )
+
+    # Step 5d: Extract the specific agenda section for the target date
+    t5d = PythonOperator(
+        task_id='extract_agenda_section',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: yt_channel.extract_agenda_section(
+                ti.xcom_pull(key='agendas'),
+                ti.xcom_pull(key='session_date')
+            ),
+            'agenda_section'
         ),
     )
 
@@ -215,6 +228,7 @@ with DAG(
     #         'video_descriptions': 'video_descriptions',
     #         'press_releases': 'press_releases',
     #         'session_date': 'session_date',
+    #         'agenda_section': 'agenda_section',
     #         'downloaded_videos': 'downloaded_videos'
     #     },
     #     output_xcom_key='db_youtube_videos'
@@ -236,8 +250,9 @@ with DAG(
     # After parsing links, scrape press release and download agenda in parallel
     t4 >> [t5a, t5b]
 
-    # After downloading agenda, extract session date (session number + target date agenda)
-    t5b >> t5c
+    # After downloading agenda, extract session date info and then agenda section
+    # These run sequentially since agenda_section depends on session_date
+    t5b >> t5c >> t5d
 
     # Future: Add download video task
     # t2a >> t6 (can run in parallel with t3a, t3b)
