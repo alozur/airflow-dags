@@ -29,6 +29,13 @@ PROJECT_DATA_DIR = f"{BASE_DATA_DIR}/congress_videos"
 VIDEOS_DIR = f"{PROJECT_DATA_DIR}/videos"
 
 # -------------------------
+# Downloads Directory (YouTube Monitor DAG)
+# -------------------------
+# All downloads from YouTube channel monitoring are stored here
+# Structure: /opt/airflow/data/congress_videos/downloads/{date}/{video_id}/{files}
+DOWNLOADS_DIR = f"{PROJECT_DATA_DIR}/downloads"
+
+# -------------------------
 # Assets Directories
 # -------------------------
 # Assets directory for thumbnail generation (images, logos, etc.)
@@ -95,6 +102,48 @@ def get_video_path(session_number: str, topic_entry_id: str, filename: str) -> s
         Full path to video file
     """
     return f"{get_topic_path(session_number, topic_entry_id)}/{filename}"
+
+
+def get_download_date_path(date: str) -> str:
+    """
+    Get the full path for a specific date's downloads directory.
+
+    Args:
+        date: Date string in YYYY-MM-DD format (e.g., "2025-10-08")
+
+    Returns:
+        Full path to date directory (e.g., /opt/airflow/data/congress_videos/downloads/2025-10-08)
+    """
+    return f"{DOWNLOADS_DIR}/{date}"
+
+
+def get_download_video_path(date: str, video_id: str) -> str:
+    """
+    Get the full path for a specific video's downloads directory.
+
+    Args:
+        date: Date string in YYYY-MM-DD format (e.g., "2025-10-08")
+        video_id: YouTube video ID (e.g., "hy1cnx-0Oww")
+
+    Returns:
+        Full path to video download directory
+    """
+    return f"{get_download_date_path(date)}/{video_id}"
+
+
+def get_download_file_path(date: str, video_id: str, filename: str) -> str:
+    """
+    Get the full path for a specific downloaded file.
+
+    Args:
+        date: Date string in YYYY-MM-DD format
+        video_id: YouTube video ID
+        filename: File name (e.g., "agenda.pdf", "video.mp4")
+
+    Returns:
+        Full path to the file
+    """
+    return f"{get_download_video_path(date, video_id)}/{filename}"
 
 
 # -------------------------

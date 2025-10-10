@@ -166,10 +166,11 @@ with DAG(
     # Step 5b: Download and read agenda PDF (Orden del día) - runs in parallel with press release scraping
     t5b = PythonOperator(
         task_id='download_and_read_agenda',
-        python_callable=lambda ti: xcom_task(
+        python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.download_and_read_agenda(
-                ti.xcom_pull(key='parsed_links')
+                ti.xcom_pull(key='parsed_links'),
+                target_date=context["params"].get("target_date")
             ),
             'agendas'
         ),

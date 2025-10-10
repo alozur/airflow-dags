@@ -443,12 +443,13 @@ def scrape_press_release(parsed_links):
     }
 
 
-def download_and_read_agenda(parsed_links):
+def download_and_read_agenda(parsed_links, target_date: str):
     """
     Download and read Orden del día (agenda) PDFs.
 
     Args:
         parsed_links: Results from parse_description_links
+        target_date: Target date in YYYY-MM-DD format (used for organizing downloads)
 
     Returns:
         Dict with agenda content:
@@ -459,12 +460,8 @@ def download_and_read_agenda(parsed_links):
         logging.warning("No parsed links to download")
         return {'total_downloaded': 0, 'videos': []}
 
-    # Get data directory path
-    from congress_videos.config.paths import PROJECT_DATA_DIR, ensure_directory_exists
-
-    # Create agenda directory
-    agenda_dir = f"{PROJECT_DATA_DIR}/agendas"
-    ensure_directory_exists(agenda_dir)
+    # Import path helpers
+    from congress_videos.config.paths import get_download_file_path, get_download_video_path, ensure_directory_exists
 
     # Headers to make the request look like it's from a real browser
     headers = {
@@ -494,9 +491,12 @@ def download_and_read_agenda(parsed_links):
             actual_url = response.url
             logging.info(f"Resolved to: {actual_url}")
 
-            # Save PDF
-            pdf_filename = f"{video_id}_agenda.pdf"
-            pdf_path = f"{agenda_dir}/{pdf_filename}"
+            # Create directory structure: downloads/{date}/{video_id}/
+            video_download_dir = get_download_video_path(target_date, video_id)
+            ensure_directory_exists(video_download_dir)
+
+            # Save PDF as: downloads/{date}/{video_id}/agenda.pdf
+            pdf_path = get_download_file_path(target_date, video_id, "agenda.pdf")
 
             with open(pdf_path, 'wb') as f:
                 f.write(response.content)
