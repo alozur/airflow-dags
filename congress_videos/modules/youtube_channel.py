@@ -607,8 +607,9 @@ def extract_session_date(agendas, target_date: str):
         base_session_number = int(session_match.group(1))
         logging.info(f"Found base session number: {base_session_number}")
 
-        # Pattern to match Spanish date headers like "MARTES, 7 DE OCTUBRE"
-        date_pattern = r'([A-ZÁÉÍÓÚÑ]+),\s*(\d{1,2})\s+[Dd][Ee]\s+([a-záéíóúñ]+)(?:\s+[Dd][Ee]\s+(\d{4}))?'
+        # Pattern to match Spanish date headers like "MARTES, 7 DE OCTUBRE" (uppercase only)
+        # Matches: DAY_NAME, DAY_NUMBER DE MONTH_NAME [DE YEAR]
+        date_pattern = r'([A-ZÁÉÍÓÚÑ]+),\s*(\d{1,2})\s+[Dd][Ee]\s+([A-ZÁÉÍÓÚÑ]+)(?:\s+[Dd][Ee]\s+(\d{4}))?'
 
         # Find all date sections in the agenda
         date_matches = list(re.finditer(date_pattern, agenda_text))
@@ -804,8 +805,9 @@ def extract_agenda_section(agendas, session_date_info):
             })
             continue
 
-        # Pattern to match Spanish date headers like "MARTES, 7 DE OCTUBRE"
-        date_pattern = r'([A-ZÁÉÍÓÚÑ]+),\s*(\d{1,2})\s+[Dd][Ee]\s+([a-záéíóúñ]+)(?:\s+[Dd][Ee]\s+(\d{4}))?'
+        # Pattern to match Spanish date headers like "MARTES, 7 DE OCTUBRE" (uppercase only)
+        # Matches: DAY_NAME, DAY_NUMBER DE MONTH_NAME [DE YEAR]
+        date_pattern = r'([A-ZÁÉÍÓÚÑ]+),\s*(\d{1,2})\s+[Dd][Ee]\s+([A-ZÁÉÍÓÚÑ]+)(?:\s+[Dd][Ee]\s+(\d{4}))?'
 
         # Find all date sections in the agenda
         date_matches = list(re.finditer(date_pattern, agenda_text))
