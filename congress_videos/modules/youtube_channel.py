@@ -366,6 +366,16 @@ def scrape_press_release(parsed_links):
         logging.warning("No parsed links to scrape")
         return {'total_scraped': 0, 'videos': []}
 
+    # Headers to make the request look like it's from a real browser
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
+    }
+
     scraped_releases = []
     for video in parsed_links['videos']:
         video_id = video['video_id']
@@ -378,7 +388,7 @@ def scrape_press_release(parsed_links):
         try:
             # Follow redirects to get actual URL
             logging.info(f"Fetching press release from {press_link}")
-            response = requests.get(press_link, timeout=10, allow_redirects=True, verify=False)
+            response = requests.get(press_link, timeout=10, allow_redirects=True, verify=False, headers=headers)
             response.raise_for_status()
 
             actual_url = response.url
@@ -456,6 +466,16 @@ def download_and_read_agenda(parsed_links):
     agenda_dir = f"{PROJECT_DATA_DIR}/agendas"
     ensure_directory_exists(agenda_dir)
 
+    # Headers to make the request look like it's from a real browser
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/pdf,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
+    }
+
     downloaded_agendas = []
     for video in parsed_links['videos']:
         video_id = video['video_id']
@@ -468,7 +488,7 @@ def download_and_read_agenda(parsed_links):
         try:
             # Follow redirects to get actual URL
             logging.info(f"Downloading agenda from {agenda_link}")
-            response = requests.get(agenda_link, timeout=30, allow_redirects=True, verify=False)
+            response = requests.get(agenda_link, timeout=30, allow_redirects=True, verify=False, headers=headers)
             response.raise_for_status()
 
             actual_url = response.url
