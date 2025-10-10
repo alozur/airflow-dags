@@ -335,13 +335,15 @@ def find_segments_by_keyword(transcription_results, keywords: List[str], context
     return results
 
 
-def export_transcript_to_srt(transcription_results, output_dir: str) -> Dict:
+def export_transcript_to_srt(transcription_results, output_dir: str = None) -> Dict:
     """
     Export transcription to SRT subtitle format.
 
+    Saves SRT files in the same directory as the audio file.
+
     Args:
         transcription_results: Results from transcribe_video_audio
-        output_dir: Directory to save SRT files
+        output_dir: (Optional) Directory to save SRT files. If not provided, saves next to audio file.
 
     Returns:
         Dict with export results:
@@ -356,8 +358,6 @@ def export_transcript_to_srt(transcription_results, output_dir: str) -> Dict:
             ]
         }
     """
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-
     results = {
         "total_exported": 0,
         "files": []
@@ -369,11 +369,22 @@ def export_transcript_to_srt(transcription_results, output_dir: str) -> Dict:
     for video in transcription_results['videos']:
         video_id = video.get('video_id')
         segments = video.get('segments', [])
+        audio_file_path = video.get('audio_file_path')
 
         if not segments:
             continue
 
-        srt_path = os.path.join(output_dir, f"{video_id}.srt")
+        # Save SRT in the same folder as the audio file
+        if output_dir:
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            srt_path = os.path.join(output_dir, f"{video_id}.srt")
+        elif audio_file_path:
+            # Save in the same directory as the audio file
+            audio_dir = os.path.dirname(audio_file_path)
+            srt_path = os.path.join(audio_dir, f"{video_id}.srt")
+        else:
+            logger.warning(f"No output directory or audio path for {video_id}, skipping SRT export")
+            continue
 
         try:
             with open(srt_path, 'w', encoding='utf-8') as f:
@@ -401,6 +412,87 @@ def export_transcript_to_srt(transcription_results, output_dir: str) -> Dict:
             results['files'].append({
                 'video_id': video_id,
                 'srt_file_path': srt_path,
+                'success': False,
+                'error': str(e)
+            })
+
+    return results
+
+
+def export_transcript_to_json(transcription_results, output_dir: str = None) -> Dict:
+    """
+    Export transcription to JSON format with all timestamps.
+
+    Saves JSON files in the same directory as the audio file.
+
+    Args:
+        transcription_results: Results from transcribe_video_audio
+        output_dir: (Optional) Directory to save JSON files. If not provided, saves next to audio file.
+
+    Returns:
+        Dict with export results
+    """
+    import json
+
+    results = {
+        "total_exported": 0,
+        "files": []
+    }
+
+    if not transcription_results or not transcription_results.get('videos'):
+        return results
+
+    for video in transcription_results['videos']:
+        video_id = video.get('video_id')
+        audio_file_path = video.get('audio_file_path')
+
+        if not video.get('transcription_success'):
+            continue
+
+        # Save JSON in the same folder as the audio file
+        if output_dir:
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            json_path = os.path.join(output_dir, f"{video_id}_transcript.json")
+        elif audio_file_path:
+            # Save in the same directory as the audio file
+            audio_dir = os.path.dirname(audio_file_path)
+            json_path = os.path.join(audio_dir, f"{video_id}_transcript.json")
+        else:
+            logger.warning(f"No output directory or audio path for {video_id}, skipping JSON export")
+            continue
+
+        try:
+            # Prepare transcript data
+            transcript_data = {
+                'video_id': video_id,
+                'video_title': video.get('video_title'),
+                'target_date': video.get('target_date'),
+                'language': video.get('language'),
+                'duration': video.get('duration'),
+                'full_text': video.get('transcript'),
+                'segments': video.get('segments', []),
+                'words': video.get('words', []),
+                'segment_count': len(video.get('segments', [])),
+                'word_count': len(video.get('words', [])),
+            }
+
+            # Write JSON file
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(transcript_data, f, ensure_ascii=False, indent=2)
+
+            results['files'].append({
+                'video_id': video_id,
+                'json_file_path': json_path,
+                'success': True
+            })
+            results['total_exported'] += 1
+            logger.info(f"✅ Exported JSON transcript: {json_path}")
+
+        except Exception as e:
+            logger.error(f"Error exporting JSON for {video_id}: {e}")
+            results['files'].append({
+                'video_id': video_id,
+                'json_file_path': json_path,
                 'success': False,
                 'error': str(e)
             })

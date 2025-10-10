@@ -241,16 +241,27 @@ with DAG(
         ),
     )
 
-    # Step 6a: Export transcripts to SRT format (optional)
+    # Step 6a: Export transcripts to SRT format (saves in video folder)
     t6a = PythonOperator(
         task_id='export_transcripts_to_srt',
-        python_callable=lambda ti, **context: xcom_task(
+        python_callable=lambda ti: xcom_task(
             ti,
             lambda: yt_channel.export_transcript_to_srt(
-                ti.xcom_pull(key='transcription_results'),
-                output_dir=f"/opt/airflow/data/congress_videos/downloads/{context['params'].get('target_date')}/transcripts"
+                ti.xcom_pull(key='transcription_results')
             ),
             'srt_export_results'
+        ),
+    )
+
+    # Step 6b: Export transcripts to JSON format (saves in video folder)
+    t6b = PythonOperator(
+        task_id='export_transcripts_to_json',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: yt_channel.export_transcript_to_json(
+                ti.xcom_pull(key='transcription_results')
+            ),
+            'json_export_results'
         ),
     )
 
@@ -292,8 +303,8 @@ with DAG(
     # After audio extraction, transcribe with timestamps
     t3d >> t6
 
-    # After transcription, export to SRT format
-    t6 >> t6a
+    # After transcription, export to SRT and JSON formats in parallel
+    t6 >> [t6a, t6b]
 
     # After getting descriptions, parse links from description
     t3b >> t4

@@ -116,6 +116,7 @@ def download_audio_only(
     youtube_url: str,
     output_dir: str,
     convert_to_mp3: bool = False,
+    audio_format: str = "webm",
 ) -> Dict[str, any]:
     """
     Download audio only from YouTube video.
@@ -126,6 +127,7 @@ def download_audio_only(
         youtube_url: YouTube video URL
         output_dir: Directory to save audio
         convert_to_mp3: If True, convert to MP3 (requires ffmpeg)
+        audio_format: Audio format to use ("webm" for lighter, "mp3" for compatibility)
 
     Returns:
         Dictionary with download info
@@ -138,13 +140,22 @@ def download_audio_only(
         "quiet": False,
     }
 
-    # Add MP3 conversion if requested
-    if convert_to_mp3:
+    # Add format conversion if requested
+    if convert_to_mp3 or audio_format == "mp3":
         ydl_opts["postprocessors"] = [
             {
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
                 "preferredquality": "192",
+            }
+        ]
+    elif audio_format == "webm":
+        # Prefer webm audio (lighter and faster)
+        ydl_opts["format"] = "bestaudio[ext=webm]/bestaudio"
+        ydl_opts["postprocessors"] = [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "opus",  # Opus codec in webm container
             }
         ]
 

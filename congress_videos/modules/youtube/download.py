@@ -144,7 +144,8 @@ def extract_audio_from_youtube(video_details, target_date: str):
             result = download_audio_only(
                 youtube_url=youtube_url,
                 output_dir=video_download_dir,
-                convert_to_mp3=True  # Convert to MP3 for easier processing
+                convert_to_mp3=False,  # Don't convert to MP3
+                audio_format="webm"  # Use webm (lighter format)
             )
 
             if result['success']:

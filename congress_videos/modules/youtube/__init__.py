@@ -62,12 +62,13 @@ def __getattr__(name):
 
     # transcription functions
     elif name in ['transcribe_audio_with_timestamps', 'transcribe_video_audio',
-                  'find_segments_by_keyword', 'export_transcript_to_srt']:
+                  'find_segments_by_keyword', 'export_transcript_to_srt', 'export_transcript_to_json']:
         from .transcription import (
             transcribe_audio_with_timestamps,
             transcribe_video_audio,
             find_segments_by_keyword,
             export_transcript_to_srt,
+            export_transcript_to_json,
         )
         return locals()[name]
 
@@ -101,4 +102,5 @@ __all__ = [
     'transcribe_video_audio',
     'find_segments_by_keyword',
     'export_transcript_to_srt',
+    'export_transcript_to_json',
 ]
