@@ -132,21 +132,23 @@ def filter_plenary_session_videos(channel_videos, target_title: str, target_date
     }
 
 
-def check_stream_status(plenary_videos):
+def get_video_details(plenary_videos):
     """
-    Check if videos are finished streams (not live) and get additional details.
+    Get detailed information for videos (duration, timing, etc.).
+
+    Note: We already filtered for completed streams, so no need to check status again.
 
     Args:
         plenary_videos: Results from filter_plenary_session_videos
 
     Returns:
-        Dict with finished stream information:
-        - total_finished: Number of finished streams
-        - videos: List of finished stream details with duration, etc.
+        Dict with enriched video information:
+        - total_videos: Number of videos
+        - videos: List of video details with duration, timing, etc.
     """
     if not plenary_videos or not plenary_videos.get('videos'):
-        logging.warning("No plenary videos to check")
-        return {'total_finished': 0, 'videos': []}
+        logging.warning("No plenary videos to process")
+        return {'total_videos': 0, 'videos': []}
 
     # Get YouTube API key from environment
     youtube_api_key = os.getenv('YOUTUBE_API_KEY')
@@ -160,13 +162,13 @@ def check_stream_status(plenary_videos):
         # Build YouTube service with API key (no OAuth needed for public data)
         youtube = build('youtube', 'v3', developerKey=youtube_api_key)
 
-        finished_streams = []
+        enriched_videos = []
         for video in plenary_videos['videos']:
             video_id = video['video_id']
 
             # Get detailed video information
             video_response = youtube.videos().list(
-                part='snippet,contentDetails,liveStreamingDetails,status',
+                part='snippet,contentDetails,liveStreamingDetails',
                 id=video_id
             ).execute()
 
@@ -175,15 +177,7 @@ def check_stream_status(plenary_videos):
                 continue
 
             video_details = video_response['items'][0]
-
-            # Check if it's a finished live stream
             live_details = video_details.get('liveStreamingDetails', {})
-            is_live = video_details['snippet'].get('liveBroadcastContent') == 'live'
-            is_upcoming = video_details['snippet'].get('liveBroadcastContent') == 'upcoming'
-
-            if is_live or is_upcoming:
-                logging.info(f"Skipping live/upcoming stream: {video['title']}")
-                continue
 
             # Extract duration
             duration_iso = video_details['contentDetails']['duration']
@@ -198,29 +192,101 @@ def check_stream_status(plenary_videos):
             else:
                 duration_seconds = 0
 
-            finished_stream = {
+            enriched_video = {
                 **video,
                 'duration_seconds': duration_seconds,
                 'duration_formatted': f"{hours}:{minutes:02d}:{seconds:02d}",
                 'actual_start_time': live_details.get('actualStartTime'),
                 'actual_end_time': live_details.get('actualEndTime'),
-                'is_finished': True,
                 'youtube_url': f"https://www.youtube.com/watch?v={video_id}",
             }
 
-            logging.info(f"Finished stream found: {video['title']} - Duration: {finished_stream['duration_formatted']}")
-            finished_streams.append(finished_stream)
+            logging.info(f"Video details: {video['title']} - Duration: {enriched_video['duration_formatted']}")
+            enriched_videos.append(enriched_video)
 
-        logging.info(f"Total finished streams: {len(finished_streams)}")
+        logging.info(f"Total videos enriched: {len(enriched_videos)}")
         return {
-            'total_finished': len(finished_streams),
-            'videos': finished_streams
+            'total_videos': len(enriched_videos),
+            'videos': enriched_videos
         }
 
     except (ValueError, RuntimeError):
         # Re-raise known errors
         raise
     except Exception as e:
-        error_msg = f"Error checking stream status: {e}"
+        error_msg = f"Error getting video details: {e}"
+        logging.error(error_msg)
+        raise RuntimeError(error_msg) from e
+
+
+def get_video_descriptions(plenary_videos):
+    """
+    Get full descriptions for videos.
+
+    The search API only returns truncated descriptions, so we need to fetch
+    full descriptions separately.
+
+    Args:
+        plenary_videos: Results from filter_plenary_session_videos
+
+    Returns:
+        Dict with video descriptions:
+        - total_videos: Number of videos
+        - videos: List with video_id and full description
+    """
+    if not plenary_videos or not plenary_videos.get('videos'):
+        logging.warning("No plenary videos to process")
+        return {'total_videos': 0, 'videos': []}
+
+    # Get YouTube API key from environment
+    youtube_api_key = os.getenv('YOUTUBE_API_KEY')
+
+    if not youtube_api_key:
+        error_msg = "YOUTUBE_API_KEY environment variable not set"
+        logging.error(error_msg)
+        raise ValueError(error_msg)
+
+    try:
+        # Build YouTube service with API key
+        youtube = build('youtube', 'v3', developerKey=youtube_api_key)
+
+        video_descriptions = []
+        for video in plenary_videos['videos']:
+            video_id = video['video_id']
+
+            # Get full video description
+            video_response = youtube.videos().list(
+                part='snippet',
+                id=video_id
+            ).execute()
+
+            if not video_response.get('items'):
+                logging.warning(f"Video not found: {video_id}")
+                continue
+
+            video_details = video_response['items'][0]
+            full_description = video_details['snippet'].get('description', '')
+
+            video_desc_data = {
+                'video_id': video_id,
+                'title': video['title'],
+                'description': full_description,
+                'description_length': len(full_description)
+            }
+
+            logging.info(f"Description fetched: {video['title']} ({len(full_description)} chars)")
+            video_descriptions.append(video_desc_data)
+
+        logging.info(f"Total descriptions fetched: {len(video_descriptions)}")
+        return {
+            'total_videos': len(video_descriptions),
+            'videos': video_descriptions
+        }
+
+    except (ValueError, RuntimeError):
+        # Re-raise known errors
+        raise
+    except Exception as e:
+        error_msg = f"Error getting video descriptions: {e}"
         logging.error(error_msg)
         raise RuntimeError(error_msg) from e

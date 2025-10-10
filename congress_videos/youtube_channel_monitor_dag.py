@@ -103,8 +103,8 @@ with DAG(
         plenary_videos = ti.xcom_pull(key='plenary_videos')
 
         if plenary_videos and plenary_videos.get('total_matches', 0) > 0:
-            logging.info(f"Found {plenary_videos['total_matches']} plenary session(s). Continuing to check stream status.")
-            return 'check_stream_status'
+            logging.info(f"Found {plenary_videos['total_matches']} plenary session(s). Continuing to process.")
+            return ['get_video_details', 'get_video_descriptions']
         else:
             logging.info("No plenary sessions found for target date. Ending DAG execution.")
             return 'no_plenary_sessions'
@@ -114,17 +114,42 @@ with DAG(
         python_callable=check_plenary_found,
     )
 
-    # Step 3: Check stream status (finished vs live)
-    t3 = PythonOperator(
-        task_id='check_stream_status',
+    # Step 3a: Get video details (duration, timing, etc.)
+    # Note: We already filtered for completed streams, no need to check status again
+    t3a = PythonOperator(
+        task_id='get_video_details',
         python_callable=lambda ti: xcom_task(
             ti,
-            lambda: yt_channel.check_stream_status(
+            lambda: yt_channel.get_video_details(
                 ti.xcom_pull(key='plenary_videos')
             ),
-            'finished_streams'
+            'video_details'
         ),
     )
+
+    # Step 3b: Get full video descriptions (runs in parallel with get_video_details)
+    t3b = PythonOperator(
+        task_id='get_video_descriptions',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: yt_channel.get_video_descriptions(
+                ti.xcom_pull(key='plenary_videos')
+            ),
+            'video_descriptions'
+        ),
+    )
+
+    # Step 3c: Download video from YouTube (FUTURE - currently commented)
+    # t3c = PythonOperator(
+    #     task_id='download_video',
+    #     python_callable=lambda ti: xcom_task(
+    #         ti,
+    #         lambda: yt_channel.download_youtube_video(
+    #             ti.xcom_pull(key='plenary_videos')
+    #         ),
+    #         'downloaded_videos'
+    #     ),
+    # )
 
     # End task for when no plenary sessions found
     t_end = PythonOperator(
@@ -132,11 +157,15 @@ with DAG(
         python_callable=lambda: logging.info("No plenary sessions found. DAG execution stopped."),
     )
 
-    # Step 4: Save to database (for future download)
+    # Step 4: Save to database (FUTURE - currently commented)
     # t4_db = PostgreSQLOperator(
     #     task_id='save_youtube_videos_to_db',
     #     operation='save_youtube_source_videos',
-    #     xcom_keys={'finished_streams': 'finished_streams'},
+    #     xcom_keys={
+    #         'video_details': 'video_details',
+    #         'video_descriptions': 'video_descriptions',
+    #         'downloaded_videos': 'downloaded_videos'
+    #     },
     #     output_xcom_key='db_youtube_videos'
     # )
 
@@ -146,5 +175,6 @@ with DAG(
     # Branch: no plenary sessions found
     t2a >> t_end
 
-    # Branch: plenary sessions found - continue checking stream status
-    t2a >> t3  # >> t4_db
+    # Branch: plenary sessions found - process in parallel
+    # get_video_details and get_video_descriptions run in parallel
+    t2a >> [t3a, t3b]  # >> t3c (when uncommented, add to list for parallel execution)
