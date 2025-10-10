@@ -140,7 +140,7 @@ def download_audio_only(
         "quiet": False,
     }
 
-    # Add format conversion if requested
+    # Add format conversion if requested AND ffmpeg is available
     if convert_to_mp3 or audio_format == "mp3":
         ydl_opts["postprocessors"] = [
             {
@@ -151,13 +151,9 @@ def download_audio_only(
         ]
     elif audio_format == "webm":
         # Prefer webm audio (lighter and faster)
+        # Download raw webm audio without post-processing to avoid ffmpeg dependency
         ydl_opts["format"] = "bestaudio[ext=webm]/bestaudio"
-        ydl_opts["postprocessors"] = [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "opus",  # Opus codec in webm container
-            }
-        ]
+        # Don't add postprocessors - just download the raw audio file
 
     result = {
         "success": False,
@@ -189,6 +185,29 @@ def download_audio_only(
 
                 logger.info(f"✅ Audio downloaded: {file_path.name}")
                 logger.info(f"   Size: {file_size_mb:.2f} MB")
+            else:
+                # File might have been downloaded with a different name
+                # Try to find the downloaded file in the output directory
+                logger.warning(f"Expected file not found: {output_file}")
+                logger.info("Searching for downloaded audio file...")
+
+                video_id = info.get('id')
+                audio_files = list(Path(output_dir).glob(f"{video_id}*_audio.*"))
+
+                if audio_files:
+                    file_path = audio_files[0]
+                    file_size_mb = file_path.stat().st_size / (1024 * 1024)
+
+                    result["success"] = True
+                    result["file_path"] = str(file_path)
+                    result["file_size_mb"] = round(file_size_mb, 2)
+                    result["duration"] = info.get("duration")
+
+                    logger.info(f"✅ Found downloaded audio: {file_path.name}")
+                    logger.info(f"   Size: {file_size_mb:.2f} MB")
+                else:
+                    result["error"] = f"Audio file not found after download: {output_file}"
+                    logger.error(result["error"])
 
     except Exception as e:
         result["error"] = f"Error: {str(e)}"
