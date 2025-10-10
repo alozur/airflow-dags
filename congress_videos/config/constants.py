@@ -19,6 +19,14 @@ LEGISLATURE_ID = 15
 ORGANO_ID = 400
 
 # -------------------------
+# YouTube Channel Configuration
+# -------------------------
+# Official Congress YouTube channel
+YOUTUBE_CHANNEL_ID = "UCZ3NjNPRKSS7wpeAJ346r_A"  # @CanalParlamento-Congreso_Es
+YOUTUBE_CHANNEL_HANDLE = "@CanalParlamento-Congreso_Es"
+TARGET_VIDEO_TITLE = "Sesión Plenaria (original)"  # Title to filter for monitoring
+
+# -------------------------
 # Global Settings
 # -------------------------
 # Disable SSL warnings for congressional website
