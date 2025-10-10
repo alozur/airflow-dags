@@ -27,13 +27,18 @@ def fetch_youtube_channel_videos(channel_id: str, max_results: int = 10):
         Dict with video information:
         - total_videos: Number of videos found
         - videos: List of video details
+
+    Raises:
+        ValueError: If API key is missing
+        RuntimeError: If channel not found or API request fails
     """
     # Get YouTube API key from environment
     youtube_api_key = os.getenv('YOUTUBE_API_KEY')
 
     if not youtube_api_key:
-        logging.error("YOUTUBE_API_KEY environment variable not set")
-        return {'total_videos': 0, 'videos': [], 'error': 'Missing API key'}
+        error_msg = "YOUTUBE_API_KEY environment variable not set"
+        logging.error(error_msg)
+        raise ValueError(error_msg)
 
     logging.info(f"Fetching videos from YouTube channel: {channel_id}")
 
@@ -48,8 +53,9 @@ def fetch_youtube_channel_videos(channel_id: str, max_results: int = 10):
         ).execute()
 
         if not channel_response.get('items'):
-            logging.error(f"Channel not found: {channel_id}")
-            return {'total_videos': 0, 'videos': []}
+            error_msg = f"Channel not found: {channel_id}"
+            logging.error(error_msg)
+            raise RuntimeError(error_msg)
 
         # Get recent videos from the channel
         # Note: This gets all uploads, not just live streams
@@ -81,9 +87,13 @@ def fetch_youtube_channel_videos(channel_id: str, max_results: int = 10):
             'videos': videos
         }
 
+    except (ValueError, RuntimeError):
+        # Re-raise known errors
+        raise
     except Exception as e:
-        logging.error(f"Error fetching YouTube videos: {e}")
-        return {'total_videos': 0, 'videos': [], 'error': str(e)}
+        error_msg = f"Error fetching YouTube videos: {e}"
+        logging.error(error_msg)
+        raise RuntimeError(error_msg) from e
 
 
 def filter_plenary_session_videos(channel_videos, target_title: str, target_date: str):
@@ -99,10 +109,14 @@ def filter_plenary_session_videos(channel_videos, target_title: str, target_date
         Dict with filtered videos:
         - total_matches: Number of matching videos
         - videos: List of matching video details
+
+    Raises:
+        ValueError: If channel_videos is invalid or empty
     """
     if not channel_videos or not channel_videos.get('videos'):
-        logging.warning("No channel videos to filter")
-        return {'total_matches': 0, 'videos': []}
+        error_msg = "No channel videos to filter - previous task may have failed"
+        logging.error(error_msg)
+        raise ValueError(error_msg)
 
     target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
     logging.info(f"Filtering for videos with title containing '{target_title}' on {target_date}")
@@ -139,17 +153,23 @@ def check_stream_status(plenary_videos):
         Dict with finished stream information:
         - total_finished: Number of finished streams
         - videos: List of finished stream details with duration, etc.
+
+    Raises:
+        ValueError: If plenary_videos is invalid, empty, or API key is missing
+        RuntimeError: If API request fails
     """
     if not plenary_videos or not plenary_videos.get('videos'):
-        logging.warning("No plenary videos to check")
-        return {'total_finished': 0, 'videos': []}
+        error_msg = "No plenary videos to check - previous task may have failed"
+        logging.error(error_msg)
+        raise ValueError(error_msg)
 
     # Get YouTube API key from environment
     youtube_api_key = os.getenv('YOUTUBE_API_KEY')
 
     if not youtube_api_key:
-        logging.error("YOUTUBE_API_KEY environment variable not set")
-        return {'total_finished': 0, 'videos': [], 'error': 'Missing API key'}
+        error_msg = "YOUTUBE_API_KEY environment variable not set"
+        logging.error(error_msg)
+        raise ValueError(error_msg)
 
     try:
         # Build YouTube service with API key (no OAuth needed for public data)
@@ -212,6 +232,10 @@ def check_stream_status(plenary_videos):
             'videos': finished_streams
         }
 
+    except (ValueError, RuntimeError):
+        # Re-raise known errors
+        raise
     except Exception as e:
-        logging.error(f"Error checking stream status: {e}")
-        return {'total_finished': 0, 'videos': [], 'error': str(e)}
+        error_msg = f"Error checking stream status: {e}"
+        logging.error(error_msg)
+        raise RuntimeError(error_msg) from e
