@@ -30,7 +30,7 @@ from congress_videos.config.constants import (
     YOUTUBE_CHANNEL_HANDLE,
     TARGET_VIDEO_TITLE
 )
-from congress_videos.modules import youtube_channel as yt_channel
+from congress_videos.modules import youtube as yt_channel
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from utils.airflow_helpers import xcom_task
 from utils.env_loader import load_env_if_local
@@ -136,6 +136,32 @@ with DAG(
                 ti.xcom_pull(key='plenary_videos')
             ),
             'video_descriptions'
+        ),
+    )
+
+    # Step 3c: Download video from YouTube (runs in parallel with audio extraction after video details)
+    t3c = PythonOperator(
+        task_id='download_video_from_youtube',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: yt_channel.download_video_from_youtube(
+                ti.xcom_pull(key='video_details'),
+                target_date=context["params"].get("target_date")
+            ),
+            'downloaded_videos'
+        ),
+    )
+
+    # Step 3d: Extract audio from YouTube (runs in parallel with video download after video details)
+    t3d = PythonOperator(
+        task_id='extract_audio_from_youtube',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: yt_channel.extract_audio_from_youtube(
+                ti.xcom_pull(key='video_details'),
+                target_date=context["params"].get("target_date")
+            ),
+            'extracted_audio'
         ),
     )
 
@@ -245,6 +271,9 @@ with DAG(
     # get_video_details and get_video_descriptions run in parallel
     t2a >> [t3a, t3b]
 
+    # After getting video details, download video and extract audio in parallel
+    t3a >> [t3c, t3d]
+
     # After getting descriptions, parse links from description
     t3b >> t4
 
@@ -254,6 +283,3 @@ with DAG(
     # After downloading agenda, extract session date info and then agenda section
     # These run sequentially since agenda_section depends on session_date
     t5b >> t5c >> t5d
-
-    # Future: Add download video task
-    # t2a >> t6 (can run in parallel with t3a, t3b)

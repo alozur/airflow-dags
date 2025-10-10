@@ -11,8 +11,7 @@ For new code, import from:
 - congress_videos.modules.web_scraping
 - congress_videos.modules.video_extraction
 - congress_videos.modules.file_operations
-- congress_videos.modules.youtube_ai
-- congress_videos.modules.youtube_upload
+- congress_videos.modules.youtube (youtube_ai, youtube_upload, youtube_channel, download)
 """
 
 import logging
@@ -56,7 +55,7 @@ from congress_videos.modules.file_operations import (
 )
 
 # Re-export YouTube AI functions
-from congress_videos.modules.youtube_ai import (
+from congress_videos.modules.youtube import (
     evaluate_video_interest_with_ai,
     generate_youtube_description,
     generate_youtube_metadata_for_selected_videos,
@@ -66,10 +65,10 @@ from congress_videos.modules.youtube_ai import (
 )
 
 # Re-export YouTube upload functions
-from congress_videos.modules.youtube_upload import prepare_youtube_upload_config
+from congress_videos.modules.youtube import prepare_youtube_upload_config
 
 # Private functions (internal use only - not re-exported)
-from congress_videos.modules.youtube_ai import (
+from congress_videos.modules.youtube.youtube_ai import (
     _evaluate_intervention_interest,
     _evaluate_main_topic_interest,
 )

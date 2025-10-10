@@ -35,7 +35,7 @@ from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 
 from congress_videos.modules import utils as cv_utils
-from congress_videos.modules import youtube_upload as yt_upload
+from congress_videos.modules import youtube as yt_upload
 from congress_videos.modules import thumbnail_generator as thumb_gen
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from utils.airflow_helpers import ensure_project_data_directory, xcom_task
