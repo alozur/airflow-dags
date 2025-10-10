@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from congress_videos.config.paths import get_session_path, ensure_directory_exists
+from congress_videos.config.paths import get_session_path, get_topic_path, get_video_path, ensure_directory_exists
 
 
 def create_session_folder(session_number, base_data_path=None):
@@ -285,19 +285,21 @@ def download_videos_for_upload(top_videos, data_directory_path):
         video_url = video.get("video_url")
         session_number = video.get("session_number")
 
-        # Create session folder
-        session_folder = create_session_folder(str(session_number))
+        # Create topic folder using centralized path configuration
+        # Structure: {VIDEOS_DIR}/{session_number}/{entry_id}/video.mp4
+        topic_folder = get_topic_path(str(session_number), entry_id)
+        ensure_directory_exists(topic_folder)
 
-        # Download video
+        # Download video to correct location
         logging.info(f"Downloading video {entry_id} from {video_url}")
-        output_path = os.path.join(session_folder, f"{entry_id}.mp4")
+        output_path = get_video_path(str(session_number), entry_id, "video.mp4")
         download_result = download_video_file(video_url, output_path)
 
         download_detail = {
             "entry_id": entry_id,
             "success": download_result.get("success", False),
             "file_path": download_result.get("file_path"),
-            "file_size": download_result.get("file_size"),
+            "file_size": download_result.get("file_size_bytes"),  # Match key from download_video_file
             "duration": download_result.get("duration"),
             "error": download_result.get("error"),
         }

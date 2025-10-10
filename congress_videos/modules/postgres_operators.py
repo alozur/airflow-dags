@@ -355,7 +355,20 @@ class PostgreSQLOperator(BaseOperator):
                     entry_id = detail.get('entry_id')
                     if entry_id:
                         if detail.get('success'):
+                            # Update queue status
                             db.update_upload_queue_status(entry_id, 'processing')
+
+                            # Also update video_file_path in video_topics table
+                            file_path = detail.get('file_path')
+                            file_size = detail.get('file_size')
+                            duration = detail.get('duration')
+                            if file_path:
+                                try:
+                                    db.update_download_info(entry_id, file_path, file_size, duration)
+                                    print(f"✅ Saved video path to database: {file_path}")
+                                except Exception as e:
+                                    print(f"⚠️ Warning: Failed to update video_file_path for {entry_id}: {e}")
+
                             updated_count += 1
                             print(f"✅ Updated queue status to 'processing' for {entry_id}")
                         else:
