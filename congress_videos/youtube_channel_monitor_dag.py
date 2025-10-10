@@ -18,11 +18,12 @@ This approach provides higher quality videos compared to downloading from the
 Congress website directly.
 """
 
+import logging
 import os
 from datetime import datetime, timedelta
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.operators.python import BranchPythonOperator, PythonOperator
 
 from congress_videos.config.constants import (
     YOUTUBE_CHANNEL_ID,
@@ -96,6 +97,23 @@ with DAG(
         ),
     )
 
+    # Step 2a: Check if any plenary sessions were found
+    def check_plenary_found(ti):
+        """Branch based on whether plenary sessions were found."""
+        plenary_videos = ti.xcom_pull(key='plenary_videos')
+
+        if plenary_videos and plenary_videos.get('total_matches', 0) > 0:
+            logging.info(f"Found {plenary_videos['total_matches']} plenary session(s). Continuing to check stream status.")
+            return 'check_stream_status'
+        else:
+            logging.info("No plenary sessions found for target date. Ending DAG execution.")
+            return 'no_plenary_sessions'
+
+    t2a = BranchPythonOperator(
+        task_id='check_if_plenary_found',
+        python_callable=check_plenary_found,
+    )
+
     # Step 3: Check stream status (finished vs live)
     t3 = PythonOperator(
         task_id='check_stream_status',
@@ -108,6 +126,12 @@ with DAG(
         ),
     )
 
+    # End task for when no plenary sessions found
+    t_end = PythonOperator(
+        task_id='no_plenary_sessions',
+        python_callable=lambda: logging.info("No plenary sessions found. DAG execution stopped."),
+    )
+
     # Step 4: Save to database (for future download)
     # t4_db = PostgreSQLOperator(
     #     task_id='save_youtube_videos_to_db',
@@ -117,4 +141,10 @@ with DAG(
     # )
 
     # Task dependencies
-    t1 >> t2 >> t3  # >> t4_db
+    t1 >> t2 >> t2a
+
+    # Branch: no plenary sessions found
+    t2a >> t_end
+
+    # Branch: plenary sessions found - continue checking stream status
+    t2a >> t3  # >> t4_db
