@@ -216,6 +216,150 @@ def download_audio_only(
     return result
 
 
+def download_audio_in_chunks(
+    youtube_url: str,
+    output_dir: str,
+    chunk_duration_minutes: int = 10,
+    audio_format: str = "webm",
+) -> Dict[str, any]:
+    """
+    Download audio from YouTube and split into time-based chunks.
+
+    This uses yt-dlp to download the full audio, then gets duration info
+    to create separate chunk downloads. Works without ffmpeg.
+
+    Args:
+        youtube_url: YouTube video URL
+        output_dir: Directory to save audio chunks
+        chunk_duration_minutes: Duration of each chunk in minutes (default: 10)
+        audio_format: Audio format to use (default: "webm")
+
+    Returns:
+        Dictionary with chunk download info:
+        {
+            "success": bool,
+            "total_chunks": int,
+            "total_duration": int (seconds),
+            "chunks": [
+                {
+                    "chunk_index": int,
+                    "file_path": str,
+                    "start_time": int (seconds),
+                    "end_time": int (seconds),
+                    "duration": int (seconds),
+                    "file_size_mb": float
+                },
+                ...
+            ],
+            "error": str (if failed)
+        }
+    """
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    result = {
+        "success": False,
+        "total_chunks": 0,
+        "total_duration": 0,
+        "chunks": [],
+        "error": None,
+    }
+
+    try:
+        # First, get video info without downloading
+        logger.info(f"Getting video info from: {youtube_url}")
+
+        ydl_opts_info = {
+            "quiet": True,
+            "no_warnings": True,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
+            info = ydl.extract_info(youtube_url, download=False)
+            video_id = info.get('id')
+            video_title = info.get('title', 'unknown')
+            total_duration = info.get('duration', 0)
+
+            if not total_duration:
+                result["error"] = "Could not get video duration"
+                logger.error(result["error"])
+                return result
+
+            result["total_duration"] = total_duration
+            logger.info(f"Video duration: {total_duration}s ({total_duration/60:.2f} minutes)")
+
+        # Calculate chunks
+        chunk_duration_seconds = chunk_duration_minutes * 60
+        num_chunks = (total_duration + chunk_duration_seconds - 1) // chunk_duration_seconds
+
+        logger.info(f"Will download {num_chunks} chunks of ~{chunk_duration_minutes} minutes each")
+
+        # Create chunks subdirectory
+        chunks_dir = Path(output_dir) / "chunks"
+        chunks_dir.mkdir(parents=True, exist_ok=True)
+
+        # Download each chunk
+        for i in range(num_chunks):
+            start_time = i * chunk_duration_seconds
+            end_time = min((i + 1) * chunk_duration_seconds, total_duration)
+
+            # Format: HH:MM:SS
+            start_str = f"{start_time//3600:02d}:{(start_time%3600)//60:02d}:{start_time%60:02d}"
+            end_str = f"{end_time//3600:02d}:{(end_time%3600)//60:02d}:{end_time%60:02d}"
+
+            chunk_filename = f"{video_id}_chunk_{i:03d}.{audio_format}"
+            chunk_path = chunks_dir / chunk_filename
+
+            logger.info(f"Downloading chunk {i+1}/{num_chunks}: {start_str} - {end_str}")
+
+            ydl_opts_chunk = {
+                "format": "bestaudio[ext=webm]/bestaudio",
+                "outtmpl": str(chunk_path),
+                "quiet": False,
+                "download_ranges": yt_dlp.utils.download_range_func(None, [(start_time, end_time)]),
+                "force_keyframes_at_cuts": True,
+            }
+
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts_chunk) as ydl:
+                    ydl.download([youtube_url])
+
+                if chunk_path.exists():
+                    file_size_mb = chunk_path.stat().st_size / (1024 * 1024)
+
+                    chunk_info = {
+                        "chunk_index": i,
+                        "file_path": str(chunk_path),
+                        "start_time": start_time,
+                        "end_time": end_time,
+                        "duration": end_time - start_time,
+                        "file_size_mb": round(file_size_mb, 2),
+                    }
+
+                    result["chunks"].append(chunk_info)
+                    logger.info(f"✅ Chunk {i+1} downloaded: {chunk_filename} ({file_size_mb:.2f} MB)")
+                else:
+                    logger.warning(f"Chunk {i+1} file not found: {chunk_path}")
+
+            except Exception as e:
+                logger.error(f"Error downloading chunk {i+1}: {e}")
+                # Continue with next chunk
+
+        result["total_chunks"] = len(result["chunks"])
+        result["success"] = result["total_chunks"] > 0
+
+        if result["success"]:
+            logger.info(f"✅ Successfully downloaded {result['total_chunks']}/{num_chunks} chunks")
+        else:
+            result["error"] = "No chunks were downloaded successfully"
+            logger.error(result["error"])
+
+    except Exception as e:
+        result["error"] = f"Error: {str(e)}"
+        logger.error(result["error"], exc_info=True)
+
+    return result
+
+
 def merge_video_audio_ffmpeg(
     video_path: str,
     audio_path: str,

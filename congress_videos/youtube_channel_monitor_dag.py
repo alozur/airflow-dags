@@ -66,6 +66,7 @@ with DAG(
     params={  # Default to yesterday
         "target_date": yesterday_str,
         "max_videos": 10,  # Maximum number of videos to check
+        "chunk_duration_minutes": 10,  # Duration of each audio chunk in minutes
         "isTesting": IS_DEVELOPMENT  # True in development, False in production
     }
 ) as dag:
@@ -159,7 +160,8 @@ with DAG(
             ti,
             lambda: yt_channel.extract_audio_from_youtube(
                 ti.xcom_pull(key='video_details'),
-                target_date=context["params"].get("target_date")
+                target_date=context["params"].get("target_date"),
+                chunk_duration_minutes=context["params"].get("chunk_duration_minutes", 10)
             ),
             'extracted_audio'
         ),
@@ -261,7 +263,7 @@ with DAG(
 
     # After getting video details, download video and extract audio in parallel
     # t3a >> [t3c, t3d] commented out video download for now
-    t3a >>  t3d
+    t3a >> t3d
 
     # After getting descriptions, parse links from description
     t3b >> t4

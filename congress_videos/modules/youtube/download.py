@@ -12,7 +12,8 @@ from congress_videos.config.paths import (
 )
 from utils.youtube_downloader import (
     download_youtube_video_for_upload,
-    download_audio_only
+    download_audio_only,
+    download_audio_in_chunks
 )
 
 
@@ -100,20 +101,22 @@ def download_video_from_youtube(video_details, target_date: str):
     }
 
 
-def extract_audio_from_youtube(video_details, target_date: str):
+def extract_audio_from_youtube(video_details, target_date: str, chunk_duration_minutes: int = None):
     """
-    Extract audio from YouTube video.
+    Extract audio from YouTube video, optionally split into chunks.
 
-    Uses yt-dlp to download audio-only stream and optionally convert to MP3.
+    Uses yt-dlp to download audio-only stream. If chunk_duration_minutes is provided,
+    downloads audio in time-based chunks directly from YouTube (no ffmpeg needed).
 
     Args:
         video_details: Results from get_video_details (contains youtube_url)
         target_date: Target date in YYYY-MM-DD format (for organizing downloads)
+        chunk_duration_minutes: If provided, split audio into chunks of this duration
 
     Returns:
         Dict with extraction results:
         - total_extracted: Number of audio files extracted
-        - videos: List with video_id, audio_file_path, file_size_mb
+        - videos: List with video_id, audio_file_path OR chunks info, file_size_mb
     """
     if not video_details or not video_details.get('videos'):
         logging.warning("No video details to extract audio")
@@ -138,36 +141,73 @@ def extract_audio_from_youtube(video_details, target_date: str):
             video_download_dir = get_download_video_path(target_date, video_id)
             ensure_directory_exists(video_download_dir)
 
-            logging.info(f"Extracting audio from YouTube: {youtube_url}")
+            # Check if chunking is requested
+            if chunk_duration_minutes:
+                logging.info(f"Extracting audio in chunks from YouTube: {youtube_url}")
+                logging.info(f"Chunk duration: {chunk_duration_minutes} minutes")
 
-            # Extract audio using youtube_downloader utility
-            result = download_audio_only(
-                youtube_url=youtube_url,
-                output_dir=video_download_dir,
-                convert_to_mp3=False,  # Don't convert to MP3
-                audio_format="webm"  # Use webm (lighter format)
-            )
+                # Download audio in chunks
+                result = download_audio_in_chunks(
+                    youtube_url=youtube_url,
+                    output_dir=video_download_dir,
+                    chunk_duration_minutes=chunk_duration_minutes,
+                    audio_format="webm"
+                )
 
-            if result['success']:
-                audio_data = {
-                    'video_id': video_id,
-                    'video_title': video.get('title'),
-                    'target_date': target_date,
-                    'youtube_url': youtube_url,
-                    'audio_file_path': result['file_path'],
-                    'file_size_mb': result['file_size_mb'],
-                    'duration': result['duration']
-                }
-                logging.info(f"✅ Audio extracted: {result['file_path']} ({result['file_size_mb']} MB)")
-                extracted_audios.append(audio_data)
+                if result['success']:
+                    audio_data = {
+                        'video_id': video_id,
+                        'video_title': video.get('title'),
+                        'target_date': target_date,
+                        'youtube_url': youtube_url,
+                        'chunked': True,
+                        'total_chunks': result['total_chunks'],
+                        'total_duration': result['total_duration'],
+                        'chunks': result['chunks'],
+                        'file_size_mb': sum(c['file_size_mb'] for c in result['chunks'])
+                    }
+                    logging.info(f"✅ Audio extracted in {result['total_chunks']} chunks")
+                    extracted_audios.append(audio_data)
+                else:
+                    logging.error(f"Failed to extract audio chunks {video_id}: {result.get('error')}")
+                    extracted_audios.append({
+                        'video_id': video_id,
+                        'video_title': video.get('title'),
+                        'youtube_url': youtube_url,
+                        'error': result.get('error')
+                    })
             else:
-                logging.error(f"Failed to extract audio {video_id}: {result.get('error')}")
-                extracted_audios.append({
-                    'video_id': video_id,
-                    'video_title': video.get('title'),
-                    'youtube_url': youtube_url,
-                    'error': result.get('error')
-                })
+                logging.info(f"Extracting audio from YouTube: {youtube_url}")
+
+                # Extract audio as single file using youtube_downloader utility
+                result = download_audio_only(
+                    youtube_url=youtube_url,
+                    output_dir=video_download_dir,
+                    convert_to_mp3=False,  # Don't convert to MP3
+                    audio_format="webm"  # Use webm (lighter format)
+                )
+
+                if result['success']:
+                    audio_data = {
+                        'video_id': video_id,
+                        'video_title': video.get('title'),
+                        'target_date': target_date,
+                        'youtube_url': youtube_url,
+                        'chunked': False,
+                        'audio_file_path': result['file_path'],
+                        'file_size_mb': result['file_size_mb'],
+                        'duration': result['duration']
+                    }
+                    logging.info(f"✅ Audio extracted: {result['file_path']} ({result['file_size_mb']} MB)")
+                    extracted_audios.append(audio_data)
+                else:
+                    logging.error(f"Failed to extract audio {video_id}: {result.get('error')}")
+                    extracted_audios.append({
+                        'video_id': video_id,
+                        'video_title': video.get('title'),
+                        'youtube_url': youtube_url,
+                        'error': result.get('error')
+                    })
 
         except Exception as e:
             logging.error(f"Error extracting audio {video_id}: {e}")
