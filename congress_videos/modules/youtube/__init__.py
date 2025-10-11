@@ -60,18 +60,6 @@ def __getattr__(name):
         from .youtube_upload import prepare_youtube_upload_config
         return prepare_youtube_upload_config
 
-    # transcription functions
-    elif name in ['transcribe_audio_with_timestamps', 'transcribe_video_audio',
-                  'find_segments_by_keyword', 'export_transcript_to_srt', 'export_transcript_to_json']:
-        from .transcription import (
-            transcribe_audio_with_timestamps,
-            transcribe_video_audio,
-            find_segments_by_keyword,
-            export_transcript_to_srt,
-            export_transcript_to_json,
-        )
-        return locals()[name]
-
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 __all__ = [
@@ -97,10 +85,4 @@ __all__ = [
     'generate_youtube_metadata_for_selected_videos',
     # youtube_upload functions
     'prepare_youtube_upload_config',
-    # transcription functions
-    'transcribe_audio_with_timestamps',
-    'transcribe_video_audio',
-    'find_segments_by_keyword',
-    'export_transcript_to_srt',
-    'export_transcript_to_json',
 ]

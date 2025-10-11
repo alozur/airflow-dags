@@ -228,43 +228,6 @@ with DAG(
         ),
     )
 
-    # Step 6: Transcribe audio with timestamps (after audio extraction)
-    t6 = PythonOperator(
-        task_id='transcribe_audio_with_timestamps',
-        python_callable=lambda ti, **context: xcom_task(
-            ti,
-            lambda: yt_channel.transcribe_video_audio(
-                ti.xcom_pull(key='extracted_audio'),
-                target_date=context["params"].get("target_date")
-            ),
-            'transcription_results'
-        ),
-    )
-
-    # Step 6a: Export transcripts to SRT format (saves in video folder)
-    t6a = PythonOperator(
-        task_id='export_transcripts_to_srt',
-        python_callable=lambda ti: xcom_task(
-            ti,
-            lambda: yt_channel.export_transcript_to_srt(
-                ti.xcom_pull(key='transcription_results')
-            ),
-            'srt_export_results'
-        ),
-    )
-
-    # Step 6b: Export transcripts to JSON format (saves in video folder)
-    t6b = PythonOperator(
-        task_id='export_transcripts_to_json',
-        python_callable=lambda ti: xcom_task(
-            ti,
-            lambda: yt_channel.export_transcript_to_json(
-                ti.xcom_pull(key='transcription_results')
-            ),
-            'json_export_results'
-        ),
-    )
-
     # End task for when no plenary sessions found
     t_end = PythonOperator(
         task_id='no_plenary_sessions',
@@ -299,12 +262,6 @@ with DAG(
     # After getting video details, download video and extract audio in parallel
     # t3a >> [t3c, t3d] commented out video download for now
     t3a >>  t3d
-
-    # After audio extraction, transcribe with timestamps
-    t3d >> t6
-
-    # After transcription, export to SRT and JSON formats in parallel
-    t6 >> [t6a, t6b]
 
     # After getting descriptions, parse links from description
     t3b >> t4
