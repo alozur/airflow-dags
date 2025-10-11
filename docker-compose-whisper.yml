@@ -1,0 +1,37 @@
+networks:
+  whisper_network:
+    driver: bridge
+    name: whisper_network
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+          gateway: 172.21.0.1
+
+volumes:
+  whisper_models:
+  whisper_audio:
+
+services:
+  whisper-api:
+    image: fedirz/faster-whisper-server:latest-cpu
+    container_name: whisper-api
+    restart: unless-stopped
+    ports:
+      - "9000:8000"  # External port 9000, internal 8000
+    volumes:
+      # Model cache (downloaded once, reused)
+      - whisper_models:/root/.cache/huggingface
+      # Audio files directory (shared with other projects via NAS)
+      - /volume1/docker/whisper/audio:/app/audio
+    environment:
+      # Whisper model size: tiny, base, small, medium, large-v2, large-v3
+      # For 4GB RAM NAS: use 'base' or 'small' (small uses ~1.5GB, base uses ~500MB)
+      - WHISPER_MODEL=base
+      # Number of CPU threads to use (1 for 4GB RAM NAS to save memory)
+      - WHISPER_NUM_WORKERS=1
+      # Language (auto-detect if not specified)
+      - WHISPER_LANGUAGE=auto
+    networks:
+      - whisper_network
+    mem_limit: 1g
+    mem_reservation: 512m

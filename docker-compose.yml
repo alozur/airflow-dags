@@ -9,6 +9,8 @@ networks:
       config:
         - subnet: 172.20.0.0/16
           gateway: 172.20.0.1
+  whisper_network:
+    external: true
 
 volumes:
   airflow_logs:
@@ -53,6 +55,7 @@ x-airflow-common:
   networks:
     - postgres_infra_network
     - airflow_network
+    - whisper_network
   mem_limit: 1.5g
   mem_reservation: 1g
 
@@ -92,6 +95,7 @@ services:
     networks:
       - postgres_infra_network
       - airflow_network
+      - whisper_network
 
   airflow-webserver:
     <<: *airflow-common
