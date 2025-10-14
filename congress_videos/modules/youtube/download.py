@@ -255,7 +255,7 @@ def extract_audio_from_youtube(video_details, target_date: str, chunk_duration_m
     }
 
 
-def transcribe_audio_with_whisper(extracted_audio, language: str = "es"):
+def transcribe_audio_with_whisper(extracted_audio, language: str = "es", timeout: int = 3600):
     """
     Transcribe extracted audio using Whisper API.
 
@@ -265,6 +265,7 @@ def transcribe_audio_with_whisper(extracted_audio, language: str = "es"):
         extracted_audio: Results from extract_audio_from_youtube
                         (contains audio files or chunks to transcribe)
         language: Language code for transcription (default: "es" for Spanish)
+        timeout: Request timeout per audio file/chunk in seconds (default: 3600 = 1 hour)
 
     Returns:
         Dict with transcription results:
@@ -304,7 +305,8 @@ def transcribe_audio_with_whisper(extracted_audio, language: str = "es"):
 
                 transcription_result = transcribe_audio_chunks(
                     audio_chunks=chunks,
-                    language=language
+                    language=language,
+                    timeout=timeout
                 )
 
                 transcribed_videos.append({
@@ -332,7 +334,8 @@ def transcribe_audio_with_whisper(extracted_audio, language: str = "es"):
 
                 transcription_result = transcribe_audio_file(
                     audio_file_path=audio_file_path,
-                    language=language
+                    language=language,
+                    timeout=timeout
                 )
 
                 transcribed_videos.append({

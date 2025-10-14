@@ -24,7 +24,7 @@ WHISPER_API_URL = f"http://{WHISPER_API_HOST}:{WHISPER_API_PORT}"
 def transcribe_audio_file(
     audio_file_path: str,
     language: str = "es",
-    timeout: int = 600
+    timeout: int = 3600
 ) -> Dict:
     """
     Transcribe a single audio file using the Whisper API.
@@ -32,7 +32,7 @@ def transcribe_audio_file(
     Args:
         audio_file_path: Path to the audio file to transcribe
         language: Language code (default: "es" for Spanish)
-        timeout: Request timeout in seconds (default: 600 = 10 minutes)
+        timeout: Request timeout in seconds (default: 3600 = 1 hour)
 
     Returns:
         Dict with transcription results:
@@ -120,7 +120,7 @@ def transcribe_audio_file(
 def transcribe_audio_chunks(
     audio_chunks: List[Dict],
     language: str = "es",
-    timeout: int = 600
+    timeout: int = 3600
 ) -> Dict:
     """
     Transcribe multiple audio chunks using the Whisper API.
@@ -128,7 +128,7 @@ def transcribe_audio_chunks(
     Args:
         audio_chunks: List of audio chunk dicts with 'file_path', 'chunk_number', etc.
         language: Language code (default: "es" for Spanish)
-        timeout: Request timeout per chunk in seconds (default: 600)
+        timeout: Request timeout per chunk in seconds (default: 3600 = 1 hour)
 
     Returns:
         Dict with transcription results:

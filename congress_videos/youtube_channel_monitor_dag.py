@@ -204,7 +204,8 @@ with DAG(
             ti,
             lambda: yt_channel.transcribe_audio_with_whisper(
                 ti.xcom_pull(key='extracted_audio'),
-                language="es"
+                language="es",
+                timeout=3600  # 1 hour timeout per chunk
             ),
             'transcriptions'
         ),
