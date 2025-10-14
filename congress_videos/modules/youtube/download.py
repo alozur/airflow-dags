@@ -24,23 +24,28 @@ def create_test_video_data():
     Test video: https://www.youtube.com/watch?v=ZBU0bVpYXM4
 
     Returns:
-        Dict with test video details in the same structure as get_video_details
+        Dict with test video in the same structure as filter_plenary_session_videos
+        (so it can be processed by get_video_details and get_video_descriptions)
     """
     test_video_id = 'ZBU0bVpYXM4'
 
-    mock_video_details = {
-        'total_videos': 1,
+    # Match the structure returned by filter_plenary_session_videos
+    mock_plenary_videos = {
+        'total_matches': 1,
         'videos': [{
             'video_id': test_video_id,
-            'youtube_url': f'https://www.youtube.com/watch?v={test_video_id}',
             'title': 'Test Video - Sesión Plenaria',
+            'url': f'https://www.youtube.com/watch?v={test_video_id}',
+            'published_at': '2025-01-01T10:00:00Z',  # Mock date
+            'is_live': False,
+            'is_upcoming': False
         }]
     }
 
     logging.info(f"Created test video data for video ID: {test_video_id}")
-    logging.info(f"Test video URL: {mock_video_details['videos'][0]['youtube_url']}")
+    logging.info(f"Test video URL: {mock_plenary_videos['videos'][0]['url']}")
 
-    return mock_video_details
+    return mock_plenary_videos
 
 
 def download_video_from_youtube(video_details, target_date: str):

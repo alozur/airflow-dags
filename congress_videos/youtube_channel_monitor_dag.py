@@ -93,7 +93,7 @@ with DAG(
         python_callable=lambda ti: xcom_task(
             ti,
             lambda: yt_channel.create_test_video_data(),
-            'video_details'
+            'plenary_videos'
         ),
     )
 
@@ -143,6 +143,7 @@ with DAG(
 
     # Step 3a: Get video details (duration, timing, etc.)
     # Note: We already filtered for completed streams, no need to check status again
+    # trigger_rule: Execute if any upstream task succeeds (test or production path)
     t3a = PythonOperator(
         task_id='get_video_details',
         python_callable=lambda ti: xcom_task(
@@ -152,9 +153,11 @@ with DAG(
             ),
             'video_details'
         ),
+        trigger_rule='none_failed_min_one_success'
     )
 
     # Step 3b: Get full video descriptions (runs in parallel with get_video_details)
+    # trigger_rule: Execute if any upstream task succeeds (test or production path)
     t3b = PythonOperator(
         task_id='get_video_descriptions',
         python_callable=lambda ti: xcom_task(
@@ -164,6 +167,7 @@ with DAG(
             ),
             'video_descriptions'
         ),
+        trigger_rule='none_failed_min_one_success'
     )
 
     # Step 3c: Download video from YouTube (runs in parallel with audio extraction after video details)
@@ -282,8 +286,8 @@ with DAG(
     # Start: Branch based on test mode
     t0_branch >> [t0_test, t1]
 
-    # Test mode path: create test video data -> extract audio
-    t0_test >> t3d
+    # Test mode path: create test video data -> get video details and descriptions in parallel
+    t0_test >> [t3a, t3b]
 
     # Production mode path: fetch from channel
     t1 >> t2 >> t2a
