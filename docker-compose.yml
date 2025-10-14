@@ -20,7 +20,9 @@ volumes:
 
 x-airflow-common:
   &airflow-common
-  image: apache/airflow:2.10.2
+  # Custom Airflow image with ffmpeg support
+  # Build with: docker build -t airflow-custom:2.10.2-ffmpeg .
+  image: airflow-custom:2.10.2-ffmpeg
   restart: unless-stopped
   environment:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
