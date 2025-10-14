@@ -17,6 +17,32 @@ from utils.youtube_downloader import (
 )
 
 
+def create_test_video_data():
+    """
+    Create mock video data for testing with predefined test video.
+
+    Test video: https://www.youtube.com/watch?v=ZBU0bVpYXM4
+
+    Returns:
+        Dict with test video details in the same structure as get_video_details
+    """
+    test_video_id = 'ZBU0bVpYXM4'
+
+    mock_video_details = {
+        'total_videos': 1,
+        'videos': [{
+            'video_id': test_video_id,
+            'youtube_url': f'https://www.youtube.com/watch?v={test_video_id}',
+            'title': 'Test Video - Sesión Plenaria',
+        }]
+    }
+
+    logging.info(f"Created test video data for video ID: {test_video_id}")
+    logging.info(f"Test video URL: {mock_video_details['videos'][0]['youtube_url']}")
+
+    return mock_video_details
+
+
 def download_video_from_youtube(video_details, target_date: str):
     """
     Download video from YouTube in best quality.

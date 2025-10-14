@@ -71,7 +71,33 @@ with DAG(
     }
 ) as dag:
 
-    # Step 1: Fetch videos from YouTube channel (streams tab)
+    # Step 0: Branch based on test mode
+    def check_test_mode(**context):
+        """Branch based on isTesting parameter."""
+        is_testing = context["params"].get("isTesting", False)
+        if is_testing:
+            logging.info("Running in TEST MODE - using predefined test video")
+            return 'create_test_video_data'
+        else:
+            logging.info("Running in PRODUCTION MODE - fetching from YouTube channel")
+            return 'fetch_youtube_channel_videos'
+
+    t0_branch = BranchPythonOperator(
+        task_id='check_test_mode',
+        python_callable=check_test_mode,
+    )
+
+    # Test mode: Create test video data
+    t0_test = PythonOperator(
+        task_id='create_test_video_data',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: yt_channel.create_test_video_data(),
+            'video_details'
+        ),
+    )
+
+    # Step 1: Fetch videos from YouTube channel (streams tab) - PRODUCTION MODE
     t1 = PythonOperator(
         task_id='fetch_youtube_channel_videos',
         python_callable=lambda ti, **context: xcom_task(
@@ -252,6 +278,14 @@ with DAG(
     # )
 
     # Task dependencies
+
+    # Start: Branch based on test mode
+    t0_branch >> [t0_test, t1]
+
+    # Test mode path: create test video data -> extract audio
+    t0_test >> t3d
+
+    # Production mode path: fetch from channel
     t1 >> t2 >> t2a
 
     # Branch: no plenary sessions found
@@ -262,8 +296,7 @@ with DAG(
     t2a >> [t3a, t3b]
 
     # After getting video details, download video and extract audio in parallel
-    # t3a >> [t3c, t3d] commented out video download for now
-    t3a >> t3d
+    t3a >> [t3c, t3d]
 
     # After getting descriptions, parse links from description
     t3b >> t4
