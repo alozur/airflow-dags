@@ -253,3 +253,110 @@ def extract_audio_from_youtube(video_details, target_date: str, chunk_duration_m
         'total_extracted': len([v for v in extracted_audios if 'audio_file_path' in v]),
         'videos': extracted_audios
     }
+
+
+def transcribe_audio_with_whisper(extracted_audio, language: str = "es"):
+    """
+    Transcribe extracted audio using Whisper API.
+
+    Handles both single audio files and chunked audio files.
+
+    Args:
+        extracted_audio: Results from extract_audio_from_youtube
+                        (contains audio files or chunks to transcribe)
+        language: Language code for transcription (default: "es" for Spanish)
+
+    Returns:
+        Dict with transcription results:
+        - total_transcribed: Number of videos transcribed
+        - videos: List with video_id, transcription text or chunks
+    """
+    from utils.whisper_helpers import (
+        transcribe_audio_file,
+        transcribe_audio_chunks,
+        check_whisper_api_health
+    )
+
+    if not extracted_audio or not extracted_audio.get('videos'):
+        logging.warning("No extracted audio to transcribe")
+        return {'total_transcribed': 0, 'videos': []}
+
+    # Check if Whisper API is available
+    if not check_whisper_api_health():
+        logging.error("Whisper API is not available. Aborting transcription.")
+        return {
+            'total_transcribed': 0,
+            'videos': [],
+            'error': 'Whisper API unavailable'
+        }
+
+    transcribed_videos = []
+
+    for video in extracted_audio['videos']:
+        video_id = video['video_id']
+        is_chunked = video.get('chunked', False)
+
+        try:
+            if is_chunked:
+                # Transcribe audio chunks
+                chunks = video.get('chunks', [])
+                logging.info(f"Transcribing {len(chunks)} audio chunks for video {video_id}")
+
+                transcription_result = transcribe_audio_chunks(
+                    audio_chunks=chunks,
+                    language=language
+                )
+
+                transcribed_videos.append({
+                    'video_id': video_id,
+                    'video_title': video.get('video_title'),
+                    'chunked': True,
+                    'total_chunks': transcription_result['total_chunks'],
+                    'successful_transcriptions': transcription_result['successful_transcriptions'],
+                    'chunks': transcription_result['chunks']
+                })
+
+            else:
+                # Transcribe single audio file
+                audio_file_path = video.get('audio_file_path')
+
+                if not audio_file_path:
+                    logging.warning(f"No audio file path for video {video_id}")
+                    transcribed_videos.append({
+                        'video_id': video_id,
+                        'error': 'No audio file path'
+                    })
+                    continue
+
+                logging.info(f"Transcribing audio file for video {video_id}")
+
+                transcription_result = transcribe_audio_file(
+                    audio_file_path=audio_file_path,
+                    language=language
+                )
+
+                transcribed_videos.append({
+                    'video_id': video_id,
+                    'video_title': video.get('video_title'),
+                    'chunked': False,
+                    'audio_file_path': audio_file_path,
+                    'transcription': transcription_result.get('text', ''),
+                    'transcription_success': transcription_result.get('success', False),
+                    'transcription_duration': transcription_result.get('duration'),
+                    'error': transcription_result.get('error')
+                })
+
+        except Exception as e:
+            logging.error(f"Error transcribing video {video_id}: {e}")
+            transcribed_videos.append({
+                'video_id': video_id,
+                'error': str(e)
+            })
+
+    successful_count = len([v for v in transcribed_videos if not v.get('error')])
+    logging.info(f"Total videos transcribed: {successful_count}/{len(transcribed_videos)}")
+
+    return {
+        'total_transcribed': successful_count,
+        'videos': transcribed_videos
+    }

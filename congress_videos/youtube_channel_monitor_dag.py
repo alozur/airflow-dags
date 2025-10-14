@@ -197,6 +197,19 @@ with DAG(
         ),
     )
 
+    # Step 3e: Transcribe audio using Whisper API
+    t3e = PythonOperator(
+        task_id='transcribe_audio_with_whisper',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: yt_channel.transcribe_audio_with_whisper(
+                ti.xcom_pull(key='extracted_audio'),
+                language="es"
+            ),
+            'transcriptions'
+        ),
+    )
+
     # Step 4: Parse description links (Nota de prensa and Orden del día)
     t4 = PythonOperator(
         task_id='parse_description_links',
@@ -301,6 +314,9 @@ with DAG(
 
     # After getting video details, download video and extract audio in parallel
     t3a >> [t3c, t3d]
+
+    # After extracting audio, transcribe it with Whisper
+    t3d >> t3e
 
     # After getting descriptions, parse links from description
     t3b >> t4

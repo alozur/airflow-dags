@@ -34,11 +34,12 @@ def __getattr__(name):
         return locals()[name]
 
     # download functions
-    elif name in ['download_video_from_youtube', 'extract_audio_from_youtube', 'create_test_video_data']:
+    elif name in ['download_video_from_youtube', 'extract_audio_from_youtube', 'create_test_video_data', 'transcribe_audio_with_whisper']:
         from .download import (
             download_video_from_youtube,
             extract_audio_from_youtube,
             create_test_video_data,
+            transcribe_audio_with_whisper,
         )
         return locals()[name]
 
@@ -78,6 +79,7 @@ __all__ = [
     'download_video_from_youtube',
     'extract_audio_from_youtube',
     'create_test_video_data',
+    'transcribe_audio_with_whisper',
     # youtube_ai functions
     'generate_youtube_title',
     'generate_youtube_description',
