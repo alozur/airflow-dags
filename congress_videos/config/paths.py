@@ -32,7 +32,9 @@ VIDEOS_DIR = f"{PROJECT_DATA_DIR}/videos"
 # Downloads Directory (YouTube Monitor DAG)
 # -------------------------
 # All downloads from YouTube channel monitoring are stored here
-# Structure: /opt/airflow/data/congress_videos/downloads/{date}/{video_id}/{files}
+# Structure: /opt/airflow/data/congress_videos/downloads/{date}/{video_id}/
+#   - audio_chunks/  (audio files)
+#   - srt_files/     (subtitle files)
 DOWNLOADS_DIR = f"{PROJECT_DATA_DIR}/downloads"
 
 # -------------------------

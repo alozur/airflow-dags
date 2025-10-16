@@ -59,22 +59,47 @@ def create_srt_from_segments(segments: list) -> str:
 
 def save_srt_file(srt_content: str, audio_file_path: str) -> str:
     """
-    Save SRT content to file next to the audio file.
+    Save SRT content to srt_files folder within the video directory.
+
+    Structure: .../downloads/{date}/{video_id}/srt_files/{filename}.srt
 
     Args:
         srt_content: SRT formatted content
         audio_file_path: Path to the audio file
+                        Expected: .../downloads/{date}/{video_id}/audio_chunks/{filename}.webm
 
     Returns:
         Path to the saved SRT file
     """
-    audio_path = Path(audio_file_path)
-    srt_path = audio_path.with_suffix('.srt')
+    try:
+        audio_path = Path(audio_file_path)
 
-    srt_path.write_text(srt_content, encoding='utf-8')
-    logging.info(f"SRT file saved: {srt_path}")
+        # Get the video directory (2 levels up from audio file)
+        # .../downloads/{date}/{video_id}/audio_chunks/{filename}.webm
+        video_dir = audio_path.parent.parent
 
-    return str(srt_path)
+        # Create srt_files folder in video directory
+        srt_dir = video_dir / "srt_files"
+        srt_dir.mkdir(parents=True, exist_ok=True)
+
+        # Get SRT filename (same as audio but .srt extension)
+        srt_filename = audio_path.stem + '.srt'
+        srt_path = srt_dir / srt_filename
+
+        # Save SRT file
+        srt_path.write_text(srt_content, encoding='utf-8')
+        logging.info(f"SRT file saved: {srt_path}")
+
+        return str(srt_path)
+
+    except Exception as e:
+        logging.error(f"Error saving SRT file: {e}")
+        # Fallback: save next to audio file
+        audio_path = Path(audio_file_path)
+        srt_path = audio_path.with_suffix('.srt')
+        srt_path.write_text(srt_content, encoding='utf-8')
+        logging.warning(f"SRT saved to fallback location: {srt_path}")
+        return str(srt_path)
 
 
 def transcribe_audio_file_with_local_whisper(
@@ -85,13 +110,23 @@ def transcribe_audio_file_with_local_whisper(
     """
     Transcribe audio using local OpenAI Whisper library with SRT generation.
 
+    SRT files are saved to srt_files folder within the video directory:
+    .../downloads/{date}/{video_id}/srt_files/{chunk_name}.srt
+
     Args:
         audio_file_path: Path to the audio file to transcribe
+                        Expected: .../downloads/{date}/{video_id}/audio_chunks/{chunk_name}.webm
         language: Language code (default: "es" for Spanish)
         model_size: Whisper model size (tiny, base, small, medium, large)
 
     Returns:
-        Dict with transcription results including segments for SRT
+        Dict with transcription results:
+        - success: Boolean
+        - text: Full transcription text
+        - srt_path: Path to saved SRT file in video's srt_files folder
+        - segments: List of segments with timestamps
+        - duration: Processing time
+        - language: Language code used
     """
     if not os.path.exists(audio_file_path):
         logging.error(f"Audio file not found: {audio_file_path}")
@@ -119,18 +154,13 @@ def transcribe_audio_file_with_local_whisper(
 
         duration = time.time() - start_time
 
-        # Generate and save SRT file
+        # Generate and save SRT file (only SRT, no text file)
         if result.get('segments'):
             srt_content = create_srt_from_segments(result['segments'])
             srt_path = save_srt_file(srt_content, audio_file_path)
         else:
             logging.warning("No segments found in transcription result")
             srt_path = None
-
-        # Also save plain text
-        txt_path = Path(audio_file_path).with_suffix('.txt')
-        txt_path.write_text(result['text'], encoding='utf-8')
-        logging.info(f"Text file saved: {txt_path}")
 
         logging.info(f"Transcription completed in {duration:.2f}s")
         logging.info(f"Segments: {len(result.get('segments', []))}")
@@ -140,7 +170,6 @@ def transcribe_audio_file_with_local_whisper(
             'file_path': audio_file_path,
             'text': result['text'],
             'srt_path': srt_path,
-            'txt_path': str(txt_path),
             'segments': result.get('segments', []),
             'duration': duration,
             'language': language
@@ -173,7 +202,9 @@ def transcribe_audio_file(
     Transcribe a single audio file.
 
     Uses local OpenAI Whisper library by default (generates SRT files).
-    Falls back to Docker API if local whisper is unavailable.
+    Falls back to Docker API if local whisper is unavailable (text only, no SRT).
+
+    SRT files are saved to: .../downloads/{date}/{video_id}/srt_files/
 
     Args:
         audio_file_path: Path to the audio file to transcribe
@@ -186,8 +217,7 @@ def transcribe_audio_file(
         Dict with transcription results:
         - success: Boolean indicating if transcription succeeded
         - text: Transcribed text (if successful)
-        - srt_path: Path to SRT file (if using local whisper)
-        - txt_path: Path to text file
+        - srt_path: Path to SRT file in video's srt_files folder (if using local whisper)
         - file_path: Original audio file path
         - error: Error message (if failed)
         - duration: Time taken for transcription
@@ -247,18 +277,13 @@ def transcribe_audio_file(
 
             duration = time.time() - start_time
 
-            # Save plain text
-            txt_path = Path(audio_file_path).with_suffix('.txt')
-            txt_path.write_text(transcription_text, encoding='utf-8')
-
-            logging.info(f"Transcription completed in {duration:.2f}s")
-            logging.info(f"Text saved: {txt_path}")
+            logging.info(f"Transcription completed in {duration:.2f}s (Docker API fallback - no SRT)")
+            logging.warning("Docker API used - no SRT file generated (only text)")
 
             return {
                 'success': True,
                 'file_path': audio_file_path,
                 'text': transcription_text,
-                'txt_path': str(txt_path),
                 'duration': duration,
                 'language': language
             }
