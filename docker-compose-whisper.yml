@@ -13,25 +13,23 @@ volumes:
 
 services:
   whisper-api:
-    image: fedirz/faster-whisper-server:latest-cpu
+    image: onerahmet/openai-whisper-asr-webservice:latest
     container_name: whisper-api
     restart: unless-stopped
     ports:
-      - "9000:8000"  # External port 9000, internal 8000
+      - "9000:9000"  # External and internal port 9000
     volumes:
       # Model cache (downloaded once, reused)
-      - whisper_models:/root/.cache/huggingface
+      - whisper_models:/root/.cache/whisper
       # Audio files directory (shared with other projects via NAS)
       - /volume1/docker/whisper/audio:/app/audio
     environment:
-      # Whisper model size: tiny, base, small, medium, large-v2, large-v3
+      # Whisper model size: tiny, base, small, medium, large-v1, large-v2, large-v3
       # For 4GB RAM NAS: use 'base' or 'small' (small uses ~1.5GB, base uses ~500MB)
-      - WHISPER_MODEL=base
-      # Number of CPU threads to use (1 for 4GB RAM NAS to save memory)
-      - WHISPER_NUM_WORKERS=1
-      # Language (auto-detect if not specified)
-      - WHISPER_LANGUAGE=auto
+      - ASR_MODEL=tiny
+      # Engine: openai_whisper or faster_whisper
+      - ASR_ENGINE=faster_whisper
     networks:
       - whisper_network
-    mem_limit: 1g
+    mem_limit: 2g
     mem_reservation: 512m
