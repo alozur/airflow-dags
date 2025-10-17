@@ -293,8 +293,8 @@ def download_audio_in_chunks(
 
         logger.info(f"Will download {num_chunks} chunks of ~{chunk_duration_minutes} minutes each")
 
-        # Create chunks subdirectory
-        chunks_dir = Path(output_dir) / "chunks"
+        # Create audio_chunks subdirectory
+        chunks_dir = Path(output_dir) / "audio_chunks"
         chunks_dir.mkdir(parents=True, exist_ok=True)
 
         # Download each chunk
