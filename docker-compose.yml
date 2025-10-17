@@ -25,21 +25,32 @@ x-airflow-common:
   image: airflow-custom:2.10.2-ffmpeg
   restart: unless-stopped
   environment:
-    AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_password@postgres_shared:5432/airflow_db
+    AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+
+    # Database connection (uses AIRFLOW_DB_NAME from .env: airflow_dev_db or airflow_db)
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_password@postgres_shared:5432/${AIRFLOW_DB_NAME:-airflow_db}
     AIRFLOW__CORE__FERNET_KEY: "${AIRFLOW__CORE__FERNET_KEY}"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+
+    # Installed packages
     _PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-postgres openai beautifulsoup4 requests urllib3 google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client Pillow PyPDF2 yt-dlp openai-whisper"
+
+    # DAG folder and performance tweaks
     AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags/repo
-    AIRFLOW__CORE__PARALLELISM: 8
-    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: 4
-    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: 3
+    AIRFLOW__CORE__PARALLELISM: 1
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: 1
+    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: 1
     AIRFLOW__CORE__DEFAULT_TIMEZONE: Europe/Madrid
-    AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 30
-    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 30
+
+    # ✅ Reduce scheduler CPU usage
+    AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 120
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 120
+
+    # API keys
     OPENAI_API_KEY: "${OPENAI_API_KEY}"
     YOUTUBE_API_KEY: "${YOUTUBE_API_KEY}"
-    # PostgreSQL connection for congress_videos project
+
+    # PostgreSQL connection for your project
     POSTGRES_HOST: "${POSTGRES_HOST}"
     POSTGRES_PORT: "${POSTGRES_PORT}"
     POSTGRES_DB: "${POSTGRES_DB}"
@@ -127,6 +138,9 @@ services:
     command:
       - -c
       - |
+        # Initialize the database (creates tables if they don't exist)
+        airflow db init
 
-        exec airflow db migrate
+        # Run migrations to ensure schema is up to date
+        airflow db migrate
     user: "50000:50000"
