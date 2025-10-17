@@ -287,6 +287,22 @@ with DAG(
         ),
     )
 
+    # Step 6: Use AI to identify interesting chapters from transcription and agenda
+    # This task waits for both merged SRT files and agenda sections to complete
+    t6 = PythonOperator(
+        task_id='identify_interesting_chapters',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: yt_channel.identify_interesting_chapters(
+                ti.xcom_pull(key='merged_srt_files'),
+                ti.xcom_pull(key='agenda_section'),
+                target_date=context["params"].get("target_date")
+            ),
+            'interesting_chapters'
+        ),
+        trigger_rule='all_success'  # Wait for both dependencies
+    )
+
     # End task for when no plenary sessions found
     t_end = PythonOperator(
         task_id='no_plenary_sessions',
@@ -341,3 +357,6 @@ with DAG(
     # After downloading agenda, extract session date info and then agenda section
     # These run sequentially since agenda_section depends on session_date
     t5b >> t5c >> t5d
+
+    # After both merged SRT files and agenda section are ready, identify interesting chapters
+    [t3f, t5d] >> t6

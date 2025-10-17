@@ -465,3 +465,104 @@ def merge_transcription_srt_files(transcriptions, target_date: str):
         'total_merged': successful_count,
         'videos': merged_videos
     }
+
+
+def identify_interesting_chapters(merged_srt_files, agenda_sections, target_date: str):
+    """
+    Use AI to identify interesting chapters from transcriptions and agenda.
+
+    Analyzes the merged SRT transcription and session agenda to identify
+    interesting segments/chapters that are 15-30 minutes long and don't
+    cut off mid-discussion.
+
+    Args:
+        merged_srt_files: Results from merge_transcription_srt_files
+        agenda_sections: Results from extract_agenda_section
+        target_date: Target date in YYYY-MM-DD format (for locating files)
+
+    Returns:
+        Dict with chapter identification results:
+        - total_videos: Number of videos analyzed
+        - videos: List with video_id, chapters data
+    """
+    from pathlib import Path
+    from utils.ai_chapter_analyzer import analyze_chapters_with_ai
+    from congress_videos.config.paths import get_download_video_path
+
+    if not merged_srt_files or not merged_srt_files.get('videos'):
+        logging.warning("No merged SRT files to analyze")
+        return {'total_videos': 0, 'videos': []}
+
+    analyzed_videos = []
+
+    for srt_video in merged_srt_files['videos']:
+        video_id = srt_video['video_id']
+        merged_srt_path = srt_video.get('merged_srt_path')
+
+        if not merged_srt_path or srt_video.get('error'):
+            logging.warning(f"Skipping video {video_id}: no merged SRT file")
+            analyzed_videos.append({
+                'video_id': video_id,
+                'error': 'No merged SRT file available'
+            })
+            continue
+
+        try:
+            # Read the merged SRT file
+            srt_content = Path(merged_srt_path).read_text(encoding='utf-8')
+            logging.info(f"Loaded SRT file for video {video_id}: {len(srt_content)} characters")
+
+            # Find matching agenda section
+            agenda_content = ""
+            if agenda_sections and agenda_sections.get('videos'):
+                for agenda_video in agenda_sections['videos']:
+                    if agenda_video.get('video_id') == video_id:
+                        agenda_content = agenda_video.get('agenda_section_text', '')
+                        break
+
+            if not agenda_content:
+                logging.warning(f"No agenda found for video {video_id}, using generic prompt")
+                agenda_content = "No agenda available. Please analyze the transcription to identify interesting topics."
+
+            logging.info(f"Analyzing video {video_id} with AI to identify interesting chapters...")
+
+            # Use AI to analyze and identify chapters
+            result = analyze_chapters_with_ai(
+                srt_content=srt_content,
+                agenda_content=agenda_content,
+                min_duration_minutes=15,
+                max_duration_minutes=30,
+                model="gpt-4o-mini"  # Fast and cost-effective model
+            )
+
+            if result['success']:
+                analyzed_videos.append({
+                    'video_id': video_id,
+                    'video_title': srt_video.get('video_title'),
+                    'total_chapters': result['total_chapters'],
+                    'total_duration_seconds': result['total_duration_seconds'],
+                    'chapters': result['chapters'],
+                    'merged_srt_path': merged_srt_path
+                })
+                logging.info(f"✅ Identified {result['total_chapters']} chapters for video {video_id}")
+            else:
+                analyzed_videos.append({
+                    'video_id': video_id,
+                    'error': result.get('error')
+                })
+                logging.error(f"Failed to analyze video {video_id}: {result.get('error')}")
+
+        except Exception as e:
+            logging.error(f"Error analyzing video {video_id}: {e}", exc_info=True)
+            analyzed_videos.append({
+                'video_id': video_id,
+                'error': str(e)
+            })
+
+    successful_count = len([v for v in analyzed_videos if not v.get('error')])
+    logging.info(f"Chapter analysis complete: {successful_count}/{len(analyzed_videos)} videos analyzed")
+
+    return {
+        'total_videos': successful_count,
+        'videos': analyzed_videos
+    }
