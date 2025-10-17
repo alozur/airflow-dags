@@ -383,6 +383,102 @@ def transcribe_audio_chunks(
     }
 
 
+def merge_srt_files(srt_files: List[str], output_path: str) -> Dict:
+    """
+    Merge multiple SRT files into one, simplifying the format.
+
+    Removes entry numbers and simplifies timestamps to HH:MM:SS format.
+
+    Args:
+        srt_files: List of SRT file paths to merge (should be in order)
+        output_path: Path where the merged SRT file should be saved
+
+    Returns:
+        Dict with merge results:
+        - success: Boolean
+        - output_path: Path to merged file
+        - total_entries: Number of subtitle entries
+        - error: Error message if failed
+    """
+    result = {
+        'success': False,
+        'output_path': None,
+        'total_entries': 0,
+        'error': None
+    }
+
+    if not srt_files:
+        result['error'] = 'No SRT files provided'
+        logging.error(result['error'])
+        return result
+
+    try:
+        merged_content = []
+        entry_count = 0
+
+        for srt_file in sorted(srt_files):
+            if not os.path.exists(srt_file):
+                logging.warning(f"SRT file not found: {srt_file}")
+                continue
+
+            with open(srt_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Parse SRT entries
+            # SRT format: number\ntimestamp\ntext\n\n
+            entries = content.strip().split('\n\n')
+
+            for entry in entries:
+                if not entry.strip():
+                    continue
+
+                lines = entry.strip().split('\n')
+                if len(lines) < 3:
+                    continue
+
+                # Skip the number (line 0)
+                # Get timestamp (line 1)
+                timestamp = lines[1]
+                # Get text (line 2 onwards)
+                text = '\n'.join(lines[2:])
+
+                # Simplify timestamp: remove milliseconds
+                # From: 00:09:30,440 --> 00:09:38,120
+                # To:   00:09:30 --> 00:09:38
+                timestamp_simplified = timestamp.replace(',000', '').replace(',', '').split(',')[0]
+                if ' --> ' in timestamp:
+                    start, end = timestamp.split(' --> ')
+                    # Remove milliseconds (everything after comma)
+                    start_clean = start.split(',')[0]
+                    end_clean = end.split(',')[0]
+                    timestamp_simplified = f"{start_clean} --> {end_clean}"
+
+                # Add to merged content (without entry numbers)
+                merged_content.append(f"{timestamp_simplified}\n{text}")
+                entry_count += 1
+
+        # Join all entries with double newline
+        final_content = '\n\n'.join(merged_content)
+
+        # Save merged file
+        output_path_obj = Path(output_path)
+        output_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        output_path_obj.write_text(final_content, encoding='utf-8')
+
+        result['success'] = True
+        result['output_path'] = output_path
+        result['total_entries'] = entry_count
+
+        logging.info(f"✅ Merged {len(srt_files)} SRT files into {output_path}")
+        logging.info(f"   Total subtitle entries: {entry_count}")
+
+    except Exception as e:
+        result['error'] = f"Error merging SRT files: {str(e)}"
+        logging.error(result['error'], exc_info=True)
+
+    return result
+
+
 def check_whisper_api_health() -> bool:
     """
     Check if the Whisper API is accessible and healthy.

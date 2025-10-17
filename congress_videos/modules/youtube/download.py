@@ -363,3 +363,105 @@ def transcribe_audio_with_whisper(extracted_audio, language: str = "es", timeout
         'total_transcribed': successful_count,
         'videos': transcribed_videos
     }
+
+
+def merge_transcription_srt_files(transcriptions, target_date: str):
+    """
+    Merge individual SRT chunk files into a single simplified SRT file per video.
+
+    For each video with chunked transcriptions, finds all SRT files in the
+    srt_files folder and merges them into a single file named {video_id}_merged.srt.
+
+    The merged file has a simplified format:
+    - No entry numbers
+    - Timestamps without milliseconds (HH:MM:SS format)
+
+    Args:
+        transcriptions: Results from transcribe_audio_with_whisper
+        target_date: Target date in YYYY-MM-DD format (for locating files)
+
+    Returns:
+        Dict with merge results:
+        - total_merged: Number of videos with merged SRT files
+        - videos: List with video_id, merged_srt_path, total_entries
+    """
+    from pathlib import Path
+    from utils.whisper_helpers import merge_srt_files
+    from congress_videos.config.paths import get_download_video_path
+
+    if not transcriptions or not transcriptions.get('videos'):
+        logging.warning("No transcriptions to merge")
+        return {'total_merged': 0, 'videos': []}
+
+    merged_videos = []
+
+    for video in transcriptions['videos']:
+        video_id = video['video_id']
+        is_chunked = video.get('chunked', False)
+
+        # Only process chunked videos (single files don't need merging)
+        if not is_chunked:
+            logging.info(f"Video {video_id} is not chunked, skipping merge")
+            continue
+
+        try:
+            # Get the video directory
+            video_dir = Path(get_download_video_path(target_date, video_id))
+            srt_dir = video_dir / "srt_files"
+
+            if not srt_dir.exists():
+                logging.warning(f"SRT directory not found: {srt_dir}")
+                merged_videos.append({
+                    'video_id': video_id,
+                    'error': 'SRT directory not found'
+                })
+                continue
+
+            # Get all SRT files (sorted by name to maintain order)
+            srt_files = sorted(srt_dir.glob("*.srt"))
+
+            if not srt_files:
+                logging.warning(f"No SRT files found in {srt_dir}")
+                merged_videos.append({
+                    'video_id': video_id,
+                    'error': 'No SRT files found'
+                })
+                continue
+
+            logging.info(f"Merging {len(srt_files)} SRT files for video {video_id}")
+
+            # Merge SRT files
+            merged_output_path = srt_dir / f"{video_id}_merged.srt"
+            result = merge_srt_files(
+                srt_files=[str(f) for f in srt_files],
+                output_path=str(merged_output_path)
+            )
+
+            if result['success']:
+                merged_videos.append({
+                    'video_id': video_id,
+                    'video_title': video.get('video_title'),
+                    'merged_srt_path': result['output_path'],
+                    'total_entries': result['total_entries'],
+                    'source_files': len(srt_files)
+                })
+            else:
+                merged_videos.append({
+                    'video_id': video_id,
+                    'error': result.get('error')
+                })
+
+        except Exception as e:
+            logging.error(f"Error merging SRT files for video {video_id}: {e}")
+            merged_videos.append({
+                'video_id': video_id,
+                'error': str(e)
+            })
+
+    successful_count = len([v for v in merged_videos if not v.get('error')])
+    logging.info(f"Total videos with merged SRT files: {successful_count}/{len(merged_videos)}")
+
+    return {
+        'total_merged': successful_count,
+        'videos': merged_videos
+    }

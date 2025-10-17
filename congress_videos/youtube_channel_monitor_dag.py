@@ -211,6 +211,19 @@ with DAG(
         ),
     )
 
+    # Step 3f: Merge SRT files into single simplified file per video
+    t3f = PythonOperator(
+        task_id='merge_srt_files',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: yt_channel.merge_transcription_srt_files(
+                ti.xcom_pull(key='transcriptions'),
+                target_date=context["params"].get("target_date")
+            ),
+            'merged_srt_files'
+        ),
+    )
+
     # Step 4: Parse description links (Nota de prensa and Orden del día)
     t4 = PythonOperator(
         task_id='parse_description_links',
@@ -316,8 +329,8 @@ with DAG(
     # After getting video details, download video and extract audio in parallel
     t3a >> [t3c, t3d]
 
-    # After extracting audio, transcribe it with Whisper
-    t3d >> t3e
+    # After extracting audio, transcribe it with Whisper, then merge SRT files
+    t3d >> t3e >> t3f
 
     # After getting descriptions, parse links from description
     t3b >> t4
