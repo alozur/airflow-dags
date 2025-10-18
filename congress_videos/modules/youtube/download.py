@@ -573,7 +573,7 @@ def merge_transcription_srt_files(transcriptions, target_date: str):
     }
 
 
-def identify_interesting_chapters(merged_srt_files, agenda_sections, target_date: str):
+def identify_interesting_chapters(srt_data, agenda_sections, target_date: str):
     """
     Use AI to identify interesting chapters from transcriptions and agenda.
 
@@ -582,7 +582,7 @@ def identify_interesting_chapters(merged_srt_files, agenda_sections, target_date
     cut off mid-discussion.
 
     Args:
-        merged_srt_files: Results from merge_transcription_srt_files
+        srt_data: Results from merge_transcription_srt_files OR try_download_subtitles_from_youtube
         agenda_sections: Results from extract_agenda_section
         target_date: Target date in YYYY-MM-DD format (for locating files)
 
@@ -595,15 +595,33 @@ def identify_interesting_chapters(merged_srt_files, agenda_sections, target_date
     from utils.ai_chapter_analyzer import analyze_chapters_with_ai
     from congress_videos.config.paths import get_download_video_path
 
-    if not merged_srt_files or not merged_srt_files.get('videos'):
-        logging.warning("No merged SRT files to analyze")
+    if not srt_data or not srt_data.get('videos'):
+        logging.warning("No SRT data to analyze")
         return {'total_videos': 0, 'videos': []}
 
     analyzed_videos = []
 
-    for srt_video in merged_srt_files['videos']:
+    for srt_video in srt_data['videos']:
         video_id = srt_video['video_id']
+
+        # Handle both YouTube subtitles and transcribed SRT
         merged_srt_path = srt_video.get('merged_srt_path')
+
+        # If no path in current record, this might be from YouTube subtitles with different structure
+        if not merged_srt_path and srt_video.get('has_subtitles'):
+            # YouTube subtitle format
+            merged_srt_path = srt_video.get('merged_srt_path')
+
+        # Still no path? Try to construct it
+        if not merged_srt_path:
+            video_dir = Path(get_download_video_path(target_date, video_id))
+            srt_dir = video_dir / "srt_files"
+            potential_path = srt_dir / f"{video_id}_merged.srt"
+            if potential_path.exists():
+                merged_srt_path = str(potential_path)
+            else:
+                logging.warning(f"No merged SRT file found for video {video_id}")
+                merged_srt_path = None
 
         if not merged_srt_path or srt_video.get('error'):
             logging.warning(f"Skipping video {video_id}: no merged SRT file")

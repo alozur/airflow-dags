@@ -186,7 +186,26 @@ with DAG(
         ),
     )
 
-    # Step 3c2: Download video from YouTube (runs after subtitle attempt)
+    # Step 3c_branch: Check if subtitles were downloaded successfully
+    def check_subtitles_downloaded(ti):
+        """Branch based on whether subtitles were downloaded from YouTube."""
+        subtitle_results = ti.xcom_pull(key='youtube_subtitles')
+
+        if subtitle_results and subtitle_results.get('total_downloaded', 0) > 0:
+            logging.info(f"✅ Subtitles downloaded from YouTube! Skipping audio extraction and transcription.")
+            # Go directly to video download (skip audio extraction/transcription)
+            return 'download_video_from_youtube'
+        else:
+            logging.info("No subtitles available on YouTube. Will extract audio and transcribe.")
+            # Need to extract audio and transcribe
+            return 'extract_audio_from_youtube'
+
+    t3c_branch = BranchPythonOperator(
+        task_id='check_subtitles_available',
+        python_callable=check_subtitles_downloaded,
+    )
+
+    # Step 3c2: Download video from YouTube (runs after subtitle check)
     t3c2 = PythonOperator(
         task_id='download_video_from_youtube',
         python_callable=lambda ti, **context: xcom_task(
@@ -197,6 +216,7 @@ with DAG(
             ),
             'downloaded_videos'
         ),
+        trigger_rule='none_failed_min_one_success'  # Run regardless of which branch
     )
 
     # Step 3d: Extract audio from YouTube (only if subtitles not available)
@@ -304,19 +324,19 @@ with DAG(
     )
 
     # Step 6: Use AI to identify interesting chapters from transcription and agenda
-    # This task waits for both merged SRT files and agenda sections to complete
+    # This task waits for SRT files (either from YouTube or transcription) and agenda sections
     t6 = PythonOperator(
         task_id='identify_interesting_chapters',
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.identify_interesting_chapters(
-                ti.xcom_pull(key='merged_srt_files'),
+                ti.xcom_pull(key='merged_srt_files') or ti.xcom_pull(key='youtube_subtitles'),  # Try both sources
                 ti.xcom_pull(key='agenda_section'),
                 target_date=context["params"].get("target_date")
             ),
             'interesting_chapters'
         ),
-        trigger_rule='all_success'  # Wait for both dependencies
+        trigger_rule='none_failed_min_one_success'  # Run if either path succeeded
     )
 
     # End task for when no plenary sessions found
@@ -361,12 +381,14 @@ with DAG(
     # After getting video details, try downloading subtitles first
     t3a >> t3c
 
-    # After subtitle attempt, download video and extract audio (if needed) in parallel
-    t3c >> [t3c2, t3d]
+    # Branch based on subtitle availability
+    t3c >> t3c_branch
 
-    # After extracting audio (if subtitles weren't available), transcribe it with Whisper, then merge SRT files
-    # If subtitles were downloaded from YouTube, this branch will still run but quickly skip videos that already have subtitles
-    t3d >> t3e >> t3f
+    # If subtitles available: download video, skip audio extraction
+    t3c_branch >> t3c2
+
+    # If no subtitles: extract audio, transcribe, merge SRT
+    t3c_branch >> t3d >> t3e >> t3f
 
     # After getting descriptions, parse links from description
     t3b >> t4
@@ -378,5 +400,7 @@ with DAG(
     # These run sequentially since agenda_section depends on session_date
     t5b >> t5c >> t5d
 
-    # After both merged SRT files and agenda section are ready, identify interesting chapters
+    # After agenda section AND (YouTube subtitles OR transcribed SRT) are ready, identify chapters
+    # Both paths (t3c2 from YouTube, t3f from transcription) converge here with t5d
+    [t3c2, t5d] >> t6
     [t3f, t5d] >> t6
