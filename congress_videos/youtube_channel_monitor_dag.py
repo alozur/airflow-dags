@@ -193,8 +193,9 @@ with DAG(
 
         if subtitle_results and subtitle_results.get('total_downloaded', 0) > 0:
             logging.info(f"✅ Subtitles downloaded from YouTube! Skipping audio extraction and transcription.")
-            # Go directly to video download (skip audio extraction/transcription)
-            return 'download_video_from_youtube'
+            # Subtitles available - skip directly to parse_description_links
+            # (video download is commented out for now)
+            return 'parse_description_links'
         else:
             logging.info("No subtitles available on YouTube. Will extract audio and transcribe.")
             # Need to extract audio and transcribe
@@ -206,18 +207,19 @@ with DAG(
     )
 
     # Step 3c2: Download video from YouTube (runs after subtitle check)
-    t3c2 = PythonOperator(
-        task_id='download_video_from_youtube',
-        python_callable=lambda ti, **context: xcom_task(
-            ti,
-            lambda: yt_channel.download_video_from_youtube(
-                ti.xcom_pull(key='video_details'),
-                target_date=context["params"].get("target_date")
-            ),
-            'downloaded_videos'
-        ),
-        trigger_rule='none_failed_min_one_success'  # Run regardless of which branch
-    )
+    # COMMENTED OUT FOR NOW - Video download disabled temporarily
+    # t3c2 = PythonOperator(
+    #     task_id='download_video_from_youtube',
+    #     python_callable=lambda ti, **context: xcom_task(
+    #         ti,
+    #         lambda: yt_channel.download_video_from_youtube(
+    #             ti.xcom_pull(key='video_details'),
+    #             target_date=context["params"].get("target_date")
+    #         ),
+    #         'downloaded_videos'
+    #     ),
+    #     trigger_rule='none_failed_min_one_success'  # Run regardless of which branch
+    # )
 
     # Step 3d: Extract audio from YouTube (only if subtitles not available)
     t3d = PythonOperator(
@@ -270,6 +272,7 @@ with DAG(
             ),
             'parsed_links'
         ),
+        trigger_rule='none_failed_min_one_success'  # Run from either branch or t3b
     )
 
     # Step 5a: Scrape press release (Nota de prensa) - runs in parallel with agenda download
@@ -384,13 +387,15 @@ with DAG(
     # Branch based on subtitle availability
     t3c >> t3c_branch
 
-    # If subtitles available: download video, skip audio extraction
-    t3c_branch >> t3c2
+    # If subtitles available: skip to parse_description_links (t4)
+    # (video download t3c2 is commented out for now)
+    t3c_branch >> t4
 
     # If no subtitles: extract audio, transcribe, merge SRT
     t3c_branch >> t3d >> t3e >> t3f
 
-    # After getting descriptions, parse links from description
+    # After getting descriptions, also parse links from description
+    # (runs in parallel with subtitle branch or after subtitle success)
     t3b >> t4
 
     # After parsing links, scrape press release and download agenda in parallel
@@ -401,6 +406,5 @@ with DAG(
     t5b >> t5c >> t5d
 
     # After agenda section AND (YouTube subtitles OR transcribed SRT) are ready, identify chapters
-    # Both paths (t3c2 from YouTube, t3f from transcription) converge here with t5d
-    [t3c2, t5d] >> t6
+    # Both paths converge here with t5d
     [t3f, t5d] >> t6
