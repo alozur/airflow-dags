@@ -56,7 +56,7 @@ def analyze_chapters_with_ai(
     agenda_content: str,
     min_duration_minutes: int = 15,
     max_duration_minutes: int = 30,
-    model: str = "gpt-4o-mini"
+    model: str = "gpt-3.5-turbo"
 ) -> Dict:
     """
     Use AI to analyze transcription and agenda to identify interesting chapters.

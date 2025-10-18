@@ -638,7 +638,7 @@ def identify_interesting_chapters(merged_srt_files, agenda_sections, target_date
                 agenda_content=agenda_content,
                 min_duration_minutes=15,
                 max_duration_minutes=30,
-                model="gpt-4o-mini"  # Fast and cost-effective model
+                model="gpt-3.5-turbo"  # Cheaper and faster model
             )
 
             if result['success']:
