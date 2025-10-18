@@ -145,6 +145,99 @@ def download_video_from_youtube(video_details, target_date: str):
     }
 
 
+def try_download_subtitles_from_youtube(video_details, target_date: str):
+    """
+    Try to download existing SRT subtitles directly from YouTube.
+
+    This is much faster than transcribing audio and should be tried first.
+    If subtitles are not available, the DAG will fall back to audio transcription.
+
+    Args:
+        video_details: Results from get_video_details (contains youtube_url)
+        target_date: Target date in YYYY-MM-DD format (for organizing downloads)
+
+    Returns:
+        Dict with subtitle download results:
+        - total_downloaded: Number of videos with subtitles downloaded
+        - videos: List with video_id, has_subtitles, merged_srt_path, or error
+    """
+    from utils.youtube_downloader import download_youtube_subtitles
+
+    if not video_details or not video_details.get('videos'):
+        logging.warning("No video details to download subtitles")
+        return {'total_downloaded': 0, 'videos': []}
+
+    subtitle_results = []
+
+    for video in video_details['videos']:
+        video_id = video['video_id']
+        youtube_url = video.get('youtube_url')
+
+        if not youtube_url:
+            logging.warning(f"No YouTube URL for {video_id}")
+            subtitle_results.append({
+                'video_id': video_id,
+                'has_subtitles': False,
+                'error': 'No YouTube URL available'
+            })
+            continue
+
+        try:
+            # Create download directory: downloads/{date}/{video_id}/
+            video_download_dir = get_download_video_path(target_date, video_id)
+            ensure_directory_exists(video_download_dir)
+
+            logging.info(f"Attempting to download subtitles from YouTube: {youtube_url}")
+
+            # Try to download subtitles
+            result = download_youtube_subtitles(
+                youtube_url=youtube_url,
+                output_dir=video_download_dir,
+                languages=['es', 'es-ES', 'en', 'auto']  # Prefer Spanish, fallback to English or auto
+            )
+
+            if result['success']:
+                subtitle_results.append({
+                    'video_id': video_id,
+                    'video_title': video.get('title'),
+                    'target_date': target_date,
+                    'youtube_url': youtube_url,
+                    'has_subtitles': True,
+                    'merged_srt_path': result['merged_srt_path'],
+                    'subtitle_files': result['subtitle_files'],
+                    'downloaded_from_youtube': True  # Flag to skip transcription
+                })
+                logging.info(f"✅ Downloaded subtitles for {video_id} from YouTube!")
+            else:
+                subtitle_results.append({
+                    'video_id': video_id,
+                    'video_title': video.get('title'),
+                    'youtube_url': youtube_url,
+                    'has_subtitles': False,
+                    'error': result.get('error'),
+                    'downloaded_from_youtube': False  # Will need transcription
+                })
+                logging.info(f"No subtitles available for {video_id}, will need transcription")
+
+        except Exception as e:
+            logging.error(f"Error downloading subtitles for {video_id}: {e}")
+            subtitle_results.append({
+                'video_id': video_id,
+                'youtube_url': youtube_url,
+                'has_subtitles': False,
+                'error': str(e),
+                'downloaded_from_youtube': False
+            })
+
+    successful_count = len([v for v in subtitle_results if v.get('has_subtitles')])
+    logging.info(f"Total videos with subtitles downloaded: {successful_count}/{len(subtitle_results)}")
+
+    return {
+        'total_downloaded': successful_count,
+        'videos': subtitle_results
+    }
+
+
 def extract_audio_from_youtube(video_details, target_date: str, chunk_duration_minutes: int = None):
     """
     Extract audio from YouTube video, optionally split into chunks.

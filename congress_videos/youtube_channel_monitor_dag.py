@@ -173,8 +173,21 @@ with DAG(
         trigger_rule='none_failed_min_one_success'
     )
 
-    # Step 3c: Download video from YouTube (runs in parallel with audio extraction after video details)
+    # Step 3c: Try to download existing SRT subtitles from YouTube (FIRST - fastest option!)
     t3c = PythonOperator(
+        task_id='try_download_subtitles_from_youtube',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: yt_channel.try_download_subtitles_from_youtube(
+                ti.xcom_pull(key='video_details'),
+                target_date=context["params"].get("target_date")
+            ),
+            'youtube_subtitles'
+        ),
+    )
+
+    # Step 3c2: Download video from YouTube (runs after subtitle attempt)
+    t3c2 = PythonOperator(
         task_id='download_video_from_youtube',
         python_callable=lambda ti, **context: xcom_task(
             ti,
@@ -186,7 +199,7 @@ with DAG(
         ),
     )
 
-    # Step 3d: Extract audio from YouTube (runs in parallel with video download after video details)
+    # Step 3d: Extract audio from YouTube (only if subtitles not available)
     t3d = PythonOperator(
         task_id='extract_audio_from_youtube',
         python_callable=lambda ti, **context: xcom_task(
@@ -345,10 +358,14 @@ with DAG(
     # get_video_details and get_video_descriptions run in parallel
     t2a >> [t3a, t3b]
 
-    # After getting video details, download video and extract audio in parallel
-    t3a >> [t3c, t3d]
+    # After getting video details, try downloading subtitles first
+    t3a >> t3c
 
-    # After extracting audio, transcribe it with Whisper, then merge SRT files
+    # After subtitle attempt, download video and extract audio (if needed) in parallel
+    t3c >> [t3c2, t3d]
+
+    # After extracting audio (if subtitles weren't available), transcribe it with Whisper, then merge SRT files
+    # If subtitles were downloaded from YouTube, this branch will still run but quickly skip videos that already have subtitles
     t3d >> t3e >> t3f
 
     # After getting descriptions, parse links from description

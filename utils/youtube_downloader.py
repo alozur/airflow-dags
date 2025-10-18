@@ -6,8 +6,9 @@ ready for processing and uploading.
 """
 
 import logging
+import os
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import yt_dlp
 
@@ -488,5 +489,168 @@ def merge_video_audio_moviepy(
     except Exception as e:
         result["error"] = f"Error: {str(e)}"
         logger.error(result["error"], exc_info=True)
+
+    return result
+
+def download_youtube_subtitles(
+    youtube_url: str,
+    output_dir: str,
+    languages: List[str] = None
+) -> Dict:
+    """
+    Download SRT subtitles directly from YouTube if available.
+
+    This function tries to download existing subtitles from YouTube in the specified
+    languages. This is much faster than transcribing and should be tried first.
+
+    Args:
+        youtube_url: YouTube video URL
+        output_dir: Directory to save subtitle files
+        languages: List of language codes to try (default: ['es', 'es-ES', 'en', 'auto'])
+
+    Returns:
+        Dictionary with download info:
+        {
+            "success": bool,
+            "has_subtitles": bool,
+            "subtitle_files": [{language, file_path, file_size_mb, is_auto_generated}],
+            "merged_srt_path": str (if successful),
+            "error": str (if failed)
+        }
+    """
+    if languages is None:
+        languages = ['es', 'es-ES', 'en', 'auto']
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    result = {
+        "success": False,
+        "has_subtitles": False,
+        "subtitle_files": [],
+        "merged_srt_path": None,
+        "error": None
+    }
+
+    try:
+        logger.info(f"Checking for available subtitles: {youtube_url}")
+
+        # First, get video info to check available subtitles
+        ydl_opts_info = {
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
+            info = ydl.extract_info(youtube_url, download=False)
+            video_id = info.get('id')
+            available_subtitles = info.get('subtitles', {})
+            automatic_captions = info.get('automatic_captions', {})
+
+            # Check if any subtitles are available
+            if not available_subtitles and not automatic_captions:
+                logger.info("No subtitles available for this video")
+                result['error'] = "No subtitles available"
+                return result
+
+            result['has_subtitles'] = True
+            logger.info(f"Found subtitles! Manual: {list(available_subtitles.keys())}, Auto: {list(automatic_captions.keys())}")
+
+        # Try to download subtitles in order of preference
+        downloaded_files = []
+
+        for lang in languages:
+            try:
+                logger.info(f"Attempting to download subtitles for language: {lang}")
+
+                # Create srt_files directory
+                srt_dir = Path(output_dir) / "srt_files"
+                srt_dir.mkdir(parents=True, exist_ok=True)
+
+                ydl_opts = {
+                    'skip_download': True,  # Don't download the video
+                    'writesubtitles': True,  # Download subtitles
+                    'writeautomaticsub': True,  # Include auto-generated subtitles
+                    'subtitleslangs': [lang],  # Language to download
+                    'subtitlesformat': 'srt',  # SRT format
+                    'outtmpl': str(srt_dir / f'{video_id}_%(lang)s'),
+                    'quiet': False,
+                    'no_warnings': False,
+                }
+
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([youtube_url])
+
+                # Check if file was downloaded
+                possible_files = list(srt_dir.glob(f'{video_id}*.srt'))
+
+                if possible_files:
+                    for srt_file in possible_files:
+                        file_size_mb = srt_file.stat().st_size / (1024 * 1024)
+
+                        # Determine if it's auto-generated
+                        is_auto = 'auto' in srt_file.name.lower() or lang == 'auto'
+
+                        downloaded_files.append({
+                            'language': lang,
+                            'file_path': str(srt_file),
+                            'file_size_mb': round(file_size_mb, 2),
+                            'is_auto_generated': is_auto
+                        })
+
+                        logger.info(f"✅ Downloaded {lang} subtitles: {srt_file.name} ({file_size_mb:.2f} MB)")
+
+                    # If we found subtitles, we can stop trying other languages
+                    break
+
+            except Exception as e:
+                logger.debug(f"Could not download {lang} subtitles: {e}")
+                continue
+
+        if not downloaded_files:
+            result['error'] = "Failed to download subtitles in any language"
+            logger.warning(result['error'])
+            return result
+
+        # If we downloaded subtitles, create a merged/simplified version
+        result['subtitle_files'] = downloaded_files
+        result['success'] = True
+
+        # Use the first downloaded file as the main subtitle file
+        main_subtitle = downloaded_files[0]['file_path']
+
+        # Read and simplify the SRT (remove milliseconds, clean format)
+        try:
+            from utils.whisper_helpers import merge_srt_files
+
+            # Create merged/simplified version
+            srt_dir = Path(output_dir) / "srt_files"
+            merged_path = srt_dir / f"{video_id}_merged.srt"
+
+            # Use merge_srt_files to simplify (even though it's just one file)
+            merge_result = merge_srt_files(
+                srt_files=[main_subtitle],
+                output_path=str(merged_path)
+            )
+
+            if merge_result['success']:
+                result['merged_srt_path'] = str(merged_path)
+                logger.info(f"✅ Created simplified subtitle file: {merged_path}")
+            else:
+                # If merge fails, just use the original
+                result['merged_srt_path'] = main_subtitle
+                logger.warning(f"Using original subtitle file (merge failed): {main_subtitle}")
+
+        except Exception as e:
+            logger.warning(f"Could not simplify subtitles: {e}")
+            result['merged_srt_path'] = main_subtitle
+
+        logger.info(f"✅ Successfully downloaded subtitles from YouTube!")
+        logger.info(f"   Languages: {[f['language'] for f in downloaded_files]}")
+        logger.info(f"   Main subtitle: {result['merged_srt_path']}")
+
+    except Exception as e:
+        result['error'] = f"Error: {str(e)}"
+        logger.error(result['error'], exc_info=True)
 
     return result
