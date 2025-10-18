@@ -656,7 +656,7 @@ def identify_interesting_chapters(srt_data, agenda_sections, target_date: str):
                 agenda_content=agenda_content,
                 min_duration_minutes=15,
                 max_duration_minutes=30,
-                model="gpt-3.5-turbo"  # Cheaper and faster model
+                model="gpt-4o-mini"  # Better quality model for chapter detection
             )
 
             if result['success']:

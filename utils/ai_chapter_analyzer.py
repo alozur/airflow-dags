@@ -61,7 +61,7 @@ def analyze_chapters_with_ai(
     agenda_content: str,
     min_duration_minutes: int = 15,
     max_duration_minutes: int = 30,
-    model: str = "gpt-3.5-turbo"
+    model: str = "gpt-4o-mini"
 ) -> Dict:
     """
     Use AI to identify topic changes in transcription based on content similarity.
