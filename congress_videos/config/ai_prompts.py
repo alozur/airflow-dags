@@ -170,14 +170,12 @@ CHAPTER_ANALYSIS_USER_PROMPT_TEMPLATE = """Identifica los cambios de tema en est
 === TRANSCRIPCIÓN (con marcas de tiempo) ===
 {srt_content}
 
-{truncation_notice}
-
 TAREA: Identifica dónde cambian los temas y crea capítulos en límites naturales.
 
 ⚠️ REQUISITOS CRÍTICOS DE DURACIÓN:
 - Cada capítulo DEBE durar MÍNIMO {min_duration_minutes} minutos (esto es OBLIGATORIO)
 - Duración máxima: {max_duration_minutes} minutos
-- Si un tema es muy corto, combínalo con temas relacionados para alcanzar el mínimo
+- Elimina el silencio del comienzo de la transcripción, no la emplees en nigun capítulo.
 - NO crear capítulos de menos de {min_duration_minutes} minutos
 
 Otros requisitos:

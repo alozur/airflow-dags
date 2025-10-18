@@ -122,14 +122,10 @@ def analyze_chapters_with_ai(
             max_duration=max_duration_minutes
         )
 
-        # Truncate SRT content if too long
-        srt_content_truncated = srt_content[:30000]
-        truncation_notice = '...(transcripción truncada por límite de contexto)...' if len(srt_content) > 30000 else ''
-
+        # Use full SRT content without truncation
         user_prompt = CHAPTER_ANALYSIS_USER_PROMPT_TEMPLATE.format(
             agenda_content=agenda_content,
-            srt_content=srt_content_truncated,
-            truncation_notice=truncation_notice,
+            srt_content=srt_content,
             min_duration_minutes=min_duration_minutes,
             max_duration_minutes=max_duration_minutes
         )
