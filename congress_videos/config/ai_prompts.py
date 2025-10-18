@@ -143,6 +143,11 @@ Tu tarea es simple:
 3. Crea capítulos de {min_duration}-{max_duration} minutos en estos cambios de tema
 4. No cortes en medio de una frase o intervención
 
+⚠️ IMPORTANTE - DURACIÓN MÍNIMA:
+- CADA capítulo DEBE durar MÍNIMO {min_duration} minutos
+- NO crear capítulos más cortos de {min_duration} minutos bajo ninguna circunstancia
+- Es preferible tener menos capítulos largos que muchos capítulos cortos
+
 FORMATO DE SALIDA:
 Devuelve SOLO un objeto JSON válido (sin markdown, sin bloques de código):
 {{
@@ -168,7 +173,14 @@ CHAPTER_ANALYSIS_USER_PROMPT_TEMPLATE = """Identifica los cambios de tema en est
 {truncation_notice}
 
 TAREA: Identifica dónde cambian los temas y crea capítulos en límites naturales.
-- Cada capítulo debe durar {min_duration_minutes}-{max_duration_minutes} minutos
+
+⚠️ REQUISITOS CRÍTICOS DE DURACIÓN:
+- Cada capítulo DEBE durar MÍNIMO {min_duration_minutes} minutos (esto es OBLIGATORIO)
+- Duración máxima: {max_duration_minutes} minutos
+- Si un tema es muy corto, combínalo con temas relacionados para alcanzar el mínimo
+- NO crear capítulos de menos de {min_duration_minutes} minutos
+
+Otros requisitos:
 - No cortes en medio de una discusión
 - Dale a cada capítulo un título descriptivo simple
 
