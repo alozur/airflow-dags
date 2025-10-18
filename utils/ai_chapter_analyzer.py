@@ -12,6 +12,11 @@ from typing import Dict, List, Optional
 
 import openai
 
+from congress_videos.config.ai_prompts import (
+    CHAPTER_ANALYSIS_SYSTEM_PROMPT_TEMPLATE,
+    CHAPTER_ANALYSIS_USER_PROMPT_TEMPLATE
+)
+
 logger = logging.getLogger(__name__)
 
 # OpenAI API configuration
@@ -59,22 +64,21 @@ def analyze_chapters_with_ai(
     model: str = "gpt-3.5-turbo"
 ) -> Dict:
     """
-    Use AI to analyze transcription and agenda to identify interesting chapters.
+    Use AI to identify topic changes in transcription based on content similarity.
 
-    The AI will:
+    Simplified approach:
     1. Read the full transcription (SRT format with timestamps)
-    2. Read the session agenda
-    3. Identify interesting topics/discussions
-    4. Group related content into chapters (15-30 minutes each)
-    5. Ensure chapters don't cut off mid-discussion or mid-speech
-    6. Return structured chapter data with timestamps
+    2. Read the session agenda for context
+    3. Identify when topics change based on content similarity
+    4. Create chapter boundaries at topic changes
+    5. Return structured chapter data with timestamps
 
     Args:
         srt_content: Full transcription in SRT format with timestamps
-        agenda_content: Session agenda text
+        agenda_content: Session agenda text (for context)
         min_duration_minutes: Minimum chapter duration (default: 15)
         max_duration_minutes: Maximum chapter duration (default: 30)
-        model: OpenAI model to use (default: "gpt-4o-mini")
+        model: OpenAI model to use (default: "gpt-3.5-turbo")
 
     Returns:
         Dict with chapter analysis results:
@@ -86,13 +90,10 @@ def analyze_chapters_with_ai(
                 {
                     "chapter_number": int,
                     "title": str,
-                    "description": str,
                     "start_time": str (HH:MM:SS),
                     "end_time": str (HH:MM:SS),
                     "duration_seconds": int,
-                    "topics": [str],
-                    "speakers": [str] (if identifiable),
-                    "interest_score": int (1-10)
+                    "topics": [str]
                 }
             ],
             "error": str (if failed)
@@ -112,59 +113,26 @@ def analyze_chapters_with_ai(
         return result
 
     try:
-        logger.info("Analyzing transcription and agenda with AI to identify chapters...")
+        logger.info("Identifying topic changes in transcription using AI...")
         logger.info(f"Target chapter duration: {min_duration_minutes}-{max_duration_minutes} minutes")
 
-        # Prepare the prompt for the AI
-        system_prompt = """You are an expert video content analyzer specializing in parliamentary sessions.
-Your task is to analyze transcriptions and agendas to identify interesting chapters/segments for video content.
-
-IMPORTANT RULES:
-1. Each chapter must be between {min_duration} and {max_duration} minutes long
-2. NEVER cut off in the middle of a discussion, topic, or speaker's intervention
-3. Find natural breaking points (end of topics, speaker changes, procedural breaks)
-4. Group related topics together when they form a coherent narrative
-5. Prioritize content that is interesting, controversial, or newsworthy
-6. Each chapter should have a clear theme or focus
-
-OUTPUT FORMAT:
-Return ONLY a valid JSON object (no markdown, no code blocks) with this structure:
-{{
-  "chapters": [
-    {{
-      "chapter_number": 1,
-      "title": "Short descriptive title",
-      "description": "Brief description of what happens in this chapter",
-      "start_time": "HH:MM:SS",
-      "end_time": "HH:MM:SS",
-      "topics": ["topic1", "topic2"],
-      "interest_score": 8
-    }}
-  ]
-}}
-
-The interest_score should be 1-10 based on how interesting/newsworthy the content is.""".format(
+        # Use prompts from configuration file
+        system_prompt = CHAPTER_ANALYSIS_SYSTEM_PROMPT_TEMPLATE.format(
             min_duration=min_duration_minutes,
             max_duration=max_duration_minutes
         )
 
-        user_prompt = f"""Analyze this parliamentary session and identify interesting chapters for video content.
+        # Truncate SRT content if too long
+        srt_content_truncated = srt_content[:30000]
+        truncation_notice = '...(transcripción truncada por límite de contexto)...' if len(srt_content) > 30000 else ''
 
-=== SESSION AGENDA ===
-{agenda_content}
-
-=== FULL TRANSCRIPTION (with timestamps) ===
-{srt_content[:30000]}
-
-{'...(transcription truncated for context length)...' if len(srt_content) > 30000 else ''}
-
-TASK: Identify 3-8 interesting chapters that:
-- Are {min_duration_minutes}-{max_duration_minutes} minutes long
-- Don't cut off mid-discussion or mid-speech
-- Group related topics together
-- Focus on newsworthy or interesting content
-
-Return ONLY the JSON object, no other text."""
+        user_prompt = CHAPTER_ANALYSIS_USER_PROMPT_TEMPLATE.format(
+            agenda_content=agenda_content,
+            srt_content=srt_content_truncated,
+            truncation_notice=truncation_notice,
+            min_duration_minutes=min_duration_minutes,
+            max_duration_minutes=max_duration_minutes
+        )
 
         # Call OpenAI API
         logger.info(f"Calling OpenAI API with model: {model}")
@@ -176,8 +144,8 @@ Return ONLY the JSON object, no other text."""
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.3,  # Lower temperature for more consistent structured output
-            max_tokens=4000
+            temperature=0.2,  # Low temperature for consistent output
+            max_tokens=2000
         )
 
         # Extract and parse the response
@@ -186,9 +154,7 @@ Return ONLY the JSON object, no other text."""
 
         # Remove markdown code blocks if present
         if ai_response.startswith('```'):
-            # Remove opening ```json or ```
             ai_response = ai_response.split('\n', 1)[1]
-            # Remove closing ```
             ai_response = ai_response.rsplit('```', 1)[0]
 
         # Parse JSON response
@@ -200,7 +166,7 @@ Return ONLY the JSON object, no other text."""
             result["error"] = f"AI returned invalid JSON: {str(e)}"
             return result
 
-        # Process and validate chapters
+        # Process chapters
         chapters = chapters_data.get('chapters', [])
 
         for chapter in chapters:
@@ -211,13 +177,6 @@ Return ONLY the JSON object, no other text."""
 
             chapter['duration_seconds'] = duration_seconds
             chapter['duration_minutes'] = round(duration_seconds / 60, 1)
-
-            # Validate duration is within acceptable range
-            duration_minutes = duration_seconds / 60
-            if duration_minutes < min_duration_minutes * 0.8:  # Allow 20% tolerance
-                logger.warning(f"Chapter {chapter['chapter_number']} is shorter than minimum ({duration_minutes:.1f} min)")
-            if duration_minutes > max_duration_minutes * 1.2:  # Allow 20% tolerance
-                logger.warning(f"Chapter {chapter['chapter_number']} is longer than maximum ({duration_minutes:.1f} min)")
 
         # Sort chapters by start time
         chapters.sort(key=lambda x: parse_timestamp_to_seconds(x['start_time']))
@@ -235,7 +194,7 @@ Return ONLY the JSON object, no other text."""
         result['total_duration_seconds'] = total_duration
         result['chapters'] = chapters
 
-        logger.info(f"✅ Successfully identified {len(chapters)} interesting chapters")
+        logger.info(f"✅ Identified {len(chapters)} topic changes")
         for i, chapter in enumerate(chapters, 1):
             logger.info(f"  Chapter {i}: {chapter['title']} ({chapter['start_time']} - {chapter['end_time']}, {chapter.get('duration_minutes', 0):.1f} min)")
 

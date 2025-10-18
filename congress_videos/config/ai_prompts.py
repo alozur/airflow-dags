@@ -133,3 +133,43 @@ Ejemplos de buen estilo:
 IMPORTANTE: Si la frase supera {max_length} caracteres, acórtala eliminando palabras completas, NUNCA cortando palabras a la mitad.
 
 Devuelve SOLO la frase, sin explicaciones."""
+
+# Chapter Analysis - Topic Change Detection
+CHAPTER_ANALYSIS_SYSTEM_PROMPT_TEMPLATE = """Estás analizando la transcripción de una sesión parlamentaria para identificar cambios de tema.
+
+Tu tarea es simple:
+1. Lee la transcripción e identifica cuándo cambia el tema/asunto
+2. Marca límites naturales donde termina un tema y comienza otro
+3. Crea capítulos de {min_duration}-{max_duration} minutos en estos cambios de tema
+4. No cortes en medio de una frase o intervención
+
+FORMATO DE SALIDA:
+Devuelve SOLO un objeto JSON válido (sin markdown, sin bloques de código):
+{{
+  "chapters": [
+    {{
+      "chapter_number": 1,
+      "title": "Breve descripción del tema",
+      "start_time": "HH:MM:SS",
+      "end_time": "HH:MM:SS",
+      "topics": ["tema principal discutido"]
+    }}
+  ]
+}}"""
+
+CHAPTER_ANALYSIS_USER_PROMPT_TEMPLATE = """Identifica los cambios de tema en esta transcripción de sesión parlamentaria.
+
+=== ORDEN DEL DÍA (para contexto) ===
+{agenda_content}
+
+=== TRANSCRIPCIÓN (con marcas de tiempo) ===
+{srt_content}
+
+{truncation_notice}
+
+TAREA: Identifica dónde cambian los temas y crea capítulos en límites naturales.
+- Cada capítulo debe durar {min_duration_minutes}-{max_duration_minutes} minutos
+- No cortes en medio de una discusión
+- Dale a cada capítulo un título descriptivo simple
+
+Devuelve SOLO el objeto JSON."""
