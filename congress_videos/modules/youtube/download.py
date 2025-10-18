@@ -17,17 +17,30 @@ from utils.youtube_downloader import (
 )
 
 
-def create_test_video_data():
+def create_test_video_data(test_video_url: str = "https://www.youtube.com/watch?v=ZBU0bVpYXM4"):
     """
-    Create mock video data for testing with predefined test video.
+    Create mock video data for testing with a specified YouTube URL.
 
-    Test video: https://www.youtube.com/watch?v=ZBU0bVpYXM4
+    Args:
+        test_video_url: YouTube video URL to use for testing
+                       (default: https://www.youtube.com/watch?v=ZBU0bVpYXM4)
 
     Returns:
         Dict with test video in the same structure as filter_plenary_session_videos
         (so it can be processed by get_video_details and get_video_descriptions)
     """
-    test_video_id = 'ZBU0bVpYXM4'
+    # Extract video ID from URL
+    # Supports formats: youtube.com/watch?v=ID, youtu.be/ID
+    import re
+
+    video_id_match = re.search(r'(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})', test_video_url)
+    if video_id_match:
+        test_video_id = video_id_match.group(1)
+    else:
+        # Fallback to default if URL parsing fails
+        logging.warning(f"Could not extract video ID from URL: {test_video_url}, using default")
+        test_video_id = 'ZBU0bVpYXM4'
+        test_video_url = f'https://www.youtube.com/watch?v={test_video_id}'
 
     # Match the structure returned by filter_plenary_session_videos
     mock_plenary_videos = {
@@ -35,7 +48,7 @@ def create_test_video_data():
         'videos': [{
             'video_id': test_video_id,
             'title': 'Test Video - Sesión Plenaria',
-            'url': f'https://www.youtube.com/watch?v={test_video_id}',
+            'url': test_video_url,
             'published_at': '2025-01-01T10:00:00Z',  # Mock date
             'is_live': False,
             'is_upcoming': False
@@ -43,7 +56,7 @@ def create_test_video_data():
     }
 
     logging.info(f"Created test video data for video ID: {test_video_id}")
-    logging.info(f"Test video URL: {mock_plenary_videos['videos'][0]['url']}")
+    logging.info(f"Test video URL: {test_video_url}")
 
     return mock_plenary_videos
 

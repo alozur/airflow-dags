@@ -66,8 +66,9 @@ with DAG(
     params={  # Default to yesterday
         "target_date": yesterday_str,
         "max_videos": 10,  # Maximum number of videos to check
-        "chunk_duration_minutes": 10,  # Duration of each audio chunk in minutes
-        "isTesting": IS_DEVELOPMENT  # True in development, False in production
+        "chunk_duration_minutes": 30,  # Duration of each audio chunk in minutes (default: 30 minutes)
+        "isTesting": IS_DEVELOPMENT,  # True in development, False in production
+        "test_video_url": "https://www.youtube.com/watch?v=ZBU0bVpYXM4"  # Test video URL (used when isTesting=True)
     }
 ) as dag:
 
@@ -90,9 +91,11 @@ with DAG(
     # Test mode: Create test video data
     t0_test = PythonOperator(
         task_id='create_test_video_data',
-        python_callable=lambda ti: xcom_task(
+        python_callable=lambda ti, **context: xcom_task(
             ti,
-            lambda: yt_channel.create_test_video_data(),
+            lambda: yt_channel.create_test_video_data(
+                test_video_url=context["params"].get("test_video_url", "https://www.youtube.com/watch?v=ZBU0bVpYXM4")
+            ),
             'plenary_videos'
         ),
     )
