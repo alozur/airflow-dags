@@ -143,6 +143,14 @@ Tu tarea es simple:
 3. Crea capítulos de {min_duration}-{max_duration} minutos en estos cambios de tema
 4. No cortes en medio de una frase o intervención
 
+🔥 FLEXIBILIDAD TOTAL EN NÚMERO DE CAPÍTULOS:
+- Puedes crear TANTOS capítulos como sean necesarios según los cambios de tema
+- NO hay límite máximo de capítulos - crea 2, 5, 10, 20, o los que necesites
+- Si hay muchos temas diferentes, crea muchos capítulos
+- Si hay pocos temas, crea pocos capítulos
+- Puedes crear capítulos que cubran TODO el vídeo completo si el tema es único
+- Puedes crear UN SOLO capítulo que abarque toda la transcripción si no hay cambios de tema significativos
+
 ⚠️ IMPORTANTE - DURACIÓN MÍNIMA:
 - CADA capítulo DEBE durar MÍNIMO {min_duration} minutos
 - NO crear capítulos más cortos de {min_duration} minutos bajo ninguna circunstancia
@@ -172,6 +180,14 @@ CHAPTER_ANALYSIS_USER_PROMPT_TEMPLATE = """Identifica los cambios de tema en est
 
 TAREA: Identifica dónde cambian los temas y crea capítulos en límites naturales.
 
+🔥 FLEXIBILIDAD TOTAL:
+- Crea TANTOS capítulos como necesites - no hay límite máximo
+- Si identificas 1 tema → crea 1 capítulo que cubra TODO el vídeo
+- Si identificas 3 temas → crea 3 capítulos
+- Si identificas 10 temas → crea 10 capítulos
+- Puedes crear un capítulo único para toda la transcripción si es apropiado
+- La cantidad de capítulos depende ÚNICAMENTE de los cambios de tema que identifiques
+
 ⚠️ REQUISITOS CRÍTICOS DE DURACIÓN:
 - Cada capítulo DEBE durar MÍNIMO {min_duration_minutes} minutos (esto es OBLIGATORIO)
 - Duración máxima: {max_duration_minutes} minutos
@@ -181,5 +197,40 @@ TAREA: Identifica dónde cambian los temas y crea capítulos en límites natural
 Otros requisitos:
 - No cortes en medio de una discusión
 - Dale a cada capítulo un título descriptivo simple
+- IMPORTANTE: Puedes y DEBES cubrir toda la duración del vídeo con tus capítulos
 
 Devuelve SOLO el objeto JSON."""
+
+# Chunk Summarization - For silence-based chunks before chapter analysis
+CHUNK_SUMMARY_SYSTEM_PROMPT = """Eres un experto en resumir transcripciones de sesiones parlamentarias españolas.
+
+Tu tarea es crear un resumen conciso y estructurado de un segmento de transcripción que preserve:
+- Los temas principales discutidos
+- Los intervinientes clave
+- Las marcas de tiempo importantes cuando cambian los temas
+- El contexto político relevante
+
+El resumen debe ser claro y ayudar a identificar cambios de tema para crear capítulos posteriormente."""
+
+CHUNK_SUMMARY_USER_PROMPT_TEMPLATE = """Resume este segmento de una sesión parlamentaria (Chunk {chunk_number}).
+
+INFORMACIÓN DEL SEGMENTO:
+- Tiempo de inicio: {start_time}
+- Tiempo de fin: {end_time}
+- Duración: {duration_minutes} minutos
+
+TRANSCRIPCIÓN:
+{chunk_content}
+
+TAREA: Crea un resumen estructurado que incluya:
+1. Tema(s) principal(es) discutido(s)
+2. Intervinientes clave y sus posiciones
+3. Cambios de tema dentro de este segmento (con timestamps aproximados si los hay)
+4. Contexto político relevante
+
+Formato esperado:
+- Párrafo breve de 3-5 oraciones
+- Menciona timestamps importantes cuando identifiques cambios de tema
+- Enfócate en CONTENIDO, no en procedimientos formales
+
+Devuelve SOLO el resumen en texto plano, sin formato adicional."""

@@ -40,6 +40,201 @@ def parse_timestamp_to_seconds(timestamp: str) -> int:
     return 0
 
 
+def detect_silence_gaps(srt_content: str, min_silence_seconds: int = 15) -> List[Dict]:
+    """
+    Detect silence gaps in SRT content by finding time gaps between subtitle entries.
+
+    This function analyzes the SRT transcript to find natural breaks (silence periods)
+    that can be used as chunk boundaries for better content segmentation.
+
+    Args:
+        srt_content: Full SRT transcription content
+        min_silence_seconds: Minimum silence duration to consider as a gap (default: 15)
+
+    Returns:
+        List of silence gaps:
+        [
+            {
+                "gap_start": "HH:MM:SS",
+                "gap_end": "HH:MM:SS",
+                "gap_duration_seconds": int,
+                "previous_text": str,  # Last text before gap
+                "next_text": str       # First text after gap
+            }
+        ]
+    """
+    import re
+
+    # Parse SRT format to extract timestamps and text
+    # SRT format: timestamp1 --> timestamp2 followed by text
+    pattern = r'(\d{1,2}:\d{2}:\d{2})\s*-->\s*(\d{1,2}:\d{2}:\d{2})\s*\n(.+?)(?=\n\d{1,2}:\d{2}:\d{2}\s*-->|\Z)'
+
+    entries = re.findall(pattern, srt_content, re.DOTALL)
+
+    if not entries:
+        logger.warning("No SRT entries found in content")
+        return []
+
+    silence_gaps = []
+
+    for i in range(len(entries) - 1):
+        current_entry = entries[i]
+        next_entry = entries[i + 1]
+
+        # Extract end time of current entry and start time of next entry
+        current_end_time = current_entry[1].strip()
+        next_start_time = next_entry[0].strip()
+
+        # Calculate gap duration
+        current_end_seconds = parse_timestamp_to_seconds(current_end_time)
+        next_start_seconds = parse_timestamp_to_seconds(next_start_time)
+
+        gap_duration = next_start_seconds - current_end_seconds
+
+        # If gap is significant, record it
+        if gap_duration >= min_silence_seconds:
+            silence_gaps.append({
+                "gap_start": current_end_time,
+                "gap_end": next_start_time,
+                "gap_duration_seconds": gap_duration,
+                "gap_midpoint_seconds": (current_end_seconds + next_start_seconds) // 2,
+                "previous_text": current_entry[2].strip()[:100],  # First 100 chars
+                "next_text": next_entry[2].strip()[:100]
+            })
+
+    logger.info(f"Found {len(silence_gaps)} silence gaps of {min_silence_seconds}+ seconds")
+    return silence_gaps
+
+
+def chunk_by_silence(
+    srt_content: str,
+    min_silence_seconds: int = 15,
+    max_chunk_duration_minutes: int = 30
+) -> List[Dict]:
+    """
+    Split SRT content into chunks based on silence gaps.
+
+    Creates natural chunks by splitting at silence gaps, ensuring chunks don't
+    exceed max_chunk_duration_minutes.
+
+    Args:
+        srt_content: Full SRT transcription content
+        min_silence_seconds: Minimum silence duration to use as split point (default: 15)
+        max_chunk_duration_minutes: Maximum duration for each chunk (default: 30)
+
+    Returns:
+        List of chunks:
+        [
+            {
+                "chunk_number": int,
+                "start_time": "HH:MM:SS",
+                "end_time": "HH:MM:SS",
+                "duration_seconds": int,
+                "duration_minutes": float,
+                "content": str  # SRT content for this chunk
+            }
+        ]
+    """
+    import re
+
+    # Detect all silence gaps
+    silence_gaps = detect_silence_gaps(srt_content, min_silence_seconds)
+
+    if not silence_gaps:
+        logger.warning("No silence gaps found, returning entire content as single chunk")
+        # Parse first and last timestamps
+        timestamps = re.findall(r'\d{1,2}:\d{2}:\d{2}', srt_content)
+        if len(timestamps) >= 2:
+            start_time = timestamps[0]
+            end_time = timestamps[-1]
+            duration = parse_timestamp_to_seconds(end_time) - parse_timestamp_to_seconds(start_time)
+        else:
+            start_time = "00:00:00"
+            end_time = "00:00:00"
+            duration = 0
+
+        return [{
+            "chunk_number": 1,
+            "start_time": start_time,
+            "end_time": end_time,
+            "duration_seconds": duration,
+            "duration_minutes": round(duration / 60, 1),
+            "content": srt_content
+        }]
+
+    # Extract all SRT entries with timestamps
+    pattern = r'(\d{1,2}:\d{2}:\d{2})\s*-->\s*(\d{1,2}:\d{2}:\d{2})\s*\n(.+?)(?=\n\d{1,2}:\d{2}:\d{2}\s*-->|\Z)'
+    entries = re.findall(pattern, srt_content, re.DOTALL)
+
+    chunks = []
+    chunk_start_idx = 0
+    chunk_start_time = entries[0][0] if entries else "00:00:00"
+    max_chunk_seconds = max_chunk_duration_minutes * 60
+
+    for gap in silence_gaps:
+        gap_midpoint = gap['gap_midpoint_seconds']
+
+        # Find the entry index at this gap
+        gap_entry_idx = None
+        for idx, entry in enumerate(entries):
+            if parse_timestamp_to_seconds(entry[1]) >= gap_midpoint:
+                gap_entry_idx = idx
+                break
+
+        if gap_entry_idx is None:
+            continue
+
+        # Check if creating a chunk here would exceed max duration
+        chunk_end_time = entries[gap_entry_idx - 1][1] if gap_entry_idx > 0 else entries[0][1]
+        chunk_duration = parse_timestamp_to_seconds(chunk_end_time) - parse_timestamp_to_seconds(chunk_start_time)
+
+        # Only create chunk if it meets duration criteria
+        if chunk_duration >= max_chunk_seconds or gap_entry_idx == len(entries) - 1:
+            # Build chunk content
+            chunk_entries = entries[chunk_start_idx:gap_entry_idx]
+            chunk_content = ""
+            for entry in chunk_entries:
+                chunk_content += f"{entry[0]} --> {entry[1]}\n{entry[2]}\n\n"
+
+            chunks.append({
+                "chunk_number": len(chunks) + 1,
+                "start_time": chunk_start_time,
+                "end_time": chunk_end_time,
+                "duration_seconds": chunk_duration,
+                "duration_minutes": round(chunk_duration / 60, 1),
+                "content": chunk_content.strip()
+            })
+
+            # Start new chunk
+            chunk_start_idx = gap_entry_idx
+            chunk_start_time = entries[gap_entry_idx][0] if gap_entry_idx < len(entries) else chunk_end_time
+
+    # Add final chunk if there are remaining entries
+    if chunk_start_idx < len(entries):
+        chunk_entries = entries[chunk_start_idx:]
+        chunk_end_time = entries[-1][1]
+        chunk_duration = parse_timestamp_to_seconds(chunk_end_time) - parse_timestamp_to_seconds(chunk_start_time)
+
+        chunk_content = ""
+        for entry in chunk_entries:
+            chunk_content += f"{entry[0]} --> {entry[1]}\n{entry[2]}\n\n"
+
+        chunks.append({
+            "chunk_number": len(chunks) + 1,
+            "start_time": chunk_start_time,
+            "end_time": chunk_end_time,
+            "duration_seconds": chunk_duration,
+            "duration_minutes": round(chunk_duration / 60, 1),
+            "content": chunk_content.strip()
+        })
+
+    logger.info(f"Created {len(chunks)} chunks based on silence gaps")
+    for chunk in chunks:
+        logger.info(f"  Chunk {chunk['chunk_number']}: {chunk['start_time']} - {chunk['end_time']} ({chunk['duration_minutes']} min)")
+
+    return chunks
+
+
 def format_seconds_to_timestamp(seconds: int) -> str:
     """
     Convert seconds to HH:MM:SS format.
