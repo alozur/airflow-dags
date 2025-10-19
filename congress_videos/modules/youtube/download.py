@@ -629,6 +629,18 @@ def split_srt_by_silence(srt_data, target_date: str, min_silence_seconds: int = 
             srt_content = Path(merged_srt_path).read_text(encoding='utf-8')
             logging.info(f"Loaded SRT file for video {video_id}: {len(srt_content)} characters")
 
+            # Debug: Check if content is actually loaded
+            if not srt_content or len(srt_content) == 0:
+                logging.error(f"SRT file is empty for video {video_id}!")
+                chunked_videos.append({
+                    'video_id': video_id,
+                    'error': 'SRT file is empty'
+                })
+                continue
+
+            # Log first 500 chars for debugging
+            logging.info(f"First 500 chars of SRT: {srt_content[:500]}")
+
             # Split content by silence gaps
             logging.info(f"Splitting SRT by silence gaps (min: {min_chunk_duration_minutes} min)...")
             chunks = chunk_by_silence(

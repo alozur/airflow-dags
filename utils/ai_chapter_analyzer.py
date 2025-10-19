@@ -139,6 +139,11 @@ def chunk_by_silence(
     """
     import re
 
+    # Debug: Log SRT content info
+    logger.info(f"Chunking SRT content: {len(srt_content)} characters")
+    if len(srt_content) > 0:
+        logger.info(f"First 500 chars: {srt_content[:500]}")
+
     # Detect all silence gaps
     silence_gaps = detect_silence_gaps(srt_content, min_silence_seconds)
 
