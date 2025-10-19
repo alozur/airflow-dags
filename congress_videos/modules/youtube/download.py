@@ -807,26 +807,29 @@ def summarize_silence_chunks(chunked_srt_data, target_date: str):
     }
 
 
-def identify_interesting_chapters(chunk_summaries, agenda_sections, target_date: str):
+def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date: str):
     """
-    Use AI to identify interesting chapters from chunk summaries and agenda.
+    TASK 3: Identify interesting chapters within EACH chunk.
 
-    Takes the summarized chunks (with speakers, topics, timeline) and combines
-    them with the agenda to create meaningful chapters for video extraction.
+    Analyzes each chunk individually using both:
+    - The SRT content (full transcript)
+    - The summary (speakers, topics, timeline)
+
+    to find interesting sub-chapters that could be extracted.
 
     Args:
-        chunk_summaries: Results from summarize_silence_chunks (contains summarized chunks)
-        agenda_sections: Results from extract_agenda_section
-        target_date: Target date in YYYY-MM-DD format (for locating files)
+        chunk_summaries: Results from summarize_silence_chunks (contains summaries)
+        chunked_srt_data: Results from split_srt_by_silence (contains SRT content)
+        target_date: Target date in YYYY-MM-DD format
 
     Returns:
         Dict with chapter identification results:
         - total_videos: Number of videos analyzed
-        - videos: List with video_id, chapters data
+        - videos: List with video_id, chunks_with_chapters (interesting chapters found in each chunk)
     """
-    from pathlib import Path
-    from utils.ai_chapter_analyzer import analyze_chapters_with_ai
-    from congress_videos.config.paths import get_download_video_path
+    from congress_videos.config.ai_prompts import CHAPTER_IDENTIFICATION_SYSTEM_PROMPT, CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE
+    import openai
+    import json
 
     if not chunk_summaries or not chunk_summaries.get('videos'):
         logging.warning("No chunk summaries to analyze")
@@ -846,71 +849,123 @@ def identify_interesting_chapters(chunk_summaries, agenda_sections, target_date:
             })
             continue
 
+        # Find matching chunked SRT data for this video
+        srt_chunks = []
+        if chunked_srt_data and chunked_srt_data.get('videos'):
+            for srt_video in chunked_srt_data['videos']:
+                if srt_video.get('video_id') == video_id:
+                    srt_chunks = srt_video.get('chunks', [])
+                    break
+
+        if not srt_chunks:
+            logging.warning(f"No SRT chunks found for video {video_id}")
+            analyzed_videos.append({
+                'video_id': video_id,
+                'error': 'No SRT chunks available'
+            })
+            continue
+
         try:
-            # Find matching agenda section
-            agenda_content = ""
-            if agenda_sections and agenda_sections.get('videos'):
-                for agenda_video in agenda_sections['videos']:
-                    if agenda_video.get('video_id') == video_id:
-                        agenda_content = agenda_video.get('agenda_section_text', '')
+            logging.info(f"Analyzing {len(summarized_chunks)} chunks for video {video_id} to identify interesting chapters...")
+            chunks_with_chapters = []
+
+            # Analyze each chunk individually
+            for idx, summary_chunk in enumerate(summarized_chunks):
+                chunk_number = summary_chunk['chunk_number']
+
+                # Find matching SRT content for this chunk
+                srt_content = ""
+                for srt_chunk in srt_chunks:
+                    if srt_chunk['chunk_number'] == chunk_number:
+                        srt_content = srt_chunk.get('content', '')
                         break
 
-            if not agenda_content:
-                logging.warning(f"No agenda found for video {video_id}, using generic prompt")
-                agenda_content = "No agenda available. Please analyze based on chunk summaries."
+                if not srt_content:
+                    logging.warning(f"No SRT content found for chunk {chunk_number}")
+                    chunks_with_chapters.append({
+                        'chunk_number': chunk_number,
+                        'error': 'No SRT content available'
+                    })
+                    continue
 
-            logging.info(f"Analyzing video {video_id} with AI to identify interesting chapters from {len(summarized_chunks)} chunks...")
+                try:
+                    # Prepare chunk summary text for AI
+                    summary_text = f"Chunk {chunk_number} ({summary_chunk['start_time']} - {summary_chunk['end_time']})\n\n"
 
-            # Prepare combined summary for AI analysis
-            # Convert chunk summaries to a readable format for the AI
-            combined_summary = f"VIDEO STRUCTURE ({len(summarized_chunks)} chunks):\n\n"
+                    if summary_chunk.get('speakers'):
+                        summary_text += "Speakers:\n"
+                        for speaker in summary_chunk['speakers']:
+                            summary_text += f"  - {speaker.get('name', 'Unknown')} ({speaker.get('role', '')})\n"
+                        summary_text += "\n"
 
-            for chunk in summarized_chunks:
-                combined_summary += f"--- CHUNK {chunk['chunk_number']} ({chunk['start_time']} - {chunk['end_time']}) ---\n"
-                combined_summary += f"Duration: {chunk['duration_minutes']} minutes\n\n"
+                    if summary_chunk.get('topics'):
+                        summary_text += f"Topics: {', '.join(summary_chunk['topics'])}\n\n"
 
-                # Speakers
-                if chunk.get('speakers'):
-                    combined_summary += "Intervinientes:\n"
-                    for speaker in chunk['speakers']:
-                        combined_summary += f"  - {speaker.get('name', 'Unknown')} ({speaker.get('role', '')}): {speaker.get('start_time', '')} - {speaker.get('end_time', '')}\n"
-                    combined_summary += "\n"
+                    if summary_chunk.get('summary'):
+                        summary_text += f"Summary: {summary_chunk['summary']}\n"
 
-                # Topics
-                if chunk.get('topics'):
-                    combined_summary += f"Temas: {', '.join(chunk['topics'])}\n\n"
+                    # Call OpenAI to identify interesting chapters within this chunk
+                    client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": CHAPTER_IDENTIFICATION_SYSTEM_PROMPT},
+                            {"role": "user", "content": CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE.format(
+                                chunk_summary=summary_text,
+                                srt_content=srt_content[:20000]  # Limit to 20k chars
+                            )}
+                        ],
+                        temperature=0.3,
+                        max_tokens=2000,
+                        response_format={"type": "json_object"}
+                    )
 
-                # Summary
-                if chunk.get('summary'):
-                    combined_summary += f"Resumen: {chunk['summary']}\n\n"
+                    # Parse AI response
+                    ai_response = response.choices[0].message.content.strip()
+                    chapter_data = json.loads(ai_response)
 
-                combined_summary += "\n"
+                    interesting_chapters = chapter_data.get('interesting_chapters', [])
 
-            # Use AI to analyze and identify chapters from summaries
-            result = analyze_chapters_with_ai(
-                srt_content=combined_summary,  # Pass combined summaries instead of full SRT
-                agenda_content=agenda_content,
-                min_duration_minutes=15,
-                max_duration_minutes=30,
-                model="gpt-4o-mini"
+                    chunks_with_chapters.append({
+                        'chunk_number': chunk_number,
+                        'start_time': summary_chunk['start_time'],
+                        'end_time': summary_chunk['end_time'],
+                        'duration_minutes': summary_chunk['duration_minutes'],
+                        'total_interesting_chapters': len(interesting_chapters),
+                        'interesting_chapters': interesting_chapters
+                    })
+
+                    logging.info(f"  ✅ Chunk {chunk_number}: Found {len(interesting_chapters)} interesting chapters")
+
+                except json.JSONDecodeError as e:
+                    logging.error(f"Failed to parse JSON for chunk {chunk_number}: {e}")
+                    chunks_with_chapters.append({
+                        'chunk_number': chunk_number,
+                        'error': f"JSON parse error: {str(e)}"
+                    })
+                except Exception as e:
+                    logging.error(f"Failed to analyze chunk {chunk_number}: {e}")
+                    chunks_with_chapters.append({
+                        'chunk_number': chunk_number,
+                        'error': str(e)
+                    })
+
+            # Count total interesting chapters found
+            total_chapters_found = sum(
+                c.get('total_interesting_chapters', 0)
+                for c in chunks_with_chapters
+                if not c.get('error')
             )
 
-            if result['success']:
-                analyzed_videos.append({
-                    'video_id': video_id,
-                    'video_title': video_data.get('video_title'),
-                    'total_chapters': result['total_chapters'],
-                    'total_duration_seconds': result['total_duration_seconds'],
-                    'chapters': result['chapters'],
-                    'chunk_summaries': summarized_chunks  # Include original summaries
-                })
-                logging.info(f"✅ Identified {result['total_chapters']} chapters for video {video_id}")
-            else:
-                analyzed_videos.append({
-                    'video_id': video_id,
-                    'error': result.get('error')
-                })
-                logging.error(f"Failed to analyze video {video_id}: {result.get('error')}")
+            analyzed_videos.append({
+                'video_id': video_id,
+                'video_title': video_data.get('video_title'),
+                'total_chunks_analyzed': len(chunks_with_chapters),
+                'total_interesting_chapters_found': total_chapters_found,
+                'chunks_with_chapters': chunks_with_chapters
+            })
+
+            logging.info(f"✅ Video {video_id}: Found {total_chapters_found} interesting chapters across {len(chunks_with_chapters)} chunks")
 
         except Exception as e:
             logging.error(f"Error analyzing video {video_id}: {e}", exc_info=True)
@@ -920,9 +975,95 @@ def identify_interesting_chapters(chunk_summaries, agenda_sections, target_date:
             })
 
     successful_count = len([v for v in analyzed_videos if not v.get('error')])
-    logging.info(f"Chapter analysis complete: {successful_count}/{len(analyzed_videos)} videos analyzed")
+    logging.info(f"Chapter identification complete: {successful_count}/{len(analyzed_videos)} videos analyzed")
 
     return {
         'total_videos': successful_count,
         'videos': analyzed_videos
+    }
+
+
+def merge_interesting_chapters(identified_chapters, target_date: str):
+    """
+    TASK 4: Merge and consolidate interesting chapters from all chunks.
+
+    Takes all the interesting chapters identified across different chunks
+    and merges/consolidates them into a final list of chapters for extraction.
+
+    Args:
+        identified_chapters: Results from identify_interesting_chapters
+        target_date: Target date in YYYY-MM-DD format
+
+    Returns:
+        Dict with merged chapter results:
+        - total_videos: Number of videos processed
+        - videos: List with video_id, final_chapters (consolidated list)
+    """
+    if not identified_chapters or not identified_chapters.get('videos'):
+        logging.warning("No identified chapters to merge")
+        return {'total_videos': 0, 'videos': []}
+
+    merged_videos = []
+
+    for video_data in identified_chapters['videos']:
+        video_id = video_data['video_id']
+        chunks_with_chapters = video_data.get('chunks_with_chapters', [])
+
+        if not chunks_with_chapters or video_data.get('error'):
+            logging.warning(f"Skipping video {video_id}: no chapters to merge")
+            merged_videos.append({
+                'video_id': video_id,
+                'error': video_data.get('error', 'No chapters available')
+            })
+            continue
+
+        try:
+            # Collect all interesting chapters from all chunks
+            all_chapters = []
+
+            for chunk_data in chunks_with_chapters:
+                if chunk_data.get('error'):
+                    continue
+
+                chunk_number = chunk_data['chunk_number']
+                interesting_chapters = chunk_data.get('interesting_chapters', [])
+
+                for chapter in interesting_chapters:
+                    all_chapters.append({
+                        'source_chunk': chunk_number,
+                        'title': chapter.get('title', ''),
+                        'description': chapter.get('description', ''),
+                        'start_time': chapter.get('start_time', ''),
+                        'end_time': chapter.get('end_time', ''),
+                        'duration_minutes': chapter.get('duration_minutes', 0),
+                        'speakers': chapter.get('speakers', []),
+                        'topics': chapter.get('topics', []),
+                        'importance_score': chapter.get('importance_score', 0)
+                    })
+
+            # Sort by start_time
+            all_chapters.sort(key=lambda x: x['start_time'])
+
+            logging.info(f"Collected {len(all_chapters)} interesting chapters for video {video_id}")
+
+            merged_videos.append({
+                'video_id': video_id,
+                'video_title': video_data.get('video_title'),
+                'total_chapters': len(all_chapters),
+                'final_chapters': all_chapters
+            })
+
+        except Exception as e:
+            logging.error(f"Error merging chapters for video {video_id}: {e}", exc_info=True)
+            merged_videos.append({
+                'video_id': video_id,
+                'error': str(e)
+            })
+
+    successful_count = len([v for v in merged_videos if not v.get('error')])
+    logging.info(f"Chapter merging complete: {successful_count}/{len(merged_videos)} videos processed")
+
+    return {
+        'total_videos': successful_count,
+        'videos': merged_videos
     }

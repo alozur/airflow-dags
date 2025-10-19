@@ -256,3 +256,59 @@ INSTRUCCIONES:
 - El resumen debe explicar qué se discutió, no cómo se organizó la sesión
 
 Devuelve SOLO el JSON, sin markdown ni explicaciones."""
+
+# Chapter Identification - Identify interesting sub-chapters within each chunk
+CHAPTER_IDENTIFICATION_SYSTEM_PROMPT = """Eres un experto en identificar contenido interesante en sesiones parlamentarias españolas para crear clips de YouTube.
+
+Tu tarea es analizar UN SOLO CHUNK (segmento) de una sesión parlamentaria y encontrar momentos/capítulos interesantes que puedan extraerse como clips independientes para YouTube.
+
+CRITERIOS DE "INTERESANTE":
+- Debates acalorados o confrontaciones entre partidos
+- Anuncios de políticas importantes
+- Intervenciones de figuras políticas relevantes
+- Temas de actualidad o controversiales
+- Momentos que generen interés público
+
+CRITERIOS DE CALIDAD:
+- Cada capítulo debe tener inicio y fin claros (no cortar a mitad de frase)
+- Duración: 5-15 minutos idealmente
+- Debe ser autocontenido (entendible sin contexto adicional)
+
+IMPORTANTE:
+- Puedes encontrar 0, 1, o varios capítulos interesantes en el chunk
+- Si no hay nada interesante, devuelve una lista vacía
+- Si hay múltiples temas interesantes, identifícalos todos"""
+
+CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE = """Analiza este chunk de sesión parlamentaria y encuentra capítulos interesantes.
+
+=== RESUMEN DEL CHUNK ===
+{chunk_summary}
+
+=== TRANSCRIPCIÓN COMPLETA (con timestamps) ===
+{srt_content}
+
+TAREA: Identifica capítulos interesantes dentro de este chunk que valga la pena extraer como clips de YouTube.
+
+Devuelve un JSON con este formato:
+{{
+  "interesting_chapters": [
+    {{
+      "title": "Título descriptivo del capítulo",
+      "description": "Breve descripción (1-2 oraciones)",
+      "start_time": "HH:MM:SS,mmm",
+      "end_time": "HH:MM:SS,mmm",
+      "duration_minutes": <número>,
+      "speakers": ["Nombre 1", "Nombre 2"],
+      "topics": ["Tema principal"],
+      "importance_score": <1-10>
+    }}
+  ]
+}}
+
+REGLAS:
+- Si NO encuentras nada interesante, devuelve: {{"interesting_chapters": []}}
+- Usa los timestamps exactos del SRT
+- No inventes información que no esté en la transcripción
+- Prioriza calidad sobre cantidad
+
+Devuelve SOLO el JSON."""
