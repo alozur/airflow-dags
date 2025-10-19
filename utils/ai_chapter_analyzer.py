@@ -25,15 +25,22 @@ openai.api_key = os.getenv('OPENAI_API_KEY')
 
 def parse_timestamp_to_seconds(timestamp: str) -> int:
     """
-    Convert SRT timestamp (HH:MM:SS) to total seconds.
+    Convert SRT timestamp to total seconds.
+
+    Supports both formats:
+    - HH:MM:SS (simplified format)
+    - HH:MM:SS,mmm (YouTube format with milliseconds)
 
     Args:
-        timestamp: Time in format "HH:MM:SS" or "H:MM:SS"
+        timestamp: Time in format "HH:MM:SS" or "HH:MM:SS,mmm"
 
     Returns:
         Total seconds as integer
     """
-    parts = timestamp.strip().split(':')
+    # Remove milliseconds if present (after comma)
+    timestamp = timestamp.strip().split(',')[0]
+
+    parts = timestamp.split(':')
     if len(parts) == 3:
         hours, minutes, seconds = parts
         return int(hours) * 3600 + int(minutes) * 60 + int(seconds)
@@ -67,7 +74,8 @@ def detect_silence_gaps(srt_content: str, min_silence_seconds: int = 15) -> List
 
     # Parse SRT format to extract timestamps and text
     # SRT format: timestamp1 --> timestamp2 followed by text
-    pattern = r'(\d{1,2}:\d{2}:\d{2})\s*-->\s*(\d{1,2}:\d{2}:\d{2})\s*\n(.+?)(?=\n\d{1,2}:\d{2}:\d{2}\s*-->|\Z)'
+    # Supports both HH:MM:SS and HH:MM:SS,mmm formats
+    pattern = r'(\d{1,2}:\d{2}:\d{2}(?:,\d{3})?)\s*-->\s*(\d{1,2}:\d{2}:\d{2}(?:,\d{3})?)\s*\n(.+?)(?=\n\d{1,2}:\d{2}:\d{2}(?:,\d{3})?\s*-->|\Z)'
 
     entries = re.findall(pattern, srt_content, re.DOTALL)
 
@@ -149,8 +157,8 @@ def chunk_by_silence(
 
     if not silence_gaps:
         logger.warning("No silence gaps found, returning entire content as single chunk")
-        # Parse first and last timestamps
-        timestamps = re.findall(r'\d{1,2}:\d{2}:\d{2}', srt_content)
+        # Parse first and last timestamps (with or without milliseconds)
+        timestamps = re.findall(r'\d{1,2}:\d{2}:\d{2}(?:,\d{3})?', srt_content)
         if len(timestamps) >= 2:
             start_time = timestamps[0]
             end_time = timestamps[-1]
@@ -170,7 +178,8 @@ def chunk_by_silence(
         }]
 
     # Extract all SRT entries with timestamps
-    pattern = r'(\d{1,2}:\d{2}:\d{2})\s*-->\s*(\d{1,2}:\d{2}:\d{2})\s*\n(.+?)(?=\n\d{1,2}:\d{2}:\d{2}\s*-->|\Z)'
+    # Supports both HH:MM:SS and HH:MM:SS,mmm formats
+    pattern = r'(\d{1,2}:\d{2}:\d{2}(?:,\d{3})?)\s*-->\s*(\d{1,2}:\d{2}:\d{2}(?:,\d{3})?)\s*\n(.+?)(?=\n\d{1,2}:\d{2}:\d{2}(?:,\d{3})?\s*-->|\Z)'
     entries = re.findall(pattern, srt_content, re.DOTALL)
 
     chunks = []
