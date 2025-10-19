@@ -358,20 +358,33 @@ with DAG(
         ),
     )
 
-    # Step 6: Use AI to identify interesting chapters from chunk summaries and agenda
-    # This task waits for chunk summaries (t5f) and agenda sections (t5d)
+    # Step 6: Use AI to identify interesting chapters within each chunk
+    # This task waits for chunk summaries (t5f) and chunked SRT data (t5e)
     t6 = PythonOperator(
         task_id='identify_interesting_chapters',
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.identify_interesting_chapters(
-                ti.xcom_pull(key='chunk_summaries'),  # Use chunk summaries now
-                ti.xcom_pull(key='agenda_section'),
+                ti.xcom_pull(key='chunk_summaries'),  # Summaries from t5f
+                ti.xcom_pull(key='silence_chunks'),   # SRT chunks from t5e
+                target_date=context["params"].get("target_date")
+            ),
+            'identified_chapters'
+        ),
+        trigger_rule='none_failed_min_one_success'  # Run if either path succeeded
+    )
+
+    # Step 7: Merge interesting chapters from all chunks into final list
+    t7 = PythonOperator(
+        task_id='merge_interesting_chapters',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: yt_channel.merge_interesting_chapters(
+                ti.xcom_pull(key='identified_chapters'),
                 target_date=context["params"].get("target_date")
             ),
             'interesting_chapters'
         ),
-        trigger_rule='none_failed_min_one_success'  # Run if either path succeeded
     )
 
     # End task for when no plenary sessions found
@@ -443,6 +456,10 @@ with DAG(
     # Both subtitle and transcription paths converge at t5e
     t5e >> t5f
 
-    # After agenda section AND chunk summaries are ready, identify chapters
-    # All paths converge here: t5d (agenda) + t5f (chunk summaries)
-    [t5f, t5d] >> t6
+    # After chunk summaries and SRT chunks are ready, identify interesting chapters
+    # We need both: t5f (chunk summaries) and t5e (SRT chunks)
+    # t5e must complete before t5f, so we only need to wait for t5f
+    t5f >> t6
+
+    # After identifying chapters in all chunks, merge them into final list
+    t6 >> t7
