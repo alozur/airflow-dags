@@ -109,17 +109,19 @@ def detect_silence_gaps(srt_content: str, min_silence_seconds: int = 15) -> List
 def chunk_by_silence(
     srt_content: str,
     min_silence_seconds: int = 15,
+    min_chunk_duration_minutes: int = 20,
     max_chunk_duration_minutes: int = 30
 ) -> List[Dict]:
     """
     Split SRT content into chunks based on silence gaps.
 
-    Creates natural chunks by splitting at silence gaps, ensuring chunks don't
-    exceed max_chunk_duration_minutes.
+    Creates natural chunks by splitting at silence gaps. Ensures chunks are at least
+    min_chunk_duration_minutes long by merging small chunks with adjacent ones.
 
     Args:
         srt_content: Full SRT transcription content
         min_silence_seconds: Minimum silence duration to use as split point (default: 15)
+        min_chunk_duration_minutes: Minimum duration for each chunk (default: 20)
         max_chunk_duration_minutes: Maximum duration for each chunk (default: 30)
 
     Returns:
@@ -170,6 +172,7 @@ def chunk_by_silence(
     chunk_start_idx = 0
     chunk_start_time = entries[0][0] if entries else "00:00:00"
     max_chunk_seconds = max_chunk_duration_minutes * 60
+    min_chunk_seconds = min_chunk_duration_minutes * 60
 
     for gap in silence_gaps:
         gap_midpoint = gap['gap_midpoint_seconds']
@@ -228,11 +231,39 @@ def chunk_by_silence(
             "content": chunk_content.strip()
         })
 
-    logger.info(f"Created {len(chunks)} chunks based on silence gaps")
-    for chunk in chunks:
+    # Post-process: Merge chunks that are too small (less than min_chunk_duration_minutes)
+    merged_chunks = []
+    i = 0
+    while i < len(chunks):
+        current_chunk = chunks[i]
+
+        # If chunk is too small and not the last one, merge with next
+        while (current_chunk['duration_seconds'] < min_chunk_seconds and
+               i < len(chunks) - 1):
+            next_chunk = chunks[i + 1]
+
+            # Merge current and next chunk
+            current_chunk = {
+                "chunk_number": len(merged_chunks) + 1,
+                "start_time": current_chunk['start_time'],
+                "end_time": next_chunk['end_time'],
+                "duration_seconds": (parse_timestamp_to_seconds(next_chunk['end_time']) -
+                                   parse_timestamp_to_seconds(current_chunk['start_time'])),
+                "content": current_chunk['content'] + "\n\n" + next_chunk['content']
+            }
+            current_chunk['duration_minutes'] = round(current_chunk['duration_seconds'] / 60, 1)
+            i += 1
+
+        # Renumber chunk
+        current_chunk['chunk_number'] = len(merged_chunks) + 1
+        merged_chunks.append(current_chunk)
+        i += 1
+
+    logger.info(f"Created {len(merged_chunks)} chunks based on silence gaps (min: {min_chunk_duration_minutes} min)")
+    for chunk in merged_chunks:
         logger.info(f"  Chunk {chunk['chunk_number']}: {chunk['start_time']} - {chunk['end_time']} ({chunk['duration_minutes']} min)")
 
-    return chunks
+    return merged_chunks
 
 
 def format_seconds_to_timestamp(seconds: int) -> str:

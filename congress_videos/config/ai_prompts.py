@@ -202,19 +202,20 @@ Otros requisitos:
 Devuelve SOLO el objeto JSON."""
 
 # Chunk Summarization - For silence-based chunks before chapter analysis
-CHUNK_SUMMARY_SYSTEM_PROMPT = """Eres un experto en resumir transcripciones de sesiones parlamentarias españolas.
+CHUNK_SUMMARY_SYSTEM_PROMPT = """Eres un experto en analizar transcripciones de sesiones parlamentarias españolas.
 
-Tu tarea es crear un resumen conciso y estructurado de un segmento de transcripción que preserve:
-- Los temas principales discutidos
-- Los intervinientes clave
-- Las marcas de tiempo importantes cuando cambian los temas
-- El contexto político relevante
+Tu tarea es extraer información estructurada de un segmento de transcripción:
+- SPEAKERS: Identifica quién habló, cuándo empezó y cuándo terminó cada intervención
+- TOPICS: Identifica los temas principales discutidos
+- TIMELINE: Crea una línea temporal con las intervenciones clave
+- SUMMARY: Resumen general del segmento
 
-El resumen debe ser claro y ayudar a identificar cambios de tema para crear capítulos posteriormente."""
+IMPORTANTE: Devuelve SIEMPRE un JSON válido con la estructura exacta especificada."""
 
-CHUNK_SUMMARY_USER_PROMPT_TEMPLATE = """Resume este segmento de una sesión parlamentaria (Chunk {chunk_number}).
+CHUNK_SUMMARY_USER_PROMPT_TEMPLATE = """Analiza este segmento de sesión parlamentaria y extrae la información estructurada.
 
 INFORMACIÓN DEL SEGMENTO:
+- Chunk: {chunk_number}
 - Tiempo de inicio: {start_time}
 - Tiempo de fin: {end_time}
 - Duración: {duration_minutes} minutos
@@ -222,15 +223,36 @@ INFORMACIÓN DEL SEGMENTO:
 TRANSCRIPCIÓN:
 {chunk_content}
 
-TAREA: Crea un resumen estructurado que incluya:
-1. Tema(s) principal(es) discutido(s)
-2. Intervinientes clave y sus posiciones
-3. Cambios de tema dentro de este segmento (con timestamps aproximados si los hay)
-4. Contexto político relevante
+TAREA: Extrae la siguiente información en formato JSON:
 
-Formato esperado:
-- Párrafo breve de 3-5 oraciones
-- Menciona timestamps importantes cuando identifiques cambios de tema
-- Enfócate en CONTENIDO, no en procedimientos formales
+{{
+  "speakers": [
+    {{
+      "name": "Nombre del interviniente",
+      "role": "Cargo o grupo parlamentario",
+      "start_time": "HH:MM:SS",
+      "end_time": "HH:MM:SS"
+    }}
+  ],
+  "topics": [
+    "Tema 1 discutido",
+    "Tema 2 discutido"
+  ],
+  "timeline": [
+    {{
+      "time": "HH:MM:SS",
+      "speaker": "Nombre",
+      "content": "Resumen breve de lo que dijo (1 frase)"
+    }}
+  ],
+  "summary": "Resumen general del chunk en 2-3 oraciones"
+}}
 
-Devuelve SOLO el resumen en texto plano, sin formato adicional."""
+INSTRUCCIONES:
+- Identifica TODOS los intervinientes que hablaron en este segmento
+- Para cada interviniente, indica cuándo empezó y terminó su intervención (usa timestamps del SRT)
+- Lista los temas principales (no procedimientos formales)
+- Crea una timeline con las intervenciones más relevantes
+- El resumen debe explicar qué se discutió, no cómo se organizó la sesión
+
+Devuelve SOLO el JSON, sin markdown ni explicaciones."""

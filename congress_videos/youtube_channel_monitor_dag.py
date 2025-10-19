@@ -326,31 +326,47 @@ with DAG(
         ),
     )
 
-    # Step 5e: Summarize silence-based chunks before AI chapter analysis
-    # This creates summaries of natural chunks (split by 15+ second silences)
+    # Step 5e: Split SRT by silence gaps (TASK 1)
+    # Split transcription into chunks at natural breaks (15+ second silences)
+    # Ensures chunks are at least 20 minutes, merging smaller ones
     t5e = PythonOperator(
-        task_id='summarize_silence_chunks',
+        task_id='split_srt_by_silence',
         python_callable=lambda ti, **context: xcom_task(
             ti,
-            lambda: yt_channel.summarize_silence_chunks(
+            lambda: yt_channel.split_srt_by_silence(
                 ti.xcom_pull(key='merged_srt_files') or ti.xcom_pull(key='youtube_subtitles'),  # Try both sources
                 target_date=context["params"].get("target_date"),
                 min_silence_seconds=15,
+                min_chunk_duration_minutes=20,
                 max_chunk_duration_minutes=30
             ),
-            'chunk_summaries'
+            'silence_chunks'
         ),
         trigger_rule='none_failed_min_one_success'  # Run if either path succeeded
     )
 
-    # Step 6: Use AI to identify interesting chapters from transcription and agenda
-    # This task waits for chunk summaries and agenda sections
+    # Step 5f: Summarize silence chunks (TASK 2)
+    # Extract speakers, topics, and timeline from each chunk in JSON format
+    t5f = PythonOperator(
+        task_id='summarize_silence_chunks',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: yt_channel.summarize_silence_chunks(
+                ti.xcom_pull(key='silence_chunks'),
+                target_date=context["params"].get("target_date")
+            ),
+            'chunk_summaries'
+        ),
+    )
+
+    # Step 6: Use AI to identify interesting chapters from chunk summaries and agenda
+    # This task waits for chunk summaries (t5f) and agenda sections (t5d)
     t6 = PythonOperator(
         task_id='identify_interesting_chapters',
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.identify_interesting_chapters(
-                ti.xcom_pull(key='merged_srt_files') or ti.xcom_pull(key='youtube_subtitles'),  # Try both sources
+                ti.xcom_pull(key='chunk_summaries'),  # Use chunk summaries now
                 ti.xcom_pull(key='agenda_section'),
                 target_date=context["params"].get("target_date")
             ),
@@ -422,10 +438,13 @@ with DAG(
     # These run sequentially since agenda_section depends on session_date
     t5b >> t5c >> t5d
 
-    # After SRT files are ready (either path), summarize silence chunks
+    # After SRT files are ready (either path), split by silence gaps (TASK 1)
     # Both subtitle and transcription paths converge here
     t3f >> t5e
 
+    # After splitting, summarize each chunk (TASK 2)
+    t5e >> t5f
+
     # After agenda section AND chunk summaries are ready, identify chapters
-    # All paths converge here: t5d (agenda) + t5e (chunk summaries)
-    [t5e, t5d] >> t6
+    # All paths converge here: t5d (agenda) + t5f (chunk summaries)
+    [t5f, t5d] >> t6

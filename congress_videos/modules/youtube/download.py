@@ -573,36 +573,34 @@ def merge_transcription_srt_files(transcriptions, target_date: str):
     }
 
 
-def summarize_silence_chunks(srt_data, target_date: str, min_silence_seconds: int = 15, max_chunk_duration_minutes: int = 30):
+def split_srt_by_silence(srt_data, target_date: str, min_silence_seconds: int = 15, min_chunk_duration_minutes: int = 20, max_chunk_duration_minutes: int = 30):
     """
-    Create summaries for silence-based chunks before AI chapter analysis.
+    TASK 1: Split SRT content into chunks based on silence gaps.
 
-    This task splits the SRT content by silence gaps (15+ seconds) and creates
-    summaries for each chunk. These summaries are then combined and passed to
-    AI for better chapter identification.
+    This task splits the SRT transcript at natural breaks (15+ second silences).
+    Small chunks (< min_chunk_duration_minutes) are automatically merged with adjacent chunks.
 
     Args:
         srt_data: Results from merge_transcription_srt_files OR try_download_subtitles_from_youtube
         target_date: Target date in YYYY-MM-DD format (for locating files)
         min_silence_seconds: Minimum silence duration to use as split point (default: 15)
+        min_chunk_duration_minutes: Minimum duration for each chunk (default: 20)
         max_chunk_duration_minutes: Maximum duration for each chunk (default: 30)
 
     Returns:
-        Dict with chunk summarization results:
+        Dict with chunking results:
         - total_videos: Number of videos processed
-        - videos: List with video_id, chunks with summaries
+        - videos: List with video_id, chunks (with SRT content)
     """
     from pathlib import Path
     from utils.ai_chapter_analyzer import chunk_by_silence
     from congress_videos.config.paths import get_download_video_path
-    from congress_videos.config.ai_prompts import CHUNK_SUMMARY_SYSTEM_PROMPT, CHUNK_SUMMARY_USER_PROMPT_TEMPLATE
-    import openai
 
     if not srt_data or not srt_data.get('videos'):
-        logging.warning("No SRT data to summarize chunks")
+        logging.warning("No SRT data to split into chunks")
         return {'total_videos': 0, 'videos': []}
 
-    summarized_videos = []
+    chunked_videos = []
 
     for srt_video in srt_data['videos']:
         video_id = srt_video['video_id']
@@ -620,7 +618,7 @@ def summarize_silence_chunks(srt_data, target_date: str, min_silence_seconds: in
 
         if not merged_srt_path or srt_video.get('error'):
             logging.warning(f"Skipping video {video_id}: no merged SRT file")
-            summarized_videos.append({
+            chunked_videos.append({
                 'video_id': video_id,
                 'error': 'No merged SRT file available'
             })
@@ -631,22 +629,88 @@ def summarize_silence_chunks(srt_data, target_date: str, min_silence_seconds: in
             srt_content = Path(merged_srt_path).read_text(encoding='utf-8')
             logging.info(f"Loaded SRT file for video {video_id}: {len(srt_content)} characters")
 
-            # Step 1: Split content by silence gaps
-            logging.info(f"Detecting silence-based chunks for video {video_id}...")
-            silence_chunks = chunk_by_silence(
+            # Split content by silence gaps
+            logging.info(f"Splitting SRT by silence gaps (min: {min_chunk_duration_minutes} min)...")
+            chunks = chunk_by_silence(
                 srt_content=srt_content,
                 min_silence_seconds=min_silence_seconds,
+                min_chunk_duration_minutes=min_chunk_duration_minutes,
                 max_chunk_duration_minutes=max_chunk_duration_minutes
             )
-            logging.info(f"Created {len(silence_chunks)} silence-based chunks")
 
-            # Step 2: Summarize each chunk using AI
-            logging.info(f"Summarizing {len(silence_chunks)} chunks with AI...")
-            chunks_with_summaries = []
+            logging.info(f"✅ Created {len(chunks)} chunks for video {video_id}")
 
-            for chunk in silence_chunks:
+            chunked_videos.append({
+                'video_id': video_id,
+                'video_title': srt_video.get('video_title'),
+                'total_chunks': len(chunks),
+                'chunks': chunks,  # Contains: chunk_number, start_time, end_time, duration, content
+                'merged_srt_path': merged_srt_path
+            })
+
+        except Exception as e:
+            logging.error(f"Error splitting video {video_id}: {e}", exc_info=True)
+            chunked_videos.append({
+                'video_id': video_id,
+                'error': str(e)
+            })
+
+    successful_count = len([v for v in chunked_videos if not v.get('error')])
+    logging.info(f"SRT splitting complete: {successful_count}/{len(chunked_videos)} videos processed")
+
+    return {
+        'total_videos': successful_count,
+        'videos': chunked_videos
+    }
+
+
+def summarize_silence_chunks(chunked_srt_data, target_date: str):
+    """
+    TASK 2: Summarize each chunk with speakers, topics, and timestamps.
+
+    Analyzes each chunk to extract:
+    - Speakers (who spoke, when they started/ended)
+    - Topics discussed
+    - Mini SRT-style timeline in JSON format
+
+    Args:
+        chunked_srt_data: Results from split_srt_by_silence (contains chunks with SRT content)
+        target_date: Target date in YYYY-MM-DD format
+
+    Returns:
+        Dict with summarization results:
+        - total_videos: Number of videos processed
+        - videos: List with video_id, summarized_chunks (speakers, topics, timeline)
+    """
+    from congress_videos.config.ai_prompts import CHUNK_SUMMARY_SYSTEM_PROMPT, CHUNK_SUMMARY_USER_PROMPT_TEMPLATE
+    import openai
+    import json
+
+    if not chunked_srt_data or not chunked_srt_data.get('videos'):
+        logging.warning("No chunked SRT data to summarize")
+        return {'total_videos': 0, 'videos': []}
+
+    summarized_videos = []
+
+    for video_data in chunked_srt_data['videos']:
+        video_id = video_data['video_id']
+        chunks = video_data.get('chunks', [])
+
+        if not chunks or video_data.get('error'):
+            logging.warning(f"Skipping video {video_id}: no chunks available")
+            summarized_videos.append({
+                'video_id': video_id,
+                'error': video_data.get('error', 'No chunks available')
+            })
+            continue
+
+        try:
+            logging.info(f"Summarizing {len(chunks)} chunks for video {video_id}...")
+            summarized_chunks = []
+
+            for chunk in chunks:
                 try:
-                    # Call OpenAI to summarize this chunk
+                    # Call OpenAI to extract speakers, topics, and timeline
                     client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
                     response = client.chat.completions.create(
                         model="gpt-4o-mini",
@@ -657,42 +721,65 @@ def summarize_silence_chunks(srt_data, target_date: str, min_silence_seconds: in
                                 start_time=chunk['start_time'],
                                 end_time=chunk['end_time'],
                                 duration_minutes=chunk['duration_minutes'],
-                                chunk_content=chunk['content'][:15000]  # Limit to 15k chars to avoid token limits
+                                chunk_content=chunk['content'][:15000]  # Limit to 15k chars
                             )}
                         ],
-                        temperature=0.3,
-                        max_tokens=500
+                        temperature=0.2,
+                        max_tokens=1000,
+                        response_format={"type": "json_object"}  # Request JSON response
                     )
 
-                    summary = response.choices[0].message.content.strip()
+                    # Parse AI response as JSON
+                    ai_response = response.choices[0].message.content.strip()
+                    summary_data = json.loads(ai_response)
 
-                    chunks_with_summaries.append({
-                        **chunk,
-                        'summary': summary
+                    summarized_chunks.append({
+                        "chunk_number": chunk['chunk_number'],
+                        "start_time": chunk['start_time'],
+                        "end_time": chunk['end_time'],
+                        "duration_seconds": chunk['duration_seconds'],
+                        "duration_minutes": chunk['duration_minutes'],
+                        "speakers": summary_data.get('speakers', []),  # List of {name, start_time, end_time}
+                        "topics": summary_data.get('topics', []),  # List of topics discussed
+                        "timeline": summary_data.get('timeline', []),  # Mini SRT: [{time, speaker, content}]
+                        "summary": summary_data.get('summary', '')  # Brief overall summary
                     })
 
-                    logging.info(f"  ✅ Chunk {chunk['chunk_number']}: {chunk['start_time']}-{chunk['end_time']} summarized")
+                    logging.info(f"  ✅ Chunk {chunk['chunk_number']}: {len(summary_data.get('speakers', []))} speakers, {len(summary_data.get('topics', []))} topics")
 
+                except json.JSONDecodeError as e:
+                    logging.error(f"Failed to parse JSON for chunk {chunk['chunk_number']}: {e}")
+                    summarized_chunks.append({
+                        "chunk_number": chunk['chunk_number'],
+                        "start_time": chunk['start_time'],
+                        "end_time": chunk['end_time'],
+                        "duration_seconds": chunk['duration_seconds'],
+                        "duration_minutes": chunk['duration_minutes'],
+                        "error": f"JSON parse error: {str(e)}",
+                        "raw_response": ai_response[:500]
+                    })
                 except Exception as e:
                     logging.error(f"Failed to summarize chunk {chunk['chunk_number']}: {e}")
-                    chunks_with_summaries.append({
-                        **chunk,
-                        'summary': f"Error: {str(e)}",
-                        'summary_error': True
+                    summarized_chunks.append({
+                        "chunk_number": chunk['chunk_number'],
+                        "start_time": chunk['start_time'],
+                        "end_time": chunk['end_time'],
+                        "duration_seconds": chunk['duration_seconds'],
+                        "duration_minutes": chunk['duration_minutes'],
+                        "error": str(e)
                     })
 
             summarized_videos.append({
                 'video_id': video_id,
-                'video_title': srt_video.get('video_title'),
-                'total_chunks': len(chunks_with_summaries),
-                'chunks_with_summaries': chunks_with_summaries,
-                'merged_srt_path': merged_srt_path
+                'video_title': video_data.get('video_title'),
+                'total_chunks': len(summarized_chunks),
+                'summarized_chunks': summarized_chunks
             })
 
-            logging.info(f"✅ Summarized {len(chunks_with_summaries)} chunks for video {video_id}")
+            logging.info(f"✅ Summarized {len(summarized_chunks)} chunks for video {video_id}")
 
         except Exception as e:
-            logging.error(f"Error processing video {video_id}: {e}", exc_info=True)
+            logging.error(f"Error summarizing video {video_id}: {e}", exc_info=True)
             summarized_videos.append({
                 'video_id': video_id,
                 'error': str(e)
@@ -707,22 +794,17 @@ def summarize_silence_chunks(srt_data, target_date: str, min_silence_seconds: in
     }
 
 
-def identify_interesting_chapters(srt_data, agenda_sections, target_date: str, use_silence_chunking: bool = True):
+def identify_interesting_chapters(chunk_summaries, agenda_sections, target_date: str):
     """
-    Use AI to identify interesting chapters from transcriptions and agenda.
+    Use AI to identify interesting chapters from chunk summaries and agenda.
 
-    Analyzes the merged SRT transcription and session agenda to identify
-    interesting segments/chapters that are 15-30 minutes long and don't
-    cut off mid-discussion.
-
-    NEW: Optionally uses silence-based chunking to split long videos at natural
-    breaks (15+ second silences) before AI analysis for better results.
+    Takes the summarized chunks (with speakers, topics, timeline) and combines
+    them with the agenda to create meaningful chapters for video extraction.
 
     Args:
-        srt_data: Results from merge_transcription_srt_files OR try_download_subtitles_from_youtube
+        chunk_summaries: Results from summarize_silence_chunks (contains summarized chunks)
         agenda_sections: Results from extract_agenda_section
         target_date: Target date in YYYY-MM-DD format (for locating files)
-        use_silence_chunking: If True, split content by silence gaps before AI analysis (default: True)
 
     Returns:
         Dict with chapter identification results:
@@ -730,50 +812,28 @@ def identify_interesting_chapters(srt_data, agenda_sections, target_date: str, u
         - videos: List with video_id, chapters data
     """
     from pathlib import Path
-    from utils.ai_chapter_analyzer import analyze_chapters_with_ai, chunk_by_silence
+    from utils.ai_chapter_analyzer import analyze_chapters_with_ai
     from congress_videos.config.paths import get_download_video_path
 
-    if not srt_data or not srt_data.get('videos'):
-        logging.warning("No SRT data to analyze")
+    if not chunk_summaries or not chunk_summaries.get('videos'):
+        logging.warning("No chunk summaries to analyze")
         return {'total_videos': 0, 'videos': []}
 
     analyzed_videos = []
 
-    for srt_video in srt_data['videos']:
-        video_id = srt_video['video_id']
+    for video_data in chunk_summaries['videos']:
+        video_id = video_data['video_id']
+        summarized_chunks = video_data.get('summarized_chunks', [])
 
-        # Handle both YouTube subtitles and transcribed SRT
-        merged_srt_path = srt_video.get('merged_srt_path')
-
-        # If no path in current record, this might be from YouTube subtitles with different structure
-        if not merged_srt_path and srt_video.get('has_subtitles'):
-            # YouTube subtitle format
-            merged_srt_path = srt_video.get('merged_srt_path')
-
-        # Still no path? Try to construct it
-        if not merged_srt_path:
-            video_dir = Path(get_download_video_path(target_date, video_id))
-            srt_dir = video_dir / "srt_files"
-            potential_path = srt_dir / f"{video_id}_merged.srt"
-            if potential_path.exists():
-                merged_srt_path = str(potential_path)
-            else:
-                logging.warning(f"No merged SRT file found for video {video_id}")
-                merged_srt_path = None
-
-        if not merged_srt_path or srt_video.get('error'):
-            logging.warning(f"Skipping video {video_id}: no merged SRT file")
+        if not summarized_chunks or video_data.get('error'):
+            logging.warning(f"Skipping video {video_id}: no summarized chunks")
             analyzed_videos.append({
                 'video_id': video_id,
-                'error': 'No merged SRT file available'
+                'error': video_data.get('error', 'No summarized chunks available')
             })
             continue
 
         try:
-            # Read the merged SRT file
-            srt_content = Path(merged_srt_path).read_text(encoding='utf-8')
-            logging.info(f"Loaded SRT file for video {video_id}: {len(srt_content)} characters")
-
             # Find matching agenda section
             agenda_content = ""
             if agenda_sections and agenda_sections.get('videos'):
@@ -784,57 +844,53 @@ def identify_interesting_chapters(srt_data, agenda_sections, target_date: str, u
 
             if not agenda_content:
                 logging.warning(f"No agenda found for video {video_id}, using generic prompt")
-                agenda_content = "No agenda available. Please analyze the transcription to identify interesting topics."
+                agenda_content = "No agenda available. Please analyze based on chunk summaries."
 
-            logging.info(f"Analyzing video {video_id} with AI to identify interesting chapters...")
+            logging.info(f"Analyzing video {video_id} with AI to identify interesting chapters from {len(summarized_chunks)} chunks...")
 
-            # Step 1: Split content by silence gaps if enabled
-            if use_silence_chunking:
-                logging.info(f"Step 1: Detecting silence-based chunks for video {video_id}...")
-                silence_chunks = chunk_by_silence(
-                    srt_content=srt_content,
-                    min_silence_seconds=15,  # 15 seconds of silence
-                    max_chunk_duration_minutes=30  # Max 30 min per chunk
-                )
-                logging.info(f"Created {len(silence_chunks)} silence-based chunks")
+            # Prepare combined summary for AI analysis
+            # Convert chunk summaries to a readable format for the AI
+            combined_summary = f"VIDEO STRUCTURE ({len(summarized_chunks)} chunks):\n\n"
 
-                # Log chunk info
-                for chunk in silence_chunks:
-                    logging.info(f"  Chunk {chunk['chunk_number']}: {chunk['start_time']}-{chunk['end_time']} ({chunk['duration_minutes']} min)")
+            for chunk in summarized_chunks:
+                combined_summary += f"--- CHUNK {chunk['chunk_number']} ({chunk['start_time']} - {chunk['end_time']}) ---\n"
+                combined_summary += f"Duration: {chunk['duration_minutes']} minutes\n\n"
 
-                # Store chunk information for later use
-                chunk_info = {
-                    'total_chunks': len(silence_chunks),
-                    'chunks': silence_chunks
-                }
-            else:
-                chunk_info = None
+                # Speakers
+                if chunk.get('speakers'):
+                    combined_summary += "Intervinientes:\n"
+                    for speaker in chunk['speakers']:
+                        combined_summary += f"  - {speaker.get('name', 'Unknown')} ({speaker.get('role', '')}): {speaker.get('start_time', '')} - {speaker.get('end_time', '')}\n"
+                    combined_summary += "\n"
 
-            # Step 2: Use AI to analyze and identify chapters
-            # If we have chunks, pass the full content but with chunk context
+                # Topics
+                if chunk.get('topics'):
+                    combined_summary += f"Temas: {', '.join(chunk['topics'])}\n\n"
+
+                # Summary
+                if chunk.get('summary'):
+                    combined_summary += f"Resumen: {chunk['summary']}\n\n"
+
+                combined_summary += "\n"
+
+            # Use AI to analyze and identify chapters from summaries
             result = analyze_chapters_with_ai(
-                srt_content=srt_content,
+                srt_content=combined_summary,  # Pass combined summaries instead of full SRT
                 agenda_content=agenda_content,
                 min_duration_minutes=15,
                 max_duration_minutes=30,
-                model="gpt-4o-mini"  # Better quality model for chapter detection
+                model="gpt-4o-mini"
             )
 
             if result['success']:
-                video_result = {
+                analyzed_videos.append({
                     'video_id': video_id,
-                    'video_title': srt_video.get('video_title'),
+                    'video_title': video_data.get('video_title'),
                     'total_chapters': result['total_chapters'],
                     'total_duration_seconds': result['total_duration_seconds'],
                     'chapters': result['chapters'],
-                    'merged_srt_path': merged_srt_path
-                }
-
-                # Add silence chunking info if available
-                if chunk_info:
-                    video_result['silence_chunks'] = chunk_info
-
-                analyzed_videos.append(video_result)
+                    'chunk_summaries': summarized_chunks  # Include original summaries
+                })
                 logging.info(f"✅ Identified {result['total_chapters']} chapters for video {video_id}")
             else:
                 analyzed_videos.append({
