@@ -420,15 +420,17 @@ with DAG(
     # Branch based on subtitle availability
     t3c >> t3c_branch
 
-    # If subtitles available: skip to parse_description_links (t4)
-    # (video download t3c2 is commented out for now)
-    t3c_branch >> t4
+    # If subtitles available: skip to split_srt_by_silence (t5e)
+    # Still need to process the subtitles through chunking pipeline!
+    t3c_branch >> t5e
 
     # If no subtitles: extract audio, transcribe, merge SRT
     t3c_branch >> t3d >> t3e >> t3f
 
-    # After getting descriptions, also parse links from description
-    # (runs in parallel with subtitle branch or after subtitle success)
+    # After transcription path, also go to split_srt_by_silence
+    t3f >> t5e
+
+    # After getting descriptions, parse links from description
     t3b >> t4
 
     # After parsing links, scrape press release and download agenda in parallel
@@ -438,11 +440,8 @@ with DAG(
     # These run sequentially since agenda_section depends on session_date
     t5b >> t5c >> t5d
 
-    # After SRT files are ready (either path), split by silence gaps (TASK 1)
-    # Both subtitle and transcription paths converge here
-    t3f >> t5e
-
-    # After splitting, summarize each chunk (TASK 2)
+    # After splitting SRT by silence (TASK 1), summarize each chunk (TASK 2)
+    # Both subtitle and transcription paths converge at t5e
     t5e >> t5f
 
     # After agenda section AND chunk summaries are ready, identify chapters
