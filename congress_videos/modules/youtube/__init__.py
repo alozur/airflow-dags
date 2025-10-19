@@ -34,7 +34,7 @@ def __getattr__(name):
         return locals()[name]
 
     # download functions
-    elif name in ['download_video_from_youtube', 'extract_audio_from_youtube', 'create_test_video_data', 'transcribe_audio_with_whisper', 'merge_transcription_srt_files', 'identify_interesting_chapters', 'try_download_subtitles_from_youtube']:
+    elif name in ['download_video_from_youtube', 'extract_audio_from_youtube', 'create_test_video_data', 'transcribe_audio_with_whisper', 'merge_transcription_srt_files', 'identify_interesting_chapters', 'try_download_subtitles_from_youtube', 'split_srt_by_silence', 'summarize_silence_chunks']:
         from .download import (
             download_video_from_youtube,
             extract_audio_from_youtube,
@@ -43,6 +43,8 @@ def __getattr__(name):
             merge_transcription_srt_files,
             identify_interesting_chapters,
             try_download_subtitles_from_youtube,
+            split_srt_by_silence,
+            summarize_silence_chunks,
         )
         return locals()[name]
 
@@ -86,6 +88,8 @@ __all__ = [
     'merge_transcription_srt_files',
     'identify_interesting_chapters',
     'try_download_subtitles_from_youtube',
+    'split_srt_by_silence',
+    'summarize_silence_chunks',
     # youtube_ai functions
     'generate_youtube_title',
     'generate_youtube_description',
