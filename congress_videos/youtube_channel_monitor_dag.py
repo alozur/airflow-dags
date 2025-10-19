@@ -193,9 +193,8 @@ with DAG(
 
         if subtitle_results and subtitle_results.get('total_downloaded', 0) > 0:
             logging.info(f"✅ Subtitles downloaded from YouTube! Skipping audio extraction and transcription.")
-            # Subtitles available - skip directly to parse_description_links
-            # (video download is commented out for now)
-            return 'parse_description_links'
+            # Subtitles available - go directly to split_srt_by_silence
+            return 'split_srt_by_silence'
         else:
             logging.info("No subtitles available on YouTube. Will extract audio and transcribe.")
             # Need to extract audio and transcribe
