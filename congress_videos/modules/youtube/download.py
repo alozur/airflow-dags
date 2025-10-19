@@ -5,6 +5,7 @@ This module handles downloading videos and extracting audio from YouTube using y
 """
 
 import logging
+import os
 
 from congress_videos.config.paths import (
     get_download_video_path,
