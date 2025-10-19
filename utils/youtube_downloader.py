@@ -619,30 +619,32 @@ def download_youtube_subtitles(
         # Use the first downloaded file as the main subtitle file
         main_subtitle = downloaded_files[0]['file_path']
 
-        # Read and simplify the SRT (remove milliseconds, clean format)
+        # Copy subtitle content to merged file (ensure merged file has content)
         try:
-            from utils.whisper_helpers import merge_srt_files
-
             # Create merged/simplified version
             srt_dir = Path(output_dir) / "srt_files"
             merged_path = srt_dir / f"{video_id}_merged.srt"
 
-            # Use merge_srt_files to simplify (even though it's just one file)
-            merge_result = merge_srt_files(
-                srt_files=[main_subtitle],
-                output_path=str(merged_path)
-            )
+            # Simply copy the content from the downloaded subtitle to merged file
+            logger.info(f"Creating merged subtitle file from: {main_subtitle}")
 
-            if merge_result['success']:
+            with open(main_subtitle, 'r', encoding='utf-8') as src:
+                subtitle_content = src.read()
+
+            with open(merged_path, 'w', encoding='utf-8') as dst:
+                dst.write(subtitle_content)
+
+            # Verify the file was written correctly
+            if merged_path.exists() and merged_path.stat().st_size > 0:
                 result['merged_srt_path'] = str(merged_path)
-                logger.info(f"✅ Created simplified subtitle file: {merged_path}")
+                logger.info(f"✅ Created merged subtitle file: {merged_path} ({merged_path.stat().st_size} bytes)")
             else:
-                # If merge fails, just use the original
+                # If copy fails, use the original
                 result['merged_srt_path'] = main_subtitle
-                logger.warning(f"Using original subtitle file (merge failed): {main_subtitle}")
+                logger.warning(f"Merged file is empty, using original: {main_subtitle}")
 
         except Exception as e:
-            logger.warning(f"Could not simplify subtitles: {e}")
+            logger.warning(f"Could not copy subtitles to merged file: {e}")
             result['merged_srt_path'] = main_subtitle
 
         logger.info(f"✅ Successfully downloaded subtitles from YouTube!")
