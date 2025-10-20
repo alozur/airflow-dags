@@ -807,7 +807,9 @@ def summarize_silence_chunks(chunked_srt_data, target_date: str):
     }
 
 
-def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date: str, min_duration_minutes: int = 15):
+def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date: str,
+                                 min_chapter_duration: int = 15,
+                                 max_optimal_duration: int = 45):
     """
     TASK 3: Identify interesting chapters within EACH chunk.
 
@@ -817,14 +819,17 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
 
     to find interesting sub-chapters that could be extracted.
 
-    IMPORTANT: Chunks shorter than min_duration_minutes are returned as-is without AI analysis.
-    Only chunks >= min_duration_minutes are analyzed by the AI.
+    DURATION RULES:
+    - Chunks < 15 minutes: Returned as-is (too short to split)
+    - Chunks 15-45 minutes: Returned as-is (optimal duration, no need to split)
+    - Chunks > 45 minutes: Analyzed by AI to extract sub-chapters of 15-45 minutes each
 
     Args:
         chunk_summaries: Results from summarize_silence_chunks (contains summaries)
         chunked_srt_data: Results from split_srt_by_silence (contains SRT content)
         target_date: Target date in YYYY-MM-DD format
-        min_duration_minutes: Minimum duration (in minutes) for AI analysis (default: 15)
+        min_chapter_duration: Minimum duration for chapters (default: 15 minutes)
+        max_optimal_duration: Maximum optimal duration before AI splitting (default: 45 minutes)
 
     Returns:
         Dict with chapter identification results:
@@ -895,21 +900,28 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
                     })
                     continue
 
-                # CHECK: If chunk is shorter than minimum duration, return it as-is without AI analysis
-                if chunk_duration < min_duration_minutes:
-                    logging.info(f"  ⚡ Chunk {chunk_number} is {chunk_duration:.1f} minutes (< {min_duration_minutes} min). Returning whole chunk without AI analysis.")
+                # DURATION CHECK: Determine if AI analysis is needed
+                # - < 15 min: Too short, return as-is
+                # - 15-45 min: Optimal duration, return as-is
+                # - > 45 min: Too long, use AI to split into 15-45 min sub-chapters
+
+                if chunk_duration <= max_optimal_duration:
+                    # Chunk is in optimal range (< 15 min OR 15-45 min)
+                    reason = "too short" if chunk_duration < min_chapter_duration else "optimal duration"
+                    logging.info(f"  ⚡ Chunk {chunk_number} is {chunk_duration:.1f} minutes ({reason}). Returning whole chunk without AI analysis.")
 
                     # Return the entire chunk as a single "interesting chapter"
                     whole_chunk_chapter = {
-                        'title': f"Chunk {chunk_number}",
-                        'description': summary_chunk.get('summary', 'Chunk returned as-is (duration < 15 minutes)'),
+                        'title': summary_chunk.get('summary', f"Chunk {chunk_number}")[:100],  # Use summary as title (truncated)
+                        'description': summary_chunk.get('summary', 'Chunk returned as-is'),
                         'start_time': summary_chunk['start_time'],
                         'end_time': summary_chunk['end_time'],
                         'duration_minutes': chunk_duration,
                         'speakers': [s.get('name', 'Unknown') for s in summary_chunk.get('speakers', [])],
                         'topics': summary_chunk.get('topics', []),
                         'importance_score': 5,  # Default score
-                        'skipped_ai_analysis': True  # Flag to indicate this wasn't analyzed by AI
+                        'skipped_ai_analysis': True,  # Flag to indicate this wasn't analyzed by AI
+                        'reason': reason
                     }
 
                     chunks_with_chapters.append({
@@ -924,10 +936,12 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
 
                     continue
 
-                # Chunk is >= min_duration_minutes, proceed with AI analysis
+                # Chunk is > 45 minutes, proceed with AI analysis to split into sub-chapters
+                logging.info(f"  🔍 Chunk {chunk_number} is {chunk_duration:.1f} minutes (>45 min). Using AI to split into 15-45 min sub-chapters...")
+
                 try:
                     # Prepare chunk summary text for AI
-                    summary_text = f"Chunk {chunk_number} ({summary_chunk['start_time']} - {summary_chunk['end_time']})\n\n"
+                    summary_text = f"Chunk {chunk_number} ({summary_chunk['start_time']} - {summary_chunk['end_time']}) - Duration: {chunk_duration:.1f} minutes\n\n"
 
                     if summary_chunk.get('speakers'):
                         summary_text += "Speakers:\n"
@@ -941,7 +955,7 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
                     if summary_chunk.get('summary'):
                         summary_text += f"Summary: {summary_chunk['summary']}\n"
 
-                    # Call OpenAI to identify interesting chapters within this chunk
+                    # Call OpenAI to split chunk into 15-45 minute sub-chapters
                     client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
                     response = client.chat.completions.create(
                         model="gpt-4o-mini",
@@ -963,17 +977,26 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
 
                     interesting_chapters = chapter_data.get('interesting_chapters', [])
 
+                    # Validate that all chapters are within 15-45 minute range
+                    valid_chapters = []
+                    for chapter in interesting_chapters:
+                        duration = chapter.get('duration_minutes', 0)
+                        if min_chapter_duration <= duration <= max_optimal_duration:
+                            valid_chapters.append(chapter)
+                        else:
+                            logging.warning(f"    ⚠️ Skipping chapter '{chapter.get('title', 'Unknown')}' - duration {duration:.1f} min is outside 15-45 min range")
+
                     chunks_with_chapters.append({
                         'chunk_number': chunk_number,
                         'start_time': summary_chunk['start_time'],
                         'end_time': summary_chunk['end_time'],
                         'duration_minutes': summary_chunk['duration_minutes'],
-                        'total_interesting_chapters': len(interesting_chapters),
-                        'interesting_chapters': interesting_chapters,
+                        'total_interesting_chapters': len(valid_chapters),
+                        'interesting_chapters': valid_chapters,
                         'skipped_ai_analysis': False
                     })
 
-                    logging.info(f"  ✅ Chunk {chunk_number}: Found {len(interesting_chapters)} interesting chapters (AI analyzed)")
+                    logging.info(f"  ✅ Chunk {chunk_number}: Split into {len(valid_chapters)} chapters (15-45 min each)")
 
                 except json.JSONDecodeError as e:
                     logging.error(f"Failed to parse JSON for chunk {chunk_number}: {e}")

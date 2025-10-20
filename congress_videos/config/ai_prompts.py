@@ -260,9 +260,17 @@ Devuelve SOLO el JSON, sin markdown ni explicaciones."""
 # Chapter Identification - Identify interesting sub-chapters within each chunk
 CHAPTER_IDENTIFICATION_SYSTEM_PROMPT = """Eres un experto en identificar contenido interesante en sesiones parlamentarias españolas para crear clips de YouTube.
 
-Tu tarea es analizar UN SOLO CHUNK (segmento) de una sesión parlamentaria y encontrar momentos/capítulos interesantes que puedan extraerse como clips independientes para YouTube.
+Tu tarea es analizar UN SOLO CHUNK (segmento) de una sesión parlamentaria que es MAYOR de 45 minutos y dividirlo en sub-capítulos interesantes de duración óptima para YouTube.
 
-NOTA IMPORTANTE: Solo recibirás chunks que tengan 15 minutos o más de duración. Los chunks menores de 15 minutos se devuelven automáticamente sin análisis de IA.
+CONTEXTO IMPORTANTE:
+- Solo recibirás chunks que tengan MÁS de 45 minutos de duración
+- Los chunks menores de 45 minutos se devuelven automáticamente sin análisis de IA (ya están en el rango óptimo)
+- Tu trabajo es dividir estos chunks largos (>45 min) en capítulos más manejables
+
+DURACIÓN OBJETIVO DE CADA CAPÍTULO:
+- **Duración mínima: 15 minutos** (OBLIGATORIO - no crear capítulos más cortos)
+- **Duración máxima: 45 minutos** (OBLIGATORIO - no crear capítulos más largos)
+- **Rango óptimo: 15-45 minutos** (este es el "sweet spot" para YouTube)
 
 CRITERIOS DE "INTERESANTE":
 - Debates acalorados o confrontaciones entre partidos
@@ -270,20 +278,21 @@ CRITERIOS DE "INTERESANTE":
 - Intervenciones de figuras políticas relevantes
 - Temas de actualidad o controversiales
 - Momentos que generen interés público
+- Cambios de tema o asunto discutido
 
 CRITERIOS DE CALIDAD:
 - Cada capítulo debe tener inicio y fin claros (no cortar a mitad de frase)
-- Duración mínima: 5 minutos (ya que el chunk completo tiene mínimo 15 minutos)
-- Duración máxima: hasta el tamaño del chunk completo
+- Cada capítulo debe durar entre 15-45 minutos (ESTRICTAMENTE)
 - Debe ser autocontenido (entendible sin contexto adicional)
+- Dividir en límites naturales (cambios de tema, nuevos intervinientes, etc.)
 
 IMPORTANTE:
-- Puedes encontrar 0, 1, o varios capítulos interesantes en el chunk
-- Si no hay nada interesante, devuelve una lista vacía
-- Si hay múltiples temas interesantes, identifícalos todos
-- Si TODO el chunk es interesante y coherente, puedes devolver el chunk completo como un solo capítulo"""
+- TODOS los capítulos que identifiques DEBEN estar entre 15-45 minutos
+- Si el chunk completo es un solo tema coherente, devuélvelo como un solo capítulo (si está entre 15-45 min, aunque debería ser >45 min)
+- Si hay múltiples temas, divídelos en capítulos de 15-45 minutos cada uno
+- Prioriza dividir por cambios de tema naturales, no de forma arbitraria"""
 
-CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE = """Analiza este chunk de sesión parlamentaria y encuentra capítulos interesantes.
+CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE = """Analiza este chunk de sesión parlamentaria (>45 minutos) y divídelo en capítulos de duración óptima para YouTube.
 
 === RESUMEN DEL CHUNK ===
 {chunk_summary}
@@ -291,7 +300,7 @@ CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE = """Analiza este chunk de sesión p
 === TRANSCRIPCIÓN COMPLETA (con timestamps) ===
 {srt_content}
 
-TAREA: Identifica capítulos interesantes dentro de este chunk que valga la pena extraer como clips de YouTube.
+TAREA: Divide este chunk largo en capítulos que estén entre 15-45 minutos de duración.
 
 Devuelve un JSON con este formato:
 {{
@@ -309,8 +318,14 @@ Devuelve un JSON con este formato:
   ]
 }}
 
-REGLAS:
-- Si NO encuentras nada interesante, devuelve: {{"interesting_chapters": []}}
+⚠️ REGLAS CRÍTICAS DE DURACIÓN:
+- CADA capítulo DEBE durar MÍNIMO 15 minutos
+- CADA capítulo DEBE durar MÁXIMO 45 minutos
+- NO crear capítulos fuera del rango 15-45 minutos bajo ninguna circunstancia
+- Si el chunk completo es un tema único coherente, devuélvelo como un solo capítulo
+
+OTRAS REGLAS:
+- Divide en límites naturales (cambios de tema, nuevos intervinientes)
 - Usa los timestamps exactos del SRT
 - No inventes información que no esté en la transcripción
 - Prioriza calidad sobre cantidad
