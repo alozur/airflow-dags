@@ -807,7 +807,7 @@ def summarize_silence_chunks(chunked_srt_data, target_date: str):
     }
 
 
-def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date: str):
+def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date: str, min_duration_minutes: int = 15):
     """
     TASK 3: Identify interesting chapters within EACH chunk.
 
@@ -817,10 +817,14 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
 
     to find interesting sub-chapters that could be extracted.
 
+    IMPORTANT: Chunks shorter than min_duration_minutes are returned as-is without AI analysis.
+    Only chunks >= min_duration_minutes are analyzed by the AI.
+
     Args:
         chunk_summaries: Results from summarize_silence_chunks (contains summaries)
         chunked_srt_data: Results from split_srt_by_silence (contains SRT content)
         target_date: Target date in YYYY-MM-DD format
+        min_duration_minutes: Minimum duration (in minutes) for AI analysis (default: 15)
 
     Returns:
         Dict with chapter identification results:
@@ -872,12 +876,15 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
             # Analyze each chunk individually
             for idx, summary_chunk in enumerate(summarized_chunks):
                 chunk_number = summary_chunk['chunk_number']
+                chunk_duration = summary_chunk.get('duration_minutes', 0)
 
                 # Find matching SRT content for this chunk
                 srt_content = ""
+                srt_chunk_data = None
                 for srt_chunk in srt_chunks:
                     if srt_chunk['chunk_number'] == chunk_number:
                         srt_content = srt_chunk.get('content', '')
+                        srt_chunk_data = srt_chunk
                         break
 
                 if not srt_content:
@@ -888,6 +895,36 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
                     })
                     continue
 
+                # CHECK: If chunk is shorter than minimum duration, return it as-is without AI analysis
+                if chunk_duration < min_duration_minutes:
+                    logging.info(f"  ⚡ Chunk {chunk_number} is {chunk_duration:.1f} minutes (< {min_duration_minutes} min). Returning whole chunk without AI analysis.")
+
+                    # Return the entire chunk as a single "interesting chapter"
+                    whole_chunk_chapter = {
+                        'title': f"Chunk {chunk_number}",
+                        'description': summary_chunk.get('summary', 'Chunk returned as-is (duration < 15 minutes)'),
+                        'start_time': summary_chunk['start_time'],
+                        'end_time': summary_chunk['end_time'],
+                        'duration_minutes': chunk_duration,
+                        'speakers': [s.get('name', 'Unknown') for s in summary_chunk.get('speakers', [])],
+                        'topics': summary_chunk.get('topics', []),
+                        'importance_score': 5,  # Default score
+                        'skipped_ai_analysis': True  # Flag to indicate this wasn't analyzed by AI
+                    }
+
+                    chunks_with_chapters.append({
+                        'chunk_number': chunk_number,
+                        'start_time': summary_chunk['start_time'],
+                        'end_time': summary_chunk['end_time'],
+                        'duration_minutes': chunk_duration,
+                        'total_interesting_chapters': 1,
+                        'interesting_chapters': [whole_chunk_chapter],
+                        'skipped_ai_analysis': True
+                    })
+
+                    continue
+
+                # Chunk is >= min_duration_minutes, proceed with AI analysis
                 try:
                     # Prepare chunk summary text for AI
                     summary_text = f"Chunk {chunk_number} ({summary_chunk['start_time']} - {summary_chunk['end_time']})\n\n"
@@ -932,10 +969,11 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
                         'end_time': summary_chunk['end_time'],
                         'duration_minutes': summary_chunk['duration_minutes'],
                         'total_interesting_chapters': len(interesting_chapters),
-                        'interesting_chapters': interesting_chapters
+                        'interesting_chapters': interesting_chapters,
+                        'skipped_ai_analysis': False
                     })
 
-                    logging.info(f"  ✅ Chunk {chunk_number}: Found {len(interesting_chapters)} interesting chapters")
+                    logging.info(f"  ✅ Chunk {chunk_number}: Found {len(interesting_chapters)} interesting chapters (AI analyzed)")
 
                 except json.JSONDecodeError as e:
                     logging.error(f"Failed to parse JSON for chunk {chunk_number}: {e}")

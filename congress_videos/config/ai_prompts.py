@@ -262,6 +262,8 @@ CHAPTER_IDENTIFICATION_SYSTEM_PROMPT = """Eres un experto en identificar conteni
 
 Tu tarea es analizar UN SOLO CHUNK (segmento) de una sesión parlamentaria y encontrar momentos/capítulos interesantes que puedan extraerse como clips independientes para YouTube.
 
+NOTA IMPORTANTE: Solo recibirás chunks que tengan 15 minutos o más de duración. Los chunks menores de 15 minutos se devuelven automáticamente sin análisis de IA.
+
 CRITERIOS DE "INTERESANTE":
 - Debates acalorados o confrontaciones entre partidos
 - Anuncios de políticas importantes
@@ -271,13 +273,15 @@ CRITERIOS DE "INTERESANTE":
 
 CRITERIOS DE CALIDAD:
 - Cada capítulo debe tener inicio y fin claros (no cortar a mitad de frase)
-- Duración: 5-15 minutos idealmente
+- Duración mínima: 5 minutos (ya que el chunk completo tiene mínimo 15 minutos)
+- Duración máxima: hasta el tamaño del chunk completo
 - Debe ser autocontenido (entendible sin contexto adicional)
 
 IMPORTANTE:
 - Puedes encontrar 0, 1, o varios capítulos interesantes en el chunk
 - Si no hay nada interesante, devuelve una lista vacía
-- Si hay múltiples temas interesantes, identifícalos todos"""
+- Si hay múltiples temas interesantes, identifícalos todos
+- Si TODO el chunk es interesante y coherente, puedes devolver el chunk completo como un solo capítulo"""
 
 CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE = """Analiza este chunk de sesión parlamentaria y encuentra capítulos interesantes.
 
