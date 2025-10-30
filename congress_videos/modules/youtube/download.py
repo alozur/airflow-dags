@@ -809,7 +809,7 @@ def summarize_silence_chunks(chunked_srt_data, target_date: str):
 
 def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date: str,
                                  min_chapter_duration: int = 15,
-                                 max_optimal_duration: int = 45):
+                                 max_optimal_duration: int = 120):
     """
     TASK 3: Identify interesting chapters within EACH chunk.
 
@@ -822,14 +822,17 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
     DURATION RULES:
     - Chunks < 15 minutes: Returned as-is (too short to split)
     - Chunks 15-45 minutes: Returned as-is (optimal duration, no need to split)
-    - Chunks > 45 minutes: Analyzed by AI to extract sub-chapters of 15-45 minutes each
+    - Chunks > 45 minutes: Analyzed by AI to decide:
+      * If single topic ≤ 120 min: Keep as 1 chapter
+      * If single topic > 120 min: Split in natural pauses
+      * If multiple topics: Split by topic
 
     Args:
         chunk_summaries: Results from summarize_silence_chunks (contains summaries)
         chunked_srt_data: Results from split_srt_by_silence (contains SRT content)
         target_date: Target date in YYYY-MM-DD format
         min_chapter_duration: Minimum duration for chapters (default: 15 minutes)
-        max_optimal_duration: Maximum optimal duration before AI splitting (default: 45 minutes)
+        max_optimal_duration: Maximum optimal duration for single-topic chapters (default: 120 minutes)
 
     Returns:
         Dict with chapter identification results:
@@ -935,8 +938,8 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
 
                     continue
 
-                # Chunk is > 45 minutes, proceed with AI analysis to split into sub-chapters
-                logging.info(f"  🔍 Chunk {chunk_number} is {chunk_duration:.1f} minutes (>45 min). Using AI to split into 15-45 min sub-chapters...")
+                # Chunk is > 45 minutes, proceed with AI analysis
+                logging.info(f"  🔍 Chunk {chunk_number} is {chunk_duration:.1f} minutes (>45 min). Using AI to analyze content...")
 
                 try:
                     # Prepare chunk summary text for AI
@@ -985,7 +988,7 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
                             chapter['skipped_ai_analysis'] = False  # AI was used to analyze and create this chapter
                             valid_chapters.append(chapter)
                         else:
-                            logging.warning(f"    ⚠️ Skipping chapter '{chapter.get('title', 'Unknown')}' - duration {duration:.1f} min is outside 15-45 min range")
+                            logging.warning(f"    ⚠️ Skipping chapter '{chapter.get('title', 'Unknown')}' - duration {duration:.1f} min is outside 15-120 min range")
 
                     # Determine if this is a single-chapter result (chunk not divided)
                     is_single_chapter = len(valid_chapters) == 1 and len(interesting_chapters) == 1
@@ -994,7 +997,7 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
                         # AI analyzed but decided chunk should remain as one chapter
                         logging.info(f"  ✅ Chunk {chunk_number}: AI analysis determined chunk is a single coherent topic - kept as 1 chapter ({valid_chapters[0]['duration_minutes']:.1f} min)")
                     else:
-                        logging.info(f"  ✅ Chunk {chunk_number}: Split into {len(valid_chapters)} chapters (15-45 min each)")
+                        logging.info(f"  ✅ Chunk {chunk_number}: Split into {len(valid_chapters)} chapters")
 
                     chunks_with_chapters.append({
                         'chunk_number': chunk_number,

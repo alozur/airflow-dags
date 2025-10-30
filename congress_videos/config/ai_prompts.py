@@ -191,57 +191,50 @@ INSTRUCCIONES:
 Devuelve SOLO el JSON, sin markdown ni explicaciones."""
 
 # Chapter Identification - Identify interesting sub-chapters within each chunk
-CHAPTER_IDENTIFICATION_SYSTEM_PROMPT = """🚨 INSTRUCCIÓN CRÍTICA - LEE PRIMERO:
-Vas a recibir un chunk de sesión parlamentaria que dura MÁS de 45 minutos.
-Tu trabajo es dividirlo en MÚLTIPLES capítulos de 15-45 minutos cada uno.
+CHAPTER_IDENTIFICATION_SYSTEM_PROMPT = """Eres un experto en identificar contenido interesante en sesiones parlamentarias españolas para crear clips de YouTube.
 
-**NUNCA devuelvas un solo capítulo que dure más de 45 minutos.**
-**Ejemplo: Si el chunk dura 107 minutos, debes devolver 3+ capítulos.**
+Tu tarea es analizar UN CHUNK de sesión parlamentaria que dura MÁS de 45 minutos y decidir si dividirlo o mantenerlo completo.
 
-Eres un experto en identificar contenido interesante en sesiones parlamentarias españolas para crear clips de YouTube.
+🎯 FILOSOFÍA: "Prioriza COHERENCIA TEMÁTICA sobre duración"
 
-🚨 REGLA ABSOLUTA - NO NEGOCIABLE:
-**CADA capítulo DEBE durar entre 15-45 minutos.**
-**NINGÚN capítulo puede durar más de 45 minutos. NUNCA.**
-**Si recibes un chunk de 107 minutos, DEBES devolver MÍNIMO 3 capítulos.**
-**Si devuelves 1 solo capítulo de >45 min, tu respuesta será RECHAZADA.**
+⚠️ REGLAS DE DIVISIÓN:
 
-⚠️ CÁLCULO DE CAPÍTULOS NECESARIOS:
-- Chunk 45-60 min → Mínimo 2 capítulos
-- Chunk 60-90 min → Mínimo 2-3 capítulos
-- Chunk 90-120 min → Mínimo 3 capítulos
-- Chunk 120-180 min → Mínimo 4 capítulos
+**Opción 1: Mantener como 1 capítulo completo**
+- Si el chunk trata UN SOLO TEMA coherente
+- Duración ≤ 120 minutos (2 horas)
+- Puedes hacerlo aunque haya sub-temas o múltiples habladores
+- Ejemplo: Debate de 90 min sobre "Vivienda" → PUEDE ser 1 capítulo de 90 min
 
-🎯 ESTRATEGIA DE DIVISIÓN:
+**Opción 2: Dividir en múltiples capítulos**
+- Si identificas SUB-TEMAS naturales dentro del tema principal
+- Si hay TEMAS CLARAMENTE DISTINTOS (ej: Vivienda → Sanidad)
+- Si el chunk > 120 minutos (entonces DEBES dividir)
+- Ejemplo: Debate de 90 min sobre "Vivienda" → TAMBIÉN puede ser 2 capítulos si identificas sub-temas claros
 
-**OPCIÓN 1: Chunk 45-90 min con UN SOLO TEMA coherente**
-→ Divide en 2-3 capítulos por TIEMPO, respetando límites naturales (pausas, cambios de hablador)
-→ Cada capítulo debe ser autocontenido pero del MISMO tema general
+**Flexibilidad:**
+- Tú decides cuándo dividir según el contenido
+- No hay reglas estrictas, usa tu criterio
+- Prioriza coherencia sobre número de capítulos
 
-**OPCIÓN 2: Chunk con TEMAS CLARAMENTE DISTINTOS**
-→ Divide por TEMAS diferentes (ej: Vivienda → Sanidad)
-→ Cada capítulo = un tema completo con todas sus intervenciones
+🔍 CRITERIOS PARA DIVIDIR POR TIEMPO (solo si >120 min y un solo tema):
+- Busca PAUSAS NATURALES de 4-5+ segundos en la transcripción
+- Cambios de hablador en pausas largas
+- NUNCA dividas en medio de una intervención
+- NUNCA dividas en medio de una frase
+- El número de capítulos es VARIABLE según el contenido
 
-🎯 FILOSOFÍA: "Prioriza coherencia temática, pero NUNCA excedas 45 minutos"
-
-CRITERIOS DE DIVISIÓN:
-- Primero, intenta dividir por TEMAS diferentes si es claro
-- Si es un solo tema, divide por TIEMPO en límites naturales:
-  * Cambios de hablador
-  * Pausas naturales en el debate
-  * Sub-temas dentro del tema principal
-- Cada capítulo: 15-45 minutos (ESTRICTAMENTE)
-
-❌ NO DIVIDAS POR:
-- Mitad de una frase
-- Mitad de una intervención importante
+⚠️ RESTRICCIONES:
+- Mínimo 15 minutos por capítulo
+- Máximo 120 minutos por capítulo (solo si es tema único coherente)
+- Si divides, hazlo en pausas naturales (4-5+ segundos de silencio)
 
 IMPORTANTE:
-- CADA capítulo DEBE ser 15-45 minutos (nunca > 45 min)
+- Prioriza mantener temas completos juntos
+- Solo divide por tiempo si supera 2 horas
 - Rellena TODOS los campos (title, description, speakers, topics)
 - NUNCA devuelvas lista vacía - mínimo 1 capítulo"""
 
-CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE = """Analiza este chunk de sesión parlamentaria (>45 minutos) y divídelo en capítulos.
+CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE = """Analiza este chunk de sesión parlamentaria (>45 minutos).
 
 === RESUMEN DEL CHUNK ===
 {chunk_summary}
@@ -249,49 +242,47 @@ CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE = """Analiza este chunk de sesión p
 === TRANSCRIPCIÓN COMPLETA (con timestamps) ===
 {srt_content}
 
-🚨 RESTRICCIÓN CRÍTICA - LEE ESTO PRIMERO:
-**ESTE CHUNK ES > 45 MINUTOS, POR LO TANTO DEBES DIVIDIRLO.**
-**NINGÚN capítulo puede durar más de 45 minutos.**
-**DEBES devolver MÚLTIPLES capítulos (2 o más).**
+🎯 TAREA: Decide si mantener el chunk completo o dividirlo.
 
-🎯 TAREA OBLIGATORIA:
-Divide este chunk en MÍNIMO 2 capítulos de 15-45 minutos cada uno.
-Si el chunk es de 107 min, necesitas devolver AL MENOS 3 capítulos.
+PASO 1: EVALÚA EL CONTENIDO TEMÁTICO
 
-PASO 1: EVALÚA EL TIPO DE DIVISIÓN
+❓ Pregunta Principal: ¿Cómo está organizado el contenido?
 
-❓ Pregunta A: ¿Hay temas CLARAMENTE DISTINTOS?
-- Ejemplo: "Vivienda" (30 min) → cambio claro → "Sanidad" (25 min)
-- Si SÍ → Divide por TEMAS (OPCIÓN A)
+**OPCIÓN A: Mantener como 1 capítulo**
+- Si el chunk tiene UN TEMA principal coherente
+- Duración ≤ 120 minutos
+- Aunque tenga sub-temas o múltiples habladores
+- Ejemplo: 90 min sobre "Víctimas de la Dana" → 1 capítulo completo (si es coherente)
 
-❓ Pregunta B: ¿Es todo UN SOLO TEMA?
-- Ejemplo: Todo el chunk habla de "Vivienda" (107 min)
-- Si SÍ → Divide por TIEMPO en límites naturales (OPCIÓN B)
+**OPCIÓN B: Dividir en 2+ capítulos**
+- Si identificas SUB-TEMAS naturales dentro del tema
+- Si hay TEMAS CLARAMENTE DISTINTOS (ej: Vivienda → Sanidad)
+- Si el chunk > 120 minutos (OBLIGATORIO dividir)
+- Ejemplo: 90 min sobre "Política Económica" → 2 capítulos si identificas "Inflación" + "Empleo" como sub-temas
 
-OPCIÓN A: DIVISIÓN POR TEMAS (si hay temas distintos)
-- Cada capítulo = un tema completo
-- Incluye todas las intervenciones de ese tema (preguntas + respuestas + réplicas)
-- Duración: 15-45 minutos por tema
+**Usa tu criterio:**
+- No hay fórmula fija
+- Prioriza que cada capítulo sea coherente y autocontenido
+- Puedes dividir un chunk de 80 min si ves sub-temas claros
+- Puedes mantener un chunk de 110 min si es un solo tema coherente
 
-OPCIÓN B: DIVISIÓN POR TIEMPO (si es un solo tema)
-- Divide el tema largo en partes de 15-45 minutos
-- Busca límites naturales:
-  * Cambios de hablador
-  * Pausas entre intervenciones
-  * Sub-temas o aspectos diferentes dentro del tema principal
-- Ejemplo: "Debate Vivienda - Parte 1" (40 min), "Debate Vivienda - Parte 2" (40 min), "Debate Vivienda - Parte 3" (27 min)
+PASO 2: SI NECESITAS DIVIDIR POR TIEMPO (solo si un tema > 120 min)
 
-🚫 NO DIVIDAS EN:
-- Mitad de una frase
-- Mitad de una intervención completa
+🔍 Busca PAUSAS NATURALES en la transcripción:
+- Silencios de 4-5+ segundos entre intervenciones
+- Cambios de hablador en pausas largas
+- Finales de intervenciones completas
 
-🚨 ANTES DE RESPONDER - VERIFICACIÓN FINAL:
-1. ¿Cada capítulo dura entre 15-45 minutos? (OBLIGATORIO)
-2. ¿Ningún capítulo supera los 45 minutos? (OBLIGATORIO)
-3. ¿He devuelto MÍNIMO 2 capítulos? (OBLIGATORIO si chunk > 45 min)
-4. Si el chunk es ~100 min, ¿he devuelto 3+ capítulos?
+🚫 NUNCA DIVIDAS EN:
+- Medio de una intervención
+- Medio de una frase
+- Sin pausa natural de al menos 4-5 segundos
 
-Si respondiste NO a cualquiera, CORRIGE tu respuesta antes de enviar.
+📐 Número de capítulos:
+- Es VARIABLE según el contenido
+- Ejemplo: 165 min → 2 capítulos (85 min + 80 min)
+- Ejemplo: 180 min → 2 capítulos (90 min + 90 min)
+- NO hay fórmulas fijas, depende de las pausas naturales
 
 FORMATO DE RESPUESTA:
 {{
@@ -301,56 +292,65 @@ FORMATO DE RESPUESTA:
       "description": "Descripción (2-3 oraciones)",
       "start_time": "HH:MM:SS,mmm",
       "end_time": "HH:MM:SS,mmm",
-      "duration_minutes": <número entre 15-45>,
+      "duration_minutes": <número>,
       "speakers": ["Lista de habladores"],
       "topics": ["Lista de temas"]
     }}
   ]
 }}
 
-📌 EJEMPLO 1 - Chunk con temas distintos (OPCIÓN A):
-Input: Chunk 60 min = "Vivienda" (35 min) + "Sanidad" (25 min)
-Output: 2 capítulos (uno por tema)
-
-📌 EJEMPLO 2 - Chunk de un solo tema largo (OPCIÓN B):
-Input: Chunk 107 min = todo sobre "Víctimas de la Dana"
-Output: 3 capítulos divididos por tiempo
+📌 EJEMPLO 1 - Chunk de 90 min, UN SOLO TEMA:
+Input: Chunk 90 min sobre "Víctimas de la Dana"
+Output: 1 capítulo completo (≤ 120 min, OK)
 {{
   "interesting_chapters": [
     {{
-      "title": "Recuerdo a las Víctimas de la Dana - Parte 1",
-      "description": "Primera parte del debate sobre las víctimas de la Dana, incluyendo intervenciones iniciales sobre responsabilidad del gobierno.",
+      "title": "Recuerdo a las Víctimas de la Dana y Responsabilidad del Gobierno",
+      "description": "Debate completo sobre las víctimas de la Dana, incluyendo todas las intervenciones sobre responsabilidad, ayudas y prevención.",
       "start_time": "00:00:00,000",
-      "end_time": "00:40:00,000",
-      "duration_minutes": 40.0,
-      "speakers": ["Portavoz PP", "Presidente Sánchez"],
-      "topics": ["Víctimas Dana", "Responsabilidad gobierno"]
-    }},
-    {{
-      "title": "Recuerdo a las Víctimas de la Dana - Parte 2",
-      "description": "Continuación del debate con réplicas de la oposición y respuestas del gobierno sobre medidas de ayuda.",
-      "start_time": "00:40:00,000",
-      "end_time": "01:25:00,000",
-      "duration_minutes": 45.0,
-      "speakers": ["Portavoz Sumar", "Ministra", "Portavoz VOX"],
-      "topics": ["Víctimas Dana", "Ayudas", "Medidas emergencia"]
-    }},
-    {{
-      "title": "Recuerdo a las Víctimas de la Dana - Parte 3",
-      "description": "Cierre del debate con intervenciones finales sobre prevención y gestión de desastres naturales.",
-      "start_time": "01:25:00,000",
-      "end_time": "01:47:48,000",
-      "duration_minutes": 22.8,
-      "speakers": ["Diputado Ciudadanos", "Presidente Sánchez"],
-      "topics": ["Víctimas Dana", "Prevención", "Gestión desastres"]
+      "end_time": "01:30:00,000",
+      "duration_minutes": 90.0,
+      "speakers": ["Portavoz PP", "Presidente Sánchez", "Portavoz Sumar", "Ministra"],
+      "topics": ["Víctimas Dana", "Responsabilidad gobierno", "Ayudas", "Prevención"]
     }}
   ]
 }}
 
+📌 EJEMPLO 2 - Chunk de 165 min, UN SOLO TEMA (> 120 min):
+Input: Chunk 165 min sobre "Política Energética"
+Output: 2 capítulos divididos en pausas naturales
+{{
+  "interesting_chapters": [
+    {{
+      "title": "Debate sobre Política Energética - Parte 1",
+      "description": "Primera parte del extenso debate energético, incluyendo precios de la luz y energías renovables.",
+      "start_time": "00:00:00,000",
+      "end_time": "01:25:00,000",
+      "duration_minutes": 85.0,
+      "speakers": ["..."],
+      "topics": ["Energía", "Precios luz", "Renovables"]
+    }},
+    {{
+      "title": "Debate sobre Política Energética - Parte 2",
+      "description": "Continuación del debate con dependencia energética y transición ecológica.",
+      "start_time": "01:25:00,000",
+      "end_time": "02:45:00,000",
+      "duration_minutes": 80.0,
+      "speakers": ["..."],
+      "topics": ["Energía", "Dependencia energética", "Transición"]
+    }}
+  ]
+}}
+
+📌 EJEMPLO 3 - Chunk con temas distintos:
+Input: Chunk 80 min = "Vivienda" (50 min) + "Sanidad" (30 min)
+Output: 2 capítulos (uno por tema)
+
 ⚠️ RECORDATORIO FINAL:
-- NINGÚN capítulo puede durar > 45 minutos
-- TODOS los capítulos deben estar entre 15-45 minutos
-- Si es un solo tema largo, divide por TIEMPO en límites naturales
+- Mínimo 15 minutos por capítulo
+- Máximo 120 minutos por capítulo (si es tema único)
+- Solo divide por tiempo si el chunk > 120 minutos
+- Divide en pausas naturales (4-5+ segundos)
 - NUNCA lista vacía - mínimo 1 capítulo
 
 Devuelve SOLO el JSON."""
