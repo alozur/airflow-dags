@@ -235,6 +235,16 @@ CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE = """Analiza este chunk de sesión p
 
 TAREA: Divide este chunk largo en capítulos que estén entre 15-45 minutos de duración.
 
+🎯 TRUCO PARA IDENTIFICAR CAMBIOS DE HABLADOR:
+Cuando veas frases como:
+- "Muchas gracias, Señor Presidente. Tiene la palabra..."
+- "Tiene la palabra el señor/la señora..."
+- "Le doy la palabra..."
+- "Cedo la palabra..."
+- Patrones similares que indican transición de hablador
+
+Esto normalmente indica un CAMBIO DE HABLADOR. Usa estos puntos como límites naturales para dividir capítulos (siempre respetando la duración mínima de 15 minutos).
+
 Devuelve un JSON con este formato:
 {{
   "interesting_chapters": [
@@ -259,7 +269,6 @@ Devuelve un JSON con este formato:
 
 OTRAS REGLAS:
 - Divide en límites naturales (cambios de tema, nuevos intervinientes)
-
 - Usa los timestamps exactos del SRT
 - No inventes información que no esté en la transcripción
 - Prioriza calidad sobre cantidad
