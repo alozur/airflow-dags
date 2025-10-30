@@ -193,39 +193,50 @@ Devuelve SOLO el JSON, sin markdown ni explicaciones."""
 # Chapter Identification - Identify interesting sub-chapters within each chunk
 CHAPTER_IDENTIFICATION_SYSTEM_PROMPT = """Eres un experto en identificar contenido interesante en sesiones parlamentarias españolas para crear clips de YouTube.
 
-Tu tarea es analizar UN SOLO CHUNK (segmento) de una sesión parlamentaria que es MAYOR de 45 minutos y dividirlo en sub-capítulos interesantes de duración óptima para YouTube.
+Tu tarea es analizar UN SOLO CHUNK (segmento) de una sesión parlamentaria que es MAYOR de 45 minutos y dividirlo en sub-capítulos basados en TEMAS COHERENTES.
 
-CONTEXTO IMPORTANTE:
+🎯 OBJETIVO PRINCIPAL: AGRUPAR POR TEMAS, NO POR HABLADORES
+
+IMPORTANTE: Cada capítulo debe representar UN TEMA COMPLETO del debate parlamentario:
+- **Tema: Vivienda** → Todo el debate sobre vivienda (preguntas + respuestas + réplicas)
+- **Tema: Salario Mínimo Interprofesional** → Debate completo sobre SMI
+- **Tema: Preguntas al Presidente sobre Economía** → Sesión de control sobre economía
+- **Tema: Política Energética** → Debate completo sobre energía y transición
+
+NO DIVIDAS por cambios de hablador si siguen hablando del MISMO TEMA:
+❌ MAL: Dividir "Pregunta del diputado sobre vivienda" y "Respuesta del presidente sobre vivienda" en 2 capítulos
+✅ BIEN: Mantener todo el intercambio sobre vivienda en 1 capítulo coherente
+
+CONTEXTO TÉCNICO:
 - Solo recibirás chunks que tengan MÁS de 45 minutos de duración
-- Los chunks menores de 45 minutos se devuelven automáticamente sin análisis de IA (ya están en el rango óptimo)
-- Tu trabajo es dividir estos chunks largos (>45 min) en capítulos más manejables
+- Los chunks menores de 45 minutos se devuelven automáticamente sin análisis de IA
+- Tu trabajo es dividir estos chunks largos (>45 min) en capítulos temáticos de 15-45 minutos
 
 DURACIÓN OBJETIVO DE CADA CAPÍTULO:
-- **Duración mínima: 15 minutos** (OBLIGATORIO - no crear capítulos más cortos)
-- **Duración máxima: 45 minutos** (OBLIGATORIO - no crear capítulos más largos)
-- **Rango óptimo: 15-45 minutos** (este es el "sweet spot" para YouTube)
+- **Duración mínima: 15 minutos** (OBLIGATORIO)
+- **Duración máxima: 45 minutos** (OBLIGATORIO)
+- **Rango óptimo: 15-45 minutos** (ideal para YouTube)
 
-CRITERIOS DE "INTERESANTE":
-- Debates acalorados o confrontaciones entre partidos
-- Anuncios de políticas importantes
-- Intervenciones de figuras políticas relevantes
-- Temas de actualidad o controversiales
-- Momentos que generen interés público
-- Cambios de tema o asunto discutido
+CRITERIOS DE "TEMA INTERESANTE":
+- Debates completos sobre políticas específicas (vivienda, empleo, sanidad, etc.)
+- Sesiones de control al gobierno sobre un asunto concreto
+- Discusión completa de una iniciativa legislativa
+- Interpelaciones sobre temas de actualidad
+- Confrontaciones políticas sobre asuntos relevantes
 
 CRITERIOS DE CALIDAD:
-- Cada capítulo debe tener inicio y fin claros (no cortar a mitad de frase)
-- Cada capítulo debe durar entre 15-45 minutos (ESTRICTAMENTE)
-- Debe ser autocontenido (entendible sin contexto adicional)
-- Dividir en límites naturales (cambios de tema, nuevos intervinientes, etc.)
+- Cada capítulo = UN TEMA COMPLETO (con todas sus intervenciones relacionadas)
+- Duración entre 15-45 minutos (ESTRICTAMENTE)
+- Autocontenido (entendible sin contexto adicional)
+- Dividir solo cuando cambia el TEMA principal, no el hablador
 
 IMPORTANTE:
-- TODOS los capítulos que identifiques DEBEN estar entre 15-45 minutos
-- Si el chunk completo es un solo tema coherente, devuélvelo como un solo capítulo (si está entre 15-45 min, aunque debería ser >45 min)
-- Si hay múltiples temas, divídelos en capítulos de 15-45 minutos cada uno
-- Prioriza dividir por cambios de tema naturales, no de forma arbitraria"""
+- Prioriza COHERENCIA TEMÁTICA sobre cambios de hablador
+- Si el chunk completo trata un solo tema, devuélvelo como un solo capítulo
+- Si hay múltiples temas distintos, divide en capítulos temáticos de 15-45 min cada uno
+- Agrupa preguntas + respuestas + réplicas del MISMO tema en UN capítulo"""
 
-CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE = """Analiza este chunk de sesión parlamentaria (>45 minutos) y divídelo en capítulos de duración óptima para YouTube.
+CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE = """Analiza este chunk de sesión parlamentaria (>45 minutos) y divídelo en capítulos basados en TEMAS COHERENTES.
 
 === RESUMEN DEL CHUNK ===
 {chunk_summary}
@@ -233,44 +244,67 @@ CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE = """Analiza este chunk de sesión p
 === TRANSCRIPCIÓN COMPLETA (con timestamps) ===
 {srt_content}
 
-TAREA: Divide este chunk largo en capítulos que estén entre 15-45 minutos de duración.
+🎯 TAREA: Identifica los TEMAS principales del debate y crea UN capítulo por TEMA.
 
-🎯 TRUCO PARA IDENTIFICAR CAMBIOS DE HABLADOR:
-Cuando veas frases como:
-- "Muchas gracias, Señor Presidente. Tiene la palabra..."
-- "Tiene la palabra el señor/la señora..."
-- "Le doy la palabra..."
-- "Cedo la palabra..."
-- Patrones similares que indican transición de hablador
+METODOLOGÍA DE ANÁLISIS POR TEMAS:
 
-Esto normalmente indica un CAMBIO DE HABLADOR. Usa estos puntos como límites naturales para dividir capítulos (siempre respetando la duración mínima de 15 minutos).
+1. **IDENTIFICA LOS TEMAS PRINCIPALES**:
+   - Lee toda la transcripción e identifica los temas políticos que se discuten
+   - Ejemplos de temas: "Vivienda", "Salario Mínimo", "Política Energética", "Sanidad", etc.
+   - Cada tema puede incluir múltiples habladores (pregunta + respuesta + réplica)
 
-Devuelve un JSON con este formato:
+2. **AGRUPA INTERVENCIONES DEL MISMO TEMA**:
+   - Si un diputado pregunta sobre VIVIENDA y el presidente responde sobre VIVIENDA → MISMO capítulo
+   - Si hay réplica del diputado sobre VIVIENDA → Incluir en el MISMO capítulo
+   - Solo crea un NUEVO capítulo cuando cambia el TEMA (ej: de Vivienda a Sanidad)
+
+3. **RESPETA LAS DURACIONES**:
+   - Cada capítulo debe durar 15-45 minutos
+   - Si un tema dura más de 45 minutos, divídelo en sub-temas naturales
+   - Si un tema dura menos de 15 minutos, agrúpalo con el tema siguiente relacionado
+
+🎯 EJEMPLOS DE AGRUPACIÓN CORRECTA:
+
+✅ CORRECTO - Agrupar por tema:
+- Capítulo 1: "Debate sobre Vivienda" (30 min)
+  → Incluye: pregunta diputado A + respuesta presidente + réplica diputado A + intervención diputado B
+
+❌ INCORRECTO - Dividir por hablador:
+- Capítulo 1: "Pregunta sobre vivienda" (5 min) ← Demasiado corto
+- Capítulo 2: "Respuesta sobre vivienda" (8 min) ← Demasiado corto
+- Capítulo 3: "Réplica sobre vivienda" (4 min) ← Demasiado corto
+
+🔍 INDICADORES DE CAMBIO DE TEMA (no de hablador):
+- "Pasamos al siguiente punto del orden del día..."
+- "En relación con otro asunto..."
+- Cambio claro en el contenido político (de economía a sanidad, etc.)
+- Nueva pregunta sobre tema diferente
+
+⚠️ NO SON CAMBIOS DE TEMA (ignorar para división):
+- "Muchas gracias, Señor Presidente. Tiene la palabra..." ← Solo cambio de hablador
+- "Le doy la palabra..." ← Solo protocolo
+- Réplicas y contrarréplicas sobre el MISMO tema ← Mantener juntas
+
+⚠️ REGLAS CRÍTICAS:
+- CADA capítulo DEBE durar MÍNIMO 15 minutos
+- CADA capítulo DEBE durar MÁXIMO 45 minutos
+- Prioriza COHERENCIA TEMÁTICA sobre número de capítulos
+- Si todo el chunk trata UN SOLO tema, devuélvelo como UN capítulo
+- SIEMPRE devuelve al menos 1 capítulo (nunca una lista vacía)
+
+FORMATO DE RESPUESTA - Devuelve un JSON con este formato:
 {{
   "interesting_chapters": [
     {{
-      "title": "Título descriptivo del capítulo",
-      "description": "Breve descripción (1-2 oraciones)",
+      "title": "Debate sobre [TEMA PRINCIPAL]",
+      "description": "Descripción del tema discutido y las posiciones principales (2-3 oraciones)",
       "start_time": "HH:MM:SS,mmm",
       "end_time": "HH:MM:SS,mmm",
-      "duration_minutes": <número>,
-      "speakers": ["Nombre 1", "Nombre 2"],
-      "topics": ["Tema principal"],
-      "importance_score": <1-10>
+      "duration_minutes": <número entre 15-45>,
+      "speakers": ["Todos los habladores que participaron en este tema"],
+      "topics": ["Tema principal específico"]
     }}
   ]
 }}
-
-⚠️ REGLAS CRÍTICAS DE DURACIÓN:
-- CADA capítulo DEBE durar MÍNIMO 15 minutos
-- CADA capítulo DEBE durar MÁXIMO 45 minutos
-- NO crear capítulos fuera del rango 15-45 minutos bajo ninguna circunstancia
-- Si el chunk completo es un tema único coherente, devuélvelo como un solo capítulo
-
-OTRAS REGLAS:
-- Divide en límites naturales (cambios de tema, nuevos intervinientes)
-- Usa los timestamps exactos del SRT
-- No inventes información que no esté en la transcripción
-- Prioriza calidad sobre cantidad
 
 Devuelve SOLO el JSON."""

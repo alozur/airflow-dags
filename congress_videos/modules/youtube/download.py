@@ -919,7 +919,6 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
                         'duration_minutes': chunk_duration,
                         'speakers': [s.get('name', 'Unknown') for s in summary_chunk.get('speakers', [])],
                         'topics': summary_chunk.get('topics', []),
-                        'importance_score': 5,  # Default score
                         'skipped_ai_analysis': True,  # Flag to indicate this wasn't analyzed by AI
                         'reason': reason
                     }
@@ -982,9 +981,20 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
                     for chapter in interesting_chapters:
                         duration = chapter.get('duration_minutes', 0)
                         if min_chapter_duration <= duration <= max_optimal_duration:
+                            # Add skipped_ai_analysis flag to each chapter
+                            chapter['skipped_ai_analysis'] = False  # AI was used to analyze and create this chapter
                             valid_chapters.append(chapter)
                         else:
                             logging.warning(f"    ⚠️ Skipping chapter '{chapter.get('title', 'Unknown')}' - duration {duration:.1f} min is outside 15-45 min range")
+
+                    # Determine if this is a single-chapter result (chunk not divided)
+                    is_single_chapter = len(valid_chapters) == 1 and len(interesting_chapters) == 1
+
+                    if is_single_chapter:
+                        # AI analyzed but decided chunk should remain as one chapter
+                        logging.info(f"  ✅ Chunk {chunk_number}: AI analysis determined chunk is a single coherent topic - kept as 1 chapter ({valid_chapters[0]['duration_minutes']:.1f} min)")
+                    else:
+                        logging.info(f"  ✅ Chunk {chunk_number}: Split into {len(valid_chapters)} chapters (15-45 min each)")
 
                     chunks_with_chapters.append({
                         'chunk_number': chunk_number,
@@ -993,10 +1003,9 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
                         'duration_minutes': summary_chunk['duration_minutes'],
                         'total_interesting_chapters': len(valid_chapters),
                         'interesting_chapters': valid_chapters,
-                        'skipped_ai_analysis': False
+                        'skipped_ai_analysis': False,  # AI was used (but may have returned 1 chapter)
+                        'is_single_chapter': is_single_chapter  # Flag to indicate if chunk was kept whole
                     })
-
-                    logging.info(f"  ✅ Chunk {chunk_number}: Split into {len(valid_chapters)} chapters (15-45 min each)")
 
                 except json.JSONDecodeError as e:
                     logging.error(f"Failed to parse JSON for chunk {chunk_number}: {e}")
@@ -1098,8 +1107,7 @@ def merge_interesting_chapters(identified_chapters, target_date: str):
                         'end_time': chapter.get('end_time', ''),
                         'duration_minutes': chapter.get('duration_minutes', 0),
                         'speakers': chapter.get('speakers', []),
-                        'topics': chapter.get('topics', []),
-                        'importance_score': chapter.get('importance_score', 0)
+                        'topics': chapter.get('topics', [])
                     })
 
             # Sort by start_time
