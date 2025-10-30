@@ -134,73 +134,6 @@ IMPORTANTE: Si la frase supera {max_length} caracteres, acórtala eliminando pal
 
 Devuelve SOLO la frase, sin explicaciones."""
 
-# Chapter Analysis - Topic Change Detection
-CHAPTER_ANALYSIS_SYSTEM_PROMPT_TEMPLATE = """Estás analizando la transcripción de una sesión parlamentaria para identificar cambios de tema.
-
-Tu tarea es simple:
-1. Lee la transcripción e identifica cuándo cambia el tema/asunto
-2. Marca límites naturales donde termina un tema y comienza otro
-3. Crea capítulos de {min_duration}-{max_duration} minutos en estos cambios de tema
-4. No cortes en medio de una frase o intervención
-
-🔥 FLEXIBILIDAD TOTAL EN NÚMERO DE CAPÍTULOS:
-- Puedes crear TANTOS capítulos como sean necesarios según los cambios de tema
-- NO hay límite máximo de capítulos - crea 2, 5, 10, 20, o los que necesites
-- Si hay muchos temas diferentes, crea muchos capítulos
-- Si hay pocos temas, crea pocos capítulos
-- Puedes crear capítulos que cubran TODO el vídeo completo si el tema es único
-- Puedes crear UN SOLO capítulo que abarque toda la transcripción si no hay cambios de tema significativos
-
-⚠️ IMPORTANTE - DURACIÓN MÍNIMA:
-- CADA capítulo DEBE durar MÍNIMO {min_duration} minutos
-- NO crear capítulos más cortos de {min_duration} minutos bajo ninguna circunstancia
-- Es preferible tener menos capítulos largos que muchos capítulos cortos
-
-FORMATO DE SALIDA:
-Devuelve SOLO un objeto JSON válido (sin markdown, sin bloques de código):
-{{
-  "chapters": [
-    {{
-      "chapter_number": 1,
-      "title": "Breve descripción del tema",
-      "start_time": "HH:MM:SS",
-      "end_time": "HH:MM:SS",
-      "topics": ["tema principal discutido"]
-    }}
-  ]
-}}"""
-
-CHAPTER_ANALYSIS_USER_PROMPT_TEMPLATE = """Identifica los cambios de tema en esta transcripción de sesión parlamentaria.
-
-=== ORDEN DEL DÍA (para contexto) ===
-{agenda_content}
-
-=== TRANSCRIPCIÓN (con marcas de tiempo) ===
-{srt_content}
-
-TAREA: Identifica dónde cambian los temas y crea capítulos en límites naturales.
-
-🔥 FLEXIBILIDAD TOTAL:
-- Crea TANTOS capítulos como necesites - no hay límite máximo
-- Si identificas 1 tema → crea 1 capítulo que cubra TODO el vídeo
-- Si identificas 3 temas → crea 3 capítulos
-- Si identificas 10 temas → crea 10 capítulos
-- Puedes crear un capítulo único para toda la transcripción si es apropiado
-- La cantidad de capítulos depende ÚNICAMENTE de los cambios de tema que identifiques
-
-⚠️ REQUISITOS CRÍTICOS DE DURACIÓN:
-- Cada capítulo DEBE durar MÍNIMO {min_duration_minutes} minutos (esto es OBLIGATORIO)
-- Duración máxima: {max_duration_minutes} minutos
-- Elimina el silencio del comienzo de la transcripción, no la emplees en nigun capítulo.
-- NO crear capítulos de menos de {min_duration_minutes} minutos
-
-Otros requisitos:
-- No cortes en medio de una discusión
-- Dale a cada capítulo un título descriptivo simple
-- IMPORTANTE: Puedes y DEBES cubrir toda la duración del vídeo con tus capítulos
-
-Devuelve SOLO el objeto JSON."""
-
 # Chunk Summarization - For silence-based chunks before chapter analysis
 CHUNK_SUMMARY_SYSTEM_PROMPT = """Eres un experto en analizar transcripciones de sesiones parlamentarias españolas.
 
@@ -326,6 +259,7 @@ Devuelve un JSON con este formato:
 
 OTRAS REGLAS:
 - Divide en límites naturales (cambios de tema, nuevos intervinientes)
+
 - Usa los timestamps exactos del SRT
 - No inventes información que no esté en la transcripción
 - Prioriza calidad sobre cantidad

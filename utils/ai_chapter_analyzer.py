@@ -12,10 +12,10 @@ from typing import Dict, List, Optional
 
 import openai
 
-from congress_videos.config.ai_prompts import (
-    CHAPTER_ANALYSIS_SYSTEM_PROMPT_TEMPLATE,
-    CHAPTER_ANALYSIS_USER_PROMPT_TEMPLATE
-)
+# NOTE: CHAPTER_ANALYSIS prompts were removed from ai_prompts.py
+# The analyze_chapters_with_ai() function below is no longer functional
+# and is kept only for reference. Use identify_interesting_chapters() in
+# congress_videos/modules/youtube/download.py instead.
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +304,9 @@ def analyze_chapters_with_ai(
     model: str = "gpt-4o-mini"
 ) -> Dict:
     """
+    DEPRECATED: This function is no longer functional because its AI prompts were removed.
+    Use identify_interesting_chapters() in congress_videos/modules/youtube/download.py instead.
+
     Use AI to identify topic changes in transcription based on content similarity.
 
     Simplified approach:
