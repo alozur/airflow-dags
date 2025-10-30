@@ -232,9 +232,10 @@ CRITERIOS DE CALIDAD:
 
 IMPORTANTE:
 - Prioriza COHERENCIA TEMÁTICA sobre cambios de hablador
-- Si el chunk completo trata un solo tema, devuélvelo como un solo capítulo
+- Si el chunk completo trata un solo tema, devuélvelo como un solo capítulo con TODOS los campos completos
 - Si hay múltiples temas distintos, divide en capítulos temáticos de 15-45 min cada uno
-- Agrupa preguntas + respuestas + réplicas del MISMO tema en UN capítulo"""
+- Agrupa preguntas + respuestas + réplicas del MISMO tema en UN capítulo
+- NUNCA devuelvas una lista vacía - SIEMPRE devuelve al menos 1 capítulo (el chunk completo si no hay divisiones claras)"""
 
 CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE = """Analiza este chunk de sesión parlamentaria (>45 minutos) y divídelo en capítulos basados en TEMAS COHERENTES.
 
@@ -289,8 +290,21 @@ METODOLOGÍA DE ANÁLISIS POR TEMAS:
 - CADA capítulo DEBE durar MÍNIMO 15 minutos
 - CADA capítulo DEBE durar MÁXIMO 45 minutos
 - Prioriza COHERENCIA TEMÁTICA sobre número de capítulos
-- Si todo el chunk trata UN SOLO tema, devuélvelo como UN capítulo
+- **IMPORTANTE**: Si NO encuentras temas claramente distintos para dividir, devuelve el chunk COMPLETO como UN SOLO capítulo
 - SIEMPRE devuelve al menos 1 capítulo (nunca una lista vacía)
+
+⚠️ CUANDO DEVOLVER EL CHUNK COMPLETO COMO 1 CAPÍTULO:
+- Si todo el debate trata sobre el MISMO tema (ej: todo sobre vivienda)
+- Si no hay puntos naturales de división entre temas
+- Si dividir el chunk rompería la coherencia del debate
+- En este caso, rellena TODOS los campos del capítulo:
+  * title: Título descriptivo del tema principal tratado en todo el chunk
+  * description: Resumen completo de lo discutido (2-3 oraciones)
+  * start_time: Tiempo de inicio del chunk
+  * end_time: Tiempo de fin del chunk
+  * duration_minutes: Duración total del chunk
+  * speakers: Lista de TODOS los habladores que participaron
+  * topics: Lista de todos los temas/subtemas mencionados
 
 FORMATO DE RESPUESTA - Devuelve un JSON con este formato:
 {{
@@ -303,6 +317,27 @@ FORMATO DE RESPUESTA - Devuelve un JSON con este formato:
       "duration_minutes": <número entre 15-45>,
       "speakers": ["Todos los habladores que participaron en este tema"],
       "topics": ["Tema principal específico"]
+    }}
+  ]
+}}
+
+📌 EJEMPLOS:
+
+Ejemplo 1 - Múltiples temas (DIVIDIR):
+Si el chunk tiene "Vivienda" (25 min) + "Sanidad" (30 min) → Devuelve 2 capítulos
+
+Ejemplo 2 - Un solo tema coherente (NO DIVIDIR):
+Si el chunk tiene solo "Debate sobre vivienda" (55 min) → Devuelve 1 capítulo con todo el chunk:
+{{
+  "interesting_chapters": [
+    {{
+      "title": "Debate Completo sobre Política de Vivienda",
+      "description": "Debate extenso sobre la crisis de vivienda en España, incluyendo preguntas de la oposición sobre alquiler turístico, respuesta del gobierno sobre la nueva ley de vivienda, y réplicas sobre limitación de precios de alquiler.",
+      "start_time": "00:00:00,000",
+      "end_time": "00:55:00,000",
+      "duration_minutes": 55.0,
+      "speakers": ["Portavoz PP", "Presidente Sánchez", "Portavoz Sumar", "Diputada Podemos"],
+      "topics": ["Vivienda", "Alquiler turístico", "Ley de vivienda", "Precios de alquiler"]
     }}
   ]
 }}
