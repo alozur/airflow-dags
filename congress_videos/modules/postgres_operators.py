@@ -30,83 +30,7 @@ class PostgreSQLOperator(BaseOperator):
         db = CongressionalVideoDB()
 
         # Pull data from XCom based on operation
-        if self.operation == 'create_session':
-            session_number = ti.xcom_pull(key=self.xcom_keys.get('session_number', 'session_number'))
-            target_date = context["params"].get("target_date")
-            session_link = ti.xcom_pull(key=self.xcom_keys.get('session_link', 'session_link'))
-
-            session_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
-            target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
-
-            result = db.create_or_update_session(session_number, session_date_obj, target_date_obj, session_link)
-
-        elif self.operation == 'save_topics':
-            session_number = ti.xcom_pull(key=self.xcom_keys.get('session_number', 'db_session_id'))
-            video_groups = ti.xcom_pull(key=self.xcom_keys.get('video_groups', 'enriched_video_groups'))
-
-            print(f"DEBUG: session_number = {session_number}")
-            print(f"DEBUG: video_groups type = {type(video_groups)}")
-            print(f"DEBUG: video_groups length = {len(video_groups) if video_groups else 0}")
-
-            topic_ids = []
-            for i, group in enumerate(video_groups):
-                print(f"DEBUG: Group {i} keys: {list(group.keys()) if isinstance(group, dict) else 'Not a dict'}")
-
-                if 'main_topic' in group:
-                    # Save main topic
-                    topic_data = group['main_topic']
-                    print(f"DEBUG: main_topic keys: {list(topic_data.keys()) if isinstance(topic_data, dict) else 'Not a dict'}")
-                    print(f"DEBUG: main_topic data: {topic_data}")
-
-                    # Map the fields correctly from the actual data structure
-                    mapped_topic_data = {
-                        'topic_title': topic_data.get('content'),  # 'content' -> 'topic_title'
-                        'video_url': topic_data.get('video_url'),
-                        'video_file_path': None,  # Will be updated later by download task
-                        'speaker_name': topic_data.get('speaker_name'),
-                        'role': topic_data.get('role'),
-                        'profile_link': topic_data.get('profile_link'),
-                        'main_topic_entry_id': None,  # Main topics don't have a parent
-                        'file_size_bytes': None,  # Will be updated later
-                        'duration_seconds': topic_data.get('metadata_url', {}).get('duration_seconds'),
-                        'is_main_topic': topic_data.get('is_bold', False)  # Map is_bold to is_main_topic
-                    }
-
-                    print(f"DEBUG: mapped_topic_data: {mapped_topic_data}")
-
-                    topic_entry_id = db.upsert_video_topic(session_number, topic_data.get('entry_id'), mapped_topic_data)
-                    topic_ids.append(topic_entry_id)
-                    print(f"✅ Successfully saved main topic {topic_entry_id}")
-
-                    # Save interventions (individual speaker videos)
-                    interventions = group.get('interventions', [])
-                    print(f"DEBUG: Found {len(interventions)} interventions for this topic")
-
-                    for j, intervention in enumerate(interventions):
-                        print(f"DEBUG: Intervention {j} keys: {list(intervention.keys()) if isinstance(intervention, dict) else 'Not a dict'}")
-
-                        # Map intervention data
-                        mapped_intervention_data = {
-                            'topic_title': intervention.get('content', f"Intervención de {intervention.get('speaker_name', 'Unknown')}"),
-                            'video_url': intervention.get('video_url'),
-                            'video_file_path': None,  # Will be updated later by download task
-                            'speaker_name': intervention.get('speaker_name'),
-                            'role': intervention.get('role'),
-                            'profile_link': intervention.get('profile_link'),
-                            'main_topic_entry_id': topic_entry_id,  # Link intervention to its main topic
-                            'file_size_bytes': None,  # Will be updated later
-                            'duration_seconds': intervention.get('metadata_url', {}).get('duration_seconds'),
-                            'is_main_topic': False  # Interventions are never main topics
-                        }
-
-                        intervention_entry_id = db.upsert_video_topic(session_number, intervention.get('entry_id'), mapped_intervention_data)
-                        topic_ids.append(intervention_entry_id)
-                        print(f"✅ Successfully saved intervention {intervention_entry_id}")
-
-            db.update_session_total_topics(session_number)
-            result = topic_ids
-
-        elif self.operation == 'update_downloads':
+        if self.operation == 'update_downloads':
             download_results_raw = ti.xcom_pull(key=self.xcom_keys.get('download_results', 'download_results'))
             topic_ids = ti.xcom_pull(key=self.xcom_keys.get('topic_ids', 'db_topic_ids'))
 
@@ -256,59 +180,6 @@ class PostgreSQLOperator(BaseOperator):
                     print(f"⚠️ Skipping {entry_id}: missing text or thumbnail failed")
 
             result = {'updated_topics': updated_count, 'total_processed': len(text_lookup)}
-
-        elif self.operation == 'save_ai_evaluations':
-            ai_evaluation_results = ti.xcom_pull(key=self.xcom_keys.get('evaluation_results', 'ai_evaluation_results'))
-            topic_ids = ti.xcom_pull(key=self.xcom_keys.get('topic_ids', 'db_topic_ids'))
-
-            # Debug logging
-            print(f"DEBUG: ai_evaluation_results type: {type(ai_evaluation_results)}")
-            print(f"DEBUG: topic_ids type: {type(topic_ids)}")
-
-            # Extract evaluations list
-            if isinstance(ai_evaluation_results, dict) and 'evaluations' in ai_evaluation_results:
-                evaluations = ai_evaluation_results['evaluations']
-                print(f"DEBUG: Extracted evaluations with {len(evaluations)} items")
-            elif isinstance(ai_evaluation_results, list):
-                evaluations = ai_evaluation_results
-                print(f"DEBUG: Using ai_evaluation_results as list with {len(evaluations)} items")
-            else:
-                print(f"ERROR: Unexpected ai_evaluation_results format: {type(ai_evaluation_results)}")
-                result = {'updated_topics': 0, 'error': 'Invalid ai_evaluation_results format'}
-                return result
-
-            # Ensure topic_ids is a list
-            if not isinstance(topic_ids, list):
-                print(f"ERROR: topic_ids is not a list, got: {type(topic_ids)}")
-                result = {'updated_topics': 0, 'error': 'topic_ids must be a list'}
-                return result
-
-            # Create a mapping from entry_id to evaluation for faster lookup
-            evaluation_map = {eval_item['entry_id']: eval_item for eval_item in evaluations if isinstance(eval_item, dict)}
-
-            updated_count = 0
-            for entry_id in topic_ids:
-                if entry_id in evaluation_map:
-                    evaluation = evaluation_map[entry_id]
-
-                    if evaluation.get('evaluation_success'):
-                        interest_score = evaluation.get('interest_score', 5)
-                        reasoning = evaluation.get('reasoning', '')
-
-                        print(f"DEBUG: Saving AI evaluation for {entry_id}: score={interest_score}")
-
-                        try:
-                            db.update_ai_interest_evaluation(entry_id, interest_score, reasoning)
-                            updated_count += 1
-                            print(f"✅ Successfully updated AI evaluation for topic {entry_id}")
-                        except Exception as e:
-                            print(f"❌ ERROR updating AI evaluation for topic {entry_id}: {e}")
-                    else:
-                        print(f"⚠️ Skipping {entry_id}: evaluation failed with error: {evaluation.get('error')}")
-                else:
-                    print(f"⚠️ No evaluation found for entry_id: {entry_id}")
-
-            result = {'updated_topics': updated_count, 'total_evaluations': len(evaluations)}
 
         elif self.operation == 'get_top_videos_for_upload':
             max_videos = context["params"].get("max_videos", 5)

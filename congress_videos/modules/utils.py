@@ -9,7 +9,6 @@ DEPRECATED: This file will be maintained for backward compatibility only.
 For new code, import from:
 - congress_videos.config.constants
 - congress_videos.modules.web_scraping
-- congress_videos.modules.video_extraction
 - congress_videos.modules.file_operations
 - congress_videos.modules.youtube (youtube_ai, youtube_upload, youtube_channel, download)
 """
@@ -36,20 +35,8 @@ from congress_videos.modules.web_scraping import (
     has_plenary_session,
 )
 
-# Re-export video extraction functions
-from congress_videos.modules.video_extraction import (
-    enrich_with_metadata,
-    extract_video_data,
-    extract_video_metadata,
-    limit_enriched_groups_for_testing,
-    organize_video_groups,
-)
-
 # Re-export file operations functions
 from congress_videos.modules.file_operations import (
-    create_session_folder,
-    create_topic_info_file,
-    download_main_topic_videos,
     download_video_file,
     download_videos_for_upload,
 )
