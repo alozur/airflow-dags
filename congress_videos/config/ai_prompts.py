@@ -355,10 +355,10 @@ Output: 2 capítulos (uno por tema)
 
 Devuelve SOLO el JSON."""
 
-# Chapter Relevance Scoring - Score chapters from 1-5 based on political relevance
+# Chapter Relevance Scoring - Score chapters from 0-5 based on political relevance
 CHAPTER_RELEVANCE_SCORING_SYSTEM_PROMPT = """Eres un experto en política española que evalúa la relevancia de debates parlamentarios para contenido de YouTube.
 
-Tu tarea es asignar un score de 1 a 5 basándote en múltiples criterios de relevancia política y mediática.
+Tu tarea es evaluar debates según múltiples criterios. El score final (0-5) se calculará automáticamente sumando los puntos de cada criterio.
 
 CRITERIOS DE EVALUACIÓN:
 
@@ -388,12 +388,13 @@ CRITERIOS DE EVALUACIÓN:
      * Potencial viral o de gran repercusión
    - 0 puntos: Debate técnico sin elementos llamativos
 
-ESCALA FINAL (suma de puntos):
-- 5 puntos: MÁXIMA relevancia → DEBE subirse a YouTube
-- 4 puntos: ALTA relevancia → Muy recomendado subir
+ESCALA FINAL (suma automática de puntos):
+- 5 puntos (2+2+1): MÁXIMA relevancia → DEBE subirse a YouTube
+- 4 puntos (2+2+0 ó 2+1+1 ó 1+2+1): ALTA relevancia → Muy recomendado subir
 - 3 puntos: Relevancia MEDIA → Considerar subir
 - 2 puntos: BAJA relevancia → Probablemente no subir
 - 1 punto: MUY BAJA relevancia → No subir
+- 0 puntos (0+0+0): Sin relevancia → Definitivamente no subir
 
 IMPORTANTE: Sé objetivo y evalúa la relevancia real para el público español general, no solo para expertos en política."""
 
@@ -417,23 +418,23 @@ PASO 1: Evalúa cada criterio individualmente
 2. Actualidad de temas (0-2 puntos): ¿Es un tema candente en España ahora mismo?
 3. Potencial de interés público (0-1 punto): ¿Puede generar interés mediático o viral?
 
-PASO 2: Suma los puntos y justifica tu evaluación
+PASO 2: Justifica tu evaluación para cada criterio
 
 FORMATO DE RESPUESTA (JSON):
 {{
-  "score": <número del 1-5>,
   "speaker_relevance_points": <0-2>,
   "topic_relevance_points": <0-2>,
   "public_interest_points": <0-1>,
-  "reasoning": "<explicación breve en español de por qué asignaste este score, mencionando speakers clave y temas>",
+  "reasoning": "<explicación breve en español de por qué asignaste estos puntos, mencionando speakers clave y temas>",
   "key_speakers": ["<lista de speakers más relevantes>"],
   "is_current_topic": <true/false - si el tema es de actualidad NOW>
 }}
 
 IMPORTANTE:
+- NO incluyas el campo "score" - se calculará automáticamente sumando los tres criterios
 - Devuelve SOLO el JSON, sin markdown ni explicaciones adicionales
-- Sé crítico y objetivo: no todos los debates merecen score alto
-- El score debe reflejar el interés REAL para audiencia general de YouTube
+- Sé crítico y objetivo: no todos los debates merecen puntos altos
+- La evaluación debe reflejar el interés REAL para audiencia general de YouTube
 - Considera el contexto político español actual (fecha: octubre 2025)
 
 Devuelve SOLO el JSON."""

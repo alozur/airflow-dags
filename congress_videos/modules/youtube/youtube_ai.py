@@ -662,12 +662,15 @@ def generate_youtube_metadata_for_selected_videos(top_videos):
 
 def score_chapters_relevance(merged_chapters):
     """
-    Score the relevance of merged interesting chapters using AI (1-5 scale).
+    Score the relevance of merged interesting chapters using AI (0-5 scale).
 
-    Evaluates each chapter based on:
+    Evaluates each chapter based on three criteria. The final score is calculated
+    automatically by summing the points from each criterion:
     - Speaker relevance (0-2 points): Are key political figures involved?
     - Topic relevance (0-2 points): Is it a current/hot topic in Spain?
     - Public interest potential (0-1 point): Could it generate media interest?
+
+    Final score = speaker_pts + topic_pts + interest_pts (range: 0-5)
 
     Args:
         merged_chapters: Results from merge_interesting_chapters function
@@ -715,7 +718,7 @@ def score_chapters_relevance(merged_chapters):
                             'topics': [str],
                             'start_time': str,
                             'end_time': str,
-                            'relevance_score': int (1-5),
+                            'relevance_score': int (0-5, sum of the 3 criteria below),
                             'speaker_relevance_points': int (0-2),
                             'topic_relevance_points': int (0-2),
                             'public_interest_points': int (0-1),
@@ -798,12 +801,16 @@ def score_chapters_relevance(merged_chapters):
 
                 if result['error']:
                     logging.warning(f"Failed to score chapter '{chapter_title}': {result['error']}")
+                    # Default middle values on error
+                    speaker_pts = 1
+                    topic_pts = 1
+                    interest_pts = 0
                     scored_chapter = {
                         **chapter,
-                        'relevance_score': 3,  # Default middle score
-                        'speaker_relevance_points': 1,
-                        'topic_relevance_points': 1,
-                        'public_interest_points': 0,
+                        'relevance_score': speaker_pts + topic_pts + interest_pts,  # Sum = 2
+                        'speaker_relevance_points': speaker_pts,
+                        'topic_relevance_points': topic_pts,
+                        'public_interest_points': interest_pts,
                         'scoring_reasoning': f"Error en scoring: {result['error']}",
                         'key_speakers': speakers,
                         'is_current_topic': False,
@@ -812,15 +819,26 @@ def score_chapters_relevance(merged_chapters):
                     scored_results['failed_scores'] += 1
                 else:
                     data = result['data']
-                    score = int(data.get('score', 3))
-                    score = clamp_value(score, 1, 5)
+
+                    # Extract individual criterion points
+                    speaker_pts = int(data.get('speaker_relevance_points', 0))
+                    topic_pts = int(data.get('topic_relevance_points', 0))
+                    interest_pts = int(data.get('public_interest_points', 0))
+
+                    # Clamp values to valid ranges
+                    speaker_pts = clamp_value(speaker_pts, 0, 2)
+                    topic_pts = clamp_value(topic_pts, 0, 2)
+                    interest_pts = clamp_value(interest_pts, 0, 1)
+
+                    # Calculate final score as sum (0-5)
+                    final_score = speaker_pts + topic_pts + interest_pts
 
                     scored_chapter = {
                         **chapter,
-                        'relevance_score': score,
-                        'speaker_relevance_points': data.get('speaker_relevance_points', 0),
-                        'topic_relevance_points': data.get('topic_relevance_points', 0),
-                        'public_interest_points': data.get('public_interest_points', 0),
+                        'relevance_score': final_score,
+                        'speaker_relevance_points': speaker_pts,
+                        'topic_relevance_points': topic_pts,
+                        'public_interest_points': interest_pts,
                         'scoring_reasoning': data.get('reasoning', 'Sin justificación'),
                         'key_speakers': data.get('key_speakers', speakers),
                         'is_current_topic': data.get('is_current_topic', False),
@@ -829,20 +847,22 @@ def score_chapters_relevance(merged_chapters):
                     scored_results['successful_scores'] += 1
 
                     logging.info(
-                        f"Chapter '{chapter_title}' scored: {score}/5 "
-                        f"(speakers:{data.get('speaker_relevance_points',0)}, "
-                        f"topics:{data.get('topic_relevance_points',0)}, "
-                        f"interest:{data.get('public_interest_points',0)})"
+                        f"Chapter '{chapter_title}' scored: {final_score}/5 "
+                        f"(speakers:{speaker_pts}, topics:{topic_pts}, interest:{interest_pts})"
                     )
 
             except Exception as e:
                 logging.error(f"Error scoring chapter '{chapter_title}': {str(e)}", exc_info=True)
+                # Default middle values on exception
+                speaker_pts = 1
+                topic_pts = 1
+                interest_pts = 0
                 scored_chapter = {
                     **chapter,
-                    'relevance_score': 3,  # Default middle score
-                    'speaker_relevance_points': 1,
-                    'topic_relevance_points': 1,
-                    'public_interest_points': 0,
+                    'relevance_score': speaker_pts + topic_pts + interest_pts,  # Sum = 2
+                    'speaker_relevance_points': speaker_pts,
+                    'topic_relevance_points': topic_pts,
+                    'public_interest_points': interest_pts,
                     'scoring_reasoning': f"Excepción en scoring: {str(e)}",
                     'key_speakers': speakers,
                     'is_current_topic': False,
