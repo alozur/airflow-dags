@@ -591,11 +591,6 @@ class CongressionalVideoDB:
                             is_current_topic = chapter.get('is_current_topic', False)
                             scoring_error = chapter.get('scoring_error')
 
-                            # Upload eligibility based on relevance score
-                            # Chapters with score >= 4 are considered upload-worthy
-                            is_upload_eligible = relevance_score >= 4
-                            upload_priority = relevance_score if is_upload_eligible else None
-
                             # Insert chapter (no conflict handling - allow duplicates for now)
                             # In production, you might want to add a unique constraint on (video_id, start_time, end_time)
                             cur.execute(f"""
@@ -603,22 +598,21 @@ class CongressionalVideoDB:
                                 (video_id, title, description, start_time, end_time, duration_minutes,
                                  speakers, topics, relevance_score, speaker_relevance_points, topic_relevance_points,
                                  public_interest_points, scoring_reasoning, key_speakers, is_current_topic,
-                                 scoring_error, scored_at, is_upload_eligible, upload_priority)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s, %s)
+                                 scoring_error, scored_at)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                                 RETURNING chapter_id
                             """, (
                                 video_id, title, description, start_time, end_time, duration_minutes,
                                 speakers, topics, relevance_score, speaker_pts, topic_pts,
                                 interest_pts, scoring_reasoning, key_speakers, is_current_topic,
-                                scoring_error, is_upload_eligible, upload_priority
+                                scoring_error
                             ))
 
                             chapter_id = cur.fetchone()['chapter_id']
                             chapters_saved_count += 1
 
                             logger.info(
-                                f"Saved chapter {chapter_id}: '{title}' (score: {relevance_score}/5, "
-                                f"eligible: {is_upload_eligible})"
+                                f"Saved chapter {chapter_id}: '{title}' (score: {relevance_score}/5)"
                             )
 
                         save_results['total_videos_saved'] += 1

@@ -73,11 +73,6 @@ CREATE TABLE IF NOT EXISTS development.video_chapters (
     scoring_error TEXT, -- Error message if scoring failed
     scored_at TIMESTAMP, -- When scoring was performed
 
-    -- Upload eligibility (based on relevance_score threshold)
-    -- Typically, chapters with relevance_score >= 4 are considered upload-worthy
-    is_upload_eligible BOOLEAN DEFAULT FALSE,
-    upload_priority INTEGER, -- Priority for upload queue (1-10, where 10 = highest)
-
     -- Upload tracking
     is_uploaded_to_youtube BOOLEAN DEFAULT FALSE,
     youtube_video_id VARCHAR(50), -- YouTube video ID once uploaded as separate video
@@ -91,7 +86,6 @@ CREATE TABLE IF NOT EXISTS development.video_chapters (
 -- Indexes for performance
 CREATE INDEX idx_video_chapters_video_id ON development.video_chapters(video_id);
 CREATE INDEX idx_video_chapters_relevance_score ON development.video_chapters(relevance_score DESC);
-CREATE INDEX idx_video_chapters_upload_eligible ON development.video_chapters(is_upload_eligible, upload_priority DESC);
 CREATE INDEX idx_video_chapters_uploaded ON development.video_chapters(is_uploaded_to_youtube);
 CREATE INDEX idx_youtube_source_videos_session ON development.youtube_source_videos(session_number, session_date);
 
@@ -119,7 +113,6 @@ SELECT
     vc.scoring_reasoning,
     vc.key_speakers,
     vc.is_current_topic,
-    vc.upload_priority,
     vc.is_uploaded_to_youtube,
     vc.created_at,
     -- Calculate days since chapter was identified
@@ -127,11 +120,9 @@ SELECT
 FROM development.video_chapters vc
 JOIN development.youtube_source_videos ysv ON vc.video_id = ysv.video_id
 WHERE
-    vc.is_upload_eligible = TRUE
-    AND vc.is_uploaded_to_youtube = FALSE
-    AND vc.relevance_score >= 4  -- Only high-relevance chapters (score >= 4/5)
+    vc.is_uploaded_to_youtube = FALSE
+    AND vc.relevance_score >= 2  -- Only high-relevance chapters (score >= 4/5)
 ORDER BY
-    vc.upload_priority DESC,  -- Higher priority first
     vc.relevance_score DESC,  -- Higher relevance score first
     vc.created_at DESC;        -- Newer chapters first
 
@@ -146,9 +137,8 @@ SELECT
     ysv.session_date,
     COUNT(vc.chapter_id) AS total_chapters,
     COUNT(CASE WHEN vc.relevance_score >= 4 THEN 1 END) AS high_relevance_chapters,
-    COUNT(CASE WHEN vc.relevance_score >= 3 THEN 1 END) AS medium_relevance_chapters,
+    COUNT(CASE WHEN vc.relevance_score = 3 THEN 1 END) AS medium_relevance_chapters,
     COUNT(CASE WHEN vc.relevance_score <= 2 THEN 1 END) AS low_relevance_chapters,
-    COUNT(CASE WHEN vc.is_upload_eligible = TRUE THEN 1 END) AS uploadable_chapters,
     COUNT(CASE WHEN vc.is_uploaded_to_youtube = TRUE THEN 1 END) AS uploaded_chapters,
     ROUND(AVG(vc.relevance_score), 2) AS avg_relevance_score,
     ROUND(AVG(vc.duration_minutes), 2) AS avg_chapter_duration_minutes,
