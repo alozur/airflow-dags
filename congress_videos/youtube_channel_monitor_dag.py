@@ -387,7 +387,7 @@ with DAG(
         ),
     )
 
-    # Step 8: Score chapter relevance using AI (1-5 scale)
+    # Step 8: Score chapter relevance using AI (0-5 scale)
     # Evaluates each chapter based on speaker relevance, topic relevance, and public interest
     t8 = PythonOperator(
         task_id='score_chapter_relevance',
@@ -400,26 +400,23 @@ with DAG(
         ),
     )
 
+    # Step 9: Save scored chapters to database
+    # Stores YouTube videos and their chapters with relevance scores in PostgreSQL
+    t9_db = PostgreSQLOperator(
+        task_id='save_chapters_to_db',
+        operation='save_youtube_chapters',
+        xcom_keys={
+            'scored_chapters': 'scored_chapters',
+            'session_date': 'session_date'  # Contains session_number and target_date
+        },
+        output_xcom_key='db_save_results'
+    )
+
     # End task for when no plenary sessions found
     t_end = PythonOperator(
         task_id='no_plenary_sessions',
         python_callable=lambda: logging.info("No plenary sessions found. DAG execution stopped."),
     )
-
-    # Step 7: Save to database (FUTURE - currently commented)
-    # t7_db = PostgreSQLOperator(
-    #     task_id='save_youtube_videos_to_db',
-    #     operation='save_youtube_source_videos',
-    #     xcom_keys={
-    #         'video_details': 'video_details',
-    #         'video_descriptions': 'video_descriptions',
-    #         'press_releases': 'press_releases',
-    #         'session_date': 'session_date',
-    #         'agenda_section': 'agenda_section',
-    #         'downloaded_videos': 'downloaded_videos'
-    #     },
-    #     output_xcom_key='db_youtube_videos'
-    # )
 
     # Task dependencies
 
@@ -479,3 +476,8 @@ with DAG(
 
     # After merging chapters, score their relevance with AI
     t7 >> t8
+
+    # After scoring chapters, save them to the database
+    # Note: session_number and session_date come from t5c and t5d tasks
+    # We need both scoring (t8) and session info (t5c) to be complete
+    [t8, t5c] >> t9_db

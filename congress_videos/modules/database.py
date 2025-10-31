@@ -449,3 +449,281 @@ class CongressionalVideoDB:
                     WHERE video_topic_entry_id = %s
                 """, (video_topic_entry_id,))
                 logger.info(f"Removed {video_topic_entry_id} from upload queue")
+
+    # ==================== YouTube Chapter Management ====================
+
+    def save_youtube_chapters_to_db(self, scored_chapters_data: Dict[str, Any], session_number: int = None, session_date: date = None) -> Dict[str, Any]:
+        """
+        Save scored YouTube video chapters to the database.
+
+        This function processes the output from score_chapters_relevance() and stores:
+        1. YouTube source videos (youtube_source_videos table)
+        2. Individual chapters with relevance scores (video_chapters table)
+
+        Args:
+            scored_chapters_data: Results from score_chapters_relevance function
+                Expected structure:
+                {
+                    'total_videos': int,
+                    'total_chapters_scored': int,
+                    'successful_scores': int,
+                    'failed_scores': int,
+                    'videos': [
+                        {
+                            'video_id': str,
+                            'video_title': str,
+                            'total_chapters': int,
+                            'scored_chapters': [
+                                {
+                                    'title': str,
+                                    'description': str,
+                                    'duration_minutes': float,
+                                    'speakers': [str],
+                                    'topics': [str],
+                                    'start_time': str,
+                                    'end_time': str,
+                                    'relevance_score': int (0-5),
+                                    'speaker_relevance_points': int (0-2),
+                                    'topic_relevance_points': int (0-2),
+                                    'public_interest_points': int (0-1),
+                                    'scoring_reasoning': str,
+                                    'key_speakers': [str],
+                                    'is_current_topic': bool,
+                                    'scoring_error': str or None
+                                }
+                            ]
+                        }
+                    ]
+                }
+            session_number: Optional congressional session number to link videos to
+            session_date: Optional session date for linkage
+
+        Returns:
+            Dict with save results:
+            {
+                'total_videos_saved': int,
+                'total_chapters_saved': int,
+                'videos': [
+                    {
+                        'video_id': str,
+                        'chapters_saved': int,
+                        'error': str or None
+                    }
+                ]
+            }
+        """
+        if not scored_chapters_data or not scored_chapters_data.get('videos'):
+            logger.warning("No scored chapters data to save")
+            return {
+                'total_videos_saved': 0,
+                'total_chapters_saved': 0,
+                'videos': []
+            }
+
+        save_results = {
+            'total_videos_saved': 0,
+            'total_chapters_saved': 0,
+            'videos': []
+        }
+
+        youtube_videos_table = self.pg_conn.get_qualified_table('youtube_source_videos')
+        chapters_table = self.pg_conn.get_qualified_table('video_chapters')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                for video_data in scored_chapters_data['videos']:
+                    video_id = video_data.get('video_id')
+                    video_title = video_data.get('video_title', 'Unknown Video')
+                    scored_chapters = video_data.get('scored_chapters', [])
+
+                    if video_data.get('error'):
+                        logger.warning(f"Skipping video {video_id} due to error: {video_data.get('error')}")
+                        save_results['videos'].append({
+                            'video_id': video_id,
+                            'chapters_saved': 0,
+                            'error': video_data.get('error')
+                        })
+                        continue
+
+                    try:
+                        # Step 1: Upsert YouTube source video
+                        video_url = f"https://www.youtube.com/watch?v={video_id}"
+                        total_chapters = len(scored_chapters)
+
+                        cur.execute(f"""
+                            INSERT INTO {youtube_videos_table}
+                            (video_id, video_title, video_url, session_number, session_date, total_chapters, is_processed)
+                            VALUES (%s, %s, %s, %s, %s, %s, TRUE)
+                            ON CONFLICT (video_id) DO UPDATE SET
+                                video_title = EXCLUDED.video_title,
+                                session_number = EXCLUDED.session_number,
+                                session_date = EXCLUDED.session_date,
+                                total_chapters = EXCLUDED.total_chapters,
+                                is_processed = TRUE,
+                                updated_at = CURRENT_TIMESTAMP
+                            RETURNING video_id
+                        """, (video_id, video_title, video_url, session_number, session_date, total_chapters))
+
+                        logger.info(f"Saved/updated YouTube source video: {video_id}")
+
+                        # Step 2: Save all chapters for this video
+                        chapters_saved_count = 0
+
+                        for chapter in scored_chapters:
+                            # Extract chapter data
+                            title = chapter.get('title', 'Untitled Chapter')
+                            description = chapter.get('description', '')
+                            start_time = chapter.get('start_time')
+                            end_time = chapter.get('end_time')
+                            duration_minutes = chapter.get('duration_minutes', 0)
+
+                            # Speaker and topic arrays
+                            speakers = chapter.get('speakers', [])
+                            topics = chapter.get('topics', [])
+
+                            # Scoring data
+                            relevance_score = chapter.get('relevance_score', 0)
+                            speaker_pts = chapter.get('speaker_relevance_points', 0)
+                            topic_pts = chapter.get('topic_relevance_points', 0)
+                            interest_pts = chapter.get('public_interest_points', 0)
+                            scoring_reasoning = chapter.get('scoring_reasoning', '')
+                            key_speakers = chapter.get('key_speakers', speakers)
+                            is_current_topic = chapter.get('is_current_topic', False)
+                            scoring_error = chapter.get('scoring_error')
+
+                            # Upload eligibility based on relevance score
+                            # Chapters with score >= 4 are considered upload-worthy
+                            is_upload_eligible = relevance_score >= 4
+                            upload_priority = relevance_score if is_upload_eligible else None
+
+                            # Insert chapter (no conflict handling - allow duplicates for now)
+                            # In production, you might want to add a unique constraint on (video_id, start_time, end_time)
+                            cur.execute(f"""
+                                INSERT INTO {chapters_table}
+                                (video_id, title, description, start_time, end_time, duration_minutes,
+                                 speakers, topics, relevance_score, speaker_relevance_points, topic_relevance_points,
+                                 public_interest_points, scoring_reasoning, key_speakers, is_current_topic,
+                                 scoring_error, scored_at, is_upload_eligible, upload_priority)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s, %s)
+                                RETURNING chapter_id
+                            """, (
+                                video_id, title, description, start_time, end_time, duration_minutes,
+                                speakers, topics, relevance_score, speaker_pts, topic_pts,
+                                interest_pts, scoring_reasoning, key_speakers, is_current_topic,
+                                scoring_error, is_upload_eligible, upload_priority
+                            ))
+
+                            chapter_id = cur.fetchone()['chapter_id']
+                            chapters_saved_count += 1
+
+                            logger.info(
+                                f"Saved chapter {chapter_id}: '{title}' (score: {relevance_score}/5, "
+                                f"eligible: {is_upload_eligible})"
+                            )
+
+                        save_results['total_videos_saved'] += 1
+                        save_results['total_chapters_saved'] += chapters_saved_count
+                        save_results['videos'].append({
+                            'video_id': video_id,
+                            'chapters_saved': chapters_saved_count,
+                            'error': None
+                        })
+
+                        logger.info(
+                            f"Successfully saved {chapters_saved_count} chapters for video {video_id}"
+                        )
+
+                    except Exception as e:
+                        error_msg = f"Error saving chapters for video {video_id}: {str(e)}"
+                        logger.error(error_msg, exc_info=True)
+                        save_results['videos'].append({
+                            'video_id': video_id,
+                            'chapters_saved': 0,
+                            'error': error_msg
+                        })
+
+        logger.info(
+            f"Chapter save complete: {save_results['total_videos_saved']} videos, "
+            f"{save_results['total_chapters_saved']} chapters saved to database"
+        )
+
+        return save_results
+
+    def get_uploadable_chapters(self, limit: int = None, min_relevance_score: int = 4) -> List[Dict]:
+        """
+        Get chapters eligible for YouTube upload.
+
+        Args:
+            limit: Maximum number of chapters to return
+            min_relevance_score: Minimum relevance score (default: 4/5)
+
+        Returns:
+            List of chapter records from the uploadable_chapters view
+        """
+        uploadable_chapters_view = self.pg_conn.get_qualified_table('uploadable_chapters')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                query = f"""
+                    SELECT * FROM {uploadable_chapters_view}
+                    WHERE relevance_score >= %s
+                    ORDER BY upload_priority DESC, relevance_score DESC, created_at DESC
+                """
+                if limit:
+                    query += f" LIMIT {limit}"
+
+                cur.execute(query, (min_relevance_score,))
+                chapters = cur.fetchall()
+                logger.info(
+                    f"Retrieved {len(chapters)} uploadable chapters "
+                    f"(min_score={min_relevance_score}, limit={limit})"
+                )
+                return chapters
+
+    def get_chapter_statistics(self, video_id: str = None) -> List[Dict]:
+        """
+        Get statistics about chapters, optionally filtered by video_id.
+
+        Args:
+            video_id: Optional YouTube video ID to filter statistics
+
+        Returns:
+            List of statistics records from the chapter_statistics view
+        """
+        chapter_stats_view = self.pg_conn.get_qualified_table('chapter_statistics')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                if video_id:
+                    cur.execute(f"""
+                        SELECT * FROM {chapter_stats_view}
+                        WHERE video_id = %s
+                    """, (video_id,))
+                else:
+                    cur.execute(f"SELECT * FROM {chapter_stats_view}")
+
+                stats = cur.fetchall()
+                logger.info(f"Retrieved statistics for {len(stats)} videos")
+                return stats
+
+    def mark_chapter_uploaded(self, chapter_id: int, youtube_video_id: str):
+        """
+        Mark a chapter as uploaded to YouTube.
+
+        Args:
+            chapter_id: Database ID of the chapter
+            youtube_video_id: YouTube video ID of the uploaded chapter video
+        """
+        chapters_table = self.pg_conn.get_qualified_table('video_chapters')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    UPDATE {chapters_table} SET
+                        is_uploaded_to_youtube = TRUE,
+                        youtube_video_id = %s,
+                        youtube_upload_date = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE chapter_id = %s
+                """, (youtube_video_id, chapter_id))
+                logger.info(f"Marked chapter {chapter_id} as uploaded to YouTube: {youtube_video_id}")

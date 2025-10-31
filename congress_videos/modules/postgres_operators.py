@@ -436,6 +436,62 @@ class PostgreSQLOperator(BaseOperator):
 
             result = {'updated_videos': updated_count, 'total_uploads': len(upload_details)}
 
+        elif self.operation == 'save_youtube_chapters':
+            """Save scored YouTube chapter data to database"""
+            scored_chapters = ti.xcom_pull(key=self.xcom_keys.get('scored_chapters', 'scored_chapters'))
+            session_date_data = ti.xcom_pull(key=self.xcom_keys.get('session_date', 'session_date'))
+            target_date = context["params"].get("target_date")
+
+            # Debug logging
+            print(f"DEBUG: scored_chapters type: {type(scored_chapters)}")
+            print(f"DEBUG: session_date_data type: {type(session_date_data)}")
+            print(f"DEBUG: target_date: {target_date}")
+
+            if not scored_chapters:
+                print("WARNING: No scored chapters data to save")
+                result = {'total_videos_saved': 0, 'total_chapters_saved': 0, 'videos': []}
+                return result
+
+            # Extract session_number and session_date from session_date_data
+            # Structure: {'total_processed': int, 'videos': [{'video_id': str, 'session_number': int, 'target_date': str, ...}]}
+            session_number = None
+            session_date_str = None
+
+            if session_date_data and isinstance(session_date_data, dict):
+                videos_list = session_date_data.get('videos', [])
+                if videos_list and len(videos_list) > 0:
+                    first_video = videos_list[0]
+                    session_number = first_video.get('session_number')
+                    session_date_str = first_video.get('target_date', target_date)
+                    print(f"DEBUG: Extracted session_number={session_number}, session_date={session_date_str}")
+                else:
+                    print("WARNING: No videos in session_date_data")
+            else:
+                print(f"WARNING: Unexpected session_date_data format: {type(session_date_data)}")
+
+            # Fallback to target_date if no session_date found
+            if not session_date_str:
+                session_date_str = target_date
+                print(f"DEBUG: Using target_date as fallback: {session_date_str}")
+
+            # Parse session_date
+            from datetime import datetime
+            if isinstance(session_date_str, str):
+                session_date_obj = datetime.strptime(session_date_str, "%Y-%m-%d").date()
+            else:
+                session_date_obj = session_date_str
+
+            print(f"DEBUG: Final values - session_number={session_number}, session_date={session_date_obj}")
+
+            # Call the database function to save chapters
+            result = db.save_youtube_chapters_to_db(
+                scored_chapters_data=scored_chapters,
+                session_number=session_number,
+                session_date=session_date_obj
+            )
+
+            print(f"✅ Saved {result['total_chapters_saved']} chapters across {result['total_videos_saved']} videos")
+
         else:
             raise ValueError(f"Unknown operation: {self.operation}")
 
