@@ -52,7 +52,8 @@ def __getattr__(name):
     # youtube_ai functions
     elif name in ['generate_youtube_title', 'generate_youtube_description',
                   'generate_youtube_metadata_from_enriched_groups', 'generate_youtube_metadata_for_topics',
-                  'evaluate_video_interest_with_ai', 'generate_youtube_metadata_for_selected_videos']:
+                  'evaluate_video_interest_with_ai', 'generate_youtube_metadata_for_selected_videos',
+                  'score_chapters_relevance']:
         from .youtube_ai import (
             generate_youtube_title,
             generate_youtube_description,
@@ -60,6 +61,7 @@ def __getattr__(name):
             generate_youtube_metadata_for_topics,
             evaluate_video_interest_with_ai,
             generate_youtube_metadata_for_selected_videos,
+            score_chapters_relevance,
         )
         return locals()[name]
 
@@ -99,6 +101,7 @@ __all__ = [
     'generate_youtube_metadata_for_topics',
     'evaluate_video_interest_with_ai',
     'generate_youtube_metadata_for_selected_videos',
+    'score_chapters_relevance',
     # youtube_upload functions
     'prepare_youtube_upload_config',
 ]

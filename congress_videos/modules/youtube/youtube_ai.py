@@ -9,6 +9,8 @@ import logging
 import os
 
 from congress_videos.config.ai_prompts import (
+    CHAPTER_RELEVANCE_SCORING_SYSTEM_PROMPT,
+    CHAPTER_RELEVANCE_SCORING_USER_PROMPT_TEMPLATE,
     VIDEO_INTEREST_INTERVENTION_SYSTEM_PROMPT,
     VIDEO_INTEREST_INTERVENTION_USER_PROMPT_TEMPLATE,
     VIDEO_INTEREST_MAIN_TOPIC_SYSTEM_PROMPT,
@@ -656,3 +658,216 @@ def generate_youtube_metadata_for_selected_videos(top_videos):
         f"YouTube metadata generation complete: {metadata_results['successful_generations']}/{metadata_results['total_videos']} videos processed successfully"
     )
     return metadata_results
+
+
+def score_chapters_relevance(merged_chapters):
+    """
+    Score the relevance of merged interesting chapters using AI (1-5 scale).
+
+    Evaluates each chapter based on:
+    - Speaker relevance (0-2 points): Are key political figures involved?
+    - Topic relevance (0-2 points): Is it a current/hot topic in Spain?
+    - Public interest potential (0-1 point): Could it generate media interest?
+
+    Args:
+        merged_chapters: Results from merge_interesting_chapters function
+                        Expected structure:
+                        {
+                            'total_videos': int,
+                            'videos': [
+                                {
+                                    'video_id': str,
+                                    'video_title': str,
+                                    'total_chapters': int,
+                                    'final_chapters': [
+                                        {
+                                            'title': str,
+                                            'description': str,
+                                            'duration_minutes': float,
+                                            'speakers': [str],
+                                            'topics': [str],
+                                            'start_time': str,
+                                            'end_time': str
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+
+    Returns:
+        Dict with scored chapters:
+        {
+            'total_videos': int,
+            'total_chapters_scored': int,
+            'successful_scores': int,
+            'failed_scores': int,
+            'videos': [
+                {
+                    'video_id': str,
+                    'video_title': str,
+                    'total_chapters': int,
+                    'scored_chapters': [
+                        {
+                            'title': str,
+                            'description': str,
+                            'duration_minutes': float,
+                            'speakers': [str],
+                            'topics': [str],
+                            'start_time': str,
+                            'end_time': str,
+                            'relevance_score': int (1-5),
+                            'speaker_relevance_points': int (0-2),
+                            'topic_relevance_points': int (0-2),
+                            'public_interest_points': int (0-1),
+                            'scoring_reasoning': str,
+                            'key_speakers': [str],
+                            'is_current_topic': bool,
+                            'scoring_error': str or None
+                        }
+                    ]
+                }
+            ]
+        }
+    """
+    if not merged_chapters or not merged_chapters.get('videos'):
+        logging.warning("No merged chapters to score")
+        return {
+            'total_videos': 0,
+            'total_chapters_scored': 0,
+            'successful_scores': 0,
+            'failed_scores': 0,
+            'videos': []
+        }
+
+    scored_results = {
+        'total_videos': 0,
+        'total_chapters_scored': 0,
+        'successful_scores': 0,
+        'failed_scores': 0,
+        'videos': []
+    }
+
+    for video_data in merged_chapters['videos']:
+        video_id = video_data.get('video_id')
+        final_chapters = video_data.get('final_chapters', [])
+
+        if video_data.get('error') or not final_chapters:
+            logging.warning(f"Skipping video {video_id}: {video_data.get('error', 'no chapters')}")
+            scored_results['videos'].append({
+                'video_id': video_id,
+                'error': video_data.get('error', 'No chapters to score')
+            })
+            continue
+
+        scored_chapters = []
+
+        for chapter in final_chapters:
+            scored_results['total_chapters_scored'] += 1
+
+            # Extract chapter information
+            chapter_title = chapter.get('title', 'Sin título')
+            chapter_description = chapter.get('description', 'Sin descripción')
+            duration_minutes = chapter.get('duration_minutes', 0)
+            speakers = chapter.get('speakers', [])
+            topics = chapter.get('topics', [])
+
+            # Format speakers list
+            speakers_list = "\n".join([f"- {speaker}" for speaker in speakers]) if speakers else "- (No especificado)"
+
+            # Format topics list
+            topics_list = "\n".join([f"- {topic}" for topic in topics]) if topics else "- (No especificado)"
+
+            # Build user prompt
+            user_prompt = CHAPTER_RELEVANCE_SCORING_USER_PROMPT_TEMPLATE.format(
+                chapter_title=chapter_title,
+                chapter_description=chapter_description,
+                duration_minutes=duration_minutes,
+                speakers_list=speakers_list,
+                topics_list=topics_list
+            )
+
+            try:
+                # Generate scoring using AI
+                result = generate_json_completion(
+                    system_prompt=CHAPTER_RELEVANCE_SCORING_SYSTEM_PROMPT,
+                    user_prompt=user_prompt,
+                    model="gpt-4o-mini",
+                    temperature=0.3,
+                    max_tokens=500
+                )
+
+                if result['error']:
+                    logging.warning(f"Failed to score chapter '{chapter_title}': {result['error']}")
+                    scored_chapter = {
+                        **chapter,
+                        'relevance_score': 3,  # Default middle score
+                        'speaker_relevance_points': 1,
+                        'topic_relevance_points': 1,
+                        'public_interest_points': 0,
+                        'scoring_reasoning': f"Error en scoring: {result['error']}",
+                        'key_speakers': speakers,
+                        'is_current_topic': False,
+                        'scoring_error': result['error']
+                    }
+                    scored_results['failed_scores'] += 1
+                else:
+                    data = result['data']
+                    score = int(data.get('score', 3))
+                    score = clamp_value(score, 1, 5)
+
+                    scored_chapter = {
+                        **chapter,
+                        'relevance_score': score,
+                        'speaker_relevance_points': data.get('speaker_relevance_points', 0),
+                        'topic_relevance_points': data.get('topic_relevance_points', 0),
+                        'public_interest_points': data.get('public_interest_points', 0),
+                        'scoring_reasoning': data.get('reasoning', 'Sin justificación'),
+                        'key_speakers': data.get('key_speakers', speakers),
+                        'is_current_topic': data.get('is_current_topic', False),
+                        'scoring_error': None
+                    }
+                    scored_results['successful_scores'] += 1
+
+                    logging.info(
+                        f"Chapter '{chapter_title}' scored: {score}/5 "
+                        f"(speakers:{data.get('speaker_relevance_points',0)}, "
+                        f"topics:{data.get('topic_relevance_points',0)}, "
+                        f"interest:{data.get('public_interest_points',0)})"
+                    )
+
+            except Exception as e:
+                logging.error(f"Error scoring chapter '{chapter_title}': {str(e)}", exc_info=True)
+                scored_chapter = {
+                    **chapter,
+                    'relevance_score': 3,  # Default middle score
+                    'speaker_relevance_points': 1,
+                    'topic_relevance_points': 1,
+                    'public_interest_points': 0,
+                    'scoring_reasoning': f"Excepción en scoring: {str(e)}",
+                    'key_speakers': speakers,
+                    'is_current_topic': False,
+                    'scoring_error': str(e)
+                }
+                scored_results['failed_scores'] += 1
+
+            scored_chapters.append(scored_chapter)
+
+        # Sort chapters by relevance_score (highest first)
+        scored_chapters.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+
+        scored_results['videos'].append({
+            'video_id': video_id,
+            'video_title': video_data.get('video_title'),
+            'total_chapters': len(scored_chapters),
+            'scored_chapters': scored_chapters
+        })
+        scored_results['total_videos'] += 1
+
+    logging.info(
+        f"Chapter relevance scoring complete: {scored_results['successful_scores']}/{scored_results['total_chapters_scored']} chapters scored successfully"
+    )
+    logging.info(
+        f"Processed {scored_results['total_videos']} videos with a total of {scored_results['total_chapters_scored']} chapters"
+    )
+
+    return scored_results

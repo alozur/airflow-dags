@@ -354,3 +354,86 @@ Output: 2 capítulos (uno por tema)
 - NUNCA lista vacía - mínimo 1 capítulo
 
 Devuelve SOLO el JSON."""
+
+# Chapter Relevance Scoring - Score chapters from 1-5 based on political relevance
+CHAPTER_RELEVANCE_SCORING_SYSTEM_PROMPT = """Eres un experto en política española que evalúa la relevancia de debates parlamentarios para contenido de YouTube.
+
+Tu tarea es asignar un score de 1 a 5 basándote en múltiples criterios de relevancia política y mediática.
+
+CRITERIOS DE EVALUACIÓN:
+
+1. **Relevancia de los Speakers (0-2 puntos)**
+   - 2 puntos: Líderes principales de partidos o gobierno
+     * Presidente del Gobierno (Pedro Sánchez)
+     * Líder de la oposición (Alberto Núñez Feijóo)
+     * Vicepresidenta (Yolanda Díaz)
+     * Otros líderes de partidos (Santiago Abascal, etc.)
+   - 1 punto: Ministros, portavoces parlamentarios, diputados prominentes
+   - 0 puntos: Diputados sin gran relevancia mediática
+
+2. **Actualidad y Relevancia de los Temas (0-2 puntos)**
+   - 2 puntos: Temas MUY candentes o de GRAN actualidad
+     * Crisis nacionales (Dana, desastres naturales)
+     * Escándalos políticos recientes
+     * Reformas legislativas importantes
+     * Temas que dominan los medios actualmente
+   - 1 punto: Temas de interés medio (economía, empleo, vivienda, sanidad)
+   - 0 puntos: Temas administrativos, técnicos o de bajo interés público
+
+3. **Potencial de Interés Público (0-1 punto)**
+   - 1 punto: El debate tiene elementos que pueden generar interés mediático
+     * Confrontación directa entre líderes
+     * Revelaciones importantes
+     * Temas que afectan directamente a la ciudadanía
+     * Potencial viral o de gran repercusión
+   - 0 puntos: Debate técnico sin elementos llamativos
+
+ESCALA FINAL (suma de puntos):
+- 5 puntos: MÁXIMA relevancia → DEBE subirse a YouTube
+- 4 puntos: ALTA relevancia → Muy recomendado subir
+- 3 puntos: Relevancia MEDIA → Considerar subir
+- 2 puntos: BAJA relevancia → Probablemente no subir
+- 1 punto: MUY BAJA relevancia → No subir
+
+IMPORTANTE: Sé objetivo y evalúa la relevancia real para el público español general, no solo para expertos en política."""
+
+CHAPTER_RELEVANCE_SCORING_USER_PROMPT_TEMPLATE = """Evalúa la relevancia de este capítulo de sesión parlamentaria para contenido de YouTube.
+
+=== INFORMACIÓN DEL CAPÍTULO ===
+Título: {chapter_title}
+Descripción: {chapter_description}
+Duración: {duration_minutes} minutos
+
+=== SPEAKERS QUE PARTICIPAN ===
+{speakers_list}
+
+=== TEMAS TRATADOS ===
+{topics_list}
+
+TAREA: Evalúa este capítulo usando los criterios establecidos y asigna un score de 1 a 5.
+
+PASO 1: Evalúa cada criterio individualmente
+1. Relevancia de speakers (0-2 puntos): ¿Quiénes participan? ¿Son figuras políticas relevantes?
+2. Actualidad de temas (0-2 puntos): ¿Es un tema candente en España ahora mismo?
+3. Potencial de interés público (0-1 punto): ¿Puede generar interés mediático o viral?
+
+PASO 2: Suma los puntos y justifica tu evaluación
+
+FORMATO DE RESPUESTA (JSON):
+{{
+  "score": <número del 1-5>,
+  "speaker_relevance_points": <0-2>,
+  "topic_relevance_points": <0-2>,
+  "public_interest_points": <0-1>,
+  "reasoning": "<explicación breve en español de por qué asignaste este score, mencionando speakers clave y temas>",
+  "key_speakers": ["<lista de speakers más relevantes>"],
+  "is_current_topic": <true/false - si el tema es de actualidad NOW>
+}}
+
+IMPORTANTE:
+- Devuelve SOLO el JSON, sin markdown ni explicaciones adicionales
+- Sé crítico y objetivo: no todos los debates merecen score alto
+- El score debe reflejar el interés REAL para audiencia general de YouTube
+- Considera el contexto político español actual (fecha: octubre 2025)
+
+Devuelve SOLO el JSON."""

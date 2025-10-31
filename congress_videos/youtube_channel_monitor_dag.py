@@ -387,6 +387,19 @@ with DAG(
         ),
     )
 
+    # Step 8: Score chapter relevance using AI (1-5 scale)
+    # Evaluates each chapter based on speaker relevance, topic relevance, and public interest
+    t8 = PythonOperator(
+        task_id='score_chapter_relevance',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: yt_channel.score_chapters_relevance(
+                ti.xcom_pull(key='interesting_chapters')
+            ),
+            'scored_chapters'
+        ),
+    )
+
     # End task for when no plenary sessions found
     t_end = PythonOperator(
         task_id='no_plenary_sessions',
@@ -463,3 +476,6 @@ with DAG(
 
     # After identifying chapters in all chunks, merge them into final list
     t6 >> t7
+
+    # After merging chapters, score their relevance with AI
+    t7 >> t8
