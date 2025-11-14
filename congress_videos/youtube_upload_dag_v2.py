@@ -26,6 +26,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
+from congress_videos.modules.youtube import youtube_ai
 from utils.airflow_helpers import ensure_project_data_directory, xcom_task
 from utils.env_loader import load_env_if_local
 
@@ -81,5 +82,19 @@ with DAG(
         output_xcom_key='uploadable_chapters'
     )
 
+    # Step 2: Generate YouTube metadata for chapters
+    # Uses chapter title, description, speakers, and topics to create
+    # optimized YouTube titles and descriptions
+    t2 = PythonOperator(
+        task_id='generate_youtube_metadata',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: youtube_ai.generate_youtube_metadata_for_selected_videos(
+                ti.xcom_pull(key='uploadable_chapters')
+            ),
+            'youtube_metadata_results'
+        ),
+    )
+
     # Task dependencies
-    t0 >> t1_db
+    t0 >> t1_db >> t2

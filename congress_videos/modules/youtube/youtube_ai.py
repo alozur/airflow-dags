@@ -599,13 +599,14 @@ def _evaluate_intervention_interest(
 
 def generate_youtube_metadata_for_selected_videos(top_videos):
     """
-    Generates YouTube metadata (titles and descriptions) for a list of selected videos.
+    Generates YouTube metadata (titles and descriptions) for a list of selected videos or chapters.
 
     Args:
-        top_videos: List of video records from database (from get_top_videos_for_upload)
+        top_videos: List of video/chapter records from database
+                   Can be from get_top_videos_for_upload OR get_uploadable_chapters
 
     Returns:
-        Dict with metadata for each video
+        Dict with metadata for each video/chapter
     """
     metadata_results = {
         "total_videos": len(top_videos) if top_videos else 0,
@@ -619,30 +620,64 @@ def generate_youtube_metadata_for_selected_videos(top_videos):
         return metadata_results
 
     for video in top_videos:
-        topic_entry_id = video.get("entry_id")
-        topic_title = video.get("topic_title", "")
-        session_number = video.get("session_number")
+        # Support both video_topics table (entry_id) and video_chapters table (chapter_id)
+        topic_entry_id = video.get("entry_id") or video.get("chapter_id")
 
-        # For now, use empty speakers info - we'll need to query interventions if needed
-        speakers_info = []
-        video_metadata = {"duration_seconds": video.get("duration_seconds", 0)}
+        # Support both topic_title (from video_topics) and chapter_title (from uploadable_chapters view)
+        topic_title = video.get("topic_title") or video.get("chapter_title", "")
+
+        # Get description from chapter data if available
+        chapter_description = video.get("description", "")
+
+        # Combine title and description for richer content
+        main_content = f"{topic_title}\n\n{chapter_description}" if chapter_description else topic_title
+
+        session_number = video.get("session_number")
+        session_date = video.get("session_date")
+
+        # Build speakers info from speakers array (from chapters) or empty
+        speakers = video.get("speakers", [])
+        key_speakers = video.get("key_speakers", speakers)
+        speakers_info = [{"speaker_name": name, "role": ""} for name in (key_speakers or speakers)]
+
+        # Get duration from either duration_seconds (video_topics) or duration_minutes (chapters)
+        duration_seconds = video.get("duration_seconds")
+        duration_minutes = video.get("duration_minutes")
+
+        if duration_seconds:
+            video_metadata = {"duration_seconds": duration_seconds}
+        elif duration_minutes:
+            video_metadata = {
+                "duration_seconds": int(duration_minutes * 60),
+                "duration_estimated": f"{int(duration_minutes)} minutos"
+            }
+        else:
+            video_metadata = {"duration_seconds": 0}
 
         # Generate title and description
-        logging.info(f"Generating YouTube metadata for video {topic_entry_id}")
-        title_result = generate_youtube_title(topic_title, speakers_info)
+        logging.info(f"Generating YouTube metadata for item {topic_entry_id}")
+        title_result = generate_youtube_title(main_content, speakers_info)
         description_result = generate_youtube_description(
-            topic_title, speakers_info, video_metadata, session_number, None
+            main_content, speakers_info, video_metadata, session_number, session_date
         )
 
         topic_metadata = {
             "topic_entry_id": topic_entry_id,
+            "chapter_id": video.get("chapter_id"),  # Include chapter_id if present
+            "video_id": video.get("video_id"),  # Include source video_id if present
             "video_file_path": video.get("video_file_path"),
             "title": title_result,
             "description": description_result,
             "main_topic_content": topic_title,
             "video_url": video.get("video_url"),
             "session_number": session_number,
+            "session_date": session_date,
             "ai_interest_score": video.get("ai_interest_score"),
+            "relevance_score": video.get("relevance_score"),  # For chapters
+            "start_time": video.get("start_time"),  # For chapters
+            "end_time": video.get("end_time"),  # For chapters
+            "speakers": speakers,
+            "topics": video.get("topics", []),
             "generation_success": title_result.get("error") is None
             and description_result.get("error") is None,
         }
