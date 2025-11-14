@@ -363,6 +363,16 @@ class PostgreSQLOperator(BaseOperator):
 
             print(f"✅ Saved {result['total_chapters_saved']} chapters across {result['total_videos_saved']} videos")
 
+        elif self.operation == 'get_uploadable_chapters':
+            """Get uploadable chapters from database view"""
+            max_chapters = context["params"].get("max_chapters", 5)
+            min_relevance_score = context["params"].get("min_relevance_score", 2)
+
+            print(f"DEBUG: Getting top {max_chapters} uploadable chapters with min_relevance_score >= {min_relevance_score}")
+
+            result = db.get_uploadable_chapters(limit=max_chapters, min_relevance_score=min_relevance_score)
+            print(f"✅ Retrieved {len(result)} uploadable chapters")
+
         else:
             raise ValueError(f"Unknown operation: {self.operation}")
 
