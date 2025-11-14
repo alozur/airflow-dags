@@ -599,14 +599,13 @@ def _evaluate_intervention_interest(
 
 def generate_youtube_metadata_for_selected_videos(top_videos):
     """
-    Generates YouTube metadata (titles and descriptions) for a list of selected videos or chapters.
+    Generates YouTube metadata (titles and descriptions) for chapters from uploadable_chapters view.
 
     Args:
-        top_videos: List of video/chapter records from database
-                   Can be from get_top_videos_for_upload OR get_uploadable_chapters
+        top_videos: List of chapter records from uploadable_chapters view
 
     Returns:
-        Dict with metadata for each video/chapter
+        Dict with metadata for each chapter
     """
     metadata_results = {
         "total_videos": len(top_videos) if top_videos else 0,
@@ -616,66 +615,50 @@ def generate_youtube_metadata_for_selected_videos(top_videos):
     }
 
     if not top_videos:
-        logging.warning("No videos provided for metadata generation")
+        logging.warning("No chapters provided for metadata generation")
         return metadata_results
 
     for video in top_videos:
-        # Support both video_topics table (entry_id) and video_chapters table (chapter_id)
-        topic_entry_id = video.get("entry_id") or video.get("chapter_id")
-
-        # Support both topic_title (from video_topics) and chapter_title (from uploadable_chapters view)
-        topic_title = video.get("topic_title") or video.get("chapter_title", "")
-
-        # Get description from chapter data if available
+        chapter_id = video.get("chapter_id")
+        chapter_title = video.get("chapter_title", "")
         chapter_description = video.get("description", "")
 
         # Combine title and description for richer content
-        main_content = f"{topic_title}\n\n{chapter_description}" if chapter_description else topic_title
+        main_content = f"{chapter_title}\n\n{chapter_description}" if chapter_description else chapter_title
 
         session_number = video.get("session_number")
         session_date = video.get("session_date")
 
-        # Build speakers info from speakers array (from chapters) or empty
+        # Build speakers info from speakers array
         speakers = video.get("speakers", [])
         key_speakers = video.get("key_speakers", speakers)
         speakers_info = [{"speaker_name": name, "role": ""} for name in (key_speakers or speakers)]
 
-        # Get duration from either duration_seconds (video_topics) or duration_minutes (chapters)
-        duration_seconds = video.get("duration_seconds")
-        duration_minutes = video.get("duration_minutes")
-
-        if duration_seconds:
-            video_metadata = {"duration_seconds": duration_seconds}
-        elif duration_minutes:
-            video_metadata = {
-                "duration_seconds": int(duration_minutes * 60),
-                "duration_estimated": f"{int(duration_minutes)} minutos"
-            }
-        else:
-            video_metadata = {"duration_seconds": 0}
+        # Get duration from duration_minutes
+        duration_minutes = video.get("duration_minutes", 0)
+        video_metadata = {
+            "duration_seconds": int(duration_minutes * 60),
+            "duration_estimated": f"{int(duration_minutes)} minutos"
+        }
 
         # Generate title and description
-        logging.info(f"Generating YouTube metadata for item {topic_entry_id}")
+        logging.info(f"Generating YouTube metadata for chapter {chapter_id}")
         title_result = generate_youtube_title(main_content, speakers_info)
         description_result = generate_youtube_description(
             main_content, speakers_info, video_metadata, session_number, session_date
         )
 
         topic_metadata = {
-            "topic_entry_id": topic_entry_id,
-            "chapter_id": video.get("chapter_id"),  # Include chapter_id if present
-            "video_id": video.get("video_id"),  # Include source video_id if present
-            "video_file_path": video.get("video_file_path"),
+            "chapter_id": chapter_id,
+            "video_id": video.get("video_id"),
             "title": title_result,
             "description": description_result,
-            "main_topic_content": topic_title,
-            "video_url": video.get("video_url"),
+            "main_topic_content": chapter_title,
             "session_number": session_number,
             "session_date": session_date,
-            "ai_interest_score": video.get("ai_interest_score"),
-            "relevance_score": video.get("relevance_score"),  # For chapters
-            "start_time": video.get("start_time"),  # For chapters
-            "end_time": video.get("end_time"),  # For chapters
+            "relevance_score": video.get("relevance_score"),
+            "start_time": video.get("start_time"),
+            "end_time": video.get("end_time"),
             "speakers": speakers,
             "topics": video.get("topics", []),
             "generation_success": title_result.get("error") is None
@@ -690,7 +673,7 @@ def generate_youtube_metadata_for_selected_videos(top_videos):
             metadata_results["failed_generations"] += 1
 
     logging.info(
-        f"YouTube metadata generation complete: {metadata_results['successful_generations']}/{metadata_results['total_videos']} videos processed successfully"
+        f"YouTube metadata generation complete: {metadata_results['successful_generations']}/{metadata_results['total_videos']} chapters processed successfully"
     )
     return metadata_results
 

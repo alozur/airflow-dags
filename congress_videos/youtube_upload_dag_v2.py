@@ -27,6 +27,7 @@ from airflow.operators.python import PythonOperator
 
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from congress_videos.modules.youtube import youtube_ai
+from congress_videos.modules import thumbnail_generator as thumb_gen
 from utils.airflow_helpers import ensure_project_data_directory, xcom_task
 from utils.env_loader import load_env_if_local
 
@@ -96,5 +97,34 @@ with DAG(
         ),
     )
 
+    # Step 3: Generate thumbnail text using AI (3-6 words, max 40 chars)
+    t3 = PythonOperator(
+        task_id='generate_thumbnail_text',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: thumb_gen.generate_thumbnail_text_for_videos(
+                ti.xcom_pull(key='uploadable_chapters'),
+                ti.xcom_pull(key='youtube_metadata_results')
+            ),
+            'thumbnail_text_results'
+        ),
+    )
+
+    # Step 4: Generate thumbnails and save to video_id/chapter_id/ folder
+    # Creates folder structure: data/congress_videos/{video_id}/{chapter_id}/thumbnail.png
+    t4 = PythonOperator(
+        task_id='generate_thumbnails',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: thumb_gen.generate_video_thumbnails(
+                ti.xcom_pull(key='uploadable_chapters'),
+                ti.xcom_pull(key='thumbnail_text_results'),
+                None,  # No download_results for chapters
+                ti.xcom_pull(key='data_directory_path')
+            ),
+            'thumbnail_results'
+        ),
+    )
+
     # Task dependencies
-    t0 >> t1_db >> t2
+    t0 >> t1_db >> t2 >> t3 >> t4
