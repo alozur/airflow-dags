@@ -28,6 +28,7 @@ from airflow.operators.python import PythonOperator
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from congress_videos.modules.youtube import youtube_ai
 from congress_videos.modules import thumbnail_generator as thumb_gen
+from congress_videos.modules import video_splitter
 from utils.airflow_helpers import ensure_project_data_directory, xcom_task
 from utils.env_loader import load_env_if_local
 
@@ -126,5 +127,22 @@ with DAG(
         ),
     )
 
+    # Step 5: Extract chapter videos from source YouTube videos using ffmpeg
+    # For each chapter, extracts video segment using start_time and end_time
+    # Saves to: data/congress_videos/{video_id}/{chapter_id}/chapter_video.mp4
+    t5 = PythonOperator(
+        task_id='extract_chapter_videos',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: video_splitter.extract_chapters_from_video(
+                ti.xcom_pull(key='uploadable_chapters'),
+                ti.xcom_pull(key='data_directory_path')
+            ),
+            'chapter_extraction_results'
+        ),
+    )
+
     # Task dependencies
-    t0 >> t1_db >> t2 >> t3 >> t4
+    # Steps 1-4 can run in parallel with step 5 (thumbnails don't depend on video extraction)
+    # But we'll run sequentially for clarity
+    t0 >> t1_db >> t2 >> t3 >> t4 >> t5
