@@ -661,7 +661,7 @@ class CongressionalVideoDB:
                 query = f"""
                     SELECT * FROM {uploadable_chapters_view}
                     WHERE relevance_score >= %s
-                    ORDER BY upload_priority DESC, relevance_score DESC, created_at DESC
+                    ORDER BY relevance_score DESC, created_at DESC
                 """
                 if limit:
                     query += f" LIMIT {limit}"
