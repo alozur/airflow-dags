@@ -193,25 +193,36 @@ def extract_chapters_from_video(uploadable_chapters, data_directory):
         logging.info(f"Processing chapter {chapter_id} from video {video_id}")
 
         try:
-            # Find source video file in data_directory/video_id/
-            video_folder = os.path.join(data_directory, str(video_id))
+            # Source videos are in: data_directory/downloads/{date}/{video_id}/
+            # We need to search for the video across all dates in downloads folder
+            downloads_folder = os.path.join(data_directory, 'downloads')
 
-            if not os.path.exists(video_folder):
-                raise FileNotFoundError(f"Source video folder not found: {video_folder}")
-
-            # Look for video files (mp4, mkv, webm)
-            video_extensions = ['.mp4', '.mkv', '.webm']
             source_video_path = None
 
-            for file in os.listdir(video_folder):
-                if any(file.endswith(ext) for ext in video_extensions):
-                    # Skip chapter videos (to avoid using extracted chapters as source)
-                    if 'chapter_video' not in file:
-                        source_video_path = os.path.join(video_folder, file)
-                        break
+            if os.path.exists(downloads_folder):
+                # Search through all date folders for this video_id
+                for date_folder in os.listdir(downloads_folder):
+                    video_folder = os.path.join(downloads_folder, date_folder, str(video_id))
+
+                    if os.path.exists(video_folder):
+                        # Look for video files (mp4, mkv, webm)
+                        video_extensions = ['.mp4', '.mkv', '.webm']
+
+                        for file in os.listdir(video_folder):
+                            if any(file.endswith(ext) for ext in video_extensions):
+                                # Skip chapter videos (to avoid using extracted chapters as source)
+                                if 'chapter_video' not in file:
+                                    source_video_path = os.path.join(video_folder, file)
+                                    break
+
+                        if source_video_path:
+                            break  # Found the video, stop searching
 
             if not source_video_path:
-                raise FileNotFoundError(f"No source video found in {video_folder}")
+                raise FileNotFoundError(
+                    f"No source video found for video_id {video_id} in {downloads_folder}. "
+                    f"Make sure youtube_channel_monitor_dag has downloaded the video first."
+                )
 
             logging.info(f"Found source video: {source_video_path}")
 

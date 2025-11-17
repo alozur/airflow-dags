@@ -206,19 +206,19 @@ with DAG(
     )
 
     # Step 3c2: Download video from YouTube (runs after subtitle check)
-    # COMMENTED OUT FOR NOW - Video download disabled temporarily
-    # t3c2 = PythonOperator(
-    #     task_id='download_video_from_youtube',
-    #     python_callable=lambda ti, **context: xcom_task(
-    #         ti,
-    #         lambda: yt_channel.download_video_from_youtube(
-    #             ti.xcom_pull(key='video_details'),
-    #             target_date=context["params"].get("target_date")
-    #         ),
-    #         'downloaded_videos'
-    #     ),
-    #     trigger_rule='none_failed_min_one_success'  # Run regardless of which branch
-    # )
+    # ENABLED: Video download needed for chapter extraction in youtube_upload_dag_v2
+    t3c2 = PythonOperator(
+        task_id='download_video_from_youtube',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: yt_channel.download_video_from_youtube(
+                ti.xcom_pull(key='video_details'),
+                target_date=context["params"].get("target_date")
+            ),
+            'downloaded_videos'
+        ),
+        trigger_rule='none_failed_min_one_success'  # Run regardless of which branch
+    )
 
     # Step 3d: Extract audio from YouTube (only if subtitles not available)
     t3d = PythonOperator(
@@ -436,8 +436,8 @@ with DAG(
     # get_video_details and get_video_descriptions run in parallel
     t2a >> [t3a, t3b]
 
-    # After getting video details, try downloading subtitles first
-    t3a >> t3c
+    # After getting video details, download video and try downloading subtitles in parallel
+    t3a >> [t3c, t3c2]
 
     # Branch based on subtitle availability
     t3c >> t3c_branch
