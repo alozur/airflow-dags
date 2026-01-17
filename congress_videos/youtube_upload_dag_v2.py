@@ -27,6 +27,7 @@ from airflow.operators.python import PythonOperator
 
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from congress_videos.modules.youtube import youtube_ai
+from congress_videos.modules.youtube import prepare_chapter_upload_config
 from congress_videos.modules import thumbnail_generator as thumb_gen
 from congress_videos.modules import video_splitter
 from utils.airflow_helpers import ensure_project_data_directory, xcom_task
@@ -142,7 +143,23 @@ with DAG(
         ),
     )
 
+    # Step 6: Prepare upload configuration for generic YouTube uploader DAG
+    # Combines extraction results, metadata, and thumbnails into upload config
+    t6 = PythonOperator(
+        task_id='prepare_upload_config',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: prepare_chapter_upload_config(
+                ti.xcom_pull(key='chapter_extraction_results'),
+                ti.xcom_pull(key='youtube_metadata_results'),
+                ti.xcom_pull(key='thumbnail_results'),
+                is_testing=context["params"].get("isTesting", False)
+            ),
+            'upload_config'
+        ),
+    )
+
     # Task dependencies
     # Steps 1-4 can run in parallel with step 5 (thumbnails don't depend on video extraction)
     # But we'll run sequentially for clarity
-    t0 >> t1_db >> t2 >> t3 >> t4 >> t5
+    t0 >> t1_db >> t2 >> t3 >> t4 >> t5 >> t6
