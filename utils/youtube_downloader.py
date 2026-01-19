@@ -69,9 +69,9 @@ def download_youtube_video_for_upload(
         "no_warnings": False,
         # Merge video+audio into mp4
         "merge_output_format": "mp4",
-        # Use web client first - it provides HLS/m3u8 streams which work for 720p
-        # when https formats are blocked by SABR streaming (YouTube issue #12482)
-        "extractor_args": {"youtube": {"player_client": ["web", "mweb"]}},
+        # Use tv_embedded client - bypasses SABR streaming and PO Token requirements
+        # See: https://github.com/yt-dlp/yt-dlp/issues/12482
+        "extractor_args": {"youtube": {"player_client": ["tv_embedded", "tv"]}},
         # Enable native HLS downloader for m3u8 streams
         "hls_prefer_native": True,
     }
