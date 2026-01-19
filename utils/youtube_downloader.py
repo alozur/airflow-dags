@@ -53,10 +53,11 @@ def download_youtube_video_for_upload(
 
     # Format selection based on quality
     # Use bestvideo+bestaudio with merge to avoid SABR streaming issues
+    # height>=720 ensures MINIMUM 720p quality
     format_map = {
-        "720p": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-        "1080p": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
-        "best": "bestvideo+bestaudio/best",
+        "720p": "bestvideo[height>=720]+bestaudio/bestvideo+bestaudio/best",
+        "1080p": "bestvideo[height>=1080]+bestaudio/bestvideo[height>=720]+bestaudio/best",
+        "best": "bestvideo[height>=720]+bestaudio/bestvideo+bestaudio/best",
     }
 
     format_string = format_map.get(quality, format_map["720p"])
