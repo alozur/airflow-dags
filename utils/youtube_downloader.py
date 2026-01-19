@@ -62,12 +62,23 @@ def download_with_pytubefix(
         video_id = yt.video_id
         safe_title = "".join(c for c in yt.title if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
 
+        # Debug: log all available streams
+        all_streams = yt.streams.all()
+        logger.info(f"[pytubefix] Available streams ({len(all_streams)} total):")
+        for s in all_streams[:15]:  # Log first 15
+            logger.info(f"  - {s.resolution or 'audio'} | {s.mime_type} | adaptive={s.is_adaptive} | progressive={s.is_progressive}")
+
         # First try: adaptive video stream at min_resolution or higher (720p+)
+        # Try without file_extension filter first (webm might have higher quality)
         video_stream = yt.streams.filter(
             adaptive=True,
-            only_video=True,
-            file_extension='mp4'
+            only_video=True
         ).filter(lambda s: s.resolution and int(s.resolution[:-1]) >= min_resolution).order_by('resolution').desc().first()
+
+        # If no stream found, try any adaptive video
+        if not video_stream:
+            logger.info("[pytubefix] No 720p+ found, trying any adaptive video...")
+            video_stream = yt.streams.filter(adaptive=True, only_video=True).order_by('resolution').desc().first()
 
         if video_stream:
             logger.info(f"[pytubefix] Found adaptive video stream: {video_stream.resolution}")
@@ -82,8 +93,10 @@ def download_with_pytubefix(
                 logger.info(f"[pytubefix] Found audio stream: {audio_stream.abr}")
 
                 # Download video and audio separately
-                video_file = f"{video_id}_video_temp.mp4"
-                audio_file = f"{video_id}_audio_temp.{audio_stream.subtype}"
+                video_ext = video_stream.subtype or 'mp4'
+                audio_ext = audio_stream.subtype or 'webm'
+                video_file = f"{video_id}_video_temp.{video_ext}"
+                audio_file = f"{video_id}_audio_temp.{audio_ext}"
                 final_file = f"{video_id}_{safe_title}.mp4"
 
                 logger.info("[pytubefix] Downloading video stream...")
