@@ -52,19 +52,24 @@ def download_youtube_video_for_upload(
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     # Format selection based on quality
+    # Use bestvideo+bestaudio with merge to avoid SABR streaming issues
     format_map = {
-        "720p": "best[ext=mp4][height<=720]/best[height<=720]",
-        "1080p": "best[ext=mp4][height<=1080]/best[height<=1080]",
-        "best": "best[ext=mp4]/best",
+        "720p": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+        "1080p": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+        "best": "bestvideo+bestaudio/best",
     }
 
     format_string = format_map.get(quality, format_map["720p"])
 
     ydl_opts = {
-        "format": format_string,  # Pre-merged video+audio
+        "format": format_string,
         "outtmpl": f"{output_dir}/%(id)s_%(title)s.%(ext)s",
         "quiet": False,
         "no_warnings": False,
+        # Merge video+audio into mp4
+        "merge_output_format": "mp4",
+        # Use android client to avoid SABR streaming (YouTube issue #12482)
+        "extractor_args": {"youtube": {"player_client": ["android", "ios", "web"]}},
     }
 
     result = {
