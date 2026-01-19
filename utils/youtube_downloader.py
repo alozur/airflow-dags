@@ -69,8 +69,11 @@ def download_youtube_video_for_upload(
         "no_warnings": False,
         # Merge video+audio into mp4
         "merge_output_format": "mp4",
-        # Use android client to avoid SABR streaming (YouTube issue #12482)
-        "extractor_args": {"youtube": {"player_client": ["android", "ios", "web"]}},
+        # Use web client first - it provides HLS/m3u8 streams which work for 720p
+        # when https formats are blocked by SABR streaming (YouTube issue #12482)
+        "extractor_args": {"youtube": {"player_client": ["web", "mweb"]}},
+        # Enable native HLS downloader for m3u8 streams
+        "hls_prefer_native": True,
     }
 
     result = {
