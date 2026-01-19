@@ -19,6 +19,7 @@ def download_youtube_video_for_upload(
     youtube_url: str,
     output_dir: str,
     quality: str = "720p",
+    cookies_file: str = "/opt/airflow/data/congress_videos/youtube_cookies.txt",
 ) -> Dict[str, any]:
     """
     Download YouTube video in format ready for re-upload to YouTube.
@@ -29,6 +30,7 @@ def download_youtube_video_for_upload(
         youtube_url: YouTube video URL
         output_dir: Directory to save video
         quality: Video quality (720p, 1080p, best)
+        cookies_file: Path to YouTube cookies.txt file (for bypassing restrictions)
 
     Returns:
         Dictionary with download info:
@@ -70,9 +72,12 @@ def download_youtube_video_for_upload(
         "no_warnings": False,
         # Merge video+audio into mp4
         "merge_output_format": "mp4",
-        # Let yt-dlp use default client selection (most compatible)
-        # Don't restrict player_client - allows yt-dlp to find working formats
     }
+
+    # Use cookies file if it exists (bypasses YouTube restrictions for 720p+)
+    if cookies_file and Path(cookies_file).exists():
+        ydl_opts["cookiefile"] = cookies_file
+        logger.info(f"Using cookies file: {cookies_file}")
 
     result = {
         "success": False,
