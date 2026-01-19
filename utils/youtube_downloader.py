@@ -24,6 +24,7 @@ def download_with_pytubefix(
     Download YouTube video using pytubefix (alternative to yt-dlp).
 
     This often works when yt-dlp fails due to YouTube restrictions.
+    Downloads adaptive streams (video+audio separately) and merges with ffmpeg.
 
     Args:
         youtube_url: YouTube video URL
@@ -58,57 +59,106 @@ def download_with_pytubefix(
         logger.info(f"[pytubefix] Downloading: {youtube_url}")
         yt = YouTube(youtube_url, on_progress_callback=on_progress)
 
-        # Try to get progressive stream (video+audio combined) at desired resolution
-        stream = None
+        video_id = yt.video_id
+        safe_title = "".join(c for c in yt.title if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
 
-        # First try: progressive stream at min_resolution or higher
-        stream = yt.streams.filter(
-            progressive=True,
+        # First try: adaptive video stream at min_resolution or higher (720p+)
+        video_stream = yt.streams.filter(
+            adaptive=True,
+            only_video=True,
             file_extension='mp4'
         ).filter(lambda s: s.resolution and int(s.resolution[:-1]) >= min_resolution).order_by('resolution').desc().first()
 
-        # Second try: any progressive stream (highest quality)
-        if not stream:
-            logger.info(f"[pytubefix] No {min_resolution}p+ progressive stream, trying highest available")
-            stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
+        if video_stream:
+            logger.info(f"[pytubefix] Found adaptive video stream: {video_stream.resolution}")
 
-        # Third try: adaptive stream (video only, will need audio merge)
-        if not stream:
-            logger.info("[pytubefix] No progressive stream, trying adaptive (video only)")
-            stream = yt.streams.filter(
+            # Get best audio stream
+            audio_stream = yt.streams.filter(
                 adaptive=True,
-                file_extension='mp4',
-                only_video=True
-            ).filter(lambda s: s.resolution and int(s.resolution[:-1]) >= min_resolution).order_by('resolution').desc().first()
+                only_audio=True
+            ).order_by('abr').desc().first()
 
-        if not stream:
-            result["error"] = "No suitable stream found"
-            logger.error(result["error"])
-            return result
+            if audio_stream:
+                logger.info(f"[pytubefix] Found audio stream: {audio_stream.abr}")
 
-        logger.info(f"[pytubefix] Selected stream: {stream.resolution} - {stream.mime_type}")
+                # Download video and audio separately
+                video_file = f"{video_id}_video_temp.mp4"
+                audio_file = f"{video_id}_audio_temp.{audio_stream.subtype}"
+                final_file = f"{video_id}_{safe_title}.mp4"
 
-        # Download
-        video_id = yt.video_id
-        safe_title = "".join(c for c in yt.title if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
-        filename = f"{video_id}_{safe_title}.mp4"
+                logger.info("[pytubefix] Downloading video stream...")
+                video_path = video_stream.download(output_path=output_dir, filename=video_file)
 
-        output_path = stream.download(output_path=output_dir, filename=filename)
+                logger.info("[pytubefix] Downloading audio stream...")
+                audio_path = audio_stream.download(output_path=output_dir, filename=audio_file)
 
-        if Path(output_path).exists():
-            file_size_mb = Path(output_path).stat().st_size / (1024 * 1024)
+                # Merge with ffmpeg
+                final_path = Path(output_dir) / final_file
+                logger.info("[pytubefix] Merging video and audio with ffmpeg...")
 
-            result["success"] = True
-            result["file_path"] = output_path
-            result["file_size_mb"] = round(file_size_mb, 2)
-            result["duration"] = yt.length
-            result["title"] = yt.title
-            result["resolution"] = stream.resolution
+                import subprocess
+                merge_cmd = [
+                    "ffmpeg", "-y",
+                    "-i", video_path,
+                    "-i", audio_path,
+                    "-c:v", "copy",
+                    "-c:a", "aac",
+                    str(final_path)
+                ]
 
-            logger.info(f"[pytubefix] Download complete: {filename}")
-            logger.info(f"[pytubefix] Size: {file_size_mb:.2f} MB, Resolution: {stream.resolution}")
-        else:
-            result["error"] = f"File not found after download: {output_path}"
+                merge_result = subprocess.run(merge_cmd, capture_output=True, text=True)
+
+                if merge_result.returncode == 0 and final_path.exists():
+                    # Clean up temp files
+                    Path(video_path).unlink(missing_ok=True)
+                    Path(audio_path).unlink(missing_ok=True)
+
+                    file_size_mb = final_path.stat().st_size / (1024 * 1024)
+
+                    result["success"] = True
+                    result["file_path"] = str(final_path)
+                    result["file_size_mb"] = round(file_size_mb, 2)
+                    result["duration"] = yt.length
+                    result["title"] = yt.title
+                    result["resolution"] = video_stream.resolution
+
+                    logger.info(f"[pytubefix] Download complete: {final_file}")
+                    logger.info(f"[pytubefix] Size: {file_size_mb:.2f} MB, Resolution: {video_stream.resolution}")
+                    return result
+                else:
+                    logger.error(f"[pytubefix] ffmpeg merge failed: {merge_result.stderr}")
+                    # Clean up on failure
+                    Path(video_path).unlink(missing_ok=True)
+                    Path(audio_path).unlink(missing_ok=True)
+
+        # Fallback: progressive stream (video+audio combined, usually lower quality)
+        logger.info(f"[pytubefix] No {min_resolution}p+ adaptive stream, trying progressive...")
+        stream = yt.streams.filter(
+            progressive=True,
+            file_extension='mp4'
+        ).order_by('resolution').desc().first()
+
+        if stream:
+            logger.info(f"[pytubefix] Using progressive stream: {stream.resolution}")
+            filename = f"{video_id}_{safe_title}.mp4"
+            output_path = stream.download(output_path=output_dir, filename=filename)
+
+            if Path(output_path).exists():
+                file_size_mb = Path(output_path).stat().st_size / (1024 * 1024)
+
+                result["success"] = True
+                result["file_path"] = output_path
+                result["file_size_mb"] = round(file_size_mb, 2)
+                result["duration"] = yt.length
+                result["title"] = yt.title
+                result["resolution"] = stream.resolution
+
+                logger.info(f"[pytubefix] Download complete: {filename}")
+                logger.info(f"[pytubefix] Size: {file_size_mb:.2f} MB, Resolution: {stream.resolution}")
+                return result
+
+        result["error"] = "No suitable stream found"
+        logger.error(result["error"])
 
     except Exception as e:
         result["error"] = f"pytubefix error: {str(e)}"
