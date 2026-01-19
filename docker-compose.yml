@@ -1,5 +1,3 @@
-version: '3.8'
-
 networks:
   postgres_infra_network:
     external: true
@@ -20,9 +18,9 @@ volumes:
 
 x-airflow-common:
   &airflow-common
-  # Custom Airflow image with ffmpeg support
-  # Build with: docker build -t airflow-custom:2.10.2-ffmpeg .
-  image: airflow-custom:2.10.2-ffmpeg
+  # Custom Airflow image with ffmpeg and Deno support (required for yt-dlp YouTube)
+  # Build with: docker build -t airflow-custom:2.10.2-ffmpeg-deno .
+  image: airflow-custom:2.10.2-ffmpeg-deno
   restart: unless-stopped
   environment:
     AIRFLOW__CORE__EXECUTOR: SequentialExecutor
