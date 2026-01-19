@@ -63,17 +63,15 @@ def download_youtube_video_for_upload(
     format_string = format_map.get(quality, format_map["720p"])
 
     ydl_opts = {
-        "format": format_string,
+        # Format with fallback: try 720p+ first, then any quality
+        "format": f"{format_string}/best",
         "outtmpl": f"{output_dir}/%(id)s_%(title)s.%(ext)s",
         "quiet": False,
         "no_warnings": False,
         # Merge video+audio into mp4
         "merge_output_format": "mp4",
-        # Use tv_embedded client - bypasses SABR streaming and PO Token requirements
-        # See: https://github.com/yt-dlp/yt-dlp/issues/12482
-        "extractor_args": {"youtube": {"player_client": ["tv_embedded", "tv"]}},
-        # Enable native HLS downloader for m3u8 streams
-        "hls_prefer_native": True,
+        # Let yt-dlp use default client selection (most compatible)
+        # Don't restrict player_client - allows yt-dlp to find working formats
     }
 
     result = {
