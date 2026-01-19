@@ -15,22 +15,127 @@ import yt_dlp
 logger = logging.getLogger(__name__)
 
 
+def download_with_pytubefix(
+    youtube_url: str,
+    output_dir: str,
+    min_resolution: int = 720,
+) -> Dict[str, any]:
+    """
+    Download YouTube video using pytubefix (alternative to yt-dlp).
+
+    This often works when yt-dlp fails due to YouTube restrictions.
+
+    Args:
+        youtube_url: YouTube video URL
+        output_dir: Directory to save video
+        min_resolution: Minimum resolution to download (default 720)
+
+    Returns:
+        Dictionary with download info
+    """
+    try:
+        from pytubefix import YouTube
+        from pytubefix.cli import on_progress
+    except ImportError:
+        return {
+            "success": False,
+            "error": "pytubefix not installed. Install with: pip install pytubefix"
+        }
+
+    result = {
+        "success": False,
+        "file_path": None,
+        "file_size_mb": None,
+        "duration": None,
+        "title": None,
+        "resolution": None,
+        "error": None,
+    }
+
+    try:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"[pytubefix] Downloading: {youtube_url}")
+        yt = YouTube(youtube_url, on_progress_callback=on_progress)
+
+        # Try to get progressive stream (video+audio combined) at desired resolution
+        stream = None
+
+        # First try: progressive stream at min_resolution or higher
+        stream = yt.streams.filter(
+            progressive=True,
+            file_extension='mp4'
+        ).filter(lambda s: s.resolution and int(s.resolution[:-1]) >= min_resolution).order_by('resolution').desc().first()
+
+        # Second try: any progressive stream (highest quality)
+        if not stream:
+            logger.info(f"[pytubefix] No {min_resolution}p+ progressive stream, trying highest available")
+            stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
+
+        # Third try: adaptive stream (video only, will need audio merge)
+        if not stream:
+            logger.info("[pytubefix] No progressive stream, trying adaptive (video only)")
+            stream = yt.streams.filter(
+                adaptive=True,
+                file_extension='mp4',
+                only_video=True
+            ).filter(lambda s: s.resolution and int(s.resolution[:-1]) >= min_resolution).order_by('resolution').desc().first()
+
+        if not stream:
+            result["error"] = "No suitable stream found"
+            logger.error(result["error"])
+            return result
+
+        logger.info(f"[pytubefix] Selected stream: {stream.resolution} - {stream.mime_type}")
+
+        # Download
+        video_id = yt.video_id
+        safe_title = "".join(c for c in yt.title if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
+        filename = f"{video_id}_{safe_title}.mp4"
+
+        output_path = stream.download(output_path=output_dir, filename=filename)
+
+        if Path(output_path).exists():
+            file_size_mb = Path(output_path).stat().st_size / (1024 * 1024)
+
+            result["success"] = True
+            result["file_path"] = output_path
+            result["file_size_mb"] = round(file_size_mb, 2)
+            result["duration"] = yt.length
+            result["title"] = yt.title
+            result["resolution"] = stream.resolution
+
+            logger.info(f"[pytubefix] Download complete: {filename}")
+            logger.info(f"[pytubefix] Size: {file_size_mb:.2f} MB, Resolution: {stream.resolution}")
+        else:
+            result["error"] = f"File not found after download: {output_path}"
+
+    except Exception as e:
+        result["error"] = f"pytubefix error: {str(e)}"
+        logger.error(result["error"], exc_info=True)
+
+    return result
+
+
 def download_youtube_video_for_upload(
     youtube_url: str,
     output_dir: str,
     quality: str = "720p",
     cookies_file: str = "/opt/airflow/data/congress_videos/youtube_cookies.txt",
+    use_pytubefix_first: bool = True,
 ) -> Dict[str, any]:
     """
     Download YouTube video in format ready for re-upload to YouTube.
 
     This downloads a pre-merged video+audio file (no ffmpeg needed).
+    Tries pytubefix first (more reliable), then falls back to yt-dlp.
 
     Args:
         youtube_url: YouTube video URL
         output_dir: Directory to save video
         quality: Video quality (720p, 1080p, best)
         cookies_file: Path to YouTube cookies.txt file (for bypassing restrictions)
+        use_pytubefix_first: Try pytubefix before yt-dlp (default True)
 
     Returns:
         Dictionary with download info:
@@ -52,6 +157,23 @@ def download_youtube_video_for_upload(
         ...     print(f"Downloaded: {result['file_path']}")
     """
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    # Map quality string to minimum resolution
+    quality_to_resolution = {"720p": 720, "1080p": 1080, "best": 720}
+    min_resolution = quality_to_resolution.get(quality, 720)
+
+    # Try pytubefix first (often more reliable for YouTube restrictions)
+    if use_pytubefix_first:
+        logger.info("Trying pytubefix first...")
+        result = download_with_pytubefix(youtube_url, output_dir, min_resolution)
+        if result["success"]:
+            logger.info(f"pytubefix succeeded! Resolution: {result.get('resolution')}")
+            return result
+        else:
+            logger.warning(f"pytubefix failed: {result.get('error')}. Falling back to yt-dlp...")
+
+    # Fall back to yt-dlp
+    logger.info("Trying yt-dlp...")
 
     # Format selection based on quality
     # Use bestvideo+bestaudio with merge to avoid SABR streaming issues
