@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from congress_videos.modules.youtube import youtube_ai
@@ -159,7 +160,85 @@ with DAG(
         ),
     )
 
+    # Step 7: Trigger generic YouTube uploader DAG and wait for completion
+    def trigger_upload_with_config(ti, **context):
+        """Trigger the generic YouTube uploader DAG with config from XCom."""
+        import time
+        from airflow.models import DagRun, XCom
+
+        # Get config from XCom
+        config = ti.xcom_pull(key='upload_config')
+
+        if not config:
+            logging.warning("No upload config found, skipping upload")
+            ti.xcom_push(key='upload_results', value={'upload_details': []})
+            return None
+
+        # Trigger the DAG
+        logging.info(f"Triggering generic_youtube_uploader with {len(config.get('videos', []))} videos")
+        dag_run = trigger_dag_api(
+            dag_id='generic_youtube_uploader',
+            conf=config,
+            run_id=f"chapter_upload_{context['run_id']}",
+        )
+
+        logging.info(f"Triggered DAG run: {dag_run.run_id}")
+
+        # Wait for completion
+        logging.info("Waiting for upload to complete...")
+        while True:
+            time.sleep(10)
+            dag_run.refresh_from_db()
+
+            if dag_run.state in ['success', 'failed']:
+                logging.info(f"Upload DAG completed with state: {dag_run.state}")
+
+                # Pull upload results from the triggered DAG
+                upload_results = XCom.get_many(
+                    execution_date=dag_run.execution_date,
+                    dag_ids=['generic_youtube_uploader'],
+                    task_ids=['upload_videos'],
+                    key='return_value',
+                    limit=1
+                )
+
+                if upload_results:
+                    results_data = upload_results[0].value
+                    logging.info(f"Retrieved upload results: {results_data}")
+                    ti.xcom_push(key='upload_results', value=results_data)
+                else:
+                    logging.warning("No upload results found from triggered DAG")
+                    # Create results based on config and DAG state
+                    upload_details = []
+                    for video_config in config.get('videos', []):
+                        upload_details.append({
+                            'chapter_id': video_config.get('chapter_id'),
+                            'video_id': video_config.get('video_id'),
+                            'video_file': video_config.get('video_file'),
+                            'success': dag_run.state == 'success',
+                            'youtube_video_id': None,
+                            'error': 'Upload failed - no results available' if dag_run.state == 'failed' else None
+                        })
+                    ti.xcom_push(key='upload_results', value={'upload_details': upload_details})
+
+                if dag_run.state == 'failed':
+                    raise Exception(f"Upload DAG failed: {dag_run.run_id}")
+
+                return dag_run.run_id
+
+    t7 = PythonOperator(
+        task_id='trigger_youtube_upload',
+        python_callable=trigger_upload_with_config,
+    )
+
+    # Step 8: Update database to mark chapters as uploaded
+    t8_db = PostgreSQLOperator(
+        task_id='mark_chapters_uploaded',
+        operation='mark_chapters_uploaded',
+        xcom_keys={'upload_results': 'upload_results'},
+        output_xcom_key='chapter_upload_updates'
+    )
+
     # Task dependencies
-    # Steps 1-4 can run in parallel with step 5 (thumbnails don't depend on video extraction)
-    # But we'll run sequentially for clarity
-    t0 >> t1_db >> t2 >> t3 >> t4 >> t5 >> t6
+    # Sequential flow: get chapters -> generate metadata -> thumbnails -> extract videos -> upload -> update DB
+    t0 >> t1_db >> t2 >> t3 >> t4 >> t5 >> t6 >> t7 >> t8_db

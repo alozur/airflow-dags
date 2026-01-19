@@ -373,6 +373,56 @@ class PostgreSQLOperator(BaseOperator):
             result = db.get_uploadable_chapters(limit=max_chapters, min_relevance_score=min_relevance_score)
             print(f"✅ Retrieved {len(result)} uploadable chapters")
 
+        elif self.operation == 'mark_chapters_uploaded':
+            """Mark chapters as uploaded to YouTube after successful upload"""
+            upload_results = ti.xcom_pull(key=self.xcom_keys.get('upload_results', 'upload_results'))
+
+            if not upload_results or not upload_results.get('upload_details'):
+                print("No upload results to process")
+                result = {'updated_chapters': 0, 'failed_updates': 0, 'details': []}
+            else:
+                updated_count = 0
+                failed_count = 0
+                details = []
+
+                for upload_detail in upload_results['upload_details']:
+                    chapter_id = upload_detail.get('chapter_id')
+                    youtube_video_id = upload_detail.get('youtube_video_id')
+                    success = upload_detail.get('success', False)
+
+                    if success and chapter_id and youtube_video_id:
+                        try:
+                            db.mark_chapter_uploaded(chapter_id, youtube_video_id)
+                            updated_count += 1
+                            details.append({
+                                'chapter_id': chapter_id,
+                                'youtube_video_id': youtube_video_id,
+                                'status': 'updated'
+                            })
+                            print(f"✅ Marked chapter {chapter_id} as uploaded: {youtube_video_id}")
+                        except Exception as e:
+                            failed_count += 1
+                            details.append({
+                                'chapter_id': chapter_id,
+                                'status': 'failed',
+                                'error': str(e)
+                            })
+                            print(f"❌ Failed to mark chapter {chapter_id}: {e}")
+                    elif not success:
+                        print(f"⏭️ Skipping chapter {chapter_id}: upload was not successful")
+                        details.append({
+                            'chapter_id': chapter_id,
+                            'status': 'skipped',
+                            'reason': 'upload_failed'
+                        })
+
+                result = {
+                    'updated_chapters': updated_count,
+                    'failed_updates': failed_count,
+                    'details': details
+                }
+                print(f"✅ Updated {updated_count} chapters, {failed_count} failed")
+
         else:
             raise ValueError(f"Unknown operation: {self.operation}")
 
