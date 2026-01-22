@@ -9,7 +9,6 @@ import urllib3
 # -------------------------
 # URL Configuration
 # -------------------------
-BASE_ARCHIVE_URL = "https://www.congreso.es/es/archivo-audiovisual"
 BASE_SESSION_URL = "https://app.congreso.es/AudiovisualCongreso/audiovisualdetalledisponible"
 
 # -------------------------

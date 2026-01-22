@@ -58,53 +58,6 @@ ESTRUCTURA REQUERIDA:
 Escribe de forma natural, como si fueras un periodista explicando el debate a ciudadanos interesados en política.
 """
 
-# Video Interest Evaluation - Main Topic
-VIDEO_INTEREST_MAIN_TOPIC_SYSTEM_PROMPT = (
-    "Eres un experto en política española y contenido viral para YouTube. "
-    "Evalúas objetivamente el interés público de debates parlamentarios."
-)
-
-VIDEO_INTEREST_MAIN_TOPIC_USER_PROMPT_TEMPLATE = """Evalúa el interés de este vídeo del Congreso de los Diputados para subirlo a YouTube.
-
-TEMA: {topic_content}
-
-PARTICIPANTES:
-{speakers_text}
-
-DURACIÓN: {duration_minutes} minutos
-
-Criterios de evaluación:
-1. Relevancia política y social (0-3 puntos)
-2. Notoriedad de los participantes (0-3 puntos)
-3. Potencial de debate público (0-2 puntos)
-4. Interés mediático (0-2 puntos)
-
-Responde SOLO con un JSON en este formato:
-{{"score": <número del 1-10>, "reasoning": "<explicación breve en español>"}}"""
-
-# Video Interest Evaluation - Intervention
-VIDEO_INTEREST_INTERVENTION_SYSTEM_PROMPT = (
-    "Eres un experto en política española y contenido viral para YouTube. "
-    "Evalúas objetivamente el interés público de intervenciones parlamentarias."
-)
-
-VIDEO_INTEREST_INTERVENTION_USER_PROMPT_TEMPLATE = """Evalúa el interés de esta intervención parlamentaria individual para subirla a YouTube.
-
-CONTEXTO DEL TEMA: {main_topic_context}
-
-INTERVINIENTE: {speaker_name}
-CARGO: {speaker_role}
-DURACIÓN: {duration_minutes} minutos
-
-Criterios de evaluación:
-1. Relevancia del tema (0-3 puntos)
-2. Notoriedad del interviniente (0-3 puntos)
-3. Duración apropiada para YouTube (0-2 puntos)
-4. Potencial de interés público (0-2 puntos)
-
-Responde SOLO con un JSON en este formato:
-{{"score": <número del 1-10>, "reasoning": "<explicación breve en español>"}}"""
-
 # Thumbnail Text Generation
 THUMBNAIL_TEXT_SYSTEM_PROMPT = (
     "Eres un experto en crear texto impactante para miniaturas de YouTube. "
