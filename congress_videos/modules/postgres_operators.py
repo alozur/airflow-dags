@@ -415,6 +415,15 @@ class PostgreSQLOperator(BaseOperator):
                             'status': 'skipped',
                             'reason': 'upload_failed'
                         })
+                    elif success and (not chapter_id or not youtube_video_id):
+                        # Debug: upload succeeded but missing tracking fields
+                        print(f"⚠️ Upload succeeded but missing fields: chapter_id={chapter_id}, youtube_video_id={youtube_video_id}")
+                        print(f"   Full upload_detail: {upload_detail}")
+                        details.append({
+                            'chapter_id': chapter_id,
+                            'status': 'skipped',
+                            'reason': f'missing_fields: chapter_id={chapter_id}, youtube_video_id={youtube_video_id}'
+                        })
 
                 result = {
                     'updated_chapters': updated_count,

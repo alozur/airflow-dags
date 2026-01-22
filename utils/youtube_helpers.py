@@ -340,11 +340,20 @@ def upload_multiple_videos(
             else:
                 results['failed_uploads'] += 1
 
-            results['upload_details'].append({
+            # Build upload detail with all tracking fields from input config
+            upload_detail = {
                 "video_file": video_file,
                 "entry_id": video_info.get('entry_id'),  # Include entry_id for database updates
-                **upload_result,
-            })
+                "chapter_id": video_info.get('chapter_id'),  # Include chapter_id for chapter uploads
+                "video_id": video_info.get('video_id'),  # Include source video_id for reference
+                "success": upload_result.get('success', False),
+                "youtube_video_id": upload_result.get('video_id'),  # Rename to youtube_video_id for clarity
+                "video_url": upload_result.get('video_url'),
+                "thumbnail_success": upload_result.get('thumbnail_success'),
+                "error": upload_result.get('error'),
+            }
+
+            results['upload_details'].append(upload_detail)
 
         logging.info(
             f"Batch upload complete: {results['successful_uploads']}/{results['total_videos']} successful"
