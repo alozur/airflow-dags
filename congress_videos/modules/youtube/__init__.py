@@ -61,9 +61,9 @@ def __getattr__(name):
         return locals()[name]
 
     # youtube_upload functions
-    elif name in ['prepare_youtube_upload_config', 'prepare_chapter_upload_config']:
-        from .youtube_upload import prepare_youtube_upload_config, prepare_chapter_upload_config
-        return locals()[name]
+    elif name == 'prepare_chapter_upload_config':
+        from .youtube_upload import prepare_chapter_upload_config
+        return prepare_chapter_upload_config
 
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
@@ -95,6 +95,5 @@ __all__ = [
     'generate_youtube_metadata_for_selected_videos',
     'score_chapters_relevance',
     # youtube_upload functions
-    'prepare_youtube_upload_config',
     'prepare_chapter_upload_config',
 ]
