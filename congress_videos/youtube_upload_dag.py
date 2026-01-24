@@ -1,5 +1,5 @@
 """
-Congress YouTube Chapter Uploader DAG v2
+Congress YouTube Chapter Uploader DAG
 
 This DAG uploads individual chapters from congressional videos to YouTube:
 
@@ -52,13 +52,13 @@ default_args = {
 }
 
 with DAG(
-    'congress_youtube_chapter_uploader_v2',
+    'congress_youtube_chapter_uploader',
     default_args=default_args,
     description='Upload top congressional video chapters to YouTube based on relevance score',
     schedule_interval='0 12 * * *',  # Run at 12:00 PM daily
     start_date=datetime(2025, 11, 14),
     catchup=False,
-    tags=['congress', 'youtube', 'chapters', 'v2'],
+    tags=['congress', 'youtube', 'chapters'],
     params={
         "max_chapters": 5,  # Maximum number of chapters to upload per day
         "min_relevance_score": 2,  # Minimum relevance score (0-5)
