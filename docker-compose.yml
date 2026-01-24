@@ -81,8 +81,9 @@ services:
   init-dags:
     image: alpine/git:latest
     container_name: airflow-init-dags
+    restart: "no"
     entrypoint: ""
-    command: ["sh", "-c", "rm -rf /dags/repo && git clone --branch ${GIT_SYNC_BRANCH:-dev} https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${GITHUB_REPO}.git /dags/repo 2>&1 || (echo 'FAILED' && sleep 300)"]
+    command: ["sh", "-c", "git config --global --add safe.directory /dags/repo && if [ -d /dags/repo/.git ]; then cd /dags/repo && git remote set-url origin https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${GITHUB_REPO}.git && git fetch origin && git reset --hard origin/${GIT_SYNC_BRANCH:-dev}; else git clone --depth 1 --branch ${GIT_SYNC_BRANCH:-dev} https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${GITHUB_REPO}.git /dags/repo; fi"]
     environment:
       GITHUB_USER: "${GITHUB_USER}"
       GITHUB_TOKEN: "${GITHUB_TOKEN}"
@@ -97,6 +98,7 @@ services:
 
   init-perms:
     image: busybox
+    restart: "no"
     depends_on:
       init-dags:
         condition: service_completed_successfully
@@ -126,6 +128,12 @@ services:
     ports:
       - "8081:8080"
     command: webserver
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   airflow-scheduler:
     <<: *airflow-common
@@ -136,6 +144,12 @@ services:
       init-perms:
         condition: service_completed_successfully
     command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $(hostname)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   airflow-init:
     <<: *airflow-common
