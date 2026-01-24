@@ -1,13 +1,13 @@
 # Custom Airflow image with ffmpeg and Deno support
 # Based on Apache Airflow 2.10.2
-# Build with: docker build -t airflow-custom:2.10.2-ffmpeg-deno .
+# Build with: docker build -t my-airflow:latest .
 
 FROM apache/airflow:2.10.2
 
 # Switch to root user to install system packages
 USER root
 
-# Install ffmpeg, curl, unzip, and nodejs (as alternative JS runtime for yt-dlp)
+# Install ffmpeg, curl, unzip, nodejs, and git (for DAG-based git sync)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ffmpeg \
@@ -15,6 +15,7 @@ RUN apt-get update && \
     unzip \
     nodejs \
     npm \
+    git \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

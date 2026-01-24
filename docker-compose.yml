@@ -19,8 +19,8 @@ volumes:
 x-airflow-common:
   &airflow-common
   # Custom Airflow image with ffmpeg and Deno support (required for yt-dlp YouTube)
-  # Build with: docker build -t airflow-custom:2.10.2-ffmpeg-deno .
-  image: airflow-custom:2.10.2-ffmpeg-deno
+  # Build with: docker build -t my-airflow:latest .
+  image: my-airflow:latest
   restart: unless-stopped
   environment:
     # LocalExecutor allows parallel task execution (required for triggering other DAGs)
@@ -56,10 +56,16 @@ x-airflow-common:
     POSTGRES_USER: "${POSTGRES_USER}"
     POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
     POSTGRES_SCHEMA: "${POSTGRES_SCHEMA}"
+
+    # Git sync credentials (for git_sync DAG)
+    GITHUB_USER: "${GITHUB_USER}"
+    GITHUB_TOKEN: "${GITHUB_TOKEN}"
+    GITHUB_REPO: "${GITHUB_REPO}"
+    GIT_SYNC_BRANCH: "${GIT_SYNC_BRANCH:-dev}"
   volumes:
     - airflow_logs:/opt/airflow/logs
     - airflow_plugins:/opt/airflow/plugins
-    - git_dags:/opt/airflow/dags:ro
+    - git_dags:/opt/airflow/dags
     - airflow_data:/opt/airflow/data
     # Mount congress_videos directory from NAS (includes token, assets, videos, fonts)
     # Note: Token file must be writable for auto-refresh
@@ -72,50 +78,51 @@ x-airflow-common:
   mem_reservation: 1g
 
 services:
+  init-dags:
+    image: alpine/git:latest
+    container_name: airflow-init-dags
+    entrypoint: ""
+    command: ["sh", "-c", "rm -rf /dags/repo && git clone --branch ${GIT_SYNC_BRANCH:-dev} https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${GITHUB_REPO}.git /dags/repo 2>&1 || (echo 'FAILED' && sleep 300)"]
+    environment:
+      GITHUB_USER: "${GITHUB_USER}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN}"
+      GITHUB_REPO: "${GITHUB_REPO}"
+      GIT_SYNC_BRANCH: "${GIT_SYNC_BRANCH:-dev}"
+    volumes:
+      - git_dags:/dags
+    networks:
+      - postgres_infra_network
+      - airflow_network
+      - whisper_network
+
   init-perms:
     image: busybox
+    depends_on:
+      init-dags:
+        condition: service_completed_successfully
     command:
       - sh
       - -c
       - |
-        chown -R 65533:65533 /git
+        chown -R 50000:0 /dags
         chown -R 50000:0 /data
         chown -R 50000:0 /congress_videos
         chmod -R 755 /congress_videos/assets
         chmod 666 /congress_videos/congress_youtube_token.pickle
         chmod -R 775 /congress_videos/videos
     volumes:
-      - git_dags:/git
+      - git_dags:/dags
       - airflow_data:/data
       - /volume1/docker/airflow/congress_videos:/congress_videos
-
-  git-sync:
-    image: k8s.gcr.io/git-sync/git-sync:v3.6.5
-    container_name: airflow-git-sync
-    user: "65533:65533"
-    restart: unless-stopped
-    depends_on:
-      - init-perms
-    environment:
-      GIT_SYNC_REPO: "https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${GITHUB_REPO}.git"
-      GIT_SYNC_BRANCH: "dev"
-      GIT_SYNC_WAIT: "15"
-      GIT_SYNC_ROOT: "/git"
-      GIT_SYNC_DEST: "repo"
-    volumes:
-      - git_dags:/git
-    networks:
-      - postgres_infra_network
-      - airflow_network
-      - whisper_network
 
   airflow-webserver:
     <<: *airflow-common
     container_name: airflow-webserver
     depends_on:
-      - airflow-init
-      - init-perms
-      - git-sync
+      airflow-init:
+        condition: service_completed_successfully
+      init-perms:
+        condition: service_completed_successfully
     ports:
       - "8081:8080"
     command: webserver
@@ -124,9 +131,10 @@ services:
     <<: *airflow-common
     container_name: airflow-scheduler
     depends_on:
-      - airflow-init
-      - init-perms
-      - git-sync
+      airflow-init:
+        condition: service_completed_successfully
+      init-perms:
+        condition: service_completed_successfully
     command: scheduler
 
   airflow-init:
