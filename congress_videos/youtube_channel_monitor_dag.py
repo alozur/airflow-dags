@@ -67,7 +67,7 @@ with DAG(
         "target_date": yesterday_str,
         "max_videos": 10,  # Maximum number of videos to check
         "chunk_duration_minutes": 30,  # Duration of each audio chunk in minutes (default: 30 minutes)
-        "isTesting": IS_DEVELOPMENT,  # True in development, False in production
+        "isTesting": False,  # Set to True manually when testing
         "test_video_url": "https://www.youtube.com/watch?v=ZBU0bVpYXM4"  # Test video URL (used when isTesting=True)
     }
 ) as dag:
