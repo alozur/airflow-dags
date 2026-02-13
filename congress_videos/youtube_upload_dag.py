@@ -62,7 +62,7 @@ with DAG(
     params={
         "max_chapters": 5,  # Maximum number of chapters to upload per day
         "min_relevance_score": 2,  # Minimum relevance score (0-5)
-        "isTesting": IS_DEVELOPMENT  # True in development, False in production
+        "isTesting": False  # Hardcoded to False so uploads are always public
     }
 ) as dag:
 

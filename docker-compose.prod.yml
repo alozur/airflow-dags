@@ -1,0 +1,167 @@
+networks:
+  postgres_infra_network:
+    external: true
+  airflow_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.24.0.0/16
+          gateway: 172.24.0.1
+  whisper_network:
+    external: true
+
+volumes:
+  airflow_logs_prod:
+  airflow_plugins_prod:
+  git_dags_prod:
+  airflow_data_prod:
+
+x-airflow-common:
+  &airflow-common
+  # Custom Airflow image with ffmpeg and Deno support (required for yt-dlp YouTube)
+  # Build with: docker build -t my-airflow:latest .
+  image: my-airflow:latest
+  restart: unless-stopped
+  environment:
+    # LocalExecutor allows parallel task execution (required for triggering other DAGs)
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+
+    # Database connection (uses AIRFLOW_DB_NAME from .env.production: airflow_db)
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_password@postgres_shared:5432/${AIRFLOW_DB_NAME:-airflow_db}
+    AIRFLOW__CORE__FERNET_KEY: "${AIRFLOW__CORE__FERNET_KEY}"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+
+    # Installed packages
+    _PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-postgres openai beautifulsoup4 requests urllib3 google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client Pillow PyPDF2 yt-dlp pytubefix openai-whisper"
+
+    # DAG folder and performance tweaks
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags/repo
+    AIRFLOW__CORE__PARALLELISM: 4
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: 3
+    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: 2
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: Europe/Madrid
+
+    # Reduce scheduler CPU usage
+    AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 120
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 120
+
+    # API keys
+    OPENAI_API_KEY: "${OPENAI_API_KEY}"
+    YOUTUBE_API_KEY: "${YOUTUBE_API_KEY}"
+
+    # PostgreSQL connection for your project
+    POSTGRES_HOST: "${POSTGRES_HOST}"
+    POSTGRES_PORT: "${POSTGRES_PORT}"
+    POSTGRES_DB: "${POSTGRES_DB}"
+    POSTGRES_USER: "${POSTGRES_USER}"
+    POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    POSTGRES_SCHEMA: "${POSTGRES_SCHEMA}"
+
+    # Git sync credentials (for git_sync DAG)
+    GITHUB_USER: "${GITHUB_USER}"
+    GITHUB_TOKEN: "${GITHUB_TOKEN}"
+    GITHUB_REPO: "${GITHUB_REPO}"
+    GIT_SYNC_BRANCH: "${GIT_SYNC_BRANCH:-main}"
+  volumes:
+    - airflow_logs_prod:/opt/airflow/logs
+    - airflow_plugins_prod:/opt/airflow/plugins
+    - git_dags_prod:/opt/airflow/dags
+    - airflow_data_prod:/opt/airflow/data
+    # Mount congress_videos directory from NAS (includes token, assets, videos, fonts)
+    # Note: Token file must be writable for auto-refresh
+    - /volume1/docker/airflow/congress_videos:/opt/airflow/data/congress_videos
+  networks:
+    - postgres_infra_network
+    - airflow_network
+    - whisper_network
+  mem_limit: 2g
+  mem_reservation: 1.5g
+
+services:
+  init-dags:
+    image: alpine/git:latest
+    container_name: airflow-init-dags-prod
+    restart: "no"
+    entrypoint: ""
+    command: ["sh", "-c", "git config --global --add safe.directory /dags/repo && if [ -d /dags/repo/.git ]; then cd /dags/repo && git remote set-url origin https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${GITHUB_REPO}.git && git fetch origin && git reset --hard origin/${GIT_SYNC_BRANCH:-main}; else git clone --depth 1 --branch ${GIT_SYNC_BRANCH:-main} https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${GITHUB_REPO}.git /dags/repo; fi"]
+    environment:
+      GITHUB_USER: "${GITHUB_USER}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN}"
+      GITHUB_REPO: "${GITHUB_REPO}"
+      GIT_SYNC_BRANCH: "${GIT_SYNC_BRANCH:-main}"
+    volumes:
+      - git_dags_prod:/dags
+    networks:
+      - postgres_infra_network
+      - airflow_network
+      - whisper_network
+
+  init-perms:
+    image: busybox
+    restart: "no"
+    depends_on:
+      init-dags:
+        condition: service_completed_successfully
+    command:
+      - sh
+      - -c
+      - |
+        chown -R 50000:0 /dags
+        chown -R 50000:0 /data
+        chown -R 50000:0 /congress_videos
+        chmod -R 755 /congress_videos/assets
+        chmod 666 /congress_videos/congress_youtube_token.pickle
+        chmod -R 775 /congress_videos/videos
+    volumes:
+      - git_dags_prod:/dags
+      - airflow_data_prod:/data
+      - /volume1/docker/airflow/congress_videos:/congress_videos
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver-prod
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      init-perms:
+        condition: service_completed_successfully
+    ports:
+      - "8082:8080"
+    command: webserver
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler-prod
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      init-perms:
+        condition: service_completed_successfully
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $(hostname)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init-prod
+    restart: "no"
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        # Initialize the database (creates tables if they don't exist)
+        airflow db init
+
+        # Run migrations to ensure schema is up to date
+        airflow db migrate
+    user: "50000:50000"
