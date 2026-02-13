@@ -30,83 +30,7 @@ class PostgreSQLOperator(BaseOperator):
         db = CongressionalVideoDB()
 
         # Pull data from XCom based on operation
-        if self.operation == 'create_session':
-            session_number = ti.xcom_pull(key=self.xcom_keys.get('session_number', 'session_number'))
-            target_date = context["params"].get("target_date")
-            session_link = ti.xcom_pull(key=self.xcom_keys.get('session_link', 'session_link'))
-
-            session_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
-            target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
-
-            result = db.create_or_update_session(session_number, session_date_obj, target_date_obj, session_link)
-
-        elif self.operation == 'save_topics':
-            session_number = ti.xcom_pull(key=self.xcom_keys.get('session_number', 'db_session_id'))
-            video_groups = ti.xcom_pull(key=self.xcom_keys.get('video_groups', 'enriched_video_groups'))
-
-            print(f"DEBUG: session_number = {session_number}")
-            print(f"DEBUG: video_groups type = {type(video_groups)}")
-            print(f"DEBUG: video_groups length = {len(video_groups) if video_groups else 0}")
-
-            topic_ids = []
-            for i, group in enumerate(video_groups):
-                print(f"DEBUG: Group {i} keys: {list(group.keys()) if isinstance(group, dict) else 'Not a dict'}")
-
-                if 'main_topic' in group:
-                    # Save main topic
-                    topic_data = group['main_topic']
-                    print(f"DEBUG: main_topic keys: {list(topic_data.keys()) if isinstance(topic_data, dict) else 'Not a dict'}")
-                    print(f"DEBUG: main_topic data: {topic_data}")
-
-                    # Map the fields correctly from the actual data structure
-                    mapped_topic_data = {
-                        'topic_title': topic_data.get('content'),  # 'content' -> 'topic_title'
-                        'video_url': topic_data.get('video_url'),
-                        'video_file_path': None,  # Will be updated later by download task
-                        'speaker_name': topic_data.get('speaker_name'),
-                        'role': topic_data.get('role'),
-                        'profile_link': topic_data.get('profile_link'),
-                        'main_topic_entry_id': None,  # Main topics don't have a parent
-                        'file_size_bytes': None,  # Will be updated later
-                        'duration_seconds': topic_data.get('metadata_url', {}).get('duration_seconds'),
-                        'is_main_topic': topic_data.get('is_bold', False)  # Map is_bold to is_main_topic
-                    }
-
-                    print(f"DEBUG: mapped_topic_data: {mapped_topic_data}")
-
-                    topic_entry_id = db.upsert_video_topic(session_number, topic_data.get('entry_id'), mapped_topic_data)
-                    topic_ids.append(topic_entry_id)
-                    print(f"✅ Successfully saved main topic {topic_entry_id}")
-
-                    # Save interventions (individual speaker videos)
-                    interventions = group.get('interventions', [])
-                    print(f"DEBUG: Found {len(interventions)} interventions for this topic")
-
-                    for j, intervention in enumerate(interventions):
-                        print(f"DEBUG: Intervention {j} keys: {list(intervention.keys()) if isinstance(intervention, dict) else 'Not a dict'}")
-
-                        # Map intervention data
-                        mapped_intervention_data = {
-                            'topic_title': intervention.get('content', f"Intervención de {intervention.get('speaker_name', 'Unknown')}"),
-                            'video_url': intervention.get('video_url'),
-                            'video_file_path': None,  # Will be updated later by download task
-                            'speaker_name': intervention.get('speaker_name'),
-                            'role': intervention.get('role'),
-                            'profile_link': intervention.get('profile_link'),
-                            'main_topic_entry_id': topic_entry_id,  # Link intervention to its main topic
-                            'file_size_bytes': None,  # Will be updated later
-                            'duration_seconds': intervention.get('metadata_url', {}).get('duration_seconds'),
-                            'is_main_topic': False  # Interventions are never main topics
-                        }
-
-                        intervention_entry_id = db.upsert_video_topic(session_number, intervention.get('entry_id'), mapped_intervention_data)
-                        topic_ids.append(intervention_entry_id)
-                        print(f"✅ Successfully saved intervention {intervention_entry_id}")
-
-            db.update_session_total_topics(session_number)
-            result = topic_ids
-
-        elif self.operation == 'update_downloads':
+        if self.operation == 'update_downloads':
             download_results_raw = ti.xcom_pull(key=self.xcom_keys.get('download_results', 'download_results'))
             topic_ids = ti.xcom_pull(key=self.xcom_keys.get('topic_ids', 'db_topic_ids'))
 
@@ -257,59 +181,6 @@ class PostgreSQLOperator(BaseOperator):
 
             result = {'updated_topics': updated_count, 'total_processed': len(text_lookup)}
 
-        elif self.operation == 'save_ai_evaluations':
-            ai_evaluation_results = ti.xcom_pull(key=self.xcom_keys.get('evaluation_results', 'ai_evaluation_results'))
-            topic_ids = ti.xcom_pull(key=self.xcom_keys.get('topic_ids', 'db_topic_ids'))
-
-            # Debug logging
-            print(f"DEBUG: ai_evaluation_results type: {type(ai_evaluation_results)}")
-            print(f"DEBUG: topic_ids type: {type(topic_ids)}")
-
-            # Extract evaluations list
-            if isinstance(ai_evaluation_results, dict) and 'evaluations' in ai_evaluation_results:
-                evaluations = ai_evaluation_results['evaluations']
-                print(f"DEBUG: Extracted evaluations with {len(evaluations)} items")
-            elif isinstance(ai_evaluation_results, list):
-                evaluations = ai_evaluation_results
-                print(f"DEBUG: Using ai_evaluation_results as list with {len(evaluations)} items")
-            else:
-                print(f"ERROR: Unexpected ai_evaluation_results format: {type(ai_evaluation_results)}")
-                result = {'updated_topics': 0, 'error': 'Invalid ai_evaluation_results format'}
-                return result
-
-            # Ensure topic_ids is a list
-            if not isinstance(topic_ids, list):
-                print(f"ERROR: topic_ids is not a list, got: {type(topic_ids)}")
-                result = {'updated_topics': 0, 'error': 'topic_ids must be a list'}
-                return result
-
-            # Create a mapping from entry_id to evaluation for faster lookup
-            evaluation_map = {eval_item['entry_id']: eval_item for eval_item in evaluations if isinstance(eval_item, dict)}
-
-            updated_count = 0
-            for entry_id in topic_ids:
-                if entry_id in evaluation_map:
-                    evaluation = evaluation_map[entry_id]
-
-                    if evaluation.get('evaluation_success'):
-                        interest_score = evaluation.get('interest_score', 5)
-                        reasoning = evaluation.get('reasoning', '')
-
-                        print(f"DEBUG: Saving AI evaluation for {entry_id}: score={interest_score}")
-
-                        try:
-                            db.update_ai_interest_evaluation(entry_id, interest_score, reasoning)
-                            updated_count += 1
-                            print(f"✅ Successfully updated AI evaluation for topic {entry_id}")
-                        except Exception as e:
-                            print(f"❌ ERROR updating AI evaluation for topic {entry_id}: {e}")
-                    else:
-                        print(f"⚠️ Skipping {entry_id}: evaluation failed with error: {evaluation.get('error')}")
-                else:
-                    print(f"⚠️ No evaluation found for entry_id: {entry_id}")
-
-            result = {'updated_topics': updated_count, 'total_evaluations': len(evaluations)}
-
         elif self.operation == 'get_top_videos_for_upload':
             max_videos = context["params"].get("max_videos", 5)
             min_score = context["params"].get("min_interest_score", 6)
@@ -355,7 +226,20 @@ class PostgreSQLOperator(BaseOperator):
                     entry_id = detail.get('entry_id')
                     if entry_id:
                         if detail.get('success'):
+                            # Update queue status
                             db.update_upload_queue_status(entry_id, 'processing')
+
+                            # Also update video_file_path in video_topics table
+                            file_path = detail.get('file_path')
+                            file_size = detail.get('file_size')
+                            duration = detail.get('duration')
+                            if file_path:
+                                try:
+                                    db.update_download_info(entry_id, file_path, file_size, duration)
+                                    print(f"✅ Saved video path to database: {file_path}")
+                                except Exception as e:
+                                    print(f"⚠️ Warning: Failed to update video_file_path for {entry_id}: {e}")
+
                             updated_count += 1
                             print(f"✅ Updated queue status to 'processing' for {entry_id}")
                         else:
@@ -422,6 +306,131 @@ class PostgreSQLOperator(BaseOperator):
                     print(f"⚠️ Skipping failed upload")
 
             result = {'updated_videos': updated_count, 'total_uploads': len(upload_details)}
+
+        elif self.operation == 'save_youtube_chapters':
+            """Save scored YouTube chapter data to database"""
+            scored_chapters = ti.xcom_pull(key=self.xcom_keys.get('scored_chapters', 'scored_chapters'))
+            session_date_data = ti.xcom_pull(key=self.xcom_keys.get('session_date', 'session_date'))
+            target_date = context["params"].get("target_date")
+
+            # Debug logging
+            print(f"DEBUG: scored_chapters type: {type(scored_chapters)}")
+            print(f"DEBUG: session_date_data type: {type(session_date_data)}")
+            print(f"DEBUG: target_date: {target_date}")
+
+            if not scored_chapters:
+                print("WARNING: No scored chapters data to save")
+                result = {'total_videos_saved': 0, 'total_chapters_saved': 0, 'videos': []}
+                return result
+
+            # Extract session_number and session_date from session_date_data
+            # Structure: {'total_processed': int, 'videos': [{'video_id': str, 'session_number': int, 'target_date': str, ...}]}
+            session_number = None
+            session_date_str = None
+
+            if session_date_data and isinstance(session_date_data, dict):
+                videos_list = session_date_data.get('videos', [])
+                if videos_list and len(videos_list) > 0:
+                    first_video = videos_list[0]
+                    session_number = first_video.get('session_number')
+                    session_date_str = first_video.get('target_date', target_date)
+                    print(f"DEBUG: Extracted session_number={session_number}, session_date={session_date_str}")
+                else:
+                    print("WARNING: No videos in session_date_data")
+            else:
+                print(f"WARNING: Unexpected session_date_data format: {type(session_date_data)}")
+
+            # Fallback to target_date if no session_date found
+            if not session_date_str:
+                session_date_str = target_date
+                print(f"DEBUG: Using target_date as fallback: {session_date_str}")
+
+            # Parse session_date
+            from datetime import datetime
+            if isinstance(session_date_str, str):
+                session_date_obj = datetime.strptime(session_date_str, "%Y-%m-%d").date()
+            else:
+                session_date_obj = session_date_str
+
+            print(f"DEBUG: Final values - session_number={session_number}, session_date={session_date_obj}")
+
+            # Call the database function to save chapters
+            result = db.save_youtube_chapters_to_db(
+                scored_chapters_data=scored_chapters,
+                session_number=session_number,
+                session_date=session_date_obj
+            )
+
+            print(f"✅ Saved {result['total_chapters_saved']} chapters across {result['total_videos_saved']} videos")
+
+        elif self.operation == 'get_uploadable_chapters':
+            """Get uploadable chapters from database view"""
+            max_chapters = context["params"].get("max_chapters", 5)
+            min_relevance_score = context["params"].get("min_relevance_score", 2)
+
+            print(f"DEBUG: Getting top {max_chapters} uploadable chapters with min_relevance_score >= {min_relevance_score}")
+
+            result = db.get_uploadable_chapters(limit=max_chapters, min_relevance_score=min_relevance_score)
+            print(f"✅ Retrieved {len(result)} uploadable chapters")
+
+        elif self.operation == 'mark_chapters_uploaded':
+            """Mark chapters as uploaded to YouTube after successful upload"""
+            upload_results = ti.xcom_pull(key=self.xcom_keys.get('upload_results', 'upload_results'))
+
+            if not upload_results or not upload_results.get('upload_details'):
+                print("No upload results to process")
+                result = {'updated_chapters': 0, 'failed_updates': 0, 'details': []}
+            else:
+                updated_count = 0
+                failed_count = 0
+                details = []
+
+                for upload_detail in upload_results['upload_details']:
+                    chapter_id = upload_detail.get('chapter_id')
+                    youtube_video_id = upload_detail.get('youtube_video_id')
+                    success = upload_detail.get('success', False)
+
+                    if success and chapter_id and youtube_video_id:
+                        try:
+                            db.mark_chapter_uploaded(chapter_id, youtube_video_id)
+                            updated_count += 1
+                            details.append({
+                                'chapter_id': chapter_id,
+                                'youtube_video_id': youtube_video_id,
+                                'status': 'updated'
+                            })
+                            print(f"✅ Marked chapter {chapter_id} as uploaded: {youtube_video_id}")
+                        except Exception as e:
+                            failed_count += 1
+                            details.append({
+                                'chapter_id': chapter_id,
+                                'status': 'failed',
+                                'error': str(e)
+                            })
+                            print(f"❌ Failed to mark chapter {chapter_id}: {e}")
+                    elif not success:
+                        print(f"⏭️ Skipping chapter {chapter_id}: upload was not successful")
+                        details.append({
+                            'chapter_id': chapter_id,
+                            'status': 'skipped',
+                            'reason': 'upload_failed'
+                        })
+                    elif success and (not chapter_id or not youtube_video_id):
+                        # Debug: upload succeeded but missing tracking fields
+                        print(f"⚠️ Upload succeeded but missing fields: chapter_id={chapter_id}, youtube_video_id={youtube_video_id}")
+                        print(f"   Full upload_detail: {upload_detail}")
+                        details.append({
+                            'chapter_id': chapter_id,
+                            'status': 'skipped',
+                            'reason': f'missing_fields: chapter_id={chapter_id}, youtube_video_id={youtube_video_id}'
+                        })
+
+                result = {
+                    'updated_chapters': updated_count,
+                    'failed_updates': failed_count,
+                    'details': details
+                }
+                print(f"✅ Updated {updated_count} chapters, {failed_count} failed")
 
         else:
             raise ValueError(f"Unknown operation: {self.operation}")

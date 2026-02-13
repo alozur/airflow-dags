@@ -19,6 +19,12 @@ from congress_videos.config.ai_prompts import (
     THUMBNAIL_TEXT_SYSTEM_PROMPT,
     THUMBNAIL_TEXT_USER_PROMPT_TEMPLATE
 )
+from congress_videos.config.paths import (
+    FONT_BOLD,
+    FONT_REGULAR,
+    BACKGROUND_IMAGE,
+    CHANNEL_LOGO
+)
 
 
 def truncate_to_complete_words(text, max_length):
@@ -184,7 +190,7 @@ def calculate_font_size_multiline(text, image_width, image_height, max_width_rat
 
     # Font paths for Linux (Docker environment)
     font_paths = [
-        "/opt/airflow/data/congress_videos/fonts/LiberationSans-Bold.ttf",  # Project fonts folder
+        FONT_BOLD,  # Project fonts folder (centralized config)
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",  # System fallback
         "C:/Windows/Fonts/ariblk.ttf",  # Windows fallback (for local testing)
     ]
@@ -352,7 +358,7 @@ def create_thumbnail(
 
         # Session font (lighter, regular weight for Linux)
         session_font_paths = [
-            "/opt/airflow/data/congress_videos/fonts/LiberationSans-Regular.ttf",  # Project fonts folder
+            FONT_REGULAR,  # Project fonts folder (centralized config)
             "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",  # System fallback
             "C:/Windows/Fonts/calibri.ttf",  # Windows fallback (for local testing)
         ]
@@ -450,7 +456,7 @@ def generate_thumbnail_text_for_videos(queued_videos, youtube_metadata_results):
     Generate short, attention-grabbing text for thumbnails using AI.
 
     Args:
-        queued_videos: List of videos from queue
+        queued_videos: List of chapters from uploadable_chapters view
         youtube_metadata_results: Results dict from generate_youtube_metadata_for_selected_videos
                                   containing 'topic_metadata' list
 
@@ -458,7 +464,7 @@ def generate_thumbnail_text_for_videos(queued_videos, youtube_metadata_results):
         Dict with thumbnail text results
     """
     if not queued_videos or not youtube_metadata_results:
-        logging.warning("No videos or metadata for thumbnail text generation")
+        logging.warning("No chapters or metadata for thumbnail text generation")
         return {"results": []}
 
     # Extract the topic_metadata list from the results dict
@@ -469,10 +475,10 @@ def generate_thumbnail_text_for_videos(queued_videos, youtube_metadata_results):
 
     results = []
     for video in queued_videos:
-        entry_id = video.get('entry_id')
+        chapter_id = video.get('chapter_id')
 
-        # Find metadata for this video by topic_entry_id
-        metadata = next((m for m in topic_metadata if m.get('topic_entry_id') == entry_id), None)
+        # Find metadata for this chapter by chapter_id
+        metadata = next((m for m in topic_metadata if m.get('chapter_id') == chapter_id), None)
 
         if metadata:
             # Extract title and description from nested dicts
@@ -482,105 +488,94 @@ def generate_thumbnail_text_for_videos(queued_videos, youtube_metadata_results):
             title = title_data.get('title', '') if isinstance(title_data, dict) else str(title_data)
             description = description_data.get('description', '') if isinstance(description_data, dict) else str(description_data)
 
-            # Generate impactful thumbnail text
+            # Generate impactful thumbnail text (3-6 words, max 40 chars)
             result = generate_thumbnail_text(title, description, max_length=40)
-            result['entry_id'] = entry_id
+            result['chapter_id'] = chapter_id
+            result['video_id'] = video.get('video_id')
             results.append(result)
         else:
-            logging.warning(f"No metadata found for video {entry_id}")
+            logging.warning(f"No metadata found for chapter {chapter_id}")
 
     return {"results": results}
 
 
 def generate_video_thumbnails(queued_videos, thumbnail_texts, download_results, data_dir):
     """
-    Generate thumbnail images for videos in the same folder as downloaded videos.
+    Generate thumbnail images for chapters.
+
+    Creates folder structure: data_dir/video_id/chapter_id/thumbnail.png
 
     Args:
-        queued_videos: List of videos from queue
+        queued_videos: List of chapters from uploadable_chapters view
         thumbnail_texts: Generated thumbnail text results
-        download_results: Download results with file paths
+        download_results: Not used for chapters (kept for signature compatibility)
         data_dir: Data directory path
 
     Returns:
         Dict with thumbnail generation results
     """
     if not queued_videos:
-        logging.warning("No videos for thumbnail generation")
+        logging.warning("No chapters for thumbnail generation")
         return {"results": []}
 
-    # Get video folder from download results (first downloaded video's folder)
-    video_folder = None
-    if download_results and download_results.get('download_details'):
-        # Find first successfully downloaded video
-        successful_videos = [v for v in download_results['download_details'] if v.get('success')]
-        if successful_videos:
-            first_video = successful_videos[0]
-            video_path = first_video.get('file_path')
-            if video_path:
-                video_folder = os.path.dirname(video_path)
-                logging.info(f"Thumbnails will be saved in video folder: {video_folder}")
-
-    if not video_folder:
-        # Fallback to data directory
-        video_folder = data_dir
-        logging.warning(f"No video folder found, using data directory: {video_folder}")
-
-    # Merge thumbnail text with video info
+    # Merge thumbnail text with chapter info
     videos_with_text = []
     for video in queued_videos:
         video_copy = video.copy()
+        chapter_id = video.get('chapter_id')
 
-        # Find thumbnail text for this video by entry_id
+        # Find thumbnail text for this chapter
         text_result = next(
-            (t for t in thumbnail_texts.get('results', []) if t.get('entry_id') == video.get('entry_id')),
+            (t for t in thumbnail_texts.get('results', [])
+             if t.get('chapter_id') == chapter_id),
             None
         )
 
         if text_result:
             video_copy['thumbnail_text'] = text_result.get('thumbnail_text', '')
         else:
-            # Fallback to title
-            video_copy['thumbnail_text'] = video.get('youtube_title', '')[:40]
+            # Fallback to chapter title
+            video_copy['thumbnail_text'] = video.get('chapter_title', '')[:40]
 
         videos_with_text.append(video_copy)
 
-    # Generate thumbnails in the video folder
-    return generate_thumbnails_for_videos(videos_with_text, data_dir, video_folder)
+    # Generate thumbnails
+    return generate_thumbnails_for_videos(videos_with_text, data_dir, download_results)
 
 
-def generate_thumbnails_for_videos(videos, data_directory, video_folder=None):
+def generate_thumbnails_for_videos(videos, data_directory, download_results=None):
     """
-    Generate thumbnails for a list of videos.
+    Generate thumbnails for chapters.
+
+    Creates folder structure: data_directory/video_id/chapter_id/thumbnail.png
 
     Args:
-        videos: List of video dicts with metadata
-        data_directory: Base data directory for assets (already the congress_videos folder)
-        video_folder: Folder where videos are saved (thumbnails will be saved here)
+        videos: List of chapter dicts with metadata
+        data_directory: Base data directory (congress_videos folder)
+        download_results: Not used for chapters (kept for signature compatibility)
 
     Returns:
         Dict with thumbnail generation results
     """
-    # data_directory is already the congress_videos folder, no need to add it again
-    assets_dir = data_directory
-    background_path = os.path.join(assets_dir, 'congress_chamber_background.png')
-    logo_path = os.path.join(assets_dir, 'congress_channel_logo.png')
-
-    # Use video_folder if provided, otherwise use data_directory
-    thumbnail_output_dir = video_folder if video_folder else data_directory
+    # Use centralized asset paths from config
+    background_path = BACKGROUND_IMAGE
+    logo_path = CHANNEL_LOGO
 
     results = []
 
     for video in videos:
         try:
-            entry_id = video.get('entry_id')
-            video_id = video.get('video_id', entry_id)  # Fallback to entry_id if no video_id
+            chapter_id = video.get('chapter_id')
+            video_id = video.get('video_id')
             session_number = video.get('session_number', 133)
-            thumbnail_text = video.get('thumbnail_text', video.get('youtube_title', ''))[:40]
+            thumbnail_text = video.get('thumbnail_text', video.get('chapter_title', ''))[:40]
 
-            # Output path for thumbnail (in the same folder as videos)
-            output_filename = f"thumbnail_{entry_id}.jpg"
-            output_path = os.path.join(thumbnail_output_dir, output_filename)
+            # Create video_id/chapter_id/ folder structure
+            chapter_folder = os.path.join(data_directory, str(video_id), str(chapter_id))
+            os.makedirs(chapter_folder, exist_ok=True)
+            output_filename = "thumbnail.png"
+            output_path = os.path.join(chapter_folder, output_filename)
+            logging.info(f"Creating chapter thumbnail in: {chapter_folder}")
 
             # Generate thumbnail
             result = create_thumbnail(
@@ -592,14 +587,14 @@ def generate_thumbnails_for_videos(videos, data_directory, video_folder=None):
             )
 
             result['video_id'] = video_id
-            result['entry_id'] = entry_id
+            result['chapter_id'] = chapter_id
             results.append(result)
 
         except Exception as e:
-            logging.error(f"Error generating thumbnail for video {video.get('entry_id')}: {e}")
+            logging.error(f"Error generating thumbnail for chapter {video.get('chapter_id')}: {e}")
             results.append({
                 "video_id": video.get('video_id'),
-                "entry_id": video.get('entry_id'),
+                "chapter_id": video.get('chapter_id'),
                 "success": False,
                 "error": str(e)
             })

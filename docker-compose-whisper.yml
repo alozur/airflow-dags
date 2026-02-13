@@ -1,0 +1,35 @@
+networks:
+  whisper_network:
+    driver: bridge
+    name: whisper_network
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+          gateway: 172.21.0.1
+
+volumes:
+  whisper_models:
+  whisper_audio:
+
+services:
+  whisper-api:
+    image: onerahmet/openai-whisper-asr-webservice:latest
+    container_name: whisper-api
+    restart: unless-stopped
+    ports:
+      - "9000:9000"  # External and internal port 9000
+    volumes:
+      # Model cache (downloaded once, reused)
+      - whisper_models:/root/.cache/whisper
+      # Audio files directory (shared with other projects via NAS)
+      - /volume1/docker/whisper/audio:/app/audio
+    environment:
+      # Whisper model size: tiny, base, small, medium, large-v1, large-v2, large-v3
+      # For 4GB RAM NAS: use 'base' or 'small' (small uses ~1.5GB, base uses ~500MB)
+      - ASR_MODEL=tiny
+      # Engine: openai_whisper or faster_whisper
+      - ASR_ENGINE=faster_whisper
+    networks:
+      - whisper_network
+    mem_limit: 2g
+    mem_reservation: 512m
