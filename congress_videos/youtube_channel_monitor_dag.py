@@ -65,7 +65,7 @@ with DAG(
     tags=['congress', 'youtube', 'monitor'],
     params={  # Default to yesterday
         "target_date": yesterday_str,
-        "max_videos": 10,  # Maximum number of videos to check
+        "max_videos": 20,  # Maximum number of videos to check
         "chunk_duration_minutes": 30,  # Duration of each audio chunk in minutes (default: 30 minutes)
         "isTesting": False,  # Set to True manually when testing
         "test_video_url": "https://www.youtube.com/watch?v=ZBU0bVpYXM4"  # Test video URL (used when isTesting=True)
@@ -336,8 +336,8 @@ with DAG(
                 ti.xcom_pull(key='merged_srt_files') or ti.xcom_pull(key='youtube_subtitles'),  # Try both sources
                 target_date=context["params"].get("target_date"),
                 min_silence_seconds=15,
-                min_chunk_duration_minutes=20,
-                max_chunk_duration_minutes=30
+                min_chunk_duration_minutes=10,
+                max_chunk_duration_minutes=20
             ),
             'silence_chunks'
         ),
