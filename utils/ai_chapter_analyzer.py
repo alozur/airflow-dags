@@ -12,10 +12,11 @@ from typing import Dict, List, Optional
 
 import openai
 
-# NOTE: CHAPTER_ANALYSIS prompts were removed from ai_prompts.py
-# The analyze_chapters_with_ai() function below is no longer functional
-# and is kept only for reference. Use identify_interesting_chapters() in
-# congress_videos/modules/youtube/download.py instead.
+from congress_videos.config.ai_prompts import (
+    CHAPTER_IDENTIFICATION_SYSTEM_PROMPT,
+    CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE,
+)
+from utils.ai_helpers import generate_json_completion
 
 logger = logging.getLogger(__name__)
 
@@ -304,9 +305,6 @@ def analyze_chapters_with_ai(
     model: str = "gpt-4o-mini"
 ) -> Dict:
     """
-    DEPRECATED: This function is no longer functional because its AI prompts were removed.
-    Use identify_interesting_chapters() in congress_videos/modules/youtube/download.py instead.
-
     Use AI to identify topic changes in transcription based on content similarity.
 
     Simplified approach:
@@ -318,10 +316,10 @@ def analyze_chapters_with_ai(
 
     Args:
         srt_content: Full transcription in SRT format with timestamps
-        agenda_content: Session agenda text (for context)
+        agenda_content: Session agenda text (used as chunk summary for context)
         min_duration_minutes: Minimum chapter duration (default: 15)
         max_duration_minutes: Maximum chapter duration (default: 30)
-        model: OpenAI model to use (default: "gpt-3.5-turbo")
+        model: OpenAI model to use (default: "gpt-4o-mini")
 
     Returns:
         Dict with chapter analysis results:
@@ -350,98 +348,80 @@ def analyze_chapters_with_ai(
         "error": None
     }
 
-    if not openai.api_key:
-        result["error"] = "OpenAI API key not configured"
-        logger.error(result["error"])
+    if not srt_content:
+        result["error"] = "Empty SRT content provided"
+        logger.warning(result["error"])
         return result
 
     try:
         logger.info("Identifying topic changes in transcription using AI...")
         logger.info(f"Target chapter duration: {min_duration_minutes}-{max_duration_minutes} minutes")
 
-        # Use prompts from configuration file
-        system_prompt = CHAPTER_ANALYSIS_SYSTEM_PROMPT_TEMPLATE.format(
-            min_duration=min_duration_minutes,
-            max_duration=max_duration_minutes
-        )
-
-        # Use full SRT content without truncation
-        user_prompt = CHAPTER_ANALYSIS_USER_PROMPT_TEMPLATE.format(
-            agenda_content=agenda_content,
+        user_prompt = CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE.format(
+            chunk_summary=agenda_content,
             srt_content=srt_content,
-            min_duration_minutes=min_duration_minutes,
-            max_duration_minutes=max_duration_minutes
         )
 
-        # Call OpenAI API
         logger.info(f"Calling OpenAI API with model: {model}")
 
-        client = openai.OpenAI(api_key=openai.api_key)
-        response = client.chat.completions.create(
+        ai_result = generate_json_completion(
+            system_prompt=CHAPTER_IDENTIFICATION_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
             model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.2,  # Low temperature for consistent output
-            max_tokens=2000
+            temperature=0.2,
+            max_tokens=2000,
         )
 
-        # Extract and parse the response
-        ai_response = response.choices[0].message.content.strip()
-        logger.info(f"Received AI response ({len(ai_response)} characters)")
-
-        # Remove markdown code blocks if present
-        if ai_response.startswith('```'):
-            ai_response = ai_response.split('\n', 1)[1]
-            ai_response = ai_response.rsplit('```', 1)[0]
-
-        # Parse JSON response
-        try:
-            chapters_data = json.loads(ai_response.strip())
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse AI response as JSON: {e}")
-            logger.error(f"AI response was: {ai_response[:500]}")
-            result["error"] = f"AI returned invalid JSON: {str(e)}"
+        if ai_result["error"]:
+            result["error"] = ai_result["error"]
+            logger.error(f"AI completion failed: {ai_result['error']}")
             return result
 
-        # Process chapters
-        chapters = chapters_data.get('chapters', [])
+        chapters_data = ai_result["data"] or {}
+        raw_chapters = chapters_data.get("interesting_chapters", [])
 
-        for chapter in chapters:
-            # Calculate duration
-            start_seconds = parse_timestamp_to_seconds(chapter['start_time'])
-            end_seconds = parse_timestamp_to_seconds(chapter['end_time'])
-            duration_seconds = end_seconds - start_seconds
+        # Normalise chapters to the expected output structure
+        chapters = []
+        for idx, chapter in enumerate(raw_chapters, start=1):
+            start_seconds = parse_timestamp_to_seconds(chapter.get("start_time", "00:00:00"))
+            end_seconds = parse_timestamp_to_seconds(chapter.get("end_time", "00:00:00"))
+            duration_seconds = max(0, end_seconds - start_seconds)
 
-            chapter['duration_seconds'] = duration_seconds
-            chapter['duration_minutes'] = round(duration_seconds / 60, 1)
+            chapters.append({
+                "chapter_number": idx,
+                "title": chapter.get("title", ""),
+                "start_time": chapter.get("start_time", "00:00:00"),
+                "end_time": chapter.get("end_time", "00:00:00"),
+                "duration_seconds": duration_seconds,
+                "duration_minutes": round(duration_seconds / 60, 1),
+                "topics": chapter.get("topics", []),
+            })
 
         # Sort chapters by start time
-        chapters.sort(key=lambda x: parse_timestamp_to_seconds(x['start_time']))
+        chapters.sort(key=lambda x: parse_timestamp_to_seconds(x["start_time"]))
 
         # Calculate total duration
         if chapters:
-            first_start = parse_timestamp_to_seconds(chapters[0]['start_time'])
-            last_end = parse_timestamp_to_seconds(chapters[-1]['end_time'])
+            first_start = parse_timestamp_to_seconds(chapters[0]["start_time"])
+            last_end = parse_timestamp_to_seconds(chapters[-1]["end_time"])
             total_duration = last_end - first_start
         else:
             total_duration = 0
 
-        result['success'] = True
-        result['total_chapters'] = len(chapters)
-        result['total_duration_seconds'] = total_duration
-        result['chapters'] = chapters
+        result["success"] = True
+        result["total_chapters"] = len(chapters)
+        result["total_duration_seconds"] = total_duration
+        result["chapters"] = chapters
 
-        logger.info(f"✅ Identified {len(chapters)} topic changes")
-        for i, chapter in enumerate(chapters, 1):
-            logger.info(f"  Chapter {i}: {chapter['title']} ({chapter['start_time']} - {chapter['end_time']}, {chapter.get('duration_minutes', 0):.1f} min)")
+        logger.info(f"Identified {len(chapters)} topic changes")
+        for chapter in chapters:
+            logger.info(
+                f"  Chapter {chapter['chapter_number']}: {chapter['title']} "
+                f"({chapter['start_time']} - {chapter['end_time']}, {chapter.get('duration_minutes', 0):.1f} min)"
+            )
 
-    except openai.OpenAIError as e:
-        result['error'] = f"OpenAI API error: {str(e)}"
-        logger.error(result['error'], exc_info=True)
     except Exception as e:
-        result['error'] = f"Unexpected error: {str(e)}"
-        logger.error(result['error'], exc_info=True)
+        result["error"] = f"Unexpected error: {str(e)}"
+        logger.error(result["error"], exc_info=True)
 
     return result
