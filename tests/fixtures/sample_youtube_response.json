@@ -1,0 +1,65 @@
+{
+  "kind": "youtube#searchListResponse",
+  "etag": "test-etag-1234",
+  "nextPageToken": "CAUQAA",
+  "regionCode": "ES",
+  "pageInfo": {
+    "totalResults": 42,
+    "resultsPerPage": 5
+  },
+  "items": [
+    {
+      "kind": "youtube#searchResult",
+      "etag": "item-etag-1",
+      "id": {
+        "kind": "youtube#video",
+        "videoId": "hy1cnx-0Oww"
+      },
+      "snippet": {
+        "publishedAt": "2025-05-22T10:00:00Z",
+        "channelId": "UC_test_channel_id",
+        "title": "Sesión Plenaria 22 de mayo de 2025",
+        "description": "Sesión plenaria del Congreso de los Diputados",
+        "thumbnails": {
+          "default": {
+            "url": "https://i.ytimg.com/vi/hy1cnx-0Oww/default.jpg",
+            "width": 120,
+            "height": 90
+          },
+          "high": {
+            "url": "https://i.ytimg.com/vi/hy1cnx-0Oww/hqdefault.jpg",
+            "width": 480,
+            "height": 360
+          }
+        },
+        "channelTitle": "Congreso de los Diputados",
+        "liveBroadcastContent": "none",
+        "publishTime": "2025-05-22T10:00:00Z"
+      }
+    },
+    {
+      "kind": "youtube#searchResult",
+      "etag": "item-etag-2",
+      "id": {
+        "kind": "youtube#video",
+        "videoId": "abc123def45"
+      },
+      "snippet": {
+        "publishedAt": "2025-05-21T15:30:00Z",
+        "channelId": "UC_test_channel_id",
+        "title": "Comisión de Economía",
+        "description": "Reunión de la comisión",
+        "thumbnails": {
+          "default": {
+            "url": "https://i.ytimg.com/vi/abc123def45/default.jpg",
+            "width": 120,
+            "height": 90
+          }
+        },
+        "channelTitle": "Congreso de los Diputados",
+        "liveBroadcastContent": "none",
+        "publishTime": "2025-05-21T15:30:00Z"
+      }
+    }
+  ]
+}

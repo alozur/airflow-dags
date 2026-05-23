@@ -1,0 +1,62 @@
+[
+  {
+    "id": 0,
+    "seek": 0,
+    "start": 0.0,
+    "end": 4.5,
+    "text": " Buenos días, señorías. Se abre la sesión.",
+    "tokens": [50364, 14478, 1932],
+    "temperature": 0.0,
+    "avg_logprob": -0.21,
+    "compression_ratio": 1.45,
+    "no_speech_prob": 0.02
+  },
+  {
+    "id": 1,
+    "seek": 0,
+    "start": 4.5,
+    "end": 9.8,
+    "text": " El orden del día comprende los siguientes puntos.",
+    "tokens": [50589, 22310],
+    "temperature": 0.0,
+    "avg_logprob": -0.18,
+    "compression_ratio": 1.52,
+    "no_speech_prob": 0.01
+  },
+  {
+    "id": 2,
+    "seek": 0,
+    "start": 9.8,
+    "end": 15.2,
+    "text": " Primer punto del orden del día: aprobación del acta.",
+    "tokens": [50856, 14478],
+    "temperature": 0.0,
+    "avg_logprob": -0.25,
+    "compression_ratio": 1.38,
+    "no_speech_prob": 0.03
+  },
+  {
+    "id": 3,
+    "seek": 0,
+    "start": 35.0,
+    "end": 42.7,
+    "text": " Segundo punto: comparecencia del ministro.",
+    "tokens": [51123, 14478],
+    "temperature": 0.0,
+    "avg_logprob": -0.19,
+    "compression_ratio": 1.41,
+    "no_speech_prob": 0.02
+  },
+  {
+    "id": 4,
+    "seek": 0,
+    "start": 42.7,
+    "end": 48.3,
+    "text": " Tiene la palabra el señor ministro.",
+    "tokens": [51389, 22310],
+    "temperature": 0.0,
+    "avg_logprob": -0.22,
+    "compression_ratio": 1.33,
+    "no_speech_prob": 0.04
+  }
+]

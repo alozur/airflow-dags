@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "airflow-dags"
+version = "0.1.0"
+description = "Airflow DAGs for congress video processing and YouTube automation"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+minversion = "7.4"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--tb=short",
+    "--cov=utils",
+    "--cov=congress_videos",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-report=html:htmlcov",
+    "--cov-report=xml:coverage.xml",
+    "--cov-fail-under=80",
+]
+markers = [
+    "unit: fast isolated unit tests (default)",
+    "integration: tests that touch multiple components",
+    "slow: tests that take > 1s",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+    "ignore::UserWarning",
+]
+log_cli = false
+log_cli_level = "INFO"
+
+[tool.coverage.run]
+branch = true
+source = ["utils", "congress_videos"]
+omit = [
+    "*/__init__.py",
+    "*/tests/*",
+    "*/test_*",
+    "utils/git_sync_dag.py",
+    "utils/youtube_uploader_dag.py",
+    "congress_videos/youtube_upload_dag.py",
+    "congress_videos/youtube_channel_monitor_dag.py",
+    "congress_videos/config/ai_prompts.py",
+]
+
+[tool.coverage.report]
+fail_under = 80
+precision = 2
+show_missing = true
+skip_covered = false
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "\\.\\.\\.",
+    "def __repr__",
+    "def __str__",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+title = "airflow-dags coverage report"
+
+[tool.coverage.xml]
+output = "coverage.xml"
