@@ -122,6 +122,7 @@ with DAG(
                             whisper_result = transcribe_audio_file(
                                 tmp.name, language='es',
                                 use_local_whisper=True, model_size='tiny',
+                                save_srt=False,
                             )
                             if whisper_result.get('success'):
                                 transcript = whisper_result.get('text', '').strip()

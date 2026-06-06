@@ -105,7 +105,8 @@ def save_srt_file(srt_content: str, audio_file_path: str) -> str:
 def transcribe_audio_file_with_local_whisper(
     audio_file_path: str,
     language: str = "es",
-    model_size: str = "tiny"
+    model_size: str = "tiny",
+    save_srt: bool = True,
 ) -> Dict:
     """
     Transcribe audio using local OpenAI Whisper library with SRT generation.
@@ -154,13 +155,12 @@ def transcribe_audio_file_with_local_whisper(
 
         duration = time.time() - start_time
 
-        # Generate and save SRT file (only SRT, no text file)
-        if result.get('segments'):
+        srt_path = None
+        if save_srt and result.get('segments'):
             srt_content = create_srt_from_segments(result['segments'])
             srt_path = save_srt_file(srt_content, audio_file_path)
-        else:
+        elif not result.get('segments'):
             logging.warning("No segments found in transcription result")
-            srt_path = None
 
         logging.info(f"Transcription completed in {duration:.2f}s")
         logging.info(f"Segments: {len(result.get('segments', []))}")
@@ -196,7 +196,8 @@ def transcribe_audio_file(
     language: str = "es",
     timeout: int = 3600,
     use_local_whisper: bool = True,
-    model_size: str = "tiny"
+    model_size: str = "tiny",
+    save_srt: bool = True,
 ) -> Dict:
     """
     Transcribe a single audio file.
@@ -223,11 +224,12 @@ def transcribe_audio_file(
         - duration: Time taken for transcription
     """
     if use_local_whisper:
-        # Try local Whisper first (with SRT generation)
+        # Try local Whisper first (with optional SRT generation)
         result = transcribe_audio_file_with_local_whisper(
             audio_file_path,
             language,
-            model_size
+            model_size,
+            save_srt=save_srt,
         )
 
         if result['success']:
