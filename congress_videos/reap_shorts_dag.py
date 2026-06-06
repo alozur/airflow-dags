@@ -5,6 +5,7 @@ Selects eligible chapters, optionally pre-trims long clips using AI + SRT contex
 uploads to Reap, waits for job completion, and downloads all resulting clips.
 """
 
+import json
 import logging
 import os
 import subprocess
@@ -158,10 +159,10 @@ with DAG(
     catchup=False,
     tags=['congress', 'reap', 'shorts'],
     params={
-        "max_chapters": 3,
+        "max_chapters": 1,
         "min_relevance_score": 3,
-        "pre_trim_threshold_secs": 480,
-        "pre_trim_target_secs": 360,
+        "pre_trim_threshold_secs": 300,
+        "pre_trim_target_secs": 300,
     }
 ) as dag:
 
@@ -234,34 +235,46 @@ with DAG(
             if duration > threshold_secs:
                 session_date = chapter.get('session_date') or None
                 srt_path = find_srt_for_chapter(str(video_id), str(chapter_id), session_date)
+                window = None
 
                 if srt_path:
                     window = select_pretrim_window(srt_path, target_secs=target_secs)
-
-                    if window:
-                        trimmed_path = os.path.join(chapter_folder, 'chapter_video_trimmed.mp4')
-                        try:
-                            _ffmpeg_extract_window(
-                                source_path=clip_path,
-                                dest_path=trimmed_path,
-                                start_secs=window['start_seconds'],
-                                end_secs=window['end_seconds'],
-                            )
-                            clip_path = trimmed_path
-                            pretrim_start = window['start_seconds']
-                            pretrim_end = window['end_seconds']
-                            pretrim_used_srt = True
-                            duration = pretrim_end - pretrim_start
-                        except RuntimeError as exc:
-                            logging.warning(
-                                "Pre-trim ffmpeg failed for chapter %s: %s — using full clip",
-                                chapter_id, exc
-                            )
+                    if not window:
+                        logging.warning(
+                            "select_pretrim_window returned None for chapter %s — falling back to first %.0fs",
+                            chapter_id, target_secs,
+                        )
                 else:
                     logging.warning(
-                        "No SRT found for chapter %s (video_id=%s) — sending full clip to Reap",
-                        chapter_id, video_id
+                        "No SRT found for chapter %s (video_id=%s) — falling back to first %.0fs",
+                        chapter_id, video_id, target_secs,
                     )
+
+                # Pre-trim is MANDATORY: use SRT window if available, else cut first target_secs
+                pretrim_start = window['start_seconds'] if window else 0.0
+                pretrim_end = window['end_seconds'] if window else float(target_secs)
+                pretrim_used_srt = window is not None
+                trimmed_path = os.path.join(chapter_folder, 'chapter_video_trimmed.mp4')
+
+                try:
+                    _ffmpeg_extract_window(
+                        source_path=clip_path,
+                        dest_path=trimmed_path,
+                        start_secs=pretrim_start,
+                        end_secs=pretrim_end,
+                    )
+                    clip_path = trimmed_path
+                    duration = pretrim_end - pretrim_start
+                    logging.info(
+                        "Chapter %s pre-trimmed: %.1f–%.1fs (%.0fs) srt_window=%s",
+                        chapter_id, pretrim_start, pretrim_end, duration, pretrim_used_srt,
+                    )
+                except RuntimeError as exc:
+                    logging.error(
+                        "Pre-trim ffmpeg failed for chapter %s: %s — skipping chapter",
+                        chapter_id, exc,
+                    )
+                    continue
 
             if duration < 120:
                 logging.warning(
@@ -284,6 +297,63 @@ with DAG(
     t2 = PythonOperator(
         task_id='extract_and_pretrim_clip',
         python_callable=_extract_and_pretrim_clip,
+    )
+
+    def _validate_clip_durations(ti, **context):
+        """
+        Safety gate: reject any clip whose actual file duration exceeds pre_trim_target_secs.
+        Uses ffprobe to measure the real file, not computed metadata.
+        """
+        clip_results = ti.xcom_pull(key='clip_results') or []
+        max_secs = float(context['params']['pre_trim_target_secs'])
+
+        safe_clips = []
+        for clip in clip_results:
+            chapter_id = clip['chapter_id']
+            clip_path = clip['clip_path']
+
+            cmd = [
+                'ffprobe', '-v', 'quiet',
+                '-print_format', 'json',
+                '-show_format',
+                clip_path,
+            ]
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                probe = json.loads(result.stdout)
+                actual_secs = float(probe['format']['duration'])
+            except Exception as exc:
+                logging.error(
+                    "validate_clip_durations: could not probe chapter %s (%s): %s — blocking upload",
+                    chapter_id, clip_path, exc,
+                )
+                continue
+
+            if actual_secs > max_secs:
+                logging.error(
+                    "SAFETY GATE BLOCKED chapter %s: actual duration %.1fs > max %.0fs — "
+                    "clip will NOT be uploaded to Reap",
+                    chapter_id, actual_secs, max_secs,
+                )
+                continue
+
+            logging.info(
+                "validate_clip_durations: chapter %s OK — %.1fs <= %.0fs",
+                chapter_id, actual_secs, max_secs,
+            )
+            safe_clips.append(clip)
+
+        if len(safe_clips) < len(clip_results):
+            logging.warning(
+                "validate_clip_durations: %d clip(s) blocked by safety gate, %d passed",
+                len(clip_results) - len(safe_clips), len(safe_clips),
+            )
+
+        ti.xcom_push(key='clip_results', value=safe_clips)
+
+    t2b = PythonOperator(
+        task_id='validate_clip_durations',
+        python_callable=_validate_clip_durations,
     )
 
     def _upload_to_reap(ti, **context):
@@ -418,4 +488,4 @@ with DAG(
         python_callable=_check_credits_status,
     )
 
-    t0 >> t1 >> t2 >> t3 >> t4 >> t5 >> t6
+    t0 >> t1 >> t2 >> t2b >> t3 >> t4 >> t5 >> t6
