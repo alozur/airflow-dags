@@ -910,6 +910,7 @@ class CongressionalVideoDB:
         """
         shorts_table = self.pg_conn.get_qualified_table('video_shorts')
         chapters_table = self.pg_conn.get_qualified_table('video_chapters')
+        videos_table = self.pg_conn.get_qualified_table('youtube_source_videos')
 
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
@@ -919,8 +920,9 @@ class CongressionalVideoDB:
                         SELECT vs.id
                         FROM {shorts_table} vs
                         LEFT JOIN {chapters_table} vc ON vc.chapter_id = vs.chapter_id
+                        LEFT JOIN {videos_table} ysv ON ysv.video_id = vc.video_id
                         WHERE vs.reap_status = 'pending'
-                        ORDER BY vc.session_date DESC NULLS LAST, vc.relevance_score DESC NULLS LAST
+                        ORDER BY ysv.session_date DESC NULLS LAST, vc.relevance_score DESC NULLS LAST
                         LIMIT 1
                         FOR UPDATE SKIP LOCKED
                     )
