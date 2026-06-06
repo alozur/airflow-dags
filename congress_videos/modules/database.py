@@ -919,10 +919,20 @@ class CongressionalVideoDB:
                     WHERE id = (
                         SELECT vs.id
                         FROM {shorts_table} vs
-                        LEFT JOIN {chapters_table} vc ON vc.chapter_id = vs.chapter_id
-                        LEFT JOIN {videos_table} ysv ON ysv.video_id = vc.video_id
                         WHERE vs.reap_status = 'pending'
-                        ORDER BY ysv.session_date DESC NULLS LAST, vc.relevance_score DESC NULLS LAST
+                        ORDER BY (
+                            SELECT ysv.session_date
+                            FROM {chapters_table} vc
+                            LEFT JOIN {videos_table} ysv ON ysv.video_id = vc.video_id
+                            WHERE vc.chapter_id = vs.chapter_id
+                            LIMIT 1
+                        ) DESC NULLS LAST,
+                        (
+                            SELECT vc.relevance_score
+                            FROM {chapters_table} vc
+                            WHERE vc.chapter_id = vs.chapter_id
+                            LIMIT 1
+                        ) DESC NULLS LAST
                         LIMIT 1
                         FOR UPDATE SKIP LOCKED
                     )
