@@ -303,11 +303,17 @@ with DAG(
         """
         Safety gate: reject any clip whose actual file duration exceeds pre_trim_target_secs.
         Uses ffprobe to measure the real file, not computed metadata.
+
+        Allows a 3-second tolerance for ffmpeg -c copy frame-boundary imprecision.
+        Raises AirflowException if any clip is blocked — the DAG fails visibly.
         """
         clip_results = ti.xcom_pull(key='clip_results') or []
         max_secs = float(context['params']['pre_trim_target_secs'])
+        _FRAME_TOLERANCE_SECS = 3.0
 
         safe_clips = []
+        blocked_chapters = []
+
         for clip in clip_results:
             chapter_id = clip['chapter_id']
             clip_path = clip['clip_path']
@@ -327,14 +333,16 @@ with DAG(
                     "validate_clip_durations: could not probe chapter %s (%s): %s — blocking upload",
                     chapter_id, clip_path, exc,
                 )
+                blocked_chapters.append(chapter_id)
                 continue
 
-            if actual_secs > max_secs:
+            if actual_secs > max_secs + _FRAME_TOLERANCE_SECS:
                 logging.error(
-                    "SAFETY GATE BLOCKED chapter %s: actual duration %.1fs > max %.0fs — "
-                    "clip will NOT be uploaded to Reap",
-                    chapter_id, actual_secs, max_secs,
+                    "SAFETY GATE BLOCKED chapter %s: actual duration %.1fs > max %.0fs (+%.0fs tolerance) — "
+                    "pre-trim did not reduce the clip enough",
+                    chapter_id, actual_secs, max_secs, _FRAME_TOLERANCE_SECS,
                 )
+                blocked_chapters.append(chapter_id)
                 continue
 
             logging.info(
@@ -343,10 +351,11 @@ with DAG(
             )
             safe_clips.append(clip)
 
-        if len(safe_clips) < len(clip_results):
-            logging.warning(
-                "validate_clip_durations: %d clip(s) blocked by safety gate, %d passed",
-                len(clip_results) - len(safe_clips), len(safe_clips),
+        if blocked_chapters:
+            raise AirflowException(
+                f"validate_clip_durations: {len(blocked_chapters)} clip(s) blocked "
+                f"(chapters {blocked_chapters}) — pre-trim failed to meet the 5-minute limit. "
+                f"Aborting upload to Reap."
             )
 
         ti.xcom_push(key='clip_results', value=safe_clips)

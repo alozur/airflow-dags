@@ -453,45 +453,34 @@ class TestValidateClipDurations:
 
         assert len(ti.xcom_store["clip_results"]) == 1
 
-    def test_clip_exceeding_limit_is_blocked(self, mocker):
+    def test_clip_exactly_at_limit_passes_due_to_tolerance(self, mocker):
         from congress_videos.reap_shorts_dag import _validate_clip_durations
 
-        self._patch_ffprobe(mocker, duration_secs=1800.0)  # 30 minutes
+        # ffmpeg -c copy produces 300.033s for a 300s target — must pass within tolerance
+        self._patch_ffprobe(mocker, duration_secs=300.033)
 
         ti = _make_ti({"clip_results": [self._clip()]})
         _validate_clip_durations(ti, params={"pre_trim_target_secs": 300})
 
-        assert ti.xcom_store["clip_results"] == []
+        assert len(ti.xcom_store["clip_results"]) == 1
 
-    def test_multiple_clips_only_safe_ones_pass(self, mocker):
+    def test_clip_exceeding_limit_plus_tolerance_raises(self, mocker):
         from congress_videos.reap_shorts_dag import _validate_clip_durations
-        import json
 
-        durations = [290.0, 2400.0, 180.0]
-        calls = iter([
-            MagicMock(stdout=json.dumps({"format": {"duration": str(d)}}), returncode=0)
-            for d in durations
-        ])
-        mocker.patch("subprocess.run", side_effect=lambda *a, **kw: next(calls))
+        self._patch_ffprobe(mocker, duration_secs=1800.0)  # 30 minutes — way over
 
-        clips = [self._clip(chapter_id=i, clip_path=f"/data/c{i}.mp4") for i in range(3)]
-        ti = _make_ti({"clip_results": clips})
-        _validate_clip_durations(ti, params={"pre_trim_target_secs": 300})
+        ti = _make_ti({"clip_results": [self._clip()]})
+        with pytest.raises(AirflowException, match="blocked"):
+            _validate_clip_durations(ti, params={"pre_trim_target_secs": 300})
 
-        safe = ti.xcom_store["clip_results"]
-        assert len(safe) == 2
-        safe_ids = [c["chapter_id"] for c in safe]
-        assert 1 not in safe_ids  # 2400s was blocked (chapter_id=1)
-
-    def test_ffprobe_failure_blocks_clip(self, mocker):
+    def test_ffprobe_failure_raises(self, mocker):
         from congress_videos.reap_shorts_dag import _validate_clip_durations
 
         mocker.patch("subprocess.run", side_effect=Exception("ffprobe not found"))
 
         ti = _make_ti({"clip_results": [self._clip()]})
-        _validate_clip_durations(ti, params={"pre_trim_target_secs": 300})
-
-        assert ti.xcom_store["clip_results"] == []
+        with pytest.raises(AirflowException, match="blocked"):
+            _validate_clip_durations(ti, params={"pre_trim_target_secs": 300})
 
 
 class TestUploadToReap:
