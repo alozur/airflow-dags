@@ -201,7 +201,7 @@ with DAG(
             start_time = str(chapter['start_time'])
             end_time = str(chapter['end_time'])
 
-            duration = convert_srt_time_to_seconds(end_time + ',000') - convert_srt_time_to_seconds(start_time + ',000')
+            duration = convert_srt_time_to_seconds(_interval_to_srt(end_time)) - convert_srt_time_to_seconds(_interval_to_srt(start_time))
 
             source_video_path = _find_source_video(video_id)
             if not source_video_path:
