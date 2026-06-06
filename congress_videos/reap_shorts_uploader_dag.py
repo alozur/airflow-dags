@@ -1,13 +1,14 @@
 """
 Reap Shorts Uploader DAG
 
-Progressive daily upload of downloaded Reap Shorts clips to YouTube.
-Uploads the highest-virality-scored clips first, up to max_shorts_per_day per run.
+Uploads one downloaded Reap Short to YouTube per run, with AI-generated title and
+description derived from audio transcription (Whisper) + chapter metadata (GPT-4o-mini).
 
 Flow:
-1. get_pending_shorts     — query video_shorts for unuploaded downloaded clips
-2. trigger_youtube_upload — upload each clip via generic_youtube_uploader
-3. mark_shorts_uploaded   — persist youtube_video_id + is_uploaded=TRUE
+1. get_pending_shorts   — claim the highest-virality unuploaded clip
+2. generate_metadata    — extract audio → Whisper transcript → GPT title+description
+3. trigger_youtube_upload — upload via generic_youtube_uploader
+4. mark_shorts_uploaded — persist youtube_video_id + is_uploaded=TRUE
 """
 
 import logging
@@ -20,7 +21,11 @@ from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 
 from congress_videos.modules.database import CongressionalVideoDB
 from congress_videos.config.paths import YOUTUBE_TOKEN_FILE
-from utils.ai_helpers import truncate_text
+from congress_videos.config.ai_prompts import (
+    SHORTS_METADATA_SYSTEM_PROMPT,
+    SHORTS_METADATA_USER_PROMPT_TEMPLATE,
+)
+from utils.ai_helpers import generate_json_completion, truncate_text
 from utils.airflow_helpers import xcom_task
 from utils.env_loader import load_env_if_local
 
@@ -41,19 +46,19 @@ default_args = {
 with DAG(
     'reap_shorts_uploader',
     default_args=default_args,
-    description='Upload top-virality Reap Shorts clips to YouTube (max N per day)',
-    schedule='0 17 * * *',
+    description='Upload one Reap Short to YouTube per run with AI-generated title/description',
+    schedule='0,30 17-20 * * *',
     start_date=datetime(2025, 11, 14),
     catchup=False,
     tags=['congress', 'youtube', 'shorts', 'reap'],
     params={
-        'max_shorts_per_day': 2,
+        'max_shorts_per_run': 1,
         'min_virality_score': 0.0,
     }
 ) as dag:
 
     def _get_pending_shorts(ti, **context):
-        max_shorts = context['params'].get('max_shorts_per_day', 2)
+        max_shorts = context['params'].get('max_shorts_per_run', 1)
         min_virality = context['params'].get('min_virality_score', 0.0)
 
         db = CongressionalVideoDB()
@@ -69,37 +74,141 @@ with DAG(
         python_callable=_get_pending_shorts,
     )
 
+    def _generate_metadata(ti, **context):
+        import subprocess
+        import tempfile
+
+        pending_shorts = ti.xcom_pull(key='pending_shorts') or []
+
+        if not pending_shorts:
+            ti.xcom_push(key='shorts_metadata', value=[])
+            return
+
+        db = CongressionalVideoDB()
+        metadata_list = []
+
+        for short in pending_shorts:
+            short_id = short.get('id')
+            chapter_id = short.get('chapter_id')
+            video_path = short.get('local_file_path')
+
+            chapter = db.get_chapter_metadata(chapter_id) if chapter_id else None
+
+            chapter_title = (chapter or {}).get('title') or f'Short clip {short_id}'
+            key_speakers = (chapter or {}).get('key_speakers') or (chapter or {}).get('speakers') or []
+            speakers = ', '.join(key_speakers) if key_speakers else 'Diputados del Congreso'
+            topics = ', '.join((chapter or {}).get('topics') or []) or 'Debate parlamentario'
+            scoring_reasoning = (chapter or {}).get('scoring_reasoning') or ''
+
+            # Fallback metadata — used if Whisper or GPT fail
+            title = truncate_text(f"{chapter_title} #Shorts", max_length=100)
+            description = '🏛️ Debate en el Congreso de los Diputados.\n\n#Congreso #España #Política #Shorts'
+
+            transcript = None
+            if video_path and os.path.exists(video_path):
+                tmp_audio = None
+                try:
+                    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+                        tmp_audio = tmp.name
+
+                    ffmpeg_result = subprocess.run(
+                        [
+                            'ffmpeg', '-i', video_path,
+                            '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
+                            tmp_audio, '-y',
+                        ],
+                        capture_output=True,
+                        timeout=60,
+                    )
+
+                    if ffmpeg_result.returncode == 0:
+                        from utils.whisper_helpers import transcribe_audio_file
+                        whisper_result = transcribe_audio_file(
+                            tmp_audio, language='es',
+                            use_local_whisper=True, model_size='tiny',
+                        )
+                        if whisper_result.get('success'):
+                            transcript = whisper_result.get('text', '').strip()
+                            logging.info(f"Transcribed short {short_id}: {len(transcript)} chars")
+                    else:
+                        logging.warning(
+                            f"ffmpeg failed for short {short_id}: "
+                            f"{ffmpeg_result.stderr.decode()[:200]}"
+                        )
+                except Exception as e:
+                    logging.warning(f"Audio extraction failed for short {short_id}: {e}")
+                finally:
+                    if tmp_audio and os.path.exists(tmp_audio):
+                        os.unlink(tmp_audio)
+            else:
+                logging.warning(f"Video file not found for short {short_id}: {video_path}")
+
+            if transcript:
+                user_prompt = SHORTS_METADATA_USER_PROMPT_TEMPLATE.format(
+                    transcript=transcript[:2000],
+                    chapter_title=chapter_title,
+                    speakers=speakers,
+                    topics=topics,
+                    scoring_reasoning=scoring_reasoning[:500],
+                )
+                ai_result = generate_json_completion(
+                    system_prompt=SHORTS_METADATA_SYSTEM_PROMPT,
+                    user_prompt=user_prompt,
+                    model='gpt-4o-mini',
+                    max_tokens=400,
+                )
+                if ai_result.get('data'):
+                    ai_title = ai_result['data'].get('title', '').strip()
+                    ai_description = ai_result['data'].get('description', '').strip()
+                    if ai_title:
+                        title = truncate_text(ai_title, max_length=100)
+                    if ai_description:
+                        description = ai_description
+                    logging.info(f"AI metadata for short {short_id}: title='{title}'")
+                else:
+                    logging.warning(
+                        f"GPT metadata generation failed for short {short_id}: "
+                        f"{ai_result.get('error')}"
+                    )
+
+            metadata_list.append({
+                'short_id': short_id,
+                'title': title,
+                'description': description,
+            })
+
+        ti.xcom_push(key='shorts_metadata', value=metadata_list)
+
+    t2 = PythonOperator(
+        task_id='generate_metadata',
+        python_callable=_generate_metadata,
+    )
+
     def _trigger_youtube_upload(ti, **context):
         import time
         from airflow.models import DagRun, XCom
 
         pending_shorts = ti.xcom_pull(key='pending_shorts') or []
+        shorts_metadata = ti.xcom_pull(key='shorts_metadata') or []
 
         if not pending_shorts:
             logging.info("No pending shorts — skipping upload")
             ti.xcom_push(key='upload_results', value={'upload_details': []})
             return None
 
-        db = CongressionalVideoDB()
-
-        # Build chapter_id → title lookup
-        chapter_ids = list({s.get('chapter_id') for s in pending_shorts if s.get('chapter_id')})
-        chapter_titles = db.get_chapter_titles(chapter_ids)
+        metadata_by_id = {m['short_id']: m for m in shorts_metadata}
 
         videos = []
         for short in pending_shorts:
-            chapter_id = short.get('chapter_id')
-            chapter_title = chapter_titles.get(chapter_id) or f'Short clip {short.get("id", "")}'
-            title = truncate_text(f"{chapter_title} #Shorts", max_length=100)
-
-            description = '#Shorts'
+            short_id = short.get('id')
+            meta = metadata_by_id.get(short_id, {})
 
             video_config = {
-                'short_id': short.get('id'),
+                'short_id': short_id,
                 'reap_clip_id': short.get('reap_clip_id'),
                 'video_file': short.get('local_file_path'),
-                'title': title,
-                'description': description,
+                'title': meta.get('title') or f'Short clip {short_id} #Shorts',
+                'description': meta.get('description') or '#Shorts',
                 'category_id': '25',
                 'privacy_status': 'public',
                 'tags': ['shorts', 'congress', 'politics', 'españa', 'congreso'],
@@ -160,7 +269,7 @@ with DAG(
 
                 return dag_run.run_id
 
-    t2 = PythonOperator(
+    t3 = PythonOperator(
         task_id='trigger_youtube_upload',
         python_callable=_trigger_youtube_upload,
     )
@@ -188,9 +297,9 @@ with DAG(
 
         logging.info(f"Upload summary: {successful} successful, {failed} failed")
 
-    t3 = PythonOperator(
+    t4 = PythonOperator(
         task_id='mark_shorts_uploaded',
         python_callable=_mark_shorts_uploaded,
     )
 
-    t1 >> t2 >> t3
+    t1 >> t2 >> t3 >> t4
