@@ -42,7 +42,9 @@ default_args = {
 
 
 def _interval_to_srt(interval_str: str) -> str:
-    """Convert 'HH:MM:SS' interval string from DB to SRT-compatible 'HH:MM:SS,000'."""
+    """Convert DB time to SRT-compatible 'HH:MM:SS,mmm'. Handles both HH:MM:SS and HH:MM:SS,mmm."""
+    if ',' in interval_str:
+        return interval_str
     return f"{interval_str},000"
 
 
