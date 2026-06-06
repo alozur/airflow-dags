@@ -757,7 +757,7 @@ class CongressionalVideoDB:
                       )
                       AND NOT EXISTS (
                           SELECT 1 FROM {shorts_table} vs
-                          WHERE vs.chapter_id = vc.id
+                          WHERE vs.chapter_id = vc.chapter_id
                             AND vs.reap_status IN ('processing', 'downloaded')
                       )
                     ORDER BY vc.relevance_score DESC, vc.created_at DESC
@@ -947,7 +947,7 @@ class CongressionalVideoDB:
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    f"SELECT id, title FROM {chapters_table} WHERE id = ANY(%s)",
+                    f"SELECT chapter_id, title FROM {chapters_table} WHERE chapter_id = ANY(%s)",
                     (chapter_ids,),
                 )
-                return {row['id']: row['title'] for row in cur.fetchall()}
+                return {row['chapter_id']: row['title'] for row in cur.fetchall()}
