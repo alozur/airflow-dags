@@ -13,7 +13,8 @@ Usage:
 import os
 from datetime import datetime
 from airflow import DAG
-from airflow.operators.bash import BashOperator
+from airflow.providers.standard.operators.bash import BashOperator
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 
 # Git configuration from environment variables
 GITHUB_USER = os.getenv("GITHUB_USER", "")
@@ -28,7 +29,7 @@ with DAG(
     dag_id="git_sync_dag",
     description="Pull latest DAG changes from GitHub repository",
     start_date=datetime(2024, 1, 1),
-    schedule_interval=None,  # Manual trigger only
+    schedule=None,
     catchup=False,
     tags=["utility", "git", "sync"],
 ) as dag:
@@ -73,4 +74,10 @@ with DAG(
         """,
     )
 
-    configure_git >> git_pull >> show_status
+    trigger_migrations = TriggerDagRunOperator(
+        task_id="trigger_migrations",
+        trigger_dag_id="run_migrations",
+        wait_for_completion=False,
+    )
+
+    configure_git >> git_pull >> show_status >> trigger_migrations
