@@ -313,10 +313,6 @@ class TestExtractAndPretrimClip:
             return_value="/data/srt.srt",
         )
         mocker.patch(
-            "congress_videos.reap_shorts_dag.parse_srt_to_text",
-            return_value="srt content",
-        )
-        mocker.patch(
             "congress_videos.reap_shorts_dag.select_pretrim_window",
             return_value={"start_seconds": 60.0, "end_seconds": 420.0},
         )

@@ -19,7 +19,7 @@ from congress_videos.config.paths import DOWNLOADS_DIR, PROJECT_DATA_DIR, get_sh
 from congress_videos.modules.database import CongressionalVideoDB
 from congress_videos.modules.video_splitter import convert_srt_time_to_seconds, split_video_chapter
 from congress_videos.reap_api import ReapApiClient, ReapCreditsExhausted
-from congress_videos.srt_helpers import find_srt_for_chapter, parse_srt_to_text, select_pretrim_window
+from congress_videos.srt_helpers import find_srt_for_chapter, select_pretrim_window
 from utils.airflow_helpers import ensure_project_data_directory, xcom_task
 from utils.env_loader import load_env_if_local
 
@@ -236,8 +236,7 @@ with DAG(
                 srt_path = find_srt_for_chapter(str(video_id), str(chapter_id), session_date)
 
                 if srt_path:
-                    srt_text = parse_srt_to_text(srt_path)
-                    window = select_pretrim_window(srt_text, target_secs=target_secs)
+                    window = select_pretrim_window(srt_path, target_secs=target_secs)
 
                     if window:
                         trimmed_path = os.path.join(chapter_folder, 'chapter_video_trimmed.mp4')
