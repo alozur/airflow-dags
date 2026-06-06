@@ -109,7 +109,7 @@ with DAG(
     'congress_reap_processor',
     default_args=default_args,
     description='Claim one pending clip from the queue, upload to Reap, wait for completion, download shorts',
-    schedule='0 9 * * *',
+    schedule='0 16 * * *',
     start_date=datetime(2025, 11, 14),
     catchup=False,
     max_active_runs=1,
