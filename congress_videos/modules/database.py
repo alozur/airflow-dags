@@ -721,3 +721,233 @@ class CongressionalVideoDB:
                     WHERE chapter_id = %s
                 """, (youtube_video_id, chapter_id))
                 logger.info(f"Marked chapter {chapter_id} as uploaded to YouTube: {youtube_video_id}")
+
+    # ==================== Video Shorts (Reap Pipeline) ====================
+
+    def get_chapters_for_shorts(self, limit: int = 3, min_relevance_score: int = 3) -> List[Dict]:
+        """
+        Get video chapters eligible for Reap Shorts processing.
+
+        A chapter qualifies when ALL of the following hold:
+        - is_uploaded_to_youtube = TRUE (only already-published chapters)
+        - relevance_score >= min_relevance_score
+        - Duration between 120 and 900 seconds (2-15 min)
+        - No existing video_shorts row with reap_status IN ('processing', 'downloaded')
+
+        Args:
+            limit: Maximum number of chapters to return (default 3)
+            min_relevance_score: Minimum relevance score threshold (default 3)
+
+        Returns:
+            List of chapter records ordered by relevance_score DESC, created_at DESC
+        """
+        chapters_table = self.pg_conn.get_qualified_table('video_chapters')
+        shorts_table = self.pg_conn.get_qualified_table('video_shorts')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT vc.*
+                    FROM {chapters_table} vc
+                    WHERE vc.is_uploaded_to_youtube = TRUE
+                      AND vc.relevance_score >= %s
+                      AND (
+                          EXTRACT(EPOCH FROM (vc.end_time::interval - vc.start_time::interval))
+                          BETWEEN 120 AND 900
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM {shorts_table} vs
+                          WHERE vs.chapter_id = vc.id
+                            AND vs.reap_status IN ('processing', 'downloaded')
+                      )
+                    ORDER BY vc.relevance_score DESC, vc.created_at DESC
+                    LIMIT %s
+                """, (min_relevance_score, limit))
+                chapters = cur.fetchall()
+                logger.info(
+                    f"Found {len(chapters)} chapters eligible for Shorts "
+                    f"(min_score={min_relevance_score}, limit={limit})"
+                )
+                return chapters
+
+    def insert_video_short(self, chapter_id: int, reap_project_id: str,
+                           reap_status: str = "processing",
+                           pretrim_start_secs: float = None,
+                           pretrim_end_secs: float = None,
+                           pretrim_used_srt: bool = False) -> int:
+        """
+        Insert a placeholder video_shorts row when a Reap job is created.
+
+        The placeholder row has reap_clip_id=NULL; it is updated or replaced
+        with per-clip rows once the sensor downloads clips on job completion.
+
+        Args:
+            chapter_id: FK to video_chapters.id
+            reap_project_id: Reap project ID returned by create_clips_job
+            reap_status: Initial status (default 'processing')
+            pretrim_start_secs: Start of pre-trim window in seconds (None if no trim)
+            pretrim_end_secs: End of pre-trim window in seconds (None if no trim)
+            pretrim_used_srt: True if an SRT file was used for AI window selection
+
+        Returns:
+            The id of the newly inserted video_shorts row
+        """
+        shorts_table = self.pg_conn.get_qualified_table('video_shorts')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    INSERT INTO {shorts_table}
+                    (chapter_id, reap_project_id, reap_status,
+                     pretrim_start_secs, pretrim_end_secs, pretrim_used_srt)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (
+                    chapter_id, reap_project_id, reap_status,
+                    pretrim_start_secs, pretrim_end_secs, pretrim_used_srt
+                ))
+                row_id = cur.fetchone()['id']
+                logger.info(
+                    f"Inserted video_short placeholder row {row_id} "
+                    f"for chapter {chapter_id}, project {reap_project_id}"
+                )
+                return row_id
+
+    def insert_video_short_clip(self, chapter_id: int, reap_project_id: str,
+                                reap_clip_id: str, reap_virality_score: float,
+                                reap_clip_url: str, local_file_path: str,
+                                reap_status: str = "downloaded") -> int:
+        """
+        Insert one video_shorts row per downloaded Reap clip.
+
+        Called by the ReapJobSensor once per clip when the Reap job completes.
+        Each call produces a distinct row with a unique reap_clip_id.
+
+        Args:
+            chapter_id: FK to video_chapters.id
+            reap_project_id: Reap project ID that produced this clip
+            reap_clip_id: Unique Reap clip identifier (stored in UNIQUE column)
+            reap_virality_score: Virality score assigned by Reap
+            reap_clip_url: Reap-hosted URL of the clip
+            local_file_path: Absolute path to the downloaded MP4 on disk
+            reap_status: Status to set (default 'downloaded')
+
+        Returns:
+            The id of the newly inserted video_shorts row
+        """
+        shorts_table = self.pg_conn.get_qualified_table('video_shorts')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    INSERT INTO {shorts_table}
+                    (chapter_id, reap_project_id, reap_clip_id,
+                     reap_virality_score, reap_clip_url, local_file_path, reap_status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (
+                    chapter_id, reap_project_id, reap_clip_id,
+                    reap_virality_score, reap_clip_url, local_file_path, reap_status
+                ))
+                row_id = cur.fetchone()['id']
+                logger.info(
+                    f"Inserted video_short clip row {row_id}: "
+                    f"clip_id={reap_clip_id}, virality={reap_virality_score}"
+                )
+                return row_id
+
+    def update_video_short_status(self, reap_project_id: str, status: str) -> None:
+        """
+        Update the reap_status for all video_shorts rows belonging to a Reap project.
+
+        Used by the ReapJobSensor to record terminal failure states
+        (e.g. 'failed', 'expired', 'invalid', 'error', 'credits_exhausted').
+
+        Args:
+            reap_project_id: Reap project ID whose rows should be updated
+            status: New reap_status value
+        """
+        shorts_table = self.pg_conn.get_qualified_table('video_shorts')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    UPDATE {shorts_table} SET
+                        reap_status = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE reap_project_id = %s
+                """, (status, reap_project_id))
+                logger.info(
+                    f"Updated video_shorts status to '{status}' "
+                    f"for project {reap_project_id}"
+                )
+
+    def get_pending_shorts(self, limit: int = 2, min_virality_score: float = 0.0) -> List[Dict]:
+        """
+        Get downloaded Shorts clips that are ready for YouTube upload.
+
+        Returns clips ordered by virality score descending so the best clips
+        are uploaded first. Only clips with a local file present are returned.
+
+        Args:
+            limit: Maximum number of rows to return (default 2)
+            min_virality_score: Minimum virality score threshold (default 0.0)
+
+        Returns:
+            List of video_shorts records ordered by reap_virality_score DESC
+        """
+        shorts_table = self.pg_conn.get_qualified_table('video_shorts')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT * FROM {shorts_table}
+                    WHERE is_uploaded = FALSE
+                      AND local_file_path IS NOT NULL
+                      AND reap_status = 'downloaded'
+                      AND (reap_virality_score >= %s OR reap_virality_score IS NULL)
+                    ORDER BY reap_virality_score DESC NULLS LAST
+                    LIMIT %s
+                """, (min_virality_score, limit))
+                shorts = cur.fetchall()
+                logger.info(
+                    f"Found {len(shorts)} pending shorts for upload "
+                    f"(min_virality={min_virality_score}, limit={limit})"
+                )
+                return shorts
+
+    def mark_short_uploaded(self, reap_clip_id: str, youtube_video_id: str) -> None:
+        """
+        Mark a Shorts clip as successfully uploaded to YouTube.
+
+        Args:
+            reap_clip_id: Unique Reap clip identifier (used as the row lookup key)
+            youtube_video_id: YouTube video ID assigned after upload
+        """
+        shorts_table = self.pg_conn.get_qualified_table('video_shorts')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    UPDATE {shorts_table} SET
+                        is_uploaded = TRUE,
+                        youtube_video_id = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE reap_clip_id = %s
+                """, (youtube_video_id, reap_clip_id))
+                logger.info(
+                    f"Marked short clip {reap_clip_id} as uploaded to YouTube: {youtube_video_id}"
+                )
+
+    def get_chapter_titles(self, chapter_ids: list) -> dict:
+        """Returns {chapter_id: title} for the given IDs."""
+        if not chapter_ids:
+            return {}
+        chapters_table = self.pg_conn.get_qualified_table('video_chapters')
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT id, title FROM {chapters_table} WHERE id = ANY(%s)",
+                    (chapter_ids,),
+                )
+                return {row['id']: row['title'] for row in cur.fetchall()}

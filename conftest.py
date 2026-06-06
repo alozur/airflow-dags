@@ -42,6 +42,7 @@ _TEST_ENV: dict[str, str] = {
     "AIRFLOW_HOME": "/tmp/airflow_test_home",
     "YOUTUBE_API_KEY": "test-youtube-api-key",
     "ANTHROPIC_API_KEY": "test-anthropic-key",
+    "REAP_API_KEY": "test-reap-api-key",
     "ENV": "testing",
 }
 for _key, _value in _TEST_ENV.items():
