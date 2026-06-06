@@ -1040,6 +1040,29 @@ class CongressionalVideoDB:
                     f"Marked short clip {reap_clip_id} as uploaded to YouTube: {youtube_video_id}"
                 )
 
+    def _count_records(self, table_or_view: str, where_clause: str = "", params: tuple = ()) -> int:
+        table = self.pg_conn.get_qualified_table(table_or_view)
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                query = f"SELECT COUNT(*) AS count FROM {table}"
+                if where_clause:
+                    query += f" WHERE {where_clause}"
+                cur.execute(query, params)
+                result = cur.fetchone()
+                return result['count'] if result else 0
+
+    def count_chapters_uploaded_today(self) -> int:
+        """Returns the number of chapters uploaded to YouTube today (UTC date)."""
+        count = self._count_records('video_chapters', 'youtube_upload_date >= CURRENT_DATE')
+        logger.info(f"Chapters uploaded today: {count}")
+        return count
+
+    def count_pending_uploadable_chapters(self, min_relevance_score: int = 2) -> int:
+        """Returns the number of chapters pending upload in the uploadable queue."""
+        count = self._count_records('uploadable_chapters', 'relevance_score >= %s', (min_relevance_score,))
+        logger.info(f"Pending uploadable chapters (min_score={min_relevance_score}): {count}")
+        return count
+
     def get_chapter_titles(self, chapter_ids: list) -> dict:
         """Returns {chapter_id: title} for the given IDs."""
         if not chapter_ids:

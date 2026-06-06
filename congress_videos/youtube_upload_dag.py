@@ -23,7 +23,7 @@ import os
 from datetime import datetime, timedelta
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
@@ -55,12 +55,12 @@ with DAG(
     'congress_youtube_chapter_uploader',
     default_args=default_args,
     description='Upload top congressional video chapters to YouTube based on relevance score',
-    schedule_interval='0 12 * * *',  # Run at 12:00 PM daily
+    schedule_interval='0 17 * * *',  # Run at 17:00 UTC daily
     start_date=datetime(2025, 11, 14),
     catchup=False,
     tags=['congress', 'youtube', 'chapters'],
     params={
-        "max_chapters": 5,  # Maximum number of chapters to upload per day
+        "max_chapters": 1,  # Default max chapters per day (overridden by quota logic)
         "min_relevance_score": 2,  # Minimum relevance score (0-5)
         "isTesting": False  # Hardcoded to False so uploads are always public
     }
@@ -76,10 +76,23 @@ with DAG(
         ),
     )
 
-    # Step 1: Get top uploadable chapters from database view
-    # Selects from uploadable_chapters view, ordered by:
-    # 1. relevance_score DESC (highest first)
-    # 2. created_at DESC (most recent first)
+    # Step 1: Check daily upload quota
+    # Queries DB for uploads today and pending queue size.
+    # Returns remaining_quota = 1 (queue ≤ 15) or 2 (queue > 15) minus today's uploads.
+    t1_quota = PostgreSQLOperator(
+        task_id='check_upload_quota',
+        operation='check_upload_quota',
+        output_xcom_key='upload_quota',
+    )
+
+    # Step 1b: Short-circuit if daily quota already reached
+    t1_skip = ShortCircuitOperator(
+        task_id='skip_if_quota_reached',
+        python_callable=lambda ti: (ti.xcom_pull(key='upload_quota') or {}).get('remaining_quota', 0) > 0,
+    )
+
+    # Step 2: Get uploadable chapters — limit comes from remaining_quota via XCom
+    # Ordered by: session_date DESC, relevance_score DESC, created_at DESC
     t1_db = PostgreSQLOperator(
         task_id='get_uploadable_chapters',
         operation='get_uploadable_chapters',
@@ -240,5 +253,4 @@ with DAG(
     )
 
     # Task dependencies
-    # Sequential flow: get chapters -> generate metadata -> thumbnails -> extract videos -> upload -> update DB
-    t0 >> t1_db >> t2 >> t3 >> t4 >> t5 >> t6 >> t7 >> t8_db
+    t0 >> t1_quota >> t1_skip >> t1_db >> t2 >> t3 >> t4 >> t5 >> t6 >> t7 >> t8_db

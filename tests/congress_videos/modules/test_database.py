@@ -656,3 +656,85 @@ class TestGetTopVideosForUpload:
         assert "is_uploaded_to_youtube" in sql
         assert "upload_eligible" in sql
         assert "ai_interest_score" in sql
+
+
+# --------------------------------------------------------------------------- #
+# count_chapters_uploaded_today
+# --------------------------------------------------------------------------- #
+
+class TestCountChaptersUploadedToday:
+
+    def test_returns_zero_when_no_uploads_today(self, db):
+        """Returns 0 when no chapters have youtube_upload_date today."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"count": 0}
+
+        result = instance.count_chapters_uploaded_today()
+
+        assert result == 0
+
+    def test_returns_count_when_uploads_exist(self, db):
+        """Returns N when N chapters were uploaded today."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"count": 2}
+
+        result = instance.count_chapters_uploaded_today()
+
+        assert result == 2
+
+    def test_query_filters_by_current_date(self, db):
+        """SQL uses CURRENT_DATE to filter youtube_upload_date."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"count": 0}
+
+        instance.count_chapters_uploaded_today()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "youtube_upload_date" in sql
+        assert "CURRENT_DATE" in sql
+
+    def test_returns_zero_when_fetchone_none(self, db):
+        """Returns 0 gracefully when fetchone returns None."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        result = instance.count_chapters_uploaded_today()
+
+        assert result == 0
+
+
+# --------------------------------------------------------------------------- #
+# count_pending_uploadable_chapters
+# --------------------------------------------------------------------------- #
+
+class TestCountPendingUploadableChapters:
+
+    def test_returns_count_with_default_min_score(self, db):
+        """Returns pending count using default min_relevance_score=2."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"count": 7}
+
+        result = instance.count_pending_uploadable_chapters()
+
+        assert result == 7
+        params = mock_cursor.execute.call_args[0][1]
+        assert params == (2,)
+
+    def test_respects_custom_min_score(self, db):
+        """Passes custom min_relevance_score to query."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"count": 3}
+
+        instance.count_pending_uploadable_chapters(min_relevance_score=4)
+
+        params = mock_cursor.execute.call_args[0][1]
+        assert params == (4,)
+
+    def test_returns_zero_when_fetchone_none(self, db):
+        """Returns 0 gracefully when fetchone returns None."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        result = instance.count_pending_uploadable_chapters()
+
+        assert result == 0

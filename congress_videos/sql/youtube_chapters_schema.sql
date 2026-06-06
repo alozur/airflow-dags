@@ -123,8 +123,9 @@ WHERE
     vc.is_uploaded_to_youtube = FALSE
     AND vc.relevance_score >= 2  -- Only high-relevance chapters (score >= 4/5)
 ORDER BY
-    vc.relevance_score DESC,  -- Higher relevance score first
-    vc.created_at DESC;        -- Newer chapters first
+    ysv.session_date DESC NULLS LAST,  -- Most recent session first
+    vc.relevance_score DESC,           -- Highest score within same session
+    vc.created_at DESC;                -- Newest ingestion as tiebreaker
 
 -- View: chapter_statistics
 -- Provides statistics about chapters by video
