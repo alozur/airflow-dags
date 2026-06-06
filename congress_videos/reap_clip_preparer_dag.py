@@ -1,8 +1,10 @@
 """
 Congress Reap Clip Preparer DAG
 
-Selects eligible chapters, optionally pre-trims long clips using AI + SRT context,
-and triggers the reap_processor DAG with the prepared clip results.
+Selects ALL eligible chapters, optionally pre-trims long clips using AI + SRT context,
+validates each clip with ffprobe, and inserts a video_shorts row with reap_status='pending'
+for each accepted clip. DAG 2 (reap_processor) runs independently on its own schedule
+and consumes the pending queue.
 """
 
 import json
@@ -12,7 +14,6 @@ import subprocess
 from datetime import datetime, timedelta
 
 from airflow import DAG
-from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 from airflow.exceptions import AirflowException
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
@@ -81,13 +82,13 @@ def _ffmpeg_extract_window(source_path: str, dest_path: str, start_secs: float, 
 with DAG(
     'congress_reap_clip_preparer',
     default_args=default_args,
-    description='Select chapters and pre-trim clips, then trigger the reap processor DAG',
+    description='Select all eligible chapters, pre-trim clips, insert pending rows in video_shorts queue',
     schedule='0 15 * * *',
     start_date=datetime(2025, 11, 14),
     catchup=False,
     tags=['congress', 'reap', 'shorts'],
     params={
-        "max_chapters": 1,
+        "max_chapters": 0,
         "min_relevance_score": 3,
         "pre_trim_threshold_secs": 300,
         "pre_trim_target_secs": 300,
@@ -106,7 +107,7 @@ with DAG(
     def _query_chapters(ti, **context):
         db = CongressionalVideoDB()
         chapters = db.get_chapters_for_shorts(
-            limit=context['params']['max_chapters'],
+            limit=context['params']['max_chapters'] or None,
             min_relevance_score=context['params']['min_relevance_score'],
         )
         ti.xcom_push(key='chapters_for_shorts', value=chapters)
@@ -121,8 +122,11 @@ with DAG(
         chapters = ti.xcom_pull(key='chapters_for_shorts') or []
         threshold_secs = context['params']['pre_trim_threshold_secs']
         target_secs = context['params']['pre_trim_target_secs']
+        max_secs = float(target_secs)
 
-        clip_results = []
+        db = CongressionalVideoDB()
+        inserted_count = 0
+        blocked_chapters = []
 
         for chapter in chapters:
             chapter_id = chapter['chapter_id']
@@ -212,40 +216,7 @@ with DAG(
                 )
                 continue
 
-            clip_results.append({
-                'chapter_id': chapter_id,
-                'clip_path': clip_path,
-                'pretrim_start': pretrim_start,
-                'pretrim_end': pretrim_end,
-                'pretrim_used_srt': pretrim_used_srt,
-                'scoring_reasoning': chapter.get('scoring_reasoning', '') or '',
-            })
-
-        ti.xcom_push(key='clip_results', value=clip_results)
-
-    t2 = PythonOperator(
-        task_id='extract_and_pretrim_clip',
-        python_callable=_extract_and_pretrim_clip,
-    )
-
-    def _validate_clip_durations(ti, **context):
-        """
-        Safety gate: reject any clip whose actual file duration exceeds pre_trim_target_secs.
-        Uses ffprobe to measure the real file, not computed metadata.
-
-        Allows a 3-second tolerance for ffmpeg -c copy frame-boundary imprecision.
-        Raises AirflowException if any clip is blocked — the DAG fails visibly.
-        """
-        clip_results = ti.xcom_pull(key='clip_results') or []
-        max_secs = float(context['params']['pre_trim_target_secs'])
-
-        safe_clips = []
-        blocked_chapters = []
-
-        for clip in clip_results:
-            chapter_id = clip['chapter_id']
-            clip_path = clip['clip_path']
-
+            # Inline safety gate: validate actual file duration with ffprobe before inserting to DB
             cmd = [
                 'ffprobe', '-v', 'quiet',
                 '-print_format', 'json',
@@ -253,12 +224,12 @@ with DAG(
                 clip_path,
             ]
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                probe = json.loads(result.stdout)
+                probe_result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                probe = json.loads(probe_result.stdout)
                 actual_secs = float(probe['format']['duration'])
             except Exception as exc:
                 logging.error(
-                    "validate_clip_durations: could not probe chapter %s (%s): %s — blocking upload",
+                    "ffprobe failed for chapter %s (%s): %s — blocking",
                     chapter_id, clip_path, exc,
                 )
                 blocked_chapters.append(chapter_id)
@@ -274,40 +245,44 @@ with DAG(
                 continue
 
             logging.info(
-                "validate_clip_durations: chapter %s OK — %.1fs <= %.0fs",
-                chapter_id, actual_secs, max_secs,
+                "Safety gate OK — chapter %s: %.1fs <= %.0fs + %.0fs",
+                chapter_id, actual_secs, max_secs, _FRAME_TOLERANCE_SECS,
             )
-            safe_clips.append(clip)
+
+            scoring_reasoning = chapter.get('scoring_reasoning', '') or ''
+
+            db.insert_video_short(
+                chapter_id=chapter_id,
+                reap_status='pending',
+                staged_clip_path=clip_path,
+                pretrim_start_secs=pretrim_start,
+                pretrim_end_secs=pretrim_end,
+                pretrim_used_srt=pretrim_used_srt,
+                scoring_reasoning=scoring_reasoning,
+            )
+            inserted_count += 1
+
+        ti.xcom_push(key='clips_queued', value=inserted_count)
 
         if blocked_chapters:
             raise AirflowException(
-                f"validate_clip_durations: {len(blocked_chapters)} clip(s) blocked "
-                f"(chapters {blocked_chapters}) — pre-trim failed to meet the 5-minute limit. "
-                f"Aborting upload to Reap."
+                f"_extract_and_pretrim_clip: {len(blocked_chapters)} clip(s) blocked "
+                f"(chapters {blocked_chapters}) — pre-trim failed to meet the duration limit. "
+                f"Inserted {inserted_count} clip(s) before blocking."
             )
 
-        ti.xcom_push(key='clip_results', value=safe_clips)
-
-    t2b = PythonOperator(
-        task_id='validate_clip_durations',
-        python_callable=_validate_clip_durations,
+    t2 = PythonOperator(
+        task_id='extract_and_pretrim_clip',
+        python_callable=_extract_and_pretrim_clip,
     )
 
-    def _trigger_reap_processor(ti, **context):
-        clip_results = ti.xcom_pull(key='clip_results') or []
-        if not clip_results:
-            logging.info("No clips to process — skipping trigger of congress_reap_processor")
-            return
-        trigger_dag_api(
-            dag_id='congress_reap_processor',
-            conf={'clip_results': clip_results},
-            run_id=f"triggered_by_preparer__{context['run_id']}",
-        )
-        logging.info("Triggered congress_reap_processor with %d clip(s)", len(clip_results))
+    def _log_queue_summary(ti, **context):
+        count = ti.xcom_pull(key='clips_queued') or 0
+        logging.info("Queue summary: %d clip(s) inserted with reap_status='pending'", count)
 
     t3 = PythonOperator(
-        task_id='trigger_reap_processor',
-        python_callable=_trigger_reap_processor,
+        task_id='log_queue_summary',
+        python_callable=_log_queue_summary,
     )
 
-    t0 >> t1 >> t2 >> t2b >> t3
+    t0 >> t1 >> t2 >> t3

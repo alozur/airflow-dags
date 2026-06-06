@@ -724,7 +724,7 @@ class CongressionalVideoDB:
 
     # ==================== Video Shorts (Reap Pipeline) ====================
 
-    def get_chapters_for_shorts(self, limit: int = 3, min_relevance_score: int = 3) -> List[Dict]:
+    def get_chapters_for_shorts(self, limit: int | None = None, min_relevance_score: int = 3) -> List[Dict]:
         """
         Get video chapters eligible for Reap Shorts processing.
 
@@ -732,10 +732,10 @@ class CongressionalVideoDB:
         - is_uploaded_to_youtube = TRUE (only already-published chapters)
         - relevance_score >= min_relevance_score
         - Duration between 120 and 900 seconds (2-15 min)
-        - No existing video_shorts row with reap_status IN ('processing', 'downloaded')
+        - No existing video_shorts row with reap_status IN ('pending', 'processing', 'downloaded')
 
         Args:
-            limit: Maximum number of chapters to return (default 3)
+            limit: Maximum number of chapters to return (None = no limit, default None)
             min_relevance_score: Minimum relevance score threshold (default 3)
 
         Returns:
@@ -746,7 +746,7 @@ class CongressionalVideoDB:
 
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(f"""
+                query = f"""
                     SELECT vc.*
                     FROM {chapters_table} vc
                     WHERE vc.is_uploaded_to_youtube = TRUE
@@ -760,11 +760,15 @@ class CongressionalVideoDB:
                       AND NOT EXISTS (
                           SELECT 1 FROM {shorts_table} vs
                           WHERE vs.chapter_id = vc.chapter_id
-                            AND vs.reap_status IN ('processing', 'downloaded')
+                            AND vs.reap_status IN ('pending', 'processing', 'downloaded')
                       )
                     ORDER BY vc.relevance_score DESC, vc.created_at DESC
-                    LIMIT %s
-                """, (min_relevance_score, limit))
+                """
+                params: list = [min_relevance_score]
+                if limit is not None:
+                    query += " LIMIT %s"
+                    params.append(limit)
+                cur.execute(query, params)
                 chapters = cur.fetchall()
                 logger.info(
                     f"Found {len(chapters)} chapters eligible for Shorts "
@@ -772,24 +776,29 @@ class CongressionalVideoDB:
                 )
                 return chapters
 
-    def insert_video_short(self, chapter_id: int, reap_project_id: str,
-                           reap_status: str = "processing",
+    def insert_video_short(self, chapter_id: int, reap_project_id: str | None = None,
+                           reap_status: str = "pending",
                            pretrim_start_secs: float = None,
                            pretrim_end_secs: float = None,
-                           pretrim_used_srt: bool = False) -> int:
+                           pretrim_used_srt: bool = False,
+                           staged_clip_path: str | None = None,
+                           scoring_reasoning: str | None = None) -> int:
         """
-        Insert a placeholder video_shorts row when a Reap job is created.
+        Insert a video_shorts row.
 
-        The placeholder row has reap_clip_id=NULL; it is updated or replaced
-        with per-clip rows once the sensor downloads clips on job completion.
+        DAG 1 uses this to insert pending rows (reap_project_id=None, staged_clip_path set).
+        DAG 2 legacy path (pre-redesign) used this for processing rows — now replaced by
+        claim_pending_clip + update_video_short_project.
 
         Args:
             chapter_id: FK to video_chapters.id
-            reap_project_id: Reap project ID returned by create_clips_job
-            reap_status: Initial status (default 'processing')
+            reap_project_id: Reap project ID (None for pending rows inserted by DAG 1)
+            reap_status: Initial status (default 'pending')
             pretrim_start_secs: Start of pre-trim window in seconds (None if no trim)
             pretrim_end_secs: End of pre-trim window in seconds (None if no trim)
             pretrim_used_srt: True if an SRT file was used for AI window selection
+            staged_clip_path: Local path to the pre-trimmed clip file (set by DAG 1)
+            scoring_reasoning: AI scoring reasoning text (optional)
 
         Returns:
             The id of the newly inserted video_shorts row
@@ -801,17 +810,19 @@ class CongressionalVideoDB:
                 cur.execute(f"""
                     INSERT INTO {shorts_table}
                     (chapter_id, reap_project_id, reap_status,
-                     pretrim_start_secs, pretrim_end_secs, pretrim_used_srt)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                     pretrim_start_secs, pretrim_end_secs, pretrim_used_srt,
+                     staged_clip_path, scoring_reasoning)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (
                     chapter_id, reap_project_id, reap_status,
-                    pretrim_start_secs, pretrim_end_secs, pretrim_used_srt
+                    pretrim_start_secs, pretrim_end_secs, pretrim_used_srt,
+                    staged_clip_path, scoring_reasoning,
                 ))
                 row_id = cur.fetchone()['id']
                 logger.info(
-                    f"Inserted video_short placeholder row {row_id} "
-                    f"for chapter {chapter_id}, project {reap_project_id}"
+                    f"Inserted video_short row {row_id} "
+                    f"for chapter {chapter_id}, status={reap_status}, project={reap_project_id}"
                 )
                 return row_id
 
@@ -882,6 +893,70 @@ class CongressionalVideoDB:
                 logger.info(
                     f"Updated video_shorts status to '{status}' "
                     f"for project {reap_project_id}"
+                )
+
+    def claim_pending_clip(self) -> dict | None:
+        """
+        Atomically claim one pending clip from the queue, ordered by priority.
+
+        Uses SELECT FOR UPDATE SKIP LOCKED so concurrent DAG 2 runs each claim
+        a distinct row without blocking each other.
+
+        Priority order: session_date DESC NULLS LAST, relevance_score DESC NULLS LAST
+        (most recent and most relevant chapters are processed first).
+
+        Returns:
+            The claimed video_shorts row as a dict, or None if no pending rows exist.
+        """
+        shorts_table = self.pg_conn.get_qualified_table('video_shorts')
+        chapters_table = self.pg_conn.get_qualified_table('video_chapters')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    UPDATE {shorts_table} SET reap_status = 'processing', updated_at = CURRENT_TIMESTAMP
+                    WHERE id = (
+                        SELECT vs.id
+                        FROM {shorts_table} vs
+                        LEFT JOIN {chapters_table} vc ON vc.chapter_id = vs.chapter_id
+                        WHERE vs.reap_status = 'pending'
+                        ORDER BY vc.session_date DESC NULLS LAST, vc.relevance_score DESC NULLS LAST
+                        LIMIT 1
+                        FOR UPDATE SKIP LOCKED
+                    )
+                    RETURNING *
+                """)
+                row = cur.fetchone()
+                if row is None:
+                    logger.info("claim_pending_clip: no pending clips in queue")
+                    return None
+                logger.info(
+                    f"Claimed pending clip: short_id={row['id']}, chapter_id={row['chapter_id']}"
+                )
+                return dict(row)
+
+    def update_video_short_project(self, short_id: int, reap_project_id: str) -> None:
+        """
+        Set the reap_project_id on an existing video_shorts row.
+
+        Called by DAG 2 after a Reap project is created for the claimed clip.
+
+        Args:
+            short_id: Primary key of the video_shorts row to update
+            reap_project_id: Reap project ID returned by create_clips_job
+        """
+        shorts_table = self.pg_conn.get_qualified_table('video_shorts')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    UPDATE {shorts_table} SET
+                        reap_project_id = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                """, (reap_project_id, short_id))
+                logger.info(
+                    f"Updated video_short {short_id}: reap_project_id={reap_project_id}"
                 )
 
     def get_pending_shorts(self, limit: int = 2, min_virality_score: float = 0.0) -> List[Dict]:

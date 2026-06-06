@@ -50,27 +50,32 @@ class TestCongressReapProcessorDAGLoads:
 
     def test_dag_has_correct_task_count(self):
         from congress_videos.reap_processor_dag import dag
-        # Tasks: load_clip_results, upload_to_reap, create_reap_job,
+        # Tasks: claim_clip_from_queue, upload_to_reap, create_reap_job,
         #        wait_for_reap, check_credits_status
         assert len(dag.tasks) == 5
 
-    def test_dag_has_no_schedule(self):
+    def test_dag_has_correct_schedule(self):
         from congress_videos.reap_processor_dag import dag
-        assert dag.schedule is None
+        assert dag.schedule == '0 9 * * *'
+
+    def test_dag_has_max_active_runs_1(self):
+        from congress_videos.reap_processor_dag import dag
+        assert dag.max_active_runs == 1
 
     def test_dag_correct_task_ids(self):
         from congress_videos.reap_processor_dag import dag
         task_ids = {t.task_id for t in dag.tasks}
-        assert "load_clip_results" in task_ids
+        assert "claim_clip_from_queue" in task_ids
         assert "upload_to_reap" in task_ids
         assert "create_reap_job" in task_ids
         assert "wait_for_reap" in task_ids
         assert "check_credits_status" in task_ids
+        assert "load_clip_results" not in task_ids
 
     def test_dag_correct_dependency_chain(self):
         from congress_videos.reap_processor_dag import dag
         tasks_by_id = {t.task_id: t for t in dag.tasks}
-        t0 = tasks_by_id["load_clip_results"]
+        t0 = tasks_by_id["claim_clip_from_queue"]
         t1 = tasks_by_id["upload_to_reap"]
         t2 = tasks_by_id["create_reap_job"]
         t3 = tasks_by_id["wait_for_reap"]
@@ -83,57 +88,52 @@ class TestCongressReapProcessorDAGLoads:
 
 
 # ---------------------------------------------------------------------------
-# TestLoadClipResults
+# TestClaimClipFromQueue
 # ---------------------------------------------------------------------------
 
-class TestLoadClipResults:
+class TestClaimClipFromQueue:
 
-    def test_empty_conf_returns_false(self):
-        from congress_videos.reap_processor_dag import _load_clip_results
+    def test_empty_result_returns_false(self, mocker):
+        from congress_videos.reap_processor_dag import _claim_clip_from_queue
 
-        dag_run = MagicMock()
-        dag_run.conf = {}
+        mock_db_cls = mocker.patch("congress_videos.reap_processor_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.claim_pending_clip.return_value = None
+
         ti = _make_ti()
-        result = _load_clip_results(ti, dag_run=dag_run)
+        result = _claim_clip_from_queue(ti)
 
         assert result is False
-        assert ti.xcom_store["clip_results"] == []
+        assert "claimed_clip" not in ti.xcom_store
 
-    def test_missing_conf_returns_false(self):
-        from congress_videos.reap_processor_dag import _load_clip_results
+    def test_non_empty_result_returns_true(self, mocker):
+        from congress_videos.reap_processor_dag import _claim_clip_from_queue
 
-        dag_run = MagicMock()
-        dag_run.conf = None
-        ti = _make_ti()
-        result = _load_clip_results(ti, dag_run=dag_run)
-
-        assert result is False
-        assert ti.xcom_store["clip_results"] == []
-
-    def test_no_dag_run_in_context_returns_false(self):
-        from congress_videos.reap_processor_dag import _load_clip_results
+        claimed = {"id": 42, "chapter_id": 10, "staged_clip_path": "/data/clip.mp4"}
+        mock_db_cls = mocker.patch("congress_videos.reap_processor_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.claim_pending_clip.return_value = claimed
 
         ti = _make_ti()
-        result = _load_clip_results(ti)
-
-        assert result is False
-        assert ti.xcom_store["clip_results"] == []
-
-    def test_valid_conf_pushes_to_xcom_returns_true(self):
-        from congress_videos.reap_processor_dag import _load_clip_results
-
-        clips = [{"chapter_id": 1, "clip_path": "/data/c1.mp4"}]
-        dag_run = MagicMock()
-        dag_run.conf = {"clip_results": clips}
-        ti = _make_ti()
-        result = _load_clip_results(ti, dag_run=dag_run)
+        result = _claim_clip_from_queue(ti)
 
         assert result is True
-        assert ti.xcom_store["clip_results"] == clips
+        assert ti.xcom_store["claimed_clip"] == claimed
+
+    def test_claimed_clip_pushed_to_xcom(self, mocker):
+        from congress_videos.reap_processor_dag import _claim_clip_from_queue
+
+        claimed = {"id": 7, "chapter_id": 3, "staged_clip_path": "/data/ch3.mp4"}
+        mock_db_cls = mocker.patch("congress_videos.reap_processor_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.claim_pending_clip.return_value = claimed
+
+        ti = _make_ti()
+        _claim_clip_from_queue(ti)
+
+        assert ti.xcom_store["claimed_clip"]["id"] == 7
+        assert ti.xcom_store["claimed_clip"]["chapter_id"] == 3
 
 
 # ---------------------------------------------------------------------------
-# TestReapJobSensor — migrated from test_reap_sensor.py
+# TestReapJobSensor
 # ---------------------------------------------------------------------------
 
 class TestReapJobSensor:
@@ -199,6 +199,32 @@ class TestReapJobSensor:
         assert result is True
         assert mock_db.insert_video_short_clip.call_count == 2
         mock_client.download_clip.assert_called()
+
+    def test_completed_status_calls_update_video_short_status_done(self, mocker):
+        """After successful sensor completion, update_video_short_status('done') must be called."""
+        sensor = self._build_sensor()
+        context = _make_context({
+            "reap_project_id_for_sensor": "proj-abc",
+            "chapter_id_for_sensor": 42,
+        })
+
+        mock_client_cls = mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
+        mock_client = mock_client_cls.return_value
+        mock_client.get_project_status.return_value = {"status": "completed"}
+        mock_client.get_project_clips.return_value = []
+        mock_client.download_clip.return_value = None
+
+        mock_db_cls = mocker.patch("congress_videos.reap_processor_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+
+        mocker.patch(
+            "congress_videos.reap_processor_dag.get_short_file_path",
+            side_effect=lambda ch, cl: f"/data/{ch}/{cl}.mp4",
+        )
+
+        sensor.poke(context)
+
+        mock_db.update_video_short_status.assert_called_once_with("proj-abc", "done")
 
     def test_failed_status_raises_airflow_exception(self, mocker):
         sensor = self._build_sensor()
@@ -269,23 +295,36 @@ class TestReapJobSensor:
 
 
 # ---------------------------------------------------------------------------
-# TestUploadToReap — migrated from test_reap_sensor.py
+# TestUploadToReap
 # ---------------------------------------------------------------------------
 
 class TestUploadToReap:
 
-    def test_empty_clip_results_pushes_empty_list(self, mocker):
+    def _make_claimed_clip(self, chapter_id=1, clip_path="/data/c1.mp4", short_id=10):
+        return {
+            "id": short_id,
+            "chapter_id": chapter_id,
+            "staged_clip_path": clip_path,
+            "scoring_reasoning": "",
+            "reap_project_id": None,
+        }
+
+    def test_missing_file_raises_airflow_exception(self, mocker):
         from congress_videos.reap_processor_dag import _upload_to_reap
 
         mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
+        mocker.patch("congress_videos.reap_processor_dag.CongressionalVideoDB")
 
-        ti = _make_ti({"clip_results": []})
-        _upload_to_reap(ti, params={})
+        claimed = self._make_claimed_clip(clip_path="/nonexistent/clip.mp4")
+        ti = _make_ti({"claimed_clip": claimed})
 
-        assert ti.xcom_store["upload_results"] == []
+        with pytest.raises(AirflowException):
+            _upload_to_reap(ti, params={})
 
-    def test_successful_upload_pushes_upload_results(self, mocker):
+    def test_successful_upload_pushes_upload_id_and_chapter_id(self, mocker):
         from congress_videos.reap_processor_dag import _upload_to_reap
+
+        mocker.patch("os.path.exists", return_value=True)
 
         mock_client_cls = mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
         mock_client = mock_client_cls.return_value
@@ -295,59 +334,75 @@ class TestUploadToReap:
         }
         mock_client.upload_file.return_value = None
 
-        clip_results = [{
-            "chapter_id": 1,
-            "clip_path": "/data/chapter1/chapter_video.mp4",
-            "pretrim_start": None,
-            "pretrim_end": None,
-            "pretrim_used_srt": False,
-            "scoring_reasoning": "interesting",
-        }]
-
-        ti = _make_ti({"clip_results": clip_results})
+        claimed = self._make_claimed_clip(chapter_id=5, clip_path="/data/chapter5.mp4")
+        ti = _make_ti({"claimed_clip": claimed})
         _upload_to_reap(ti, params={})
 
-        results = ti.xcom_store["upload_results"]
-        assert len(results) == 1
-        assert results[0]["upload_id"] == "up-001"
+        assert ti.xcom_store["upload_id"] == "up-001"
+        assert ti.xcom_store["chapter_id"] == 5
 
-    def test_credits_exhausted_stops_uploads_and_sets_flag(self, mocker):
+    def test_credits_exhausted_stops_upload_and_sets_flag(self, mocker):
         from congress_videos.reap_processor_dag import _upload_to_reap
+
+        mocker.patch("os.path.exists", return_value=True)
 
         mock_client_cls = mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
         mock_client = mock_client_cls.return_value
         mock_client.get_upload_url.side_effect = ReapCreditsExhausted("no credits")
 
-        clip_results = [
-            {"chapter_id": 1, "clip_path": "/data/c1.mp4", "pretrim_start": None,
-             "pretrim_end": None, "pretrim_used_srt": False, "scoring_reasoning": ""},
-            {"chapter_id": 2, "clip_path": "/data/c2.mp4", "pretrim_start": None,
-             "pretrim_end": None, "pretrim_used_srt": False, "scoring_reasoning": ""},
-        ]
-
-        ti = _make_ti({"clip_results": clip_results})
+        claimed = self._make_claimed_clip()
+        ti = _make_ti({"claimed_clip": claimed})
         _upload_to_reap(ti, params={})
 
         assert ti.xcom_store.get("credits_exhausted") is True
-        assert mock_client.get_upload_url.call_count == 1
+        assert "upload_id" not in ti.xcom_store
 
 
 # ---------------------------------------------------------------------------
-# TestCreateReapJob — migrated from test_reap_sensor.py
+# TestCreateReapJob
 # ---------------------------------------------------------------------------
 
 class TestCreateReapJob:
 
-    def test_empty_upload_results_pushes_empty_list(self, mocker):
+    def _make_claimed_clip(self, short_id=10, chapter_id=5):
+        return {
+            "id": short_id,
+            "chapter_id": chapter_id,
+            "staged_clip_path": "/data/clip.mp4",
+            "scoring_reasoning": "test reasoning",
+        }
+
+    def test_no_upload_id_skips_job_creation(self, mocker):
         from congress_videos.reap_processor_dag import _create_reap_job
 
         mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
         mocker.patch("congress_videos.reap_processor_dag.CongressionalVideoDB")
 
-        ti = _make_ti({"upload_results": []})
+        claimed = self._make_claimed_clip()
+        ti = _make_ti({"claimed_clip": claimed})  # no upload_id in xcom
         _create_reap_job(ti, params={})
 
         assert ti.xcom_store["reap_job_results"] == []
+
+    def test_successful_job_creation_calls_update_video_short_project(self, mocker):
+        """create_reap_job must call update_video_short_project NOT insert_video_short."""
+        from congress_videos.reap_processor_dag import _create_reap_job
+
+        mock_client_cls = mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
+        mock_client = mock_client_cls.return_value
+        mock_client.create_clips_job.return_value = {"project_id": "proj-001"}
+
+        mock_db_cls = mocker.patch("congress_videos.reap_processor_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+
+        claimed = self._make_claimed_clip(short_id=42, chapter_id=5)
+        ti = _make_ti({"claimed_clip": claimed, "upload_id": "up-001"})
+        _create_reap_job(ti, params={})
+
+        # Must call update_video_short_project with (short_id, reap_project_id)
+        mock_db.update_video_short_project.assert_called_once_with(42, "proj-001")
+        # Must NOT call insert_video_short
+        mock_db.insert_video_short.assert_not_called()
 
     def test_successful_job_creation_sets_sensor_xcoms(self, mocker):
         from congress_videos.reap_processor_dag import _create_reap_job
@@ -357,20 +412,26 @@ class TestCreateReapJob:
         mock_client.create_clips_job.return_value = {"project_id": "proj-001"}
 
         mock_db_cls = mocker.patch("congress_videos.reap_processor_dag.CongressionalVideoDB")
-        mock_db = mock_db_cls.return_value
-        mock_db.insert_video_short.return_value = 99
 
-        upload_results = [{
-            "chapter_id": 5,
-            "upload_id": "up-001",
-            "pretrim_start": None,
-            "pretrim_end": None,
-            "pretrim_used_srt": False,
-            "scoring_reasoning": "test",
-        }]
-
-        ti = _make_ti({"upload_results": upload_results})
+        claimed = self._make_claimed_clip(short_id=42, chapter_id=5)
+        ti = _make_ti({"claimed_clip": claimed, "upload_id": "up-001"})
         _create_reap_job(ti, params={})
 
         assert ti.xcom_store["reap_project_id_for_sensor"] == "proj-001"
         assert ti.xcom_store["chapter_id_for_sensor"] == 5
+
+    def test_credits_exhausted_sets_flag_and_empty_results(self, mocker):
+        from congress_videos.reap_processor_dag import _create_reap_job
+
+        mock_client_cls = mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
+        mock_client = mock_client_cls.return_value
+        mock_client.create_clips_job.side_effect = ReapCreditsExhausted("no credits")
+
+        mocker.patch("congress_videos.reap_processor_dag.CongressionalVideoDB")
+
+        claimed = self._make_claimed_clip()
+        ti = _make_ti({"claimed_clip": claimed, "upload_id": "up-001"})
+        _create_reap_job(ti, params={})
+
+        assert ti.xcom_store.get("credits_exhausted") is True
+        assert ti.xcom_store["reap_job_results"] == []

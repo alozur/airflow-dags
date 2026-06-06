@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 from airflow.exceptions import AirflowException
 
 
@@ -46,8 +46,8 @@ class TestCongressReapClipPreparerDAGLoads:
     def test_dag_has_correct_task_count(self):
         from congress_videos.reap_clip_preparer_dag import dag
         # Tasks: ensure_data_directory, query_chapters, extract_and_pretrim_clip,
-        #        validate_clip_durations, trigger_reap_processor
-        assert len(dag.tasks) == 5
+        #        log_queue_summary
+        assert len(dag.tasks) == 4
 
     def test_dag_has_correct_schedule(self):
         from congress_videos.reap_clip_preparer_dag import dag
@@ -59,8 +59,9 @@ class TestCongressReapClipPreparerDAGLoads:
         assert "ensure_data_directory" in task_ids
         assert "query_chapters" in task_ids
         assert "extract_and_pretrim_clip" in task_ids
-        assert "validate_clip_durations" in task_ids
-        assert "trigger_reap_processor" in task_ids
+        assert "log_queue_summary" in task_ids
+        assert "validate_clip_durations" not in task_ids
+        assert "trigger_reap_processor" not in task_ids
 
     def test_dag_correct_dependency_chain(self):
         from congress_videos.reap_clip_preparer_dag import dag
@@ -68,13 +69,11 @@ class TestCongressReapClipPreparerDAGLoads:
         t0 = tasks_by_id["ensure_data_directory"]
         t1 = tasks_by_id["query_chapters"]
         t2 = tasks_by_id["extract_and_pretrim_clip"]
-        t2b = tasks_by_id["validate_clip_durations"]
-        t3 = tasks_by_id["trigger_reap_processor"]
+        t3 = tasks_by_id["log_queue_summary"]
 
         assert t1.task_id in {t.task_id for t in t0.downstream_list}
         assert t2.task_id in {t.task_id for t in t1.downstream_list}
-        assert t2b.task_id in {t.task_id for t in t2.downstream_list}
-        assert t3.task_id in {t.task_id for t in t2b.downstream_list}
+        assert t3.task_id in {t.task_id for t in t2.downstream_list}
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +89,7 @@ class TestQueryChapters:
         mock_db_cls.return_value.get_chapters_for_shorts.return_value = []
 
         ti = _make_ti()
-        result = _query_chapters(ti, params={"max_chapters": 1, "min_relevance_score": 3})
+        result = _query_chapters(ti, params={"max_chapters": 100, "min_relevance_score": 3})
 
         assert result is False
         assert ti.xcom_store["chapters_for_shorts"] == []
@@ -103,7 +102,7 @@ class TestQueryChapters:
         mock_db_cls.return_value.get_chapters_for_shorts.return_value = chapters
 
         ti = _make_ti()
-        result = _query_chapters(ti, params={"max_chapters": 2, "min_relevance_score": 3})
+        result = _query_chapters(ti, params={"max_chapters": 100, "min_relevance_score": 3})
 
         assert result is True
         assert ti.xcom_store["chapters_for_shorts"] == chapters
@@ -116,7 +115,7 @@ class TestQueryChapters:
         mock_db_cls.return_value.get_chapters_for_shorts.return_value = chapters
 
         ti = _make_ti()
-        _query_chapters(ti, params={"max_chapters": 2, "min_relevance_score": 3})
+        _query_chapters(ti, params={"max_chapters": 100, "min_relevance_score": 3})
 
         assert ti.xcom_store["chapters_for_shorts"] == chapters
 
@@ -131,68 +130,6 @@ class TestQueryChapters:
         _query_chapters(ti, params={"max_chapters": 5, "min_relevance_score": 4})
 
         mock_db.get_chapters_for_shorts.assert_called_once_with(limit=5, min_relevance_score=4)
-
-
-# ---------------------------------------------------------------------------
-# TestValidateClipDurations
-# ---------------------------------------------------------------------------
-
-class TestValidateClipDurations:
-
-    def _clip(self, chapter_id=1, clip_path="/data/chapter1/chapter_video_trimmed.mp4"):
-        return {
-            "chapter_id": chapter_id,
-            "clip_path": clip_path,
-            "pretrim_start": 0.0,
-            "pretrim_end": 300.0,
-            "pretrim_used_srt": False,
-            "scoring_reasoning": "",
-        }
-
-    def _patch_ffprobe(self, mocker, duration_secs: float):
-        fake_output = json.dumps({"format": {"duration": str(duration_secs)}})
-        mocker.patch(
-            "subprocess.run",
-            return_value=MagicMock(stdout=fake_output, returncode=0),
-        )
-
-    def test_clips_within_limit_pass(self, mocker):
-        from congress_videos.reap_clip_preparer_dag import _validate_clip_durations
-
-        self._patch_ffprobe(mocker, duration_secs=295.0)
-
-        ti = _make_ti({"clip_results": [self._clip()]})
-        _validate_clip_durations(ti, params={"pre_trim_target_secs": 300})
-
-        assert len(ti.xcom_store["clip_results"]) == 1
-
-    def test_clip_exactly_at_limit_passes_due_to_tolerance(self, mocker):
-        from congress_videos.reap_clip_preparer_dag import _validate_clip_durations
-
-        self._patch_ffprobe(mocker, duration_secs=300.033)
-
-        ti = _make_ti({"clip_results": [self._clip()]})
-        _validate_clip_durations(ti, params={"pre_trim_target_secs": 300})
-
-        assert len(ti.xcom_store["clip_results"]) == 1
-
-    def test_clip_over_limit_raises(self, mocker):
-        from congress_videos.reap_clip_preparer_dag import _validate_clip_durations
-
-        self._patch_ffprobe(mocker, duration_secs=1800.0)
-
-        ti = _make_ti({"clip_results": [self._clip()]})
-        with pytest.raises(AirflowException, match="blocked"):
-            _validate_clip_durations(ti, params={"pre_trim_target_secs": 300})
-
-    def test_ffprobe_failure_raises(self, mocker):
-        from congress_videos.reap_clip_preparer_dag import _validate_clip_durations
-
-        mocker.patch("subprocess.run", side_effect=Exception("ffprobe not found"))
-
-        ti = _make_ti({"clip_results": [self._clip()]})
-        with pytest.raises(AirflowException, match="blocked"):
-            _validate_clip_durations(ti, params={"pre_trim_target_secs": 300})
 
 
 # ---------------------------------------------------------------------------
@@ -222,11 +159,32 @@ class TestExtractAndPretrimClip:
             return_value={"success": True, "error": None, "duration_seconds": duration_seconds},
         )
 
+    def _patch_ffprobe_ok(self, mocker, duration_secs: float = 240.0):
+        """Mock ffprobe returning a valid duration within safe limits."""
+        fake_output = json.dumps({"format": {"duration": str(duration_secs)}})
+        mocker.patch(
+            "subprocess.run",
+            return_value=MagicMock(stdout=fake_output, returncode=0),
+        )
+
+    def _patch_ffprobe_blocked(self, mocker, duration_secs: float = 1800.0):
+        """Mock ffprobe returning a duration that exceeds the safety gate."""
+        fake_output = json.dumps({"format": {"duration": str(duration_secs)}})
+        mocker.patch(
+            "subprocess.run",
+            return_value=MagicMock(stdout=fake_output, returncode=0),
+        )
+
     def test_short_chapter_no_pretrim(self, mocker):
-        """Short chapter (below threshold) should be appended without pre-trim."""
+        """Short chapter (below threshold) should insert a pending row without pre-trim."""
         from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
 
         self._setup_mocks(mocker)
+        self._patch_ffprobe_ok(mocker, duration_secs=240.0)
+
+        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.insert_video_short.return_value = 1
 
         ti = _make_ti({"chapters_for_shorts": [self._default_chapter()]})
         _extract_and_pretrim_clip(
@@ -234,15 +192,20 @@ class TestExtractAndPretrimClip:
             params={"pre_trim_threshold_secs": 480, "pre_trim_target_secs": 360},
         )
 
-        clips = ti.xcom_store.get("clip_results", [])
-        assert len(clips) == 1
-        assert clips[0]["pretrim_used_srt"] is False
+        mock_db.insert_video_short.assert_called_once()
+        call_kwargs = mock_db.insert_video_short.call_args.kwargs
+        assert call_kwargs["reap_status"] == "pending"
+        assert call_kwargs["staged_clip_path"] is not None
+        assert call_kwargs.get("reap_project_id") is None
+        assert call_kwargs["pretrim_used_srt"] is False
+        assert ti.xcom_store["clips_queued"] == 1
 
     def test_long_chapter_with_srt_window(self, mocker):
-        """Long chapter with SRT available should call ffmpeg with SRT window."""
+        """Long chapter with SRT available should call ffmpeg, then insert pending row."""
         from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
 
         self._setup_mocks(mocker, duration_seconds=720)
+        self._patch_ffprobe_ok(mocker, duration_secs=360.0)
 
         chapter = self._default_chapter()
         chapter["start_time"] = "00:00:00"
@@ -258,6 +221,10 @@ class TestExtractAndPretrimClip:
         )
         mock_ffmpeg = mocker.patch("congress_videos.reap_clip_preparer_dag._ffmpeg_extract_window")
 
+        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.insert_video_short.return_value = 2
+
         ti = _make_ti({"chapters_for_shorts": [chapter]})
         _extract_and_pretrim_clip(
             ti,
@@ -265,15 +232,20 @@ class TestExtractAndPretrimClip:
         )
 
         mock_ffmpeg.assert_called_once()
-        clips = ti.xcom_store.get("clip_results", [])
-        assert len(clips) == 1
-        assert clips[0]["pretrim_used_srt"] is True
+        mock_db.insert_video_short.assert_called_once()
+        call_kwargs = mock_db.insert_video_short.call_args.kwargs
+        assert call_kwargs["reap_status"] == "pending"
+        assert call_kwargs["pretrim_used_srt"] is True
+        assert call_kwargs["pretrim_start_secs"] == 60.0
+        assert call_kwargs["pretrim_end_secs"] == 420.0
+        assert ti.xcom_store["clips_queued"] == 1
 
     def test_long_chapter_no_srt_fallback(self, mocker):
-        """Long chapter without SRT should fallback to first target_secs."""
+        """Long chapter without SRT should fallback to first target_secs and insert pending row."""
         from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
 
         self._setup_mocks(mocker, duration_seconds=720)
+        self._patch_ffprobe_ok(mocker, duration_secs=360.0)
 
         chapter = self._default_chapter()
         chapter["start_time"] = "00:00:00"
@@ -284,6 +256,10 @@ class TestExtractAndPretrimClip:
             return_value=None,
         )
         mock_ffmpeg = mocker.patch("congress_videos.reap_clip_preparer_dag._ffmpeg_extract_window")
+
+        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.insert_video_short.return_value = 3
 
         ti = _make_ti({"chapters_for_shorts": [chapter]})
         _extract_and_pretrim_clip(
@@ -296,12 +272,91 @@ class TestExtractAndPretrimClip:
         assert call_kwargs.kwargs["start_secs"] == 0.0
         assert call_kwargs.kwargs["end_secs"] == 360.0
 
-        clips = ti.xcom_store.get("clip_results", [])
-        assert len(clips) == 1
-        assert clips[0]["pretrim_used_srt"] is False
+        mock_db.insert_video_short.assert_called_once()
+        db_kwargs = mock_db.insert_video_short.call_args.kwargs
+        assert db_kwargs["reap_status"] == "pending"
+        assert db_kwargs["pretrim_used_srt"] is False
+        assert ti.xcom_store["clips_queued"] == 1
+
+    def test_blocked_clip_not_inserted(self, mocker):
+        """When ffprobe reports excessive duration, clip must NOT be inserted and AirflowException raised."""
+        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
+
+        self._setup_mocks(mocker)
+        self._patch_ffprobe_blocked(mocker, duration_secs=1800.0)
+
+        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+
+        ti = _make_ti({"chapters_for_shorts": [self._default_chapter()]})
+        with pytest.raises(AirflowException, match="blocked"):
+            _extract_and_pretrim_clip(
+                ti,
+                params={"pre_trim_threshold_secs": 480, "pre_trim_target_secs": 300},
+            )
+
+        mock_db.insert_video_short.assert_not_called()
+
+    def test_ffprobe_failure_blocks_clip(self, mocker):
+        """When ffprobe raises an exception, clip must NOT be inserted and AirflowException raised."""
+        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
+
+        self._setup_mocks(mocker)
+        mocker.patch("subprocess.run", side_effect=Exception("ffprobe not found"))
+
+        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+
+        ti = _make_ti({"chapters_for_shorts": [self._default_chapter()]})
+        with pytest.raises(AirflowException, match="blocked"):
+            _extract_and_pretrim_clip(
+                ti,
+                params={"pre_trim_threshold_secs": 480, "pre_trim_target_secs": 300},
+            )
+
+        mock_db.insert_video_short.assert_not_called()
+
+    def test_no_source_video_skips_chapter(self, mocker):
+        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
+
+        mocker.patch(
+            "congress_videos.reap_clip_preparer_dag._find_source_video",
+            return_value=None,
+        )
+        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+
+        ti = _make_ti({"chapters_for_shorts": [self._default_chapter()]})
+        _extract_and_pretrim_clip(
+            ti,
+            params={"pre_trim_threshold_secs": 480, "pre_trim_target_secs": 360},
+        )
+
+        mock_db.insert_video_short.assert_not_called()
+        assert ti.xcom_store.get("clips_queued") == 0
+
+    def test_extraction_failure_skips_chapter(self, mocker):
+        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
+
+        self._setup_mocks(mocker)
+        mocker.patch(
+            "congress_videos.reap_clip_preparer_dag.split_video_chapter",
+            return_value={"success": False, "error": "ffmpeg error"},
+        )
+        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+
+        ti = _make_ti({"chapters_for_shorts": [self._default_chapter()]})
+        _extract_and_pretrim_clip(
+            ti,
+            params={"pre_trim_threshold_secs": 480, "pre_trim_target_secs": 360},
+        )
+
+        mock_db.insert_video_short.assert_not_called()
+        assert ti.xcom_store.get("clips_queued") == 0
 
     def test_post_trim_clip_below_120s_skipped(self, mocker):
-        """Clip that ends up below 120s after trim should be skipped."""
+        """Clip that ends up below 120s after trim should be skipped — not inserted."""
         from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
 
         self._setup_mocks(mocker, duration_seconds=720)
@@ -321,44 +376,58 @@ class TestExtractAndPretrimClip:
         )
         mocker.patch("congress_videos.reap_clip_preparer_dag._ffmpeg_extract_window")
 
+        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+
         ti = _make_ti({"chapters_for_shorts": [chapter]})
         _extract_and_pretrim_clip(
             ti,
             params={"pre_trim_threshold_secs": 480, "pre_trim_target_secs": 360},
         )
 
-        clips = ti.xcom_store.get("clip_results", [])
-        assert clips == []
+        mock_db.insert_video_short.assert_not_called()
+        assert ti.xcom_store.get("clips_queued") == 0
 
-    def test_no_source_video_skips_chapter(self, mocker):
+    def test_partial_success_blocked_raises_after_inserting_good_clips(self, mocker):
+        """Batch with 1 good + 1 blocked clip: good clip is inserted, then AirflowException raised."""
         from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
+
+        chapter_good = {**self._default_chapter(), "chapter_id": 1}
+        chapter_blocked = {**self._default_chapter(), "chapter_id": 2}
 
         mocker.patch(
             "congress_videos.reap_clip_preparer_dag._find_source_video",
-            return_value=None,
+            return_value="/data/video.mp4",
         )
-
-        ti = _make_ti({"chapters_for_shorts": [self._default_chapter()]})
-        _extract_and_pretrim_clip(
-            ti,
-            params={"pre_trim_threshold_secs": 480, "pre_trim_target_secs": 360},
-        )
-
-        assert ti.xcom_store.get("clip_results", []) == []
-
-    def test_extraction_failure_skips_chapter(self, mocker):
-        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
-
-        self._setup_mocks(mocker)
+        mocker.patch("os.makedirs")
         mocker.patch(
             "congress_videos.reap_clip_preparer_dag.split_video_chapter",
-            return_value={"success": False, "error": "ffmpeg error"},
+            return_value={"success": True, "error": None, "duration_seconds": 240},
         )
 
-        ti = _make_ti({"chapters_for_shorts": [self._default_chapter()]})
-        _extract_and_pretrim_clip(
-            ti,
-            params={"pre_trim_threshold_secs": 480, "pre_trim_target_secs": 360},
-        )
+        call_count = {"n": 0}
+        def fake_subprocess_run(cmd, *args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # First chapter: OK duration
+                return MagicMock(stdout=json.dumps({"format": {"duration": "240.0"}}), returncode=0)
+            else:
+                # Second chapter: blocked duration
+                return MagicMock(stdout=json.dumps({"format": {"duration": "1800.0"}}), returncode=0)
 
-        assert ti.xcom_store.get("clip_results", []) == []
+        mocker.patch("subprocess.run", side_effect=fake_subprocess_run)
+
+        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.insert_video_short.return_value = 1
+
+        ti = _make_ti({"chapters_for_shorts": [chapter_good, chapter_blocked]})
+        with pytest.raises(AirflowException, match="blocked"):
+            _extract_and_pretrim_clip(
+                ti,
+                params={"pre_trim_threshold_secs": 480, "pre_trim_target_secs": 300},
+            )
+
+        # Good clip was inserted before the exception
+        mock_db.insert_video_short.assert_called_once()
+        assert ti.xcom_store.get("clips_queued") == 1

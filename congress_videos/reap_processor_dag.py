@@ -1,8 +1,9 @@
 """
 Congress Reap Processor DAG
 
-Triggered by congress_reap_clip_preparer. Uploads prepared clips to Reap,
-waits for job completion, and downloads all resulting shorts.
+Runs on its own cron schedule (daily at 09:00). On each run, claims exactly one
+video_shorts row with reap_status='pending' from the queue, uploads the staged clip
+to Reap, waits for job completion via sensor, and downloads all resulting shorts.
 """
 
 import logging
@@ -96,6 +97,7 @@ class ReapJobSensor(BaseSensorOperator):
                     local_file_path=dest_path,
                 )
 
+            db.update_video_short_status(reap_project_id, 'done')
             return True
 
         if status in _FAILURE_STATES:
@@ -108,63 +110,65 @@ class ReapJobSensor(BaseSensorOperator):
 with DAG(
     'congress_reap_processor',
     default_args=default_args,
-    description='Upload clips to Reap, wait for job completion, download resulting shorts',
-    schedule=None,
+    description='Claim one pending clip from the queue, upload to Reap, wait for completion, download shorts',
+    schedule='0 9 * * *',
     start_date=datetime(2025, 11, 14),
     catchup=False,
+    max_active_runs=1,
     tags=['congress', 'reap', 'shorts'],
 ) as dag:
 
-    def _load_clip_results(ti, **context) -> bool:
-        conf = context.get('dag_run') and context['dag_run'].conf or {}
-        clip_results = conf.get('clip_results', [])
-        ti.xcom_push(key='clip_results', value=clip_results)
-        return bool(clip_results)
+    def _claim_clip_from_queue(ti, **context) -> bool:
+        db = CongressionalVideoDB()
+        claimed = db.claim_pending_clip()
+        if not claimed:
+            logging.info("No pending clips in queue — skipping run")
+            return False
+        ti.xcom_push(key='claimed_clip', value=claimed)
+        logging.info("Claimed clip: short_id=%s chapter_id=%s", claimed['id'], claimed['chapter_id'])
+        return True
 
     t0 = ShortCircuitOperator(
-        task_id='load_clip_results',
-        python_callable=_load_clip_results,
+        task_id='claim_clip_from_queue',
+        python_callable=_claim_clip_from_queue,
     )
 
     def _upload_to_reap(ti, **context):
-        clip_results = ti.xcom_pull(key='clip_results') or []
+        claimed_clip = ti.xcom_pull(key='claimed_clip')
 
-        if not clip_results:
-            ti.xcom_push(key='upload_results', value=[])
+        if not claimed_clip:
+            logging.warning("upload_to_reap: no claimed_clip in XCom — nothing to upload")
             return
 
+        chapter_id = claimed_clip['chapter_id']
+        clip_path = claimed_clip['staged_clip_path']
+
+        if not clip_path or not os.path.exists(clip_path):
+            db = CongressionalVideoDB()
+            db.update_video_short_status(claimed_clip.get('reap_project_id') or '', 'failed')
+            raise AirflowException(
+                f"upload_to_reap: staged_clip_path missing or file not found for "
+                f"short_id={claimed_clip['id']} chapter_id={chapter_id}: {clip_path}"
+            )
+
         reap_client = ReapApiClient()
-        upload_results = []
 
-        for clip_info in clip_results:
-            chapter_id = clip_info['chapter_id']
-            clip_path = clip_info['clip_path']
+        try:
+            upload_data = reap_client.get_upload_url(os.path.basename(clip_path))
+            upload_id = upload_data['upload_id']
+            upload_url = upload_data['uploadUrl']
 
-            try:
-                upload_data = reap_client.get_upload_url(os.path.basename(clip_path))
-                upload_id = upload_data['upload_id']
-                upload_url = upload_data['uploadUrl']
+            reap_client.upload_file(upload_url, clip_path)
+            logging.info("Chapter %s uploaded to Reap — upload_id=%s", chapter_id, upload_id)
 
-                reap_client.upload_file(upload_url, clip_path)
-                logging.info("Chapter %s uploaded to Reap — upload_id=%s", chapter_id, upload_id)
+            ti.xcom_push(key='upload_id', value=upload_id)
+            ti.xcom_push(key='chapter_id', value=chapter_id)
 
-                upload_results.append({
-                    'chapter_id': chapter_id,
-                    'upload_id': upload_id,
-                    'pretrim_start': clip_info['pretrim_start'],
-                    'pretrim_end': clip_info['pretrim_end'],
-                    'pretrim_used_srt': clip_info['pretrim_used_srt'],
-                    'scoring_reasoning': clip_info['scoring_reasoning'],
-                })
-
-            except ReapCreditsExhausted:
-                logging.warning(
-                    "Reap credits exhausted uploading chapter %s — stopping further uploads", chapter_id
-                )
-                ti.xcom_push(key='credits_exhausted', value=True)
-                break
-
-        ti.xcom_push(key='upload_results', value=upload_results)
+        except ReapCreditsExhausted:
+            logging.warning(
+                "Reap credits exhausted uploading chapter %s — stopping", chapter_id
+            )
+            ti.xcom_push(key='credits_exhausted', value=True)
 
     t1 = PythonOperator(
         task_id='upload_to_reap',
@@ -172,64 +176,51 @@ with DAG(
     )
 
     def _create_reap_job(ti, **context):
-        upload_results = ti.xcom_pull(key='upload_results') or []
+        claimed_clip = ti.xcom_pull(key='claimed_clip')
+        upload_id = ti.xcom_pull(key='upload_id')
 
-        if not upload_results:
+        if not upload_id:
+            logging.info("create_reap_job: no upload_id in XCom — skipping job creation")
             ti.xcom_push(key='reap_job_results', value=[])
             return
 
+        chapter_id = claimed_clip['chapter_id']
+        scoring_reasoning = truncate_text(
+            claimed_clip.get('scoring_reasoning') or '', max_length=500
+        )
+
         reap_client = ReapApiClient()
         db = CongressionalVideoDB()
-        job_results = []
 
-        for upload_info in upload_results:
-            chapter_id = upload_info['chapter_id']
-            upload_id = upload_info['upload_id']
-            scoring_reasoning = truncate_text(upload_info.get('scoring_reasoning') or '', max_length=500)
+        try:
+            job_data = reap_client.create_clips_job(
+                upload_id,
+                language='es',
+                prompt=scoring_reasoning,
+            )
+            reap_project_id = job_data['project_id']
 
-            try:
-                job_data = reap_client.create_clips_job(
-                    upload_id,
-                    language='es',
-                    prompt=scoring_reasoning,
-                )
-                reap_project_id = job_data['project_id']
+            db.update_video_short_project(claimed_clip['id'], reap_project_id)
 
-                short_id = db.insert_video_short(
-                    chapter_id=chapter_id,
-                    reap_project_id=reap_project_id,
-                    reap_status='processing',
-                    pretrim_start_secs=upload_info['pretrim_start'],
-                    pretrim_end_secs=upload_info['pretrim_end'],
-                    pretrim_used_srt=upload_info['pretrim_used_srt'],
-                )
+            logging.info(
+                "Reap job created — project_id=%s chapter=%s short_id=%s",
+                reap_project_id, chapter_id, claimed_clip['id'],
+            )
 
-                logging.info(
-                    "Reap job created — project_id=%s chapter=%s short_id=%s",
-                    reap_project_id, chapter_id, short_id
-                )
+            ti.xcom_push(key='reap_project_id_for_sensor', value=reap_project_id)
+            ti.xcom_push(key='chapter_id_for_sensor', value=chapter_id)
+            ti.xcom_push(key='reap_job_results', value=[{
+                'reap_project_id': reap_project_id,
+                'short_id': claimed_clip['id'],
+                'chapter_id': chapter_id,
+            }])
 
-                job_results.append({
-                    'reap_project_id': reap_project_id,
-                    'short_id': short_id,
-                    'chapter_id': chapter_id,
-                })
-
-            except ReapCreditsExhausted:
-                logging.warning(
-                    "Reap credits exhausted creating job for chapter %s", chapter_id
-                )
-                ti.xcom_push(key='credits_exhausted', value=True)
-                break
-
-        ti.xcom_push(key='reap_job_results', value=job_results)
-
-        # Single-sensor approach: sensor handles the first queued job;
-        # remaining jobs are left for subsequent DAG runs (max_chapters keeps the backlog small)
-        if job_results:
-            first_job = job_results[0]
-            ti.xcom_push(key='reap_project_id_for_sensor', value=first_job['reap_project_id'])
-            ti.xcom_push(key='chapter_id_for_sensor', value=first_job['chapter_id'])
+        except ReapCreditsExhausted:
+            logging.warning(
+                "Reap credits exhausted creating job for chapter %s", chapter_id
+            )
+            ti.xcom_push(key='credits_exhausted', value=True)
+            ti.xcom_push(key='reap_job_results', value=[])
 
     t2 = PythonOperator(
         task_id='create_reap_job',
