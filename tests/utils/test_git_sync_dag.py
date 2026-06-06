@@ -16,7 +16,8 @@ class TestGitSyncDAGLoads:
 
     def test_dag_schedule_is_none(self):
         from utils.git_sync_dag import dag
-        assert dag.schedule is None
+        schedule = getattr(dag, 'schedule_interval', None) or getattr(dag, 'schedule', None)
+        assert schedule is None
 
     def test_task_chain(self):
         from utils.git_sync_dag import dag
