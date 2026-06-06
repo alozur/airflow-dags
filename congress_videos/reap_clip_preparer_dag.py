@@ -122,7 +122,6 @@ with DAG(
         chapters = ti.xcom_pull(key='chapters_for_shorts') or []
         threshold_secs = context['params']['pre_trim_threshold_secs']
         target_secs = context['params']['pre_trim_target_secs']
-        max_secs = float(target_secs)
 
         db = CongressionalVideoDB()
         inserted_count = 0
@@ -133,8 +132,6 @@ with DAG(
             video_id = chapter['video_id']
             start_time = str(chapter['start_time'])
             end_time = str(chapter['end_time'])
-
-            duration = convert_srt_time_to_seconds(_interval_to_srt(end_time)) - convert_srt_time_to_seconds(_interval_to_srt(start_time))
 
             source_video_path = _find_source_video(video_id)
             if not source_video_path:
@@ -235,21 +232,21 @@ with DAG(
                 blocked_chapters.append(chapter_id)
                 continue
 
-            if actual_secs > max_secs + _FRAME_TOLERANCE_SECS:
+            if actual_secs > float(target_secs) + _FRAME_TOLERANCE_SECS:
                 logging.error(
                     "SAFETY GATE BLOCKED chapter %s: actual duration %.1fs > max %.0fs (+%.0fs tolerance) — "
                     "pre-trim did not reduce the clip enough",
-                    chapter_id, actual_secs, max_secs, _FRAME_TOLERANCE_SECS,
+                    chapter_id, actual_secs, target_secs, _FRAME_TOLERANCE_SECS,
                 )
                 blocked_chapters.append(chapter_id)
                 continue
 
             logging.info(
                 "Safety gate OK — chapter %s: %.1fs <= %.0fs + %.0fs",
-                chapter_id, actual_secs, max_secs, _FRAME_TOLERANCE_SECS,
+                chapter_id, actual_secs, target_secs, _FRAME_TOLERANCE_SECS,
             )
 
-            scoring_reasoning = chapter.get('scoring_reasoning', '') or ''
+            scoring_reasoning = chapter.get('scoring_reasoning') or ''
 
             db.insert_video_short(
                 chapter_id=chapter_id,

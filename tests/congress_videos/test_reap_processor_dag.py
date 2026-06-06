@@ -143,7 +143,7 @@ class TestReapJobSensor:
         return ReapJobSensor(
             task_id="wait_for_reap_test",
             reap_project_id_key="reap_project_id_for_sensor",
-            short_id_key="short_id_for_sensor",
+            chapter_id_key="chapter_id_for_sensor",
             poke_interval=900,
             timeout=7200,
             mode="reschedule",
@@ -382,7 +382,7 @@ class TestCreateReapJob:
         ti = _make_ti({"claimed_clip": claimed})  # no upload_id in xcom
         _create_reap_job(ti, params={})
 
-        assert ti.xcom_store["reap_job_results"] == []
+        assert "reap_project_id_for_sensor" not in ti.xcom_store
 
     def test_successful_job_creation_calls_update_video_short_project(self, mocker):
         """create_reap_job must call update_video_short_project NOT insert_video_short."""
@@ -434,4 +434,3 @@ class TestCreateReapJob:
         _create_reap_job(ti, params={})
 
         assert ti.xcom_store.get("credits_exhausted") is True
-        assert ti.xcom_store["reap_job_results"] == []

@@ -47,15 +47,15 @@ class ReapJobSensor(BaseSensorOperator):
     On failure states: updates DB status and raises AirflowException.
     """
 
-    def __init__(self, reap_project_id_key: str, short_id_key: str, **kwargs):
+    def __init__(self, reap_project_id_key: str, chapter_id_key: str, **kwargs):
         super().__init__(**kwargs)
         self.reap_project_id_key = reap_project_id_key
-        self.short_id_key = short_id_key
+        self.chapter_id_key = chapter_id_key
 
     def poke(self, context) -> bool:
         ti = context['ti']
         reap_project_id = ti.xcom_pull(key=self.reap_project_id_key)
-        chapter_id = ti.xcom_pull(key='chapter_id_for_sensor')
+        chapter_id = ti.xcom_pull(key=self.chapter_id_key)
 
         if not reap_project_id:
             raise AirflowException("ReapJobSensor: reap_project_id not found in XCom")
@@ -104,8 +104,6 @@ class ReapJobSensor(BaseSensorOperator):
             CongressionalVideoDB().update_video_short_status(reap_project_id, status)
             raise AirflowException(f"Reap job {reap_project_id} ended with terminal status: {status}")
 
-        return False
-
 
 with DAG(
     'congress_reap_processor',
@@ -135,17 +133,11 @@ with DAG(
 
     def _upload_to_reap(ti, **context):
         claimed_clip = ti.xcom_pull(key='claimed_clip')
-
-        if not claimed_clip:
-            logging.warning("upload_to_reap: no claimed_clip in XCom — nothing to upload")
-            return
-
         chapter_id = claimed_clip['chapter_id']
         clip_path = claimed_clip['staged_clip_path']
 
         if not clip_path or not os.path.exists(clip_path):
-            db = CongressionalVideoDB()
-            db.update_video_short_status(claimed_clip.get('reap_project_id') or '', 'failed')
+            CongressionalVideoDB().update_video_short_status_by_id(claimed_clip['id'], 'failed')
             raise AirflowException(
                 f"upload_to_reap: staged_clip_path missing or file not found for "
                 f"short_id={claimed_clip['id']} chapter_id={chapter_id}: {clip_path}"
@@ -181,7 +173,6 @@ with DAG(
 
         if not upload_id:
             logging.info("create_reap_job: no upload_id in XCom — skipping job creation")
-            ti.xcom_push(key='reap_job_results', value=[])
             return
 
         chapter_id = claimed_clip['chapter_id']
@@ -190,7 +181,6 @@ with DAG(
         )
 
         reap_client = ReapApiClient()
-        db = CongressionalVideoDB()
 
         try:
             job_data = reap_client.create_clips_job(
@@ -200,7 +190,7 @@ with DAG(
             )
             reap_project_id = job_data['project_id']
 
-            db.update_video_short_project(claimed_clip['id'], reap_project_id)
+            CongressionalVideoDB().update_video_short_project(claimed_clip['id'], reap_project_id)
 
             logging.info(
                 "Reap job created — project_id=%s chapter=%s short_id=%s",
@@ -209,18 +199,12 @@ with DAG(
 
             ti.xcom_push(key='reap_project_id_for_sensor', value=reap_project_id)
             ti.xcom_push(key='chapter_id_for_sensor', value=chapter_id)
-            ti.xcom_push(key='reap_job_results', value=[{
-                'reap_project_id': reap_project_id,
-                'short_id': claimed_clip['id'],
-                'chapter_id': chapter_id,
-            }])
 
         except ReapCreditsExhausted:
             logging.warning(
                 "Reap credits exhausted creating job for chapter %s", chapter_id
             )
             ti.xcom_push(key='credits_exhausted', value=True)
-            ti.xcom_push(key='reap_job_results', value=[])
 
     t2 = PythonOperator(
         task_id='create_reap_job',
@@ -230,7 +214,7 @@ with DAG(
     t3 = ReapJobSensor(
         task_id='wait_for_reap',
         reap_project_id_key='reap_project_id_for_sensor',
-        short_id_key='short_id_for_sensor',
+        chapter_id_key='chapter_id_for_sensor',
         poke_interval=900,
         timeout=7200,
         mode='reschedule',

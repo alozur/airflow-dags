@@ -959,6 +959,18 @@ class CongressionalVideoDB:
                     f"Updated video_short {short_id}: reap_project_id={reap_project_id}"
                 )
 
+    def update_video_short_status_by_id(self, short_id: int, status: str) -> None:
+        """Update reap_status for a single video_shorts row by primary key."""
+        shorts_table = self.pg_conn.get_qualified_table('video_shorts')
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    UPDATE {shorts_table}
+                    SET reap_status = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                """, (status, short_id))
+                logger.info(f"Updated video_short {short_id}: reap_status={status}")
+
     def get_pending_shorts(self, limit: int = 2, min_virality_score: float = 0.0) -> List[Dict]:
         """
         Get downloaded Shorts clips that are ready for YouTube upload.
