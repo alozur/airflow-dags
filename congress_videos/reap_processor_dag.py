@@ -186,6 +186,7 @@ with DAG(
             job_data = reap_client.create_clips_job(
                 upload_id,
                 language='es',
+                name=f"chapter_{chapter_id}",
                 prompt=scoring_reasoning,
             )
             reap_project_id = job_data['project_id']
