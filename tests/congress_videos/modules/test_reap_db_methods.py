@@ -73,7 +73,7 @@ class TestGetChaptersForShorts:
         instance.get_chapters_for_shorts(limit=5, min_relevance_score=4)
 
         _, params = mock_cursor.execute.call_args[0]
-        assert params == (4, 5)
+        assert params == [4, 5]
 
     def test_query_contains_not_exists_subquery(self, db):
         instance, mock_cursor = db
@@ -279,8 +279,8 @@ class TestGetChapterTitles:
     def test_returns_dict_of_id_to_title(self, db):
         instance, mock_cursor = db
         mock_cursor.fetchall.return_value = [
-            {"id": 1, "title": "Title A"},
-            {"id": 2, "title": "Title B"},
+            {"chapter_id": 1, "title": "Title A"},
+            {"chapter_id": 2, "title": "Title B"},
         ]
 
         result = instance.get_chapter_titles([1, 2])

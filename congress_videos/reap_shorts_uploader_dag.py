@@ -28,6 +28,7 @@ from congress_videos.config.ai_prompts import (
 from utils.ai_helpers import generate_json_completion, truncate_text
 from utils.airflow_helpers import xcom_task
 from utils.env_loader import load_env_if_local
+from utils.whisper_helpers import transcribe_audio_file
 
 load_env_if_local()
 
@@ -92,13 +93,13 @@ with DAG(
             chapter_id = short.get('chapter_id')
             video_path = short.get('local_file_path')
 
-            chapter = db.get_chapter_metadata(chapter_id) if chapter_id else None
+            ch = db.get_chapter_metadata(chapter_id) if chapter_id else {}
 
-            chapter_title = (chapter or {}).get('title') or f'Short clip {short_id}'
-            key_speakers = (chapter or {}).get('key_speakers') or (chapter or {}).get('speakers') or []
+            chapter_title = ch.get('title') or f'Short clip {short_id}'
+            key_speakers = ch.get('key_speakers') or ch.get('speakers') or []
             speakers = ', '.join(key_speakers) if key_speakers else 'Diputados del Congreso'
-            topics = ', '.join((chapter or {}).get('topics') or []) or 'Debate parlamentario'
-            scoring_reasoning = (chapter or {}).get('scoring_reasoning') or ''
+            topics = ', '.join(ch.get('topics') or []) or 'Debate parlamentario'
+            scoring_reasoning = ch.get('scoring_reasoning') or ''
 
             # Fallback metadata — used if Whisper or GPT fail
             title = truncate_text(f"{chapter_title} #Shorts", max_length=100)
@@ -106,40 +107,32 @@ with DAG(
 
             transcript = None
             if video_path and os.path.exists(video_path):
-                tmp_audio = None
                 try:
-                    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-                        tmp_audio = tmp.name
-
-                    ffmpeg_result = subprocess.run(
-                        [
-                            'ffmpeg', '-i', video_path,
-                            '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
-                            tmp_audio, '-y',
-                        ],
-                        capture_output=True,
-                        timeout=60,
-                    )
-
-                    if ffmpeg_result.returncode == 0:
-                        from utils.whisper_helpers import transcribe_audio_file
-                        whisper_result = transcribe_audio_file(
-                            tmp_audio, language='es',
-                            use_local_whisper=True, model_size='tiny',
+                    with tempfile.NamedTemporaryFile(suffix='.wav', delete=True) as tmp:
+                        ffmpeg_result = subprocess.run(
+                            [
+                                'ffmpeg', '-i', video_path,
+                                '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
+                                tmp.name, '-y',
+                            ],
+                            capture_output=True,
+                            timeout=60,
                         )
-                        if whisper_result.get('success'):
-                            transcript = whisper_result.get('text', '').strip()
-                            logging.info(f"Transcribed short {short_id}: {len(transcript)} chars")
-                    else:
-                        logging.warning(
-                            f"ffmpeg failed for short {short_id}: "
-                            f"{ffmpeg_result.stderr.decode()[:200]}"
-                        )
+                        if ffmpeg_result.returncode == 0:
+                            whisper_result = transcribe_audio_file(
+                                tmp.name, language='es',
+                                use_local_whisper=True, model_size='tiny',
+                            )
+                            if whisper_result.get('success'):
+                                transcript = whisper_result.get('text', '').strip()
+                                logging.info(f"Transcribed short {short_id}: {len(transcript)} chars")
+                        else:
+                            logging.warning(
+                                f"ffmpeg failed for short {short_id}: "
+                                f"{ffmpeg_result.stderr.decode()[:200]}"
+                            )
                 except Exception as e:
                     logging.warning(f"Audio extraction failed for short {short_id}: {e}")
-                finally:
-                    if tmp_audio and os.path.exists(tmp_audio):
-                        os.unlink(tmp_audio)
             else:
                 logging.warning(f"Video file not found for short {short_id}: {video_path}")
 
@@ -196,12 +189,9 @@ with DAG(
             ti.xcom_push(key='upload_results', value={'upload_details': []})
             return None
 
-        metadata_by_id = {m['short_id']: m for m in shorts_metadata}
-
         videos = []
-        for short in pending_shorts:
+        for short, meta in zip(pending_shorts, shorts_metadata):
             short_id = short.get('id')
-            meta = metadata_by_id.get(short_id, {})
 
             video_config = {
                 'short_id': short_id,

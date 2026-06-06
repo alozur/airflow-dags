@@ -18,17 +18,18 @@ class TestReapShortsUploaderDAGLoads:
 
     def test_dag_has_correct_task_count(self):
         from congress_videos.reap_shorts_uploader_dag import dag
-        # Tasks: get_pending_shorts, trigger_youtube_upload, mark_shorts_uploaded
-        assert len(dag.tasks) == 3
+        # Tasks: get_pending_shorts, generate_metadata, trigger_youtube_upload, mark_shorts_uploaded
+        assert len(dag.tasks) == 4
 
     def test_dag_schedule(self):
         from congress_videos.reap_shorts_uploader_dag import dag
-        assert dag.schedule == "0 17 * * *"
+        assert dag.schedule == "0,30 17-20 * * *"
 
     def test_dag_correct_task_ids(self):
         from congress_videos.reap_shorts_uploader_dag import dag
         task_ids = {t.task_id for t in dag.tasks}
         assert "get_pending_shorts" in task_ids
+        assert "generate_metadata" in task_ids
         assert "trigger_youtube_upload" in task_ids
         assert "mark_shorts_uploaded" in task_ids
 
@@ -36,11 +37,13 @@ class TestReapShortsUploaderDAGLoads:
         from congress_videos.reap_shorts_uploader_dag import dag
         tasks_by_id = {t.task_id: t for t in dag.tasks}
         t1 = tasks_by_id["get_pending_shorts"]
-        t2 = tasks_by_id["trigger_youtube_upload"]
-        t3 = tasks_by_id["mark_shorts_uploaded"]
+        t2 = tasks_by_id["generate_metadata"]
+        t3 = tasks_by_id["trigger_youtube_upload"]
+        t4 = tasks_by_id["mark_shorts_uploaded"]
 
         assert t2.task_id in {t.task_id for t in t1.downstream_list}
         assert t3.task_id in {t.task_id for t in t2.downstream_list}
+        assert t4.task_id in {t.task_id for t in t3.downstream_list}
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +125,7 @@ class TestGetPendingShorts:
         mock_db.get_pending_shorts.return_value = []
 
         ti = _make_ti()
-        _get_pending_shorts(ti, params={"max_shorts_per_day": 2, "min_virality_score": 0.0})
+        _get_pending_shorts(ti, params={"max_shorts_per_run": 2, "min_virality_score": 0.0})
 
         assert ti.xcom_store["pending_shorts"] == []
 
@@ -137,7 +140,7 @@ class TestGetPendingShorts:
         mock_db_cls.return_value.get_pending_shorts.return_value = shorts
 
         ti = _make_ti()
-        _get_pending_shorts(ti, params={"max_shorts_per_day": 3, "min_virality_score": 0.5})
+        _get_pending_shorts(ti, params={"max_shorts_per_run": 3, "min_virality_score": 0.5})
 
         assert ti.xcom_store["pending_shorts"] == shorts
 
@@ -149,7 +152,7 @@ class TestGetPendingShorts:
         mock_db.get_pending_shorts.return_value = []
 
         ti = _make_ti()
-        _get_pending_shorts(ti, params={"max_shorts_per_day": 5, "min_virality_score": 0.7})
+        _get_pending_shorts(ti, params={"max_shorts_per_run": 5, "min_virality_score": 0.7})
 
         mock_db.get_pending_shorts.assert_called_once_with(limit=5, min_virality_score=0.7)
 
