@@ -752,8 +752,10 @@ class CongressionalVideoDB:
                     WHERE vc.is_uploaded_to_youtube = TRUE
                       AND vc.relevance_score >= %s
                       AND (
-                          EXTRACT(EPOCH FROM (vc.end_time::interval - vc.start_time::interval))
-                          BETWEEN 120 AND 900
+                          EXTRACT(EPOCH FROM (
+                              REPLACE(vc.end_time, ',', '.')::interval
+                              - REPLACE(vc.start_time, ',', '.')::interval
+                          )) BETWEEN 120 AND 900
                       )
                       AND NOT EXISTS (
                           SELECT 1 FROM {shorts_table} vs
