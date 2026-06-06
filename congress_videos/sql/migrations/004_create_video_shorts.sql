@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS video_shorts (
     id                    SERIAL PRIMARY KEY,
 
     -- Source chapter (1→N relationship: one chapter → many clips)
-    chapter_id            INTEGER NOT NULL REFERENCES video_chapters(id) ON DELETE CASCADE,
+    chapter_id            INTEGER NOT NULL REFERENCES video_chapters(chapter_id) ON DELETE CASCADE,
 
     -- Pre-trim window applied before sending to Reap (NULL = no pre-trim)
     pretrim_start_secs    FLOAT,
