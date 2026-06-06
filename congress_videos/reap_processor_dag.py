@@ -17,6 +17,7 @@ from airflow.sensors.base import BaseSensorOperator
 from congress_videos.config.paths import get_short_file_path
 from congress_videos.modules.database import CongressionalVideoDB
 from congress_videos.reap_api import ReapApiClient, ReapCreditsExhausted
+from utils.ai_helpers import truncate_text
 from utils.env_loader import load_env_if_local
 
 load_env_if_local()
@@ -59,7 +60,6 @@ class ReapJobSensor(BaseSensorOperator):
             raise AirflowException("ReapJobSensor: reap_project_id not found in XCom")
 
         reap_client = ReapApiClient()
-        db = CongressionalVideoDB()
 
         try:
             status_data = reap_client.get_project_status(reap_project_id)
@@ -75,6 +75,7 @@ class ReapJobSensor(BaseSensorOperator):
             return False
 
         if status == 'completed':
+            db = CongressionalVideoDB()
             clips = reap_client.get_project_clips(reap_project_id)
             logging.info("Reap project %s completed — downloading %d clips", reap_project_id, len(clips))
 
@@ -84,7 +85,6 @@ class ReapJobSensor(BaseSensorOperator):
                 virality = float(clip['virality_score'])
 
                 dest_path = get_short_file_path(chapter_id, clip_id)
-                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                 reap_client.download_clip(clip_url, dest_path)
 
                 db.insert_video_short_clip(
@@ -99,7 +99,7 @@ class ReapJobSensor(BaseSensorOperator):
             return True
 
         if status in _FAILURE_STATES:
-            db.update_video_short_status(reap_project_id, status)
+            CongressionalVideoDB().update_video_short_status(reap_project_id, status)
             raise AirflowException(f"Reap job {reap_project_id} ended with terminal status: {status}")
 
         return False
@@ -116,16 +116,8 @@ with DAG(
 ) as dag:
 
     def _load_clip_results(ti, **context) -> bool:
-        import json
-        raw = context['dag_run'].conf.get('clip_results', []) if context.get('dag_run') and context['dag_run'].conf else []
-        if isinstance(raw, str):
-            try:
-                clip_results = json.loads(raw)
-            except (json.JSONDecodeError, ValueError):
-                logging.error("Could not parse clip_results conf — expected list or JSON string")
-                clip_results = []
-        else:
-            clip_results = raw
+        conf = context.get('dag_run') and context['dag_run'].conf or {}
+        clip_results = conf.get('clip_results', [])
         ti.xcom_push(key='clip_results', value=clip_results)
         return bool(clip_results)
 
@@ -193,7 +185,7 @@ with DAG(
         for upload_info in upload_results:
             chapter_id = upload_info['chapter_id']
             upload_id = upload_info['upload_id']
-            scoring_reasoning = (upload_info.get('scoring_reasoning') or '')[:500]
+            scoring_reasoning = truncate_text(upload_info.get('scoring_reasoning') or '', max_length=500)
 
             try:
                 job_data = reap_client.create_clips_job(

@@ -211,7 +211,7 @@ class TestExtractAndPretrimClip:
             "scoring_reasoning": "Good debate",
         }
 
-    def _setup_mocks(self, mocker, *, source_video="/data/video.mp4"):
+    def _setup_mocks(self, mocker, *, source_video="/data/video.mp4", duration_seconds=240):
         mocker.patch(
             "congress_videos.reap_clip_preparer_dag._find_source_video",
             return_value=source_video,
@@ -219,7 +219,7 @@ class TestExtractAndPretrimClip:
         mocker.patch("os.makedirs")
         mocker.patch(
             "congress_videos.reap_clip_preparer_dag.split_video_chapter",
-            return_value={"success": True, "error": None},
+            return_value={"success": True, "error": None, "duration_seconds": duration_seconds},
         )
 
     def test_short_chapter_no_pretrim(self, mocker):
@@ -242,7 +242,7 @@ class TestExtractAndPretrimClip:
         """Long chapter with SRT available should call ffmpeg with SRT window."""
         from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
 
-        self._setup_mocks(mocker)
+        self._setup_mocks(mocker, duration_seconds=720)
 
         chapter = self._default_chapter()
         chapter["start_time"] = "00:00:00"
@@ -273,7 +273,7 @@ class TestExtractAndPretrimClip:
         """Long chapter without SRT should fallback to first target_secs."""
         from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
 
-        self._setup_mocks(mocker)
+        self._setup_mocks(mocker, duration_seconds=720)
 
         chapter = self._default_chapter()
         chapter["start_time"] = "00:00:00"
@@ -304,7 +304,7 @@ class TestExtractAndPretrimClip:
         """Clip that ends up below 120s after trim should be skipped."""
         from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
 
-        self._setup_mocks(mocker)
+        self._setup_mocks(mocker, duration_seconds=720)
 
         chapter = self._default_chapter()
         chapter["start_time"] = "00:00:00"

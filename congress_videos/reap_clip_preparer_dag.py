@@ -5,12 +5,15 @@ Selects eligible chapters, optionally pre-trims long clips using AI + SRT contex
 and triggers the reap_processor DAG with the prepared clip results.
 """
 
+import json
 import logging
 import os
 import subprocess
 from datetime import datetime, timedelta
 
 from airflow import DAG
+from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
+from airflow.exceptions import AirflowException
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
 from congress_videos.config.paths import DOWNLOADS_DIR, PROJECT_DATA_DIR
@@ -23,6 +26,7 @@ from utils.env_loader import load_env_if_local
 load_env_if_local()
 
 POSTGRES_SCHEMA = os.getenv('POSTGRES_SCHEMA', 'development')
+_FRAME_TOLERANCE_SECS = 3.0
 
 
 default_args = {
@@ -152,12 +156,13 @@ with DAG(
                 )
                 continue
 
+            duration = result['duration_seconds']
             pretrim_start = None
             pretrim_end = None
             pretrim_used_srt = False
 
             if duration > threshold_secs:
-                session_date = chapter.get('session_date') or None
+                session_date = chapter.get('session_date')
                 srt_path = find_srt_for_chapter(str(video_id), str(chapter_id), session_date)
                 window = None
 
@@ -231,12 +236,8 @@ with DAG(
         Allows a 3-second tolerance for ffmpeg -c copy frame-boundary imprecision.
         Raises AirflowException if any clip is blocked — the DAG fails visibly.
         """
-        import json
-        from airflow.exceptions import AirflowException
-
         clip_results = ti.xcom_pull(key='clip_results') or []
         max_secs = float(context['params']['pre_trim_target_secs'])
-        _FRAME_TOLERANCE_SECS = 3.0
 
         safe_clips = []
         blocked_chapters = []
@@ -293,7 +294,6 @@ with DAG(
     )
 
     def _trigger_reap_processor(ti, **context):
-        from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
         clip_results = ti.xcom_pull(key='clip_results') or []
         if not clip_results:
             logging.info("No clips to process — skipping trigger of congress_reap_processor")
