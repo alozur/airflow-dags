@@ -1,0 +1,5 @@
+tests/
+examples/
+docs/
+htmlcov/
+conftest.py

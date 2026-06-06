@@ -5,6 +5,45 @@ This module contains all AI prompts used for generating YouTube metadata
 and evaluating video content for the Congreso YouTube project.
 """
 
+# YouTube Shorts Metadata (title + description) from audio transcript
+SHORTS_METADATA_SYSTEM_PROMPT = (
+    "Eres un experto en crear contenido viral para YouTube Shorts del Congreso de los Diputados de España. "
+    "Creas títulos impactantes y descripciones atractivas basadas en la transcripción real del clip. "
+    "Tu lenguaje es directo, claro y accesible para el ciudadano de a pie."
+)
+
+SHORTS_METADATA_USER_PROMPT_TEMPLATE = """Genera el título y la descripción para un YouTube Short del Congreso de España.
+
+TRANSCRIPCIÓN DEL CLIP:
+{transcript}
+
+CONTEXTO:
+- Tema del capítulo: {chapter_title}
+- Ponentes: {speakers}
+- Temas: {topics}
+- Por qué es relevante: {scoring_reasoning}
+
+FORMATO DE RESPUESTA (JSON):
+{{
+  "title": "<máximo 90 caracteres, impactante, en español, sin comillas ni #Shorts>",
+  "description": "<150-400 caracteres: 2-3 frases sobre lo que se dice, emojis relevantes, termina con #Congreso #España #Política #Shorts>"
+}}
+
+REQUISITOS TÍTULO:
+- Máximo 90 caracteres (CRÍTICO — YouTube lo trunca)
+- Refleja lo más llamativo o polémico del clip
+- Incluye el nombre del político si es relevante y conocido
+- No empieces con "En este clip..." ni similares
+
+REQUISITOS DESCRIPCIÓN:
+- Basada en lo que SE DICE realmente en la transcripción
+- Contexto político accesible para cualquier ciudadano
+- Emojis relevantes (🏛️ 🗳️ 💬 ⚡ etc.)
+- Hashtags al final: #Congreso #España #Política #Shorts
+
+Devuelve SOLO el JSON, sin markdown."""
+
+
 # YouTube Title Generation
 YOUTUBE_TITLE_SYSTEM_PROMPT = (
     "Eres un experto en crear títulos atractivos para contenido político español en YouTube."

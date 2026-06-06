@@ -149,6 +149,40 @@ def get_download_file_path(date: str, video_id: str, filename: str) -> str:
 
 
 # -------------------------
+# Shorts Storage (Reap Video Shorts pipeline)
+# -------------------------
+# Short clips downloaded from Reap are stored per chapter
+# Structure: /opt/airflow/data/congress_videos/{chapter_id}/shorts/{clip_id}.mp4
+
+
+def get_shorts_dir(chapter_id: int) -> str:
+    """
+    Get the directory where Reap-generated short clips are stored for a chapter.
+
+    Args:
+        chapter_id: DB chapter_id (e.g., 42)
+
+    Returns:
+        Full path to shorts directory (e.g., /opt/airflow/data/congress_videos/42/shorts)
+    """
+    return f"{PROJECT_DATA_DIR}/{chapter_id}/shorts"
+
+
+def get_short_file_path(chapter_id: int, clip_id: str) -> str:
+    """
+    Get the full path for a downloaded Reap short clip file.
+
+    Args:
+        chapter_id: DB chapter_id (e.g., 42)
+        clip_id: Reap clip ID (e.g., "abc123")
+
+    Returns:
+        Full path to clip file (e.g., /opt/airflow/data/congress_videos/42/shorts/abc123.mp4)
+    """
+    return f"{get_shorts_dir(chapter_id)}/{clip_id}.mp4"
+
+
+# -------------------------
 # Path Validation
 # -------------------------
 def ensure_directory_exists(path: str) -> str:

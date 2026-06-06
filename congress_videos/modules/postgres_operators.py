@@ -432,6 +432,71 @@ class PostgreSQLOperator(BaseOperator):
                 }
                 print(f"✅ Updated {updated_count} chapters, {failed_count} failed")
 
+        elif self.operation == 'get_chapters_for_shorts':
+            """Get video chapters eligible for Reap Shorts processing"""
+            max_chapters = context["params"].get("max_chapters", 3)
+            min_relevance_score = context["params"].get("min_relevance_score", 3)
+
+            print(f"DEBUG: Getting up to {max_chapters} chapters for Shorts (min_score={min_relevance_score})")
+
+            result = db.get_chapters_for_shorts(limit=max_chapters, min_relevance_score=min_relevance_score)
+            print(f"✅ Retrieved {len(result)} chapters eligible for Shorts")
+
+        elif self.operation == 'mark_shorts_uploaded':
+            """Mark Shorts clips as uploaded to YouTube after successful upload"""
+            upload_results = ti.xcom_pull(key=self.xcom_keys.get('upload_results', 'upload_results'))
+
+            if not upload_results:
+                print("No upload results to process")
+                result = {'updated_shorts': 0, 'failed_updates': 0, 'details': []}
+            else:
+                updated_count = 0
+                failed_count = 0
+                details = []
+
+                upload_details = upload_results if isinstance(upload_results, list) else upload_results.get('upload_details', [])
+
+                for upload_detail in upload_details:
+                    reap_clip_id = upload_detail.get('reap_clip_id')
+                    youtube_video_id = upload_detail.get('youtube_video_id')
+                    success = upload_detail.get('success', False)
+
+                    if success and reap_clip_id and youtube_video_id:
+                        try:
+                            db.mark_short_uploaded(reap_clip_id, youtube_video_id)
+                            updated_count += 1
+                            details.append({
+                                'reap_clip_id': reap_clip_id,
+                                'youtube_video_id': youtube_video_id,
+                                'status': 'updated'
+                            })
+                            print(f"✅ Marked short {reap_clip_id} as uploaded: {youtube_video_id}")
+                        except Exception as e:
+                            failed_count += 1
+                            details.append({
+                                'reap_clip_id': reap_clip_id,
+                                'status': 'failed',
+                                'error': str(e)
+                            })
+                            print(f"❌ Failed to mark short {reap_clip_id}: {e}")
+                    elif not success:
+                        print(f"⏭️ Skipping short {reap_clip_id}: upload was not successful")
+                        details.append({'reap_clip_id': reap_clip_id, 'status': 'skipped', 'reason': 'upload_failed'})
+                    else:
+                        print(f"⚠️ Upload succeeded but missing fields: reap_clip_id={reap_clip_id}, youtube_video_id={youtube_video_id}")
+                        details.append({
+                            'reap_clip_id': reap_clip_id,
+                            'status': 'skipped',
+                            'reason': f'missing_fields: reap_clip_id={reap_clip_id}, youtube_video_id={youtube_video_id}'
+                        })
+
+                result = {
+                    'updated_shorts': updated_count,
+                    'failed_updates': failed_count,
+                    'details': details
+                }
+                print(f"✅ Updated {updated_count} shorts, {failed_count} failed")
+
         else:
             raise ValueError(f"Unknown operation: {self.operation}")
 
