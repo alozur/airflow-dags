@@ -30,23 +30,24 @@ def find_srt_for_chapter(
       2. downloads/{session_date}/{video_id}/srt_files/  (if session_date provided)
       3. downloads/ (date-agnostic search when session_date is None)
     """
-    srt_filename = f"{video_id}.srt"
+    srt_filenames = [f"{video_id}_merged.srt", f"{video_id}.srt"]
 
-    candidates = [
-        os.path.join(PROJECT_DATA_DIR, video_id, "srt_files", srt_filename),
-    ]
+    candidates = []
+    for name in srt_filenames:
+        candidates.append(os.path.join(PROJECT_DATA_DIR, video_id, "srt_files", name))
 
     if session_date:
-        candidates.append(
-            os.path.join(DOWNLOADS_DIR, session_date, video_id, "srt_files", srt_filename)
-        )
+        for name in srt_filenames:
+            candidates.append(
+                os.path.join(DOWNLOADS_DIR, session_date, video_id, "srt_files", name)
+            )
     else:
         if os.path.isdir(DOWNLOADS_DIR):
             for date_folder in os.listdir(DOWNLOADS_DIR):
-                candidate = os.path.join(
-                    DOWNLOADS_DIR, date_folder, video_id, "srt_files", srt_filename
-                )
-                candidates.append(candidate)
+                for name in srt_filenames:
+                    candidates.append(
+                        os.path.join(DOWNLOADS_DIR, date_folder, video_id, "srt_files", name)
+                    )
 
     for path in candidates:
         if os.path.exists(path):
