@@ -755,7 +755,7 @@ class CongressionalVideoDB:
                           EXTRACT(EPOCH FROM (
                               REPLACE(vc.end_time, ',', '.')::interval
                               - REPLACE(vc.start_time, ',', '.')::interval
-                          )) BETWEEN 120 AND 900
+                          )) >= 120
                       )
                       AND NOT EXISTS (
                           SELECT 1 FROM {shorts_table} vs
