@@ -31,7 +31,7 @@ class TestGitSyncDAGLoads:
 
     def test_trigger_targets_run_migrations(self):
         from utils.git_sync_dag import dag
-        from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
+        from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
         trigger = dag.get_task("trigger_migrations")
         assert isinstance(trigger, TriggerDagRunOperator)

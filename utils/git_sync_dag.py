@@ -13,8 +13,8 @@ Usage:
 import os
 from datetime import datetime
 from airflow import DAG
-from airflow.providers.standard.operators.bash import BashOperator
-from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.operators.bash import BashOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 # Git configuration from environment variables
 GITHUB_USER = os.getenv("GITHUB_USER", "")
