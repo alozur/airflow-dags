@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.exceptions import AirflowException
-from airflow.operators.python import PythonOperator
+from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.sensors.base import BaseSensorOperator
 
 from congress_videos.config.paths import DOWNLOADS_DIR, PROJECT_DATA_DIR, get_short_file_path
@@ -179,8 +179,9 @@ with DAG(
             min_relevance_score=context['params']['min_relevance_score'],
         )
         ti.xcom_push(key='chapters_for_shorts', value=chapters)
+        return bool(chapters)  # False → ShortCircuitOperator skips all downstream tasks
 
-    t1 = PythonOperator(
+    t1 = ShortCircuitOperator(
         task_id='query_chapters',
         python_callable=_query_chapters,
     )
