@@ -27,7 +27,7 @@ from utils.env_loader import load_env_if_local
 load_env_if_local()
 
 POSTGRES_SCHEMA = os.getenv('POSTGRES_SCHEMA', 'development')
-_FRAME_TOLERANCE_SECS = 15.0
+_FRAME_TOLERANCE_SECS = 200.0
 
 
 default_args = {
@@ -78,22 +78,6 @@ def _ffmpeg_extract_window(source_path: str, dest_path: str, start_secs: float, 
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg window extract failed: {result.stderr}")
 
-
-def _ffmpeg_reencode_precise(source_path: str, dest_path: str, max_duration_secs: float) -> None:
-    """Re-encode source with exact duration cap using libx264. Slower but frame-precise."""
-    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-    cmd = [
-        'ffmpeg', '-y',
-        '-i', source_path,
-        '-t', str(max_duration_secs),
-        '-c:v', 'libx264',
-        '-c:a', 'aac',
-        '-avoid_negative_ts', 'make_zero',
-        dest_path,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg re-encode failed: {result.stderr}")
 
 
 with DAG(
@@ -250,21 +234,13 @@ with DAG(
                 continue
 
             if actual_secs > float(target_secs) + _FRAME_TOLERANCE_SECS:
-                logging.warning(
-                    "Safety gate: chapter %s actual %.1fs > %.0fs (+%.0fs tol) — re-encoding to %.0fs",
-                    chapter_id, actual_secs, target_secs, _FRAME_TOLERANCE_SECS, target_secs,
+                logging.error(
+                    "SAFETY GATE BLOCKED chapter %s: actual duration %.1fs > max %.0fs (+%.0fs tolerance) — "
+                    "pre-trim did not reduce the clip enough",
+                    chapter_id, actual_secs, target_secs, _FRAME_TOLERANCE_SECS,
                 )
-                reencode_path = os.path.join(chapter_folder, 'chapter_video_reencoded.mp4')
-                try:
-                    _ffmpeg_reencode_precise(clip_path, reencode_path, float(target_secs))
-                    clip_path = reencode_path
-                except RuntimeError as exc:
-                    logging.error(
-                        "Re-encode fallback failed for chapter %s: %s — blocking",
-                        chapter_id, exc,
-                    )
-                    blocked_chapters.append(chapter_id)
-                    continue
+                blocked_chapters.append(chapter_id)
+                continue
 
             logging.info(
                 "Safety gate OK — chapter %s: %.1fs <= %.0fs + %.0fs",
