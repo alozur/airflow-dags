@@ -999,6 +999,8 @@ class CongressionalVideoDB:
         """
         shorts_table = self.pg_conn.get_qualified_table('video_shorts')
 
+        min_virality_score = min_virality_score if min_virality_score is not None else 0.0
+
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(f"""
