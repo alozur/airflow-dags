@@ -12,8 +12,7 @@
 -- Example (development): psql ... -c "SET search_path TO development, public;" -f 007_update_uploadable_chapters_order.sql
 -- Example (production):  psql ... -c "SET search_path TO production, public;"  -f 007_update_uploadable_chapters_order.sql
 
-DROP VIEW IF EXISTS uploadable_chapters;
-CREATE VIEW uploadable_chapters AS
+CREATE OR REPLACE VIEW uploadable_chapters AS
 SELECT
     vc.chapter_id,
     vc.video_id,
