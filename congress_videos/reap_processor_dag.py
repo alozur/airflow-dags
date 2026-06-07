@@ -97,7 +97,6 @@ class ReapJobSensor(BaseSensorOperator):
                     local_file_path=dest_path,
                 )
 
-            db.update_video_short_status(reap_project_id, 'done')
             return True
 
         if status in _FAILURE_STATES:
