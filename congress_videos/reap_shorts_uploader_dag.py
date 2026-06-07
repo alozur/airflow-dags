@@ -240,6 +240,12 @@ with DAG(
                 if upload_results:
                     results_data = upload_results[0].value
                     logging.info(f"Retrieved upload results: {results_data}")
+                    file_to_meta = {v['video_file']: v for v in videos}
+                    enriched = []
+                    for detail in results_data.get('upload_details', []):
+                        meta = file_to_meta.get(detail.get('video_file'), {})
+                        enriched.append({**detail, 'reap_clip_id': meta.get('reap_clip_id'), 'short_id': meta.get('short_id')})
+                    results_data = {**results_data, 'upload_details': enriched}
                     ti.xcom_push(key='upload_results', value=results_data)
                 else:
                     logging.warning("No upload results found from triggered DAG")
