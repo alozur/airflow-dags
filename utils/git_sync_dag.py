@@ -80,4 +80,10 @@ with DAG(
         wait_for_completion=False,
     )
 
-    configure_git >> git_pull >> show_status >> trigger_migrations
+    trigger_reap_processor = TriggerDagRunOperator(
+        task_id="trigger_reap_processor",
+        trigger_dag_id="congress_reap_processor",
+        wait_for_completion=False,
+    )
+
+    configure_git >> git_pull >> show_status >> trigger_migrations >> trigger_reap_processor
