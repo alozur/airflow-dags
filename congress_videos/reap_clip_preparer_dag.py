@@ -27,7 +27,7 @@ from utils.env_loader import load_env_if_local
 load_env_if_local()
 
 POSTGRES_SCHEMA = os.getenv('POSTGRES_SCHEMA', 'development')
-_FRAME_TOLERANCE_SECS = 3.0
+_FRAME_TOLERANCE_SECS = 15.0
 
 
 default_args = {
