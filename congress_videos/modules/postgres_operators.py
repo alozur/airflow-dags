@@ -363,9 +363,28 @@ class PostgreSQLOperator(BaseOperator):
 
             print(f"✅ Saved {result['total_chapters_saved']} chapters across {result['total_videos_saved']} videos")
 
+        elif self.operation == 'check_upload_quota':
+            min_relevance_score = context["params"].get("min_relevance_score", 2)
+
+            uploads_today = db.count_chapters_uploaded_today()
+            queue_size = db.count_pending_uploadable_chapters(min_relevance_score)
+            max_uploads = 2 if queue_size > 15 else 1
+            remaining_quota = max(0, max_uploads - uploads_today)
+
+            result = {
+                "uploads_today": uploads_today,
+                "queue_size": queue_size,
+                "max_uploads": max_uploads,
+                "remaining_quota": remaining_quota,
+            }
+            print(f"✅ Upload quota: {uploads_today} today, {queue_size} in queue, {remaining_quota} remaining (max={max_uploads})")
+
         elif self.operation == 'get_uploadable_chapters':
-            """Get uploadable chapters from database view"""
-            max_chapters = context["params"].get("max_chapters", 5)
+            upload_quota = ti.xcom_pull(key=self.xcom_keys.get('upload_quota', 'upload_quota'))
+            if upload_quota and 'remaining_quota' in upload_quota:
+                max_chapters = upload_quota['remaining_quota']
+            else:
+                max_chapters = context["params"].get("max_chapters", 1)
             min_relevance_score = context["params"].get("min_relevance_score", 2)
 
             print(f"DEBUG: Getting top {max_chapters} uploadable chapters with min_relevance_score >= {min_relevance_score}")

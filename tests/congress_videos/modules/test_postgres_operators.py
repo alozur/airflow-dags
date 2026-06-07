@@ -337,3 +337,125 @@ class TestExecuteXcomPush:
         op.execute(ctx)
 
         mock_task_instance.xcom_push.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# execute — check_upload_quota operation
+# --------------------------------------------------------------------------- #
+
+class TestExecuteCheckUploadQuota:
+
+    def test_max_uploads_1_when_queue_small(
+        self, mock_db, mock_task_instance, make_context
+    ):
+        """max_uploads=1 when queue_size <= 15."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db.count_chapters_uploaded_today.return_value = 0
+        mock_db.count_pending_uploadable_chapters.return_value = 10
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="check_upload_quota",
+            output_xcom_key="upload_quota",
+        )
+        ctx = make_context(params={"min_relevance_score": 2}, ti=mock_task_instance)
+        result = op.execute(ctx)
+
+        assert result["max_uploads"] == 1
+        assert result["remaining_quota"] == 1
+        assert result["uploads_today"] == 0
+        assert result["queue_size"] == 10
+
+    def test_max_uploads_2_when_queue_large(
+        self, mock_db, mock_task_instance, make_context
+    ):
+        """max_uploads=2 when queue_size > 15."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db.count_chapters_uploaded_today.return_value = 0
+        mock_db.count_pending_uploadable_chapters.return_value = 16
+
+        op = PostgreSQLOperator(task_id="t", operation="check_upload_quota")
+        ctx = make_context(params={}, ti=mock_task_instance)
+        result = op.execute(ctx)
+
+        assert result["max_uploads"] == 2
+        assert result["remaining_quota"] == 2
+
+    def test_remaining_quota_zero_when_quota_reached(
+        self, mock_db, mock_task_instance, make_context
+    ):
+        """remaining_quota=0 when uploads_today >= max_uploads."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db.count_chapters_uploaded_today.return_value = 1
+        mock_db.count_pending_uploadable_chapters.return_value = 5  # queue <= 15 -> max=1
+
+        op = PostgreSQLOperator(task_id="t", operation="check_upload_quota")
+        ctx = make_context(params={}, ti=mock_task_instance)
+        result = op.execute(ctx)
+
+        assert result["remaining_quota"] == 0
+
+    def test_result_pushed_to_xcom(
+        self, mock_db, mock_task_instance, make_context
+    ):
+        """Result dict is pushed to XCom under upload_quota key."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db.count_chapters_uploaded_today.return_value = 0
+        mock_db.count_pending_uploadable_chapters.return_value = 3
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="check_upload_quota",
+            output_xcom_key="upload_quota",
+        )
+        ctx = make_context(params={}, ti=mock_task_instance)
+        op.execute(ctx)
+
+        stored = mock_task_instance.xcom_store.get("upload_quota")
+        assert stored is not None
+        assert "remaining_quota" in stored
+
+
+# --------------------------------------------------------------------------- #
+# execute — get_uploadable_chapters reads limit from XCom
+# --------------------------------------------------------------------------- #
+
+class TestGetUploadableChaptersQuotaLimit:
+
+    def test_uses_remaining_quota_as_limit(
+        self, mock_db, mock_task_instance, make_context
+    ):
+        """get_uploadable_chapters uses remaining_quota from XCom as LIMIT."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db.get_uploadable_chapters.return_value = []
+        mock_task_instance.xcom_store["upload_quota"] = {
+            "uploads_today": 0,
+            "queue_size": 5,
+            "max_uploads": 1,
+            "remaining_quota": 1,
+        }
+
+        op = PostgreSQLOperator(task_id="t", operation="get_uploadable_chapters")
+        ctx = make_context(params={"min_relevance_score": 2}, ti=mock_task_instance)
+        op.execute(ctx)
+
+        mock_db.get_uploadable_chapters.assert_called_once_with(limit=1, min_relevance_score=2)
+
+    def test_falls_back_to_param_when_no_quota_xcom(
+        self, mock_db, mock_task_instance, make_context
+    ):
+        """Falls back to max_chapters param when upload_quota XCom key absent."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db.get_uploadable_chapters.return_value = []
+
+        op = PostgreSQLOperator(task_id="t", operation="get_uploadable_chapters")
+        ctx = make_context(params={"max_chapters": 1, "min_relevance_score": 2}, ti=mock_task_instance)
+        op.execute(ctx)
+
+        mock_db.get_uploadable_chapters.assert_called_once_with(limit=1, min_relevance_score=2)
