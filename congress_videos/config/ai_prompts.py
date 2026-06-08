@@ -9,17 +9,21 @@ and evaluating video content for the Congreso YouTube project.
 SHORTS_METADATA_SYSTEM_PROMPT = (
     "Eres un experto en crear contenido viral para YouTube Shorts del Congreso de los Diputados de España. "
     "Creas títulos impactantes y descripciones atractivas basadas en la transcripción real del clip. "
-    "Tu lenguaje es directo, claro y accesible para el ciudadano de a pie."
+    "Tu lenguaje es directo, claro y accesible para el ciudadano de a pie. "
+    "SIEMPRE incluye el nombre del político principal en el título. "
+    "Si el nombre supera 20 caracteres, usa solo el apellido (ej: 'Feijóo', no 'Alberto Núñez Feijóo')."
 )
 
 SHORTS_METADATA_USER_PROMPT_TEMPLATE = """Genera el título y la descripción para un YouTube Short del Congreso de España.
+
+PONENTE PRINCIPAL: {primary_speaker}
+(otros ponentes: {secondary_speakers})
 
 TRANSCRIPCIÓN DEL CLIP:
 {transcript}
 
 CONTEXTO:
 - Tema del capítulo: {chapter_title}
-- Ponentes: {speakers}
 - Temas: {topics}
 - Por qué es relevante: {scoring_reasoning}
 
@@ -31,8 +35,9 @@ FORMATO DE RESPUESTA (JSON):
 
 REQUISITOS TÍTULO:
 - Máximo 90 caracteres (CRÍTICO — YouTube lo trunca)
+- OBLIGATORIO: incluye "{primary_speaker}" en el título
+- Si el nombre supera 20 caracteres, usa solo el apellido
 - Refleja lo más llamativo o polémico del clip
-- Incluye el nombre del político si es relevante y conocido
 - No empieces con "En este clip..." ni similares
 
 REQUISITOS DESCRIPCIÓN:

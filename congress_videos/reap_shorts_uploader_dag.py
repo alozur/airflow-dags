@@ -35,6 +35,13 @@ load_env_if_local()
 POSTGRES_SCHEMA = os.getenv('POSTGRES_SCHEMA', 'development')
 
 
+def _resolve_speakers(ch: dict) -> tuple[str, str]:
+    speakers = ch.get('key_speakers') or ch.get('speakers') or []
+    if not speakers:
+        return ('', '')
+    return (speakers[0].strip(), ', '.join(speakers[1:]))
+
+
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
@@ -94,15 +101,18 @@ with DAG(
             video_path = short.get('local_file_path')
 
             ch = db.get_chapter_metadata(chapter_id) if chapter_id else {}
+            ch = ch or {}
 
             chapter_title = ch.get('title') or f'Short clip {short_id}'
-            key_speakers = ch.get('key_speakers') or ch.get('speakers') or []
-            speakers = ', '.join(key_speakers) if key_speakers else 'Diputados del Congreso'
+            primary_speaker, secondary_speakers = _resolve_speakers(ch)
             topics = ', '.join(ch.get('topics') or []) or 'Debate parlamentario'
             scoring_reasoning = ch.get('scoring_reasoning') or ''
 
             # Fallback metadata — used if Whisper or GPT fail
-            title = truncate_text(f"{chapter_title} #Shorts", max_length=100)
+            title = truncate_text(
+                f"{primary_speaker}: {chapter_title} #Shorts" if primary_speaker else f"{chapter_title} #Shorts",
+                max_length=100,
+            )
             description = '🏛️ Debate en el Congreso de los Diputados.\n\n#Congreso #España #Política #Shorts'
 
             transcript = None
@@ -141,7 +151,8 @@ with DAG(
                 user_prompt = SHORTS_METADATA_USER_PROMPT_TEMPLATE.format(
                     transcript=transcript[:2000],
                     chapter_title=chapter_title,
-                    speakers=speakers,
+                    primary_speaker=primary_speaker,
+                    secondary_speakers=secondary_speakers,
                     topics=topics,
                     scoring_reasoning=scoring_reasoning[:500],
                 )

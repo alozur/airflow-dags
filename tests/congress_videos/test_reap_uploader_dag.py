@@ -220,3 +220,107 @@ class TestMarkShortsUploaded:
 
         ti = _make_ti({})
         _mark_shorts_uploaded(ti, params={})
+
+
+# ---------------------------------------------------------------------------
+# _resolve_speakers unit tests
+# ---------------------------------------------------------------------------
+
+class TestResolveSpeakers:
+
+    def test_resolve_speakers_uses_key_speakers_first(self):
+        from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
+        result = _resolve_speakers({"key_speakers": ["A", "B"], "speakers": ["C"]})
+        assert result == ("A", "B")
+
+    def test_resolve_speakers_falls_back_to_speakers(self):
+        from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
+        result = _resolve_speakers({"speakers": ["X", "Y"]})
+        assert result == ("X", "Y")
+
+    def test_resolve_speakers_key_speakers_empty_list(self):
+        from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
+        result = _resolve_speakers({"key_speakers": [], "speakers": ["Z"]})
+        assert result == ("Z", "")
+
+    def test_resolve_speakers_empty_both(self):
+        from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
+        assert _resolve_speakers({}) == ("", "")
+        assert _resolve_speakers({"key_speakers": [], "speakers": []}) == ("", "")
+
+    def test_resolve_speakers_single_speaker(self):
+        from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
+        result = _resolve_speakers({"key_speakers": ["Solo"]})
+        assert result == ("Solo", "")
+
+    def test_resolve_speakers_none_values(self):
+        from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
+        result = _resolve_speakers({"key_speakers": None, "speakers": None})
+        assert result == ("", "")
+
+
+# ---------------------------------------------------------------------------
+# Prompt template regression tests
+# ---------------------------------------------------------------------------
+
+class TestPromptTemplates:
+
+    def test_old_speakers_placeholder_not_in_template(self):
+        from congress_videos.config.ai_prompts import SHORTS_METADATA_USER_PROMPT_TEMPLATE
+        assert "{speakers}" not in SHORTS_METADATA_USER_PROMPT_TEMPLATE
+
+    def test_system_prompt_contains_siempre_and_length_rule(self):
+        from congress_videos.config.ai_prompts import SHORTS_METADATA_SYSTEM_PROMPT
+        assert "SIEMPRE" in SHORTS_METADATA_SYSTEM_PROMPT
+        assert "20" in SHORTS_METADATA_SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# _generate_metadata integration: prompt contains primary speaker
+# ---------------------------------------------------------------------------
+
+class TestGenerateMetadataPrompt:
+
+    def test_generate_metadata_prompt_includes_primary_speaker(self, mocker):
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapter_metadata.return_value = {
+            "key_speakers": ["Pedro Sánchez"],
+            "title": "Test Chapter",
+            "topics": [],
+            "scoring_reasoning": "",
+        }
+
+        mocker.patch("os.path.exists", return_value=True)
+
+        mock_subprocess = mocker.patch("subprocess.run")
+        mock_subprocess.return_value.returncode = 0
+
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.transcribe_audio_file",
+            return_value={"success": True, "text": "Texto de prueba transcrito"},
+        )
+
+        captured: dict = {}
+
+        def fake_generate_json_completion(system_prompt, user_prompt, **kwargs):
+            captured["user_prompt"] = user_prompt
+            return {"data": {"title": "Pedro Sánchez debate vivienda", "description": "Desc #Shorts"}}
+
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.generate_json_completion",
+            side_effect=fake_generate_json_completion,
+        )
+
+        pending_shorts = [{"id": 1, "chapter_id": 42, "local_file_path": "/fake/clip.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        assert "user_prompt" in captured
+        user_prompt = captured["user_prompt"]
+        assert "Pedro Sánchez" in user_prompt
+        transcript_pos = user_prompt.find("TRANSCRIPCIÓN")
+        speaker_pos = user_prompt.find("Pedro Sánchez")
+        assert speaker_pos < transcript_pos, "primary_speaker must appear before TRANSCRIPCIÓN block"
