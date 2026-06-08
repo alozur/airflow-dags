@@ -1,7 +1,7 @@
 """
 Congress Reap Processor DAG
 
-Runs on its own cron schedule (daily at 09:00). On each run, claims exactly one
+Runs on its own cron schedule (daily at 14:30). On each run, claims exactly one
 video_shorts row with reap_status='pending' from the queue, uploads the staged clip
 to Reap, waits for job completion via sensor, and downloads all resulting shorts.
 """
@@ -18,7 +18,6 @@ from airflow.sensors.base import BaseSensorOperator
 from congress_videos.config.paths import get_short_file_path
 from congress_videos.modules.database import CongressionalVideoDB
 from congress_videos.reap_api import ReapApiClient, ReapCreditsExhausted
-from utils.ai_helpers import truncate_text
 from utils.env_loader import load_env_if_local
 
 load_env_if_local()
@@ -27,6 +26,18 @@ POSTGRES_SCHEMA = os.getenv('POSTGRES_SCHEMA', 'development')
 
 _TERMINAL_STATES = {'completed', 'failed', 'invalid', 'expired', 'error'}
 _FAILURE_STATES = {'failed', 'invalid', 'expired', 'error'}
+
+_REAP_CLIP_TOPICS = "Spanish Parliament, Spanish politics, parliamentary debates"
+
+_REAP_CLIP_PROMPT = (
+    "Find politically charged moments: strong opinions, direct confrontations between party leaders, "
+    "memorable soundbites, and statements likely to spark public debate. "
+    "Prioritize: the President or opposition leader making a clear claim, heated exchanges, surprising "
+    "revelations, or moments that capture the political conflict in one sentence. "
+    "Skip procedural formalities, roll calls, and transition segments with no political content. "
+    "IMPORTANT: each clip must feature a single continuous speaker — never split-screen, "
+    "never simultaneous cuts between two speakers on screen at the same time."
+)
 
 
 default_args = {
@@ -108,7 +119,7 @@ with DAG(
     'congress_reap_processor',
     default_args=default_args,
     description='Claim one pending clip from the queue, upload to Reap, wait for completion, download shorts',
-    schedule=None,
+    schedule='30 14 * * *',
     start_date=datetime(2025, 11, 14),
     catchup=False,
     max_active_runs=1,
@@ -175,9 +186,6 @@ with DAG(
             return
 
         chapter_id = claimed_clip['chapter_id']
-        scoring_reasoning = truncate_text(
-            claimed_clip.get('scoring_reasoning') or '', max_length=500
-        )
 
         reap_client = ReapApiClient()
 
@@ -186,7 +194,8 @@ with DAG(
                 upload_id,
                 language='es',
                 name=f"chapter_{chapter_id}",
-                prompt=scoring_reasoning,
+                clipTopics=_REAP_CLIP_TOPICS,
+                prompt=_REAP_CLIP_PROMPT,
             )
             reap_project_id = job_data['project_id']
 
