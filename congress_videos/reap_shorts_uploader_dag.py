@@ -61,8 +61,7 @@ def _format_session_line(session_number: int | None, session_date: date | None) 
     if session_number:
         parts.append(f'Sesión nº {session_number} del Congreso')
     if session_date:
-        d = session_date
-        parts.append(f'{d.day} de {_MONTHS[d.month - 1]} de {d.year}')
+        parts.append(f'{session_date.day} de {_MONTHS[session_date.month - 1]} de {session_date.year}')
     return '\n\n🏛️ ' + ' - '.join(parts)
 
 

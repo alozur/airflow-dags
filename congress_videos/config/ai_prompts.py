@@ -39,12 +39,7 @@ FORMATO DE RESPUESTA (JSON):
 
 REQUISITOS TÍTULO:
 - Máximo 90 caracteres (CRÍTICO — YouTube lo trunca)
-- OBLIGATORIO: incluye al político principal en el título
-- Usa el nivel más corto que sea inequívoco:
-  Nivel 1 (solo apellido): notoriedad máxima e inconfundible → "Sánchez", "Feijóo", "Abascal"
-  Nivel 2 (nombre + apellido): apellido ambiguo o compartido → "Yolanda Díaz", "Ayuso"
-  Nivel 3 (cargo + apellido): mediático pero no primer nivel → "Ministra Ribera", "Portavoz Hernando"
-  Nivel 4 (cargo solo): nombre sin reconocimiento público → "el Portavoz del PP"
+- OBLIGATORIO: incluye al político principal en el título usando la taxonomía de 4 niveles del sistema
 - Si "{primary_speaker}" está vacío o es desconocido, usa el cargo/rol del político en su lugar
 - Refleja lo más llamativo o polémico del clip
 - No empieces con "En este clip..." ni similares
