@@ -1079,14 +1079,24 @@ class CongressionalVideoDB:
                 return {row['chapter_id']: row['title'] for row in cur.fetchall()}
 
     def get_chapter_metadata(self, chapter_id: int) -> dict | None:
-        """Returns full chapter metadata for AI-generated YouTube Shorts title/description."""
+        """Returns full chapter metadata for AI-generated YouTube Shorts title/description.
+
+        Includes source video title and URL via LEFT JOIN to youtube_source_videos.
+        Both fields are None when no source video is linked to the chapter.
+        """
         chapters_table = self.pg_conn.get_qualified_table('video_chapters')
+        source_videos_table = self.pg_conn.get_qualified_table('youtube_source_videos')
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    f"""SELECT chapter_id, title, description, speakers, key_speakers,
-                               topics, scoring_reasoning, relevance_score
-                        FROM {chapters_table} WHERE chapter_id = %s""",
+                    f"""SELECT vc.chapter_id, vc.title, vc.description, vc.speakers,
+                               vc.key_speakers, vc.topics, vc.scoring_reasoning,
+                               vc.relevance_score,
+                               sv.video_title AS source_video_title,
+                               sv.video_url   AS source_video_url
+                        FROM {chapters_table} vc
+                        LEFT JOIN {source_videos_table} sv ON sv.video_id = vc.video_id
+                        WHERE vc.chapter_id = %s""",
                     (chapter_id,),
                 )
                 row = cur.fetchone()
