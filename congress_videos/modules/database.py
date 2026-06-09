@@ -1081,21 +1081,24 @@ class CongressionalVideoDB:
     def get_chapter_metadata(self, chapter_id: int) -> dict | None:
         """Returns full chapter metadata for AI-generated YouTube Shorts title/description.
 
-        Includes source video title and URL via LEFT JOIN to youtube_source_videos.
-        Both fields are None when no source video is linked to the chapter.
+        Includes source video title, URL, session_number and session_date via LEFT JOIN
+        to youtube_source_videos. All JOIN-sourced fields are None when no source video
+        is linked to the chapter.
         """
         chapters_table = self.pg_conn.get_qualified_table('video_chapters')
-        source_videos_table = self.pg_conn.get_qualified_table('youtube_source_videos')
+        youtube_source_videos_table = self.pg_conn.get_qualified_table('youtube_source_videos')
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     f"""SELECT vc.chapter_id, vc.title, vc.description, vc.speakers,
                                vc.key_speakers, vc.topics, vc.scoring_reasoning,
                                vc.relevance_score,
-                               sv.video_title AS source_video_title,
-                               sv.video_url   AS source_video_url
+                               ysv.video_title AS source_video_title,
+                               ysv.video_url   AS source_video_url,
+                               ysv.session_number,
+                               ysv.session_date
                         FROM {chapters_table} vc
-                        LEFT JOIN {source_videos_table} sv ON sv.video_id = vc.video_id
+                        LEFT JOIN {youtube_source_videos_table} ysv ON ysv.video_id = vc.video_id
                         WHERE vc.chapter_id = %s""",
                     (chapter_id,),
                 )
