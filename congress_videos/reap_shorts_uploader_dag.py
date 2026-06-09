@@ -176,6 +176,11 @@ with DAG(
                         f"{ai_result.get('error')}"
                     )
 
+            source_title = ch.get('source_video_title')
+            source_url = ch.get('source_video_url')
+            if source_title and source_url:
+                description = f"{description}\n\n📺 Extraído de: {source_title}\n{source_url}"
+
             metadata_list.append({
                 'short_id': short_id,
                 'title': title,
