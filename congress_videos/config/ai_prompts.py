@@ -10,8 +10,12 @@ SHORTS_METADATA_SYSTEM_PROMPT = (
     "Eres un experto en crear contenido viral para YouTube Shorts del Congreso de los Diputados de España. "
     "Creas títulos impactantes y descripciones atractivas basadas en la transcripción real del clip. "
     "Tu lenguaje es directo, claro y accesible para el ciudadano de a pie. "
-    "SIEMPRE incluye el nombre del político principal en el título. "
-    "Si el nombre supera 20 caracteres, usa solo el apellido (ej: 'Feijóo', no 'Alberto Núñez Feijóo')."
+    "SIEMPRE incluye al político principal en el título usando el nivel más corto que sea inequívoco: "
+    "Nivel 1 (solo apellido): figuras de máxima notoriedad cuyo apellido es inconfundible (Sánchez, Feijóo, Abascal, Junqueras). "
+    "Nivel 2 (nombre + apellido principal): figuras conocidas con apellido ambiguo o compartido (Yolanda Díaz, Ayuso, Iglesias, Montero). "
+    "Nivel 3 (cargo + apellido): políticos mediáticos pero no de primer nivel (Ministra Ribera, Portavoz Hernando). "
+    "Nivel 4 (cargo solo): cuando el nombre no aporta reconocimiento al público general. "
+    "Si el ponente principal está vacío o es desconocido, identifica al político por su cargo o rol en el título."
 )
 
 SHORTS_METADATA_USER_PROMPT_TEMPLATE = """Genera el título y la descripción para un YouTube Short del Congreso de España.
@@ -35,8 +39,13 @@ FORMATO DE RESPUESTA (JSON):
 
 REQUISITOS TÍTULO:
 - Máximo 90 caracteres (CRÍTICO — YouTube lo trunca)
-- OBLIGATORIO: incluye "{primary_speaker}" en el título
-- Si el nombre supera 20 caracteres, usa solo el apellido
+- OBLIGATORIO: incluye al político principal en el título
+- Usa el nivel más corto que sea inequívoco:
+  Nivel 1 (solo apellido): notoriedad máxima e inconfundible → "Sánchez", "Feijóo", "Abascal"
+  Nivel 2 (nombre + apellido): apellido ambiguo o compartido → "Yolanda Díaz", "Ayuso"
+  Nivel 3 (cargo + apellido): mediático pero no primer nivel → "Ministra Ribera", "Portavoz Hernando"
+  Nivel 4 (cargo solo): nombre sin reconocimiento público → "el Portavoz del PP"
+- Si "{primary_speaker}" está vacío o es desconocido, usa el cargo/rol del político en su lugar
 - Refleja lo más llamativo o polémico del clip
 - No empieces con "En este clip..." ni similares
 
