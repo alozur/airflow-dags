@@ -738,3 +738,81 @@ class TestCountPendingUploadableChapters:
         result = instance.count_pending_uploadable_chapters()
 
         assert result == 0
+
+
+# --------------------------------------------------------------------------- #
+# get_chapter_metadata — session_number / session_date via LEFT JOIN (task 4.2)
+# --------------------------------------------------------------------------- #
+
+class TestGetChapterMetadataSessionData:
+
+    def test_sql_contains_left_join_and_session_columns(self, db):
+        """The SQL issued by get_chapter_metadata must include LEFT JOIN and session columns."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.get_chapter_metadata(chapter_id=1)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "LEFT JOIN" in sql
+        assert "session_number" in sql
+        assert "session_date" in sql
+
+    def test_returns_none_when_chapter_not_found(self, db):
+        """Returns None for a missing chapter_id (unchanged behaviour)."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        result = instance.get_chapter_metadata(chapter_id=9999)
+
+        assert result is None
+
+    def test_returns_session_data_when_linked_row_present(self, db):
+        """Returned dict contains session_number and session_date keys from the join."""
+        from datetime import date as dt_date
+
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "chapter_id": 5,
+            "title": "Test chapter",
+            "description": "desc",
+            "speakers": ["Alice"],
+            "key_speakers": ["Alice"],
+            "topics": ["topic1"],
+            "scoring_reasoning": "high",
+            "relevance_score": 4,
+            "source_video_title": "Sesion 80",
+            "source_video_url": "https://youtube.com/watch?v=xyz",
+            "session_number": 80,
+            "session_date": dt_date(2024, 6, 10),
+        }
+
+        result = instance.get_chapter_metadata(chapter_id=5)
+
+        assert result is not None
+        assert result["session_number"] == 80
+        assert result["session_date"] == dt_date(2024, 6, 10)
+
+    def test_returns_none_session_fields_when_no_linked_video(self, db):
+        """session_number and session_date are None when no youtube_source_videos row matches."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "chapter_id": 7,
+            "title": "Orphan chapter",
+            "description": "desc",
+            "speakers": [],
+            "key_speakers": [],
+            "topics": [],
+            "scoring_reasoning": "",
+            "relevance_score": 2,
+            "source_video_title": None,
+            "source_video_url": None,
+            "session_number": None,
+            "session_date": None,
+        }
+
+        result = instance.get_chapter_metadata(chapter_id=7)
+
+        assert result is not None
+        assert result["session_number"] is None
+        assert result["session_date"] is None

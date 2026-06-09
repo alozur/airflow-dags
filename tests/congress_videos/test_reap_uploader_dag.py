@@ -426,3 +426,133 @@ class TestGenerateMetadataFooter:
         assert "source_video_url" not in user_prompt
         assert "Sesión con fuente" not in user_prompt
         assert "https://youtube.com/watch?v=xyz789" not in user_prompt
+
+
+# ---------------------------------------------------------------------------
+# _format_session_line — unit tests for all 4 spec scenarios (task 4.1)
+# ---------------------------------------------------------------------------
+
+class TestFormatSessionLine:
+
+    def test_both_present_returns_full_line(self):
+        """Spec scenario: both session_number and session_date present."""
+        from datetime import date
+        from congress_videos.reap_shorts_uploader_dag import _format_session_line
+
+        result = _format_session_line(150, date(2024, 3, 12))
+
+        assert result == "\n\n🏛️ Sesión nº 150 del Congreso - 12 de marzo de 2024"
+
+    def test_number_only_returns_session_line(self):
+        """Spec scenario: only session_number present."""
+        from congress_videos.reap_shorts_uploader_dag import _format_session_line
+
+        result = _format_session_line(42, None)
+
+        assert result == "\n\n🏛️ Sesión nº 42 del Congreso"
+
+    def test_date_only_returns_date_line(self):
+        """Spec scenario: only session_date present."""
+        from datetime import date
+        from congress_videos.reap_shorts_uploader_dag import _format_session_line
+
+        result = _format_session_line(None, date(2025, 11, 5))
+
+        assert result == "\n\n🏛️ 5 de noviembre de 2025"
+
+    def test_both_none_returns_empty_string(self):
+        """Spec scenario: both values absent."""
+        from congress_videos.reap_shorts_uploader_dag import _format_session_line
+
+        result = _format_session_line(None, None)
+
+        assert result == ""
+
+    def test_all_twelve_months_in_spanish(self):
+        """All months produce the correct Spanish name."""
+        from datetime import date
+        from congress_videos.reap_shorts_uploader_dag import _format_session_line
+
+        expected_months = [
+            "enero", "febrero", "marzo", "abril", "mayo", "junio",
+            "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+        ]
+        for month_idx, month_name in enumerate(expected_months, start=1):
+            result = _format_session_line(None, date(2024, month_idx, 1))
+            assert month_name in result, f"Month {month_idx} expected '{month_name}' in '{result}'"
+
+
+# ---------------------------------------------------------------------------
+# _generate_metadata — session line integration tests (tasks 4.3 and 4.4)
+# ---------------------------------------------------------------------------
+
+class TestGenerateMetadataSessionLine:
+
+    def _base_chapter_metadata(self, **overrides) -> dict:
+        base = {
+            "chapter_id": 1,
+            "title": "Debate sobre pensiones",
+            "description": "Descripcion original",
+            "key_speakers": ["Ana García"],
+            "speakers": ["Ana García"],
+            "topics": ["pensiones"],
+            "scoring_reasoning": "Alta relevancia",
+            "relevance_score": 4,
+            "source_video_title": None,
+            "source_video_url": None,
+            "session_number": None,
+            "session_date": None,
+        }
+        base.update(overrides)
+        return base
+
+    def test_description_ends_with_session_suffix_when_data_available(self, mocker):
+        """Task 4.3 — AI success + session data: description ends with Spanish session line."""
+        from datetime import date
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.get_chapter_metadata.return_value = self._base_chapter_metadata(
+            session_number=80,
+            session_date=date(2024, 6, 10),
+        )
+
+        mocker.patch("os.path.exists", return_value=True)
+        mocker.patch("subprocess.run").return_value.returncode = 0
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.transcribe_audio_file",
+            return_value={"success": True, "text": "Texto transcrito de prueba"},
+        )
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.generate_json_completion",
+            return_value={"data": {"title": "Titulo AI", "description": "Descripcion AI generada"}},
+        )
+
+        pending_shorts = [{"id": 1, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        metadata = ti.xcom_store["shorts_metadata"]
+        description = metadata[0]["description"]
+        expected_suffix = "\n\n🏛️ Sesión nº 80 del Congreso - 10 de junio de 2024"
+        assert description.endswith(expected_suffix), f"Description was: {description!r}"
+
+    def test_description_unchanged_when_session_data_null(self, mocker):
+        """Task 4.4 — session_number=None + session_date=None: no session suffix appended."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.get_chapter_metadata.return_value = self._base_chapter_metadata(
+            session_number=None,
+            session_date=None,
+        )
+
+        mocker.patch("os.path.exists", return_value=False)
+
+        pending_shorts = [{"id": 2, "chapter_id": 20, "local_file_path": "/fake/clip2.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        metadata = ti.xcom_store["shorts_metadata"]
+        description = metadata[0]["description"]
+        assert "🏛️ Sesión" not in description, f"Unexpected session suffix in: {description!r}"
