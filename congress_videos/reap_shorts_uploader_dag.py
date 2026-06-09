@@ -13,7 +13,7 @@ Flow:
 
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -40,6 +40,30 @@ def _resolve_speakers(ch: dict) -> tuple[str, str]:
     if not speakers:
         return ('', '')
     return (speakers[0].strip(), ', '.join(speakers[1:]))
+
+
+_MONTHS = [
+    'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+    'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
+]
+
+
+def _format_session_line(session_number: int | None, session_date: date | None) -> str:
+    """Return a Spanish attribution line for a congressional session.
+
+    Returns an empty string when both arguments are falsy so callers can
+    append unconditionally without affecting descriptions that have no
+    session data.
+    """
+    if not session_number and not session_date:
+        return ''
+    parts = []
+    if session_number:
+        parts.append(f'Sesión nº {session_number} del Congreso')
+    if session_date:
+        d = session_date
+        parts.append(f'{d.day} de {_MONTHS[d.month - 1]} de {d.year}')
+    return '\n\n🏛️ ' + ' - '.join(parts)
 
 
 default_args = {
@@ -180,6 +204,8 @@ with DAG(
             source_url = ch.get('source_video_url')
             if source_title and source_url:
                 description = f"{description}\n\n📺 Extraído de: {source_title}\n{source_url}"
+
+            description += _format_session_line(ch.get('session_number'), ch.get('session_date'))
 
             metadata_list.append({
                 'short_id': short_id,
