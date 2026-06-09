@@ -324,3 +324,105 @@ class TestGenerateMetadataPrompt:
         transcript_pos = user_prompt.find("TRANSCRIPCIÓN")
         speaker_pos = user_prompt.find("Pedro Sánchez")
         assert speaker_pos < transcript_pos, "primary_speaker must appear before TRANSCRIPCIÓN block"
+
+
+# ---------------------------------------------------------------------------
+# _generate_metadata — source video footer tests
+# ---------------------------------------------------------------------------
+
+class TestGenerateMetadataFooter:
+
+    def _base_chapter_metadata(self, **overrides) -> dict:
+        base = {
+            "key_speakers": ["Ana García"],
+            "title": "Debate presupuestos",
+            "description": "Descripción original",
+            "topics": ["presupuestos"],
+            "scoring_reasoning": "Alta relevancia",
+            "source_video_title": None,
+            "source_video_url": None,
+        }
+        base.update(overrides)
+        return base
+
+    def test_generate_metadata_footer_appended(self, mocker):
+        """AC#4 — description ends with footer when source_video_title and source_video_url are set."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.get_chapter_metadata.return_value = self._base_chapter_metadata(
+            source_video_title="Sesión plenaria 2024-01-15",
+            source_video_url="https://youtube.com/watch?v=abc123",
+        )
+
+        mocker.patch("os.path.exists", return_value=False)
+
+        pending_shorts = [{"id": 1, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        metadata = ti.xcom_store["shorts_metadata"]
+        description = metadata[0]["description"]
+        expected_suffix = "\n\n📺 Extraído de: Sesión plenaria 2024-01-15\nhttps://youtube.com/watch?v=abc123"
+        assert description.endswith(expected_suffix), f"Description was: {description!r}"
+
+    def test_generate_metadata_no_footer_when_source_null(self, mocker):
+        """AC#5 — description is unchanged when source_video_title is None."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.get_chapter_metadata.return_value = self._base_chapter_metadata(
+            source_video_title=None,
+            source_video_url=None,
+        )
+
+        mocker.patch("os.path.exists", return_value=False)
+
+        pending_shorts = [{"id": 2, "chapter_id": 20, "local_file_path": "/fake/clip.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        metadata = ti.xcom_store["shorts_metadata"]
+        description = metadata[0]["description"]
+        assert "📺 Extraído de:" not in description
+
+    def test_generate_metadata_source_fields_not_in_ai_prompt(self, mocker):
+        """AC#6 — source_video_title and source_video_url must NOT appear in the AI user prompt."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.get_chapter_metadata.return_value = self._base_chapter_metadata(
+            source_video_title="Sesión con fuente",
+            source_video_url="https://youtube.com/watch?v=xyz789",
+        )
+
+        mocker.patch("os.path.exists", return_value=True)
+        mock_subprocess = mocker.patch("subprocess.run")
+        mock_subprocess.return_value.returncode = 0
+
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.transcribe_audio_file",
+            return_value={"success": True, "text": "Texto transcrito de prueba"},
+        )
+
+        captured: dict = {}
+
+        def fake_generate_json_completion(system_prompt, user_prompt, **kwargs):
+            captured["user_prompt"] = user_prompt
+            return {"data": {"title": "Título generado", "description": "Descripción AI"}}
+
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.generate_json_completion",
+            side_effect=fake_generate_json_completion,
+        )
+
+        pending_shorts = [{"id": 3, "chapter_id": 30, "local_file_path": "/fake/clip.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        assert "user_prompt" in captured, "generate_json_completion was not called"
+        user_prompt = captured["user_prompt"]
+        assert "source_video_title" not in user_prompt
+        assert "source_video_url" not in user_prompt
+        assert "Sesión con fuente" not in user_prompt
+        assert "https://youtube.com/watch?v=xyz789" not in user_prompt
