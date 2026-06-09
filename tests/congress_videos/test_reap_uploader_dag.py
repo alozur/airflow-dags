@@ -269,10 +269,10 @@ class TestPromptTemplates:
         from congress_videos.config.ai_prompts import SHORTS_METADATA_USER_PROMPT_TEMPLATE
         assert "{speakers}" not in SHORTS_METADATA_USER_PROMPT_TEMPLATE
 
-    def test_system_prompt_contains_siempre_and_length_rule(self):
+    def test_system_prompt_contains_siempre_and_taxonomy_rule(self):
         from congress_videos.config.ai_prompts import SHORTS_METADATA_SYSTEM_PROMPT
         assert "SIEMPRE" in SHORTS_METADATA_SYSTEM_PROMPT
-        assert "20" in SHORTS_METADATA_SYSTEM_PROMPT
+        assert "Nivel 1" in SHORTS_METADATA_SYSTEM_PROMPT
 
 
 # ---------------------------------------------------------------------------
