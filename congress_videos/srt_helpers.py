@@ -242,7 +242,7 @@ def select_pretrim_window(
         return None
 
     start_secs = start_block["start_secs"]
-    end_secs = end_block["end_secs"]
+    end_secs = min(end_block["end_secs"], start_block["start_secs"] + target_secs)
 
     if end_secs <= start_secs:
         logger.warning(

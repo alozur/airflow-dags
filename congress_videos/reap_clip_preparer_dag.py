@@ -111,7 +111,6 @@ with DAG(
             limit=context['params']['max_chapters'] or None,
             min_relevance_score=context['params']['min_relevance_score'],
         )
-        ti.xcom_push(key='chapters_for_shorts', value=chapters)
         return bool(chapters)  # False → ShortCircuitOperator skips all downstream tasks
 
     t1 = ShortCircuitOperator(
@@ -120,11 +119,13 @@ with DAG(
     )
 
     def _extract_and_pretrim_clip(ti, **context):
-        chapters = ti.xcom_pull(key='chapters_for_shorts') or []
+        db = CongressionalVideoDB()
+        chapters = db.get_chapters_for_shorts(
+            limit=context['params']['max_chapters'] or None,
+            min_relevance_score=context['params']['min_relevance_score'],
+        )
         threshold_secs = context['params']['pre_trim_threshold_secs']
         target_secs = context['params']['pre_trim_target_secs']
-
-        db = CongressionalVideoDB()
         inserted_count = 0
         blocked_chapters = []
 
