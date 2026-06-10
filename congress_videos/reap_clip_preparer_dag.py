@@ -143,7 +143,7 @@ with DAG(
 
             chapter_folder = os.path.join(PROJECT_DATA_DIR, str(video_id), str(chapter_id))
             os.makedirs(chapter_folder, exist_ok=True)
-            clip_path = os.path.join(chapter_folder, 'chapter_video.mp4')
+            clip_path = os.path.join(chapter_folder, f'chapter_{chapter_id}.mp4')
 
             result = split_video_chapter(
                 source_video_path=source_video_path,
@@ -185,7 +185,7 @@ with DAG(
                 pretrim_start = window['start_seconds'] if window else 0.0
                 pretrim_end = window['end_seconds'] if window else float(target_secs)
                 pretrim_used_srt = window is not None
-                trimmed_path = os.path.join(chapter_folder, 'chapter_video_trimmed.mp4')
+                trimmed_path = os.path.join(chapter_folder, f'chapter_{chapter_id}_trimmed.mp4')
 
                 try:
                     _ffmpeg_extract_window(
