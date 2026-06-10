@@ -91,6 +91,8 @@ class ReapJobSensor(BaseSensorOperator):
             clips = reap_client.get_project_clips(reap_project_id)
             logging.info("Reap project %s completed — downloading %d clips", reap_project_id, len(clips))
 
+            db.update_video_short_status(reap_project_id, 'done')
+
             for clip in clips:
                 clip_id = clip['clip_id']
                 clip_url = clip['clip_url']

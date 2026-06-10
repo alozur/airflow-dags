@@ -56,7 +56,7 @@ class TestCongressReapProcessorDAGLoads:
 
     def test_dag_has_correct_schedule(self):
         from congress_videos.reap_processor_dag import dag
-        assert dag.schedule == '0 9 * * *'
+        assert dag.schedule == '30 14 * * *'
 
     def test_dag_has_max_active_runs_1(self):
         from congress_videos.reap_processor_dag import dag
