@@ -48,21 +48,22 @@ _MONTHS = [
 ]
 
 
-def _format_session_line(session_number: int | None, session_date: date | None) -> str:
-    """Return a Spanish attribution line for a congressional session.
-
-    Returns an empty string when both arguments are falsy so callers can
-    append unconditionally without affecting descriptions that have no
-    session data.
-    """
-    if not session_number and not session_date:
+def _format_source_footer(source_title: str | None, source_url: str | None) -> str:
+    """Return a source video attribution line, or '' if either arg is falsy."""
+    if not source_title or not source_url:
         return ''
-    parts = []
-    if session_number:
-        parts.append(f'Sesión nº {session_number} del Congreso')
-    if session_date:
-        parts.append(f'{session_date.day} de {_MONTHS[session_date.month - 1]} de {session_date.year}')
-    return '\n\n🏛️ ' + ' - '.join(parts)
+    return f'\n\n📺 Extraído de: {source_title}\n{source_url}'
+
+
+def _format_session_line(session_number: int | None, session_date: date | None) -> str:
+    """Return a Spanish attribution line for a congressional session, or '' if both args are falsy."""
+    number_part = f'Sesión nº {session_number} del Congreso' if session_number else ''
+    date_part = (
+        f'{session_date.day} de {_MONTHS[session_date.month - 1]} de {session_date.year}'
+        if session_date else ''
+    )
+    body = ' - '.join(p for p in (number_part, date_part) if p)
+    return f'\n\n🏛️ {body}' if body else ''
 
 
 default_args = {
@@ -199,11 +200,7 @@ with DAG(
                         f"{ai_result.get('error')}"
                     )
 
-            source_title = ch.get('source_video_title')
-            source_url = ch.get('source_video_url')
-            if source_title and source_url:
-                description = f"{description}\n\n📺 Extraído de: {source_title}\n{source_url}"
-
+            description += _format_source_footer(ch.get('source_video_title'), ch.get('source_video_url'))
             description += _format_session_line(ch.get('session_number'), ch.get('session_date'))
 
             metadata_list.append({

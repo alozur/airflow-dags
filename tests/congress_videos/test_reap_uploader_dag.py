@@ -327,30 +327,40 @@ class TestGenerateMetadataPrompt:
 
 
 # ---------------------------------------------------------------------------
+# Shared factory for chapter metadata dicts used across footer/session tests
+# ---------------------------------------------------------------------------
+
+def _make_chapter_metadata(**overrides) -> dict:
+    base = {
+        "chapter_id": 1,
+        "title": "Debate presupuestos",
+        "description": "Descripción original",
+        "key_speakers": ["Ana García"],
+        "speakers": ["Ana García"],
+        "topics": ["presupuestos"],
+        "scoring_reasoning": "Alta relevancia",
+        "relevance_score": 4,
+        "source_video_title": None,
+        "source_video_url": None,
+        "session_number": None,
+        "session_date": None,
+    }
+    base.update(overrides)
+    return base
+
+
+# ---------------------------------------------------------------------------
 # _generate_metadata — source video footer tests
 # ---------------------------------------------------------------------------
 
 class TestGenerateMetadataFooter:
-
-    def _base_chapter_metadata(self, **overrides) -> dict:
-        base = {
-            "key_speakers": ["Ana García"],
-            "title": "Debate presupuestos",
-            "description": "Descripción original",
-            "topics": ["presupuestos"],
-            "scoring_reasoning": "Alta relevancia",
-            "source_video_title": None,
-            "source_video_url": None,
-        }
-        base.update(overrides)
-        return base
 
     def test_generate_metadata_footer_appended(self, mocker):
         """AC#4 — description ends with footer when source_video_title and source_video_url are set."""
         from congress_videos.reap_shorts_uploader_dag import _generate_metadata
 
         mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
-        mock_db_cls.return_value.get_chapter_metadata.return_value = self._base_chapter_metadata(
+        mock_db_cls.return_value.get_chapter_metadata.return_value = _make_chapter_metadata(
             source_video_title="Sesión plenaria 2024-01-15",
             source_video_url="https://youtube.com/watch?v=abc123",
         )
@@ -371,7 +381,7 @@ class TestGenerateMetadataFooter:
         from congress_videos.reap_shorts_uploader_dag import _generate_metadata
 
         mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
-        mock_db_cls.return_value.get_chapter_metadata.return_value = self._base_chapter_metadata(
+        mock_db_cls.return_value.get_chapter_metadata.return_value = _make_chapter_metadata(
             source_video_title=None,
             source_video_url=None,
         )
@@ -391,7 +401,7 @@ class TestGenerateMetadataFooter:
         from congress_videos.reap_shorts_uploader_dag import _generate_metadata
 
         mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
-        mock_db_cls.return_value.get_chapter_metadata.return_value = self._base_chapter_metadata(
+        mock_db_cls.return_value.get_chapter_metadata.return_value = _make_chapter_metadata(
             source_video_title="Sesión con fuente",
             source_video_url="https://youtube.com/watch?v=xyz789",
         )
@@ -488,31 +498,13 @@ class TestFormatSessionLine:
 
 class TestGenerateMetadataSessionLine:
 
-    def _base_chapter_metadata(self, **overrides) -> dict:
-        base = {
-            "chapter_id": 1,
-            "title": "Debate sobre pensiones",
-            "description": "Descripcion original",
-            "key_speakers": ["Ana García"],
-            "speakers": ["Ana García"],
-            "topics": ["pensiones"],
-            "scoring_reasoning": "Alta relevancia",
-            "relevance_score": 4,
-            "source_video_title": None,
-            "source_video_url": None,
-            "session_number": None,
-            "session_date": None,
-        }
-        base.update(overrides)
-        return base
-
     def test_description_ends_with_session_suffix_when_data_available(self, mocker):
         """Task 4.3 — AI success + session data: description ends with Spanish session line."""
         from datetime import date
         from congress_videos.reap_shorts_uploader_dag import _generate_metadata
 
         mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
-        mock_db_cls.return_value.get_chapter_metadata.return_value = self._base_chapter_metadata(
+        mock_db_cls.return_value.get_chapter_metadata.return_value = _make_chapter_metadata(
             session_number=80,
             session_date=date(2024, 6, 10),
         )
@@ -542,7 +534,7 @@ class TestGenerateMetadataSessionLine:
         from congress_videos.reap_shorts_uploader_dag import _generate_metadata
 
         mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
-        mock_db_cls.return_value.get_chapter_metadata.return_value = self._base_chapter_metadata(
+        mock_db_cls.return_value.get_chapter_metadata.return_value = _make_chapter_metadata(
             session_number=None,
             session_date=None,
         )
