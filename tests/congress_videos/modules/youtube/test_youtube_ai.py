@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from congress_videos.modules.youtube.youtube_ai import (
     generate_youtube_description,
     generate_youtube_title,
@@ -193,7 +191,7 @@ class TestScoreChaptersRelevance:
 
     def test_single_chapter_scored_correctly(self, mocker):
         mocker.patch(
-            "congress_videos.modules.youtube.youtube_ai.generate_json_completion",
+            "congress_videos.modules.youtube.youtube_ai.cached_json_completion",
             return_value=_make_json_result({
                 "speaker_relevance_points": 2,
                 "topic_relevance_points": 2,
@@ -220,7 +218,7 @@ class TestScoreChaptersRelevance:
 
     def test_ai_error_returns_default_middle_score_of_two(self, mocker):
         mocker.patch(
-            "congress_videos.modules.youtube.youtube_ai.generate_json_completion",
+            "congress_videos.modules.youtube.youtube_ai.cached_json_completion",
             return_value=_make_json_error("Model unavailable"),
         )
         merged = _make_merged_chapters([_make_video("vid1", [_make_chapter()])])
@@ -234,7 +232,7 @@ class TestScoreChaptersRelevance:
 
     def test_scores_clamped_to_valid_ranges(self, mocker):
         mocker.patch(
-            "congress_videos.modules.youtube.youtube_ai.generate_json_completion",
+            "congress_videos.modules.youtube.youtube_ai.cached_json_completion",
             return_value=_make_json_result({
                 "speaker_relevance_points": 10,   # exceeds max of 2
                 "topic_relevance_points": -1,     # below min of 0
@@ -277,7 +275,7 @@ class TestScoreChaptersRelevance:
             })
 
         mocker.patch(
-            "congress_videos.modules.youtube.youtube_ai.generate_json_completion",
+            "congress_videos.modules.youtube.youtube_ai.cached_json_completion",
             side_effect=side_effect,
         )
 
@@ -303,7 +301,7 @@ class TestScoreChaptersRelevance:
 
     def test_multiple_videos_all_chapters_scored(self, mocker):
         mocker.patch(
-            "congress_videos.modules.youtube.youtube_ai.generate_json_completion",
+            "congress_videos.modules.youtube.youtube_ai.cached_json_completion",
             return_value=_make_json_result({
                 "speaker_relevance_points": 1,
                 "topic_relevance_points": 1,

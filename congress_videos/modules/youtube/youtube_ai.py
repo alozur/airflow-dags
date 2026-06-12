@@ -6,6 +6,7 @@ and to evaluate video interest scores for upload prioritization.
 """
 
 import logging
+from datetime import datetime, timezone
 
 from congress_videos.config.ai_prompts import (
     CHAPTER_RELEVANCE_SCORING_SYSTEM_PROMPT,
@@ -20,9 +21,30 @@ from congress_videos.modules.web_scraping import construct_session_link
 from utils.ai_helpers import (
     clamp_value,
     generate_chat_completion,
-    generate_json_completion,
     truncate_text,
 )
+from utils.llm_cache import cached_json_completion
+
+
+_SPANISH_MONTHS = {
+    1: "enero", 2: "febrero", 3: "marzo", 4: "abril",
+    5: "mayo", 6: "junio", 7: "julio", 8: "agosto",
+    9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre",
+}
+
+
+def _current_date_es() -> str:
+    """Return the current month and year in Spanish (locale-independent).
+
+    Returns a string like ``"junio 2026"`` regardless of the system locale.
+    Falls back to ISO format ``"2026-06"`` if the month lookup unexpectedly fails.
+    """
+    now = datetime.now(tz=timezone.utc)
+    try:
+        return f"{_SPANISH_MONTHS[now.month]} {now.year}"
+    except KeyError:
+        # Defensive fallback — should never happen with a valid month (1-12)
+        return now.strftime("%Y-%m")
 
 
 def generate_youtube_title(main_topic_content, speakers_info, max_length=100):
@@ -424,12 +446,14 @@ def score_chapters_relevance(merged_chapters):
                 chapter_description=chapter_description,
                 duration_minutes=duration_minutes,
                 speakers_list=speakers_list,
-                topics_list=topics_list
+                topics_list=topics_list,
+                current_date=_current_date_es(),
             )
 
             try:
-                # Generate scoring using AI
-                result = generate_json_completion(
+                # Generate scoring using AI (#2: routed through the idempotent
+                # LLM cache; DB errors fall through to a live call).
+                result = cached_json_completion(
                     system_prompt=CHAPTER_RELEVANCE_SCORING_SYSTEM_PROMPT,
                     user_prompt=user_prompt,
                     model="gpt-4o-mini",
