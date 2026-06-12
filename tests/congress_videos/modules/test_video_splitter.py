@@ -8,6 +8,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from congress_videos.modules.video_splitter import (
+    build_ffmpeg_cut_cmd,
+    compute_ffmpeg_timeout,
     convert_srt_time_to_seconds,
     extract_chapters_from_video,
     split_video_chapter,
@@ -196,3 +198,71 @@ class TestExtractChaptersFromVideo:
         assert result["failed_extractions"] == 0
         assert result["results"][0]["chapter_id"] == 42
         assert result["results"][0]["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# build_ffmpeg_cut_cmd (Batch 3, #10: precise input-seek re-encode)
+# ---------------------------------------------------------------------------
+
+class TestBuildFfmpegCutCmd:
+    def test_input_seek_ss_after_input(self):
+        """Frame accuracy requires -ss AFTER -i (input-seek), not before."""
+        cmd = build_ffmpeg_cut_cmd(src="in.mp4", out="out.mp4", start=10.0, duration=30.0)
+        i_idx = cmd.index("-i")
+        ss_idx = cmd.index("-ss")
+        assert ss_idx > i_idx, "-ss must come after -i for frame-accurate cuts"
+
+    def test_does_not_use_stream_copy(self):
+        """Stream copy (-c copy) snaps to keyframes; precise mode re-encodes."""
+        cmd = build_ffmpeg_cut_cmd(src="in.mp4", out="out.mp4", start=0.0, duration=5.0)
+        assert "copy" not in cmd
+        assert "libx264" in cmd
+
+    def test_source_and_output_present(self):
+        cmd = build_ffmpeg_cut_cmd(src="src.mkv", out="dst.mp4", start=1.0, duration=2.0)
+        assert cmd[cmd.index("-i") + 1] == "src.mkv"
+        assert cmd[-1] == "dst.mp4"
+
+    def test_start_and_duration_serialised(self):
+        cmd = build_ffmpeg_cut_cmd(src="a", out="b", start=12.5, duration=30.0)
+        assert cmd[cmd.index("-ss") + 1] == "12.5"
+        assert cmd[cmd.index("-t") + 1] == "30.0"
+
+    def test_zero_duration_raises_value_error(self):
+        with pytest.raises(ValueError, match="0 seconds"):
+            build_ffmpeg_cut_cmd(src="a", out="b", start=0.0, duration=0.0)
+
+    def test_negative_duration_raises_value_error(self):
+        with pytest.raises(ValueError):
+            build_ffmpeg_cut_cmd(src="a", out="b", start=5.0, duration=-3.0)
+
+    def test_sub_second_duration_is_valid(self):
+        cmd = build_ffmpeg_cut_cmd(src="a", out="b", start=0.0, duration=0.5)
+        assert cmd[cmd.index("-t") + 1] == "0.5"
+
+
+# ---------------------------------------------------------------------------
+# compute_ffmpeg_timeout (Batch 3, #12: adaptive timeout, base=120 factor=8)
+# ---------------------------------------------------------------------------
+
+class TestComputeFfmpegTimeout:
+    def test_scales_with_duration(self):
+        # 120 + 8 * 300 = 2520
+        assert compute_ffmpeg_timeout(300) == 2520
+
+    def test_capped_at_max(self):
+        # 120 + 8 * 2000 = 16120 → capped to 3600
+        assert compute_ffmpeg_timeout(2000) == 3600
+
+    def test_short_clip(self):
+        # 120 + 8 * 1 = 128
+        assert compute_ffmpeg_timeout(1) == 128
+
+    def test_zero_duration_returns_base(self):
+        assert compute_ffmpeg_timeout(0) == 120
+
+    def test_negative_duration_returns_base(self):
+        assert compute_ffmpeg_timeout(-10) == 120
+
+    def test_returns_int(self):
+        assert isinstance(compute_ffmpeg_timeout(45.7), int)

@@ -7,29 +7,100 @@ Splits downloaded YouTube videos into chapters based on start_time and end_time.
 import logging
 import os
 import subprocess
-from pathlib import Path
+
+from utils.time_utils import parse_timestamp
 
 
-def convert_srt_time_to_seconds(srt_time):
-    """
-    Convert SRT timestamp format (HH:MM:SS,mmm) to seconds.
+def build_ffmpeg_cut_cmd(
+    src: str,
+    out: str,
+    start: float,
+    duration: float,
+    reencode: bool = True,
+) -> list[str]:
+    """Build a frame-accurate ffmpeg cut command.
+
+    Uses *input-seeking* (``-ss`` placed AFTER ``-i``) with a full re-encode so
+    cuts land on the requested boundary instead of snapping to the nearest
+    keyframe (the ``-c copy`` behaviour, which drifts by seconds). The veryfast
+    libx264 preset bounds CPU cost; clips are short (chapters/shorts).
 
     Args:
-        srt_time: Time string in SRT format (e.g., "00:10:15,500")
+        src: Path to the source video.
+        out: Path where the cut clip is written.
+        start: Start offset in seconds from the beginning of ``src``.
+        duration: Clip duration in seconds. Must be > 0.
+        reencode: When ``True`` (default and only supported precise mode),
+            re-encode with libx264/aac for frame accuracy.
 
     Returns:
-        Float representing total seconds
+        The ffmpeg argument list, ready for :func:`subprocess.run`.
+
+    Raises:
+        ValueError: If ``duration <= 0``.
+    """
+    if duration <= 0:
+        raise ValueError("clip duration is 0 seconds")
+
+    return [
+        'ffmpeg',
+        '-y',
+        '-i', src,
+        '-ss', str(start),
+        '-t', str(duration),
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-crf', '20',
+        '-c:a', 'aac',
+        '-avoid_negative_ts', 'make_zero',
+        out,
+    ]
+
+
+def compute_ffmpeg_timeout(
+    duration_seconds: float,
+    base: int = 120,
+    factor: float = 8.0,
+    max_timeout: int = 3600,
+) -> int:
+    """Compute an adaptive subprocess timeout for an ffmpeg cut.
+
+    The timeout scales with clip duration because a full re-encode takes longer
+    for longer clips. Defaults (base=120, factor=8) are conservative for the
+    veryfast re-encode used by :func:`build_ffmpeg_cut_cmd`.
+
+    Args:
+        duration_seconds: Clip duration in seconds. Non-positive values yield
+            just ``base``.
+        base: Fixed overhead in seconds (default 120).
+        factor: Seconds of timeout budget per second of clip (default 8.0).
+        max_timeout: Hard cap in seconds (default 3600).
+
+    Returns:
+        Timeout in whole seconds, never exceeding ``max_timeout``.
+    """
+    if duration_seconds <= 0:
+        return base
+    return int(min(max_timeout, base + factor * duration_seconds))
+
+
+def convert_srt_time_to_seconds(srt_time: str) -> float:
+    """Convert an SRT timestamp to total seconds.
+
+    Delegates to ``utils.time_utils.parse_timestamp``, which handles
+    ``HH:MM:SS``, ``HH:MM:SS,mmm``, and ``HH:MM:SS.mmm`` formats
+    with millisecond precision.
+
+    Args:
+        srt_time: Timestamp string, e.g. ``"00:10:15,500"``.
+
+    Returns:
+        Total seconds as float, or ``0.0`` on parse error.
     """
     try:
-        # Split time and milliseconds
-        time_part, ms_part = srt_time.split(',')
-        hours, minutes, seconds = map(int, time_part.split(':'))
-        milliseconds = int(ms_part)
-
-        total_seconds = hours * 3600 + minutes * 60 + seconds + milliseconds / 1000.0
-        return total_seconds
-    except Exception as e:
-        logging.error(f"Error converting SRT time '{srt_time}': {e}")
+        return parse_timestamp(srt_time)
+    except (ValueError, AttributeError) as e:
+        logging.error("Error converting SRT time %r: %s", srt_time, e)
         return 0.0
 
 
@@ -66,32 +137,24 @@ def split_video_chapter(source_video_path, output_path, start_time, end_time):
         output_dir = os.path.dirname(output_path)
         os.makedirs(output_dir, exist_ok=True)
 
-        # Build ffmpeg command
-        # -ss: start time (seek to position)
-        # -t: duration to extract
-        # -i: input file
-        # -c copy: copy codec (fast, no re-encoding)
-        # -avoid_negative_ts make_zero: fix timestamp issues
-        ffmpeg_command = [
-            'ffmpeg',
-            '-y',  # Overwrite output file if exists
-            '-ss', str(start_seconds),
-            '-t', str(duration_seconds),
-            '-i', source_video_path,
-            '-c', 'copy',
-            '-avoid_negative_ts', 'make_zero',
-            output_path
-        ]
+        # Build frame-accurate ffmpeg command (input-seek + re-encode).
+        ffmpeg_command = build_ffmpeg_cut_cmd(
+            src=source_video_path,
+            out=output_path,
+            start=start_seconds,
+            duration=duration_seconds,
+        )
+        timeout = compute_ffmpeg_timeout(duration_seconds)
 
         logging.info(f"Extracting chapter: {start_time} to {end_time} ({duration_seconds:.2f}s)")
-        logging.info(f"Command: {' '.join(ffmpeg_command)}")
+        logging.info(f"Command: {' '.join(ffmpeg_command)} (timeout={timeout}s)")
 
         # Run ffmpeg
         result = subprocess.run(
             ffmpeg_command,
             capture_output=True,
             text=True,
-            timeout=600  # 10 minute timeout
+            timeout=timeout
         )
 
         if result.returncode != 0:
@@ -188,7 +251,6 @@ def extract_chapters_from_video(uploadable_chapters, data_directory):
         video_id = chapter.get('video_id')
         start_time = chapter.get('start_time')
         end_time = chapter.get('end_time')
-        source_video_title = chapter.get('source_video_title', 'video')
 
         logging.info(f"Processing chapter {chapter_id} from video {video_id}")
 
