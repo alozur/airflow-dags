@@ -280,6 +280,20 @@ class TestMigrationIdempotency:
         assert "CREATE UNIQUE INDEX IF NOT EXISTS" in sql
         assert "(video_id, start_time, end_time)" in sql
 
+    def test_009_llm_cache_table_exists_and_idempotent(self):
+        """Migration 009 must create the llm_cache table idempotently with a
+        sha256 (CHAR(64)) primary key and use unqualified names (the runner
+        sets search_path, so migrations must NOT schema-qualify tables)."""
+        path = MIGRATIONS_DIR / "009_create_llm_cache.sql"
+        assert path.exists(), f"Missing migration: {path}"
+        sql = path.read_text()
+        assert "CREATE TABLE IF NOT EXISTS llm_cache" in sql
+        assert "cache_key" in sql
+        assert "CHAR(64)" in sql
+        assert "PRIMARY KEY" in sql
+        # Unqualified — no schema prefix like "development.llm_cache".
+        assert ".llm_cache" not in sql
+
     @pytest.mark.parametrize("path", _MIGRATION_FILES, ids=lambda p: p.name)
     def test_no_bare_create_table(self, path: Path):
         sql = path.read_text()
