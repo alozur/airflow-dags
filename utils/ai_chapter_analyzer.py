@@ -5,10 +5,9 @@ This module uses OpenAI to analyze video transcriptions and agendas
 to identify interesting chapters/segments for content extraction.
 """
 
-import json
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import openai
 
@@ -17,6 +16,7 @@ from congress_videos.config.ai_prompts import (
     CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE,
 )
 from utils.ai_helpers import generate_json_completion
+from utils.time_utils import parse_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -24,31 +24,67 @@ logger = logging.getLogger(__name__)
 openai.api_key = os.getenv('OPENAI_API_KEY')
 
 
-def parse_timestamp_to_seconds(timestamp: str) -> int:
-    """
-    Convert SRT timestamp to total seconds.
+def parse_timestamp_to_seconds(timestamp: str) -> float:
+    """Convert SRT timestamp to total seconds.
 
-    Supports both formats:
-    - HH:MM:SS (simplified format)
-    - HH:MM:SS,mmm (YouTube format with milliseconds)
+    Delegates to the unified ``utils.time_utils.parse_timestamp`` which
+    preserves millisecond precision and returns a float.
+
+    Supports:
+    - ``HH:MM:SS`` (simplified format)
+    - ``HH:MM:SS,mmm`` (SRT comma-separated milliseconds)
+    - ``HH:MM:SS.mmm`` (dot-separated milliseconds)
 
     Args:
-        timestamp: Time in format "HH:MM:SS" or "HH:MM:SS,mmm"
+        timestamp: Time string in one of the supported formats.
 
     Returns:
-        Total seconds as integer
+        Total seconds as float (millisecond-precise).
     """
-    # Remove milliseconds if present (after comma)
-    timestamp = timestamp.strip().split(',')[0]
-
-    parts = timestamp.split(':')
-    if len(parts) == 3:
-        hours, minutes, seconds = parts
-        return int(hours) * 3600 + int(minutes) * 60 + int(seconds)
-    return 0
+    try:
+        return parse_timestamp(timestamp)
+    except (ValueError, AttributeError):
+        return 0.0
 
 
-def detect_silence_gaps(srt_content: str, min_silence_seconds: int = 15) -> List[Dict]:
+def _adaptive_silence_threshold(
+    gaps_secs: list[float],
+    percentile: float = 75.0,
+    floor: int = 8,
+) -> float:
+    """Compute a percentile-based silence threshold from observed gap durations.
+
+    Uses pure-Python sorted-index percentile (no numpy).  The result is clamped
+    to a minimum of ``floor`` seconds so very sparse transcripts don't produce a
+    threshold of zero.
+
+    Args:
+        gaps_secs: All inter-entry gap durations in seconds (may be empty).
+        percentile: Desired percentile in [0, 100] (default: 75).
+        floor: Hard minimum threshold in seconds (default: 8).
+
+    Returns:
+        Computed threshold in seconds (float), always >= floor.
+    """
+    if not gaps_secs:
+        return float(floor)
+    sorted_gaps = sorted(gaps_secs)
+    n = len(sorted_gaps)
+    # Linear interpolation index
+    idx = (percentile / 100.0) * (n - 1)
+    lower = int(idx)
+    upper = min(lower + 1, n - 1)
+    frac = idx - lower
+    value = sorted_gaps[lower] + frac * (sorted_gaps[upper] - sorted_gaps[lower])
+    return max(float(floor), value)
+
+
+def detect_silence_gaps(
+    srt_content: str,
+    min_silence_seconds: int = 15,
+    use_adaptive: bool = False,
+    adaptive_percentile: float = 75.0,
+) -> List[Dict]:
     """
     Detect silence gaps in SRT content by finding time gaps between subtitle entries.
 
@@ -58,6 +94,10 @@ def detect_silence_gaps(srt_content: str, min_silence_seconds: int = 15) -> List
     Args:
         srt_content: Full SRT transcription content
         min_silence_seconds: Minimum silence duration to consider as a gap (default: 15)
+        use_adaptive: When True, derive the threshold from the Nth percentile of all
+            observed inter-entry gaps instead of using ``min_silence_seconds`` directly.
+            Falls back to the fixed threshold if no gaps pass the adaptive one.
+        adaptive_percentile: Percentile to use for adaptive threshold (default: 75).
 
     Returns:
         List of silence gaps:
@@ -84,34 +124,77 @@ def detect_silence_gaps(srt_content: str, min_silence_seconds: int = 15) -> List
         logger.warning("No SRT entries found in content")
         return []
 
+    # Collect ALL inter-entry gap durations first (needed for adaptive mode).
+    all_gaps: list[float] = []
+    for i in range(len(entries) - 1):
+        current_end_seconds = parse_timestamp_to_seconds(entries[i][1].strip())
+        next_start_seconds = parse_timestamp_to_seconds(entries[i + 1][0].strip())
+        gap = next_start_seconds - current_end_seconds
+        all_gaps.append(gap)
+
+    # Determine effective threshold.
+    if use_adaptive:
+        effective_threshold = _adaptive_silence_threshold(
+            all_gaps, percentile=adaptive_percentile
+        )
+        logger.info(
+            "Adaptive silence threshold: %.2fs (p%.0f of %d gaps); "
+            "fixed fallback: %ds",
+            effective_threshold, adaptive_percentile, len(all_gaps), min_silence_seconds,
+        )
+    else:
+        effective_threshold = float(min_silence_seconds)
+
     silence_gaps = []
 
     for i in range(len(entries) - 1):
         current_entry = entries[i]
         next_entry = entries[i + 1]
 
-        # Extract end time of current entry and start time of next entry
         current_end_time = current_entry[1].strip()
         next_start_time = next_entry[0].strip()
 
-        # Calculate gap duration
-        current_end_seconds = parse_timestamp_to_seconds(current_end_time)
-        next_start_seconds = parse_timestamp_to_seconds(next_start_time)
+        gap_duration = all_gaps[i]
 
-        gap_duration = next_start_seconds - current_end_seconds
-
-        # If gap is significant, record it
-        if gap_duration >= min_silence_seconds:
+        if gap_duration >= effective_threshold:
+            current_end_seconds = parse_timestamp_to_seconds(current_end_time)
+            next_start_seconds = parse_timestamp_to_seconds(next_start_time)
             silence_gaps.append({
                 "gap_start": current_end_time,
                 "gap_end": next_start_time,
                 "gap_duration_seconds": gap_duration,
                 "gap_midpoint_seconds": (current_end_seconds + next_start_seconds) // 2,
-                "previous_text": current_entry[2].strip()[:100],  # First 100 chars
-                "next_text": next_entry[2].strip()[:100]
+                "previous_text": current_entry[2].strip()[:100],
+                "next_text": next_entry[2].strip()[:100],
             })
 
-    logger.info(f"Found {len(silence_gaps)} silence gaps of {min_silence_seconds}+ seconds")
+    # Adaptive fallback: if no gaps passed the adaptive threshold, retry with fixed.
+    if use_adaptive and not silence_gaps:
+        logger.warning(
+            "Adaptive threshold %.2fs produced 0 gaps; "
+            "falling back to fixed threshold %ds",
+            effective_threshold, min_silence_seconds,
+        )
+        for i in range(len(entries) - 1):
+            current_entry = entries[i]
+            next_entry = entries[i + 1]
+            current_end_time = current_entry[1].strip()
+            next_start_time = next_entry[0].strip()
+            gap_duration = all_gaps[i]
+            if gap_duration >= min_silence_seconds:
+                current_end_seconds = parse_timestamp_to_seconds(current_end_time)
+                next_start_seconds = parse_timestamp_to_seconds(next_start_time)
+                silence_gaps.append({
+                    "gap_start": current_end_time,
+                    "gap_end": next_start_time,
+                    "gap_duration_seconds": gap_duration,
+                    "gap_midpoint_seconds": (current_end_seconds + next_start_seconds) // 2,
+                    "previous_text": current_entry[2].strip()[:100],
+                    "next_text": next_entry[2].strip()[:100],
+                })
+
+    threshold_used = effective_threshold if not (use_adaptive and not silence_gaps) else min_silence_seconds
+    logger.info(f"Found {len(silence_gaps)} silence gaps of {threshold_used}+ seconds")
     return silence_gaps
 
 
@@ -119,7 +202,9 @@ def chunk_by_silence(
     srt_content: str,
     min_silence_seconds: int = 15,
     min_chunk_duration_minutes: int = 20,
-    max_chunk_duration_minutes: int = 30
+    max_chunk_duration_minutes: int = 30,
+    use_adaptive: bool = False,
+    adaptive_percentile: float = 75.0,
 ) -> List[Dict]:
     """
     Split SRT content into chunks based on silence gaps.
@@ -132,6 +217,10 @@ def chunk_by_silence(
         min_silence_seconds: Minimum silence duration to use as split point (default: 15)
         min_chunk_duration_minutes: Minimum duration for each chunk (default: 20)
         max_chunk_duration_minutes: Maximum duration for each chunk (default: 30)
+        use_adaptive: When True, derive the silence threshold from the Nth percentile
+            of observed inter-entry gaps instead of using ``min_silence_seconds`` directly.
+            Falls back to the fixed threshold if the adaptive one produces no gaps (default: False).
+        adaptive_percentile: Percentile to use for adaptive threshold (default: 75).
 
     Returns:
         List of chunks:
@@ -154,7 +243,12 @@ def chunk_by_silence(
         logger.info(f"First 500 chars: {srt_content[:500]}")
 
     # Detect all silence gaps
-    silence_gaps = detect_silence_gaps(srt_content, min_silence_seconds)
+    silence_gaps = detect_silence_gaps(
+        srt_content,
+        min_silence_seconds,
+        use_adaptive=use_adaptive,
+        adaptive_percentile=adaptive_percentile,
+    )
 
     if not silence_gaps:
         logger.warning("No silence gaps found, returning entire content as single chunk")
@@ -281,19 +375,19 @@ def chunk_by_silence(
     return merged_chunks
 
 
-def format_seconds_to_timestamp(seconds: int) -> str:
-    """
-    Convert seconds to HH:MM:SS format.
+def format_seconds_to_timestamp(seconds: float) -> str:
+    """Convert seconds to HH:MM:SS format.
 
     Args:
-        seconds: Total seconds
+        seconds: Total seconds (int or float; fractional part is truncated).
 
     Returns:
-        Formatted timestamp string
+        Formatted timestamp string in ``HH:MM:SS`` format.
     """
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
+    total = int(seconds)
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    secs = total % 60
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
