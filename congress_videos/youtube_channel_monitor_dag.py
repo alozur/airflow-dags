@@ -42,8 +42,7 @@ load_env_if_local()
 POSTGRES_SCHEMA = os.getenv('POSTGRES_SCHEMA', 'development')
 IS_DEVELOPMENT = POSTGRES_SCHEMA == 'development'
 
-# Calculate yesterday's date
-yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+today_str = datetime.now().strftime("%Y-%m-%d")
 
 
 default_args = {
@@ -59,12 +58,15 @@ with DAG(
     'congress_youtube_channel_monitor',
     default_args=default_args,
     description='Monitor YouTube channel for Congress plenary sessions and identify finished streams',
-    schedule_interval='0 22 * * *',  # Run at 10:00 PM daily (after sessions typically end)
+    schedule_interval='0 * * * *',  # Run every hour on the hour
     start_date=datetime(2025, 10, 9),
     catchup=False,
+    max_active_runs=1,  # Serialize runs so overlapping hourly runs don't race on the same video_id
     tags=['congress', 'youtube', 'monitor'],
-    params={  # Default to yesterday
-        "target_date": yesterday_str,
+    params={  # Default to today; lookback range covers yesterday too
+        "target_date": today_str,
+        "lookback_days": 1,  # Inclusive lookback window: target_date - lookback_days .. target_date
+        "min_hours_since_end": 2,  # Skip videos whose live broadcast ended less than this many hours ago
         "max_videos": 20,  # Maximum number of videos to check
         "chunk_duration_minutes": 30,  # Duration of each audio chunk in minutes (default: 30 minutes)
         "isTesting": False,  # Set to True manually when testing
@@ -121,7 +123,8 @@ with DAG(
             lambda: yt_channel.filter_plenary_session_videos(
                 ti.xcom_pull(key='channel_videos'),
                 target_title=TARGET_VIDEO_TITLE,
-                target_date=context["params"].get("target_date")
+                target_date=context["params"].get("target_date"),
+                lookback_days=context["params"].get("lookback_days", 1)
             ),
             'plenary_videos'
         ),
@@ -163,10 +166,11 @@ with DAG(
     # trigger_rule: Execute if any upstream task succeeds (test or production path)
     t3a = PythonOperator(
         task_id='get_video_details',
-        python_callable=lambda ti: xcom_task(
+        python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.get_video_details(
-                ti.xcom_pull(key='plenary_videos')
+                ti.xcom_pull(key='plenary_videos'),
+                min_hours_since_end=context["params"].get("min_hours_since_end", 2)
             ),
             'video_details'
         ),

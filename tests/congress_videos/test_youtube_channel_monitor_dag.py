@@ -17,7 +17,11 @@ class TestCongressYoutubeChannelMonitorDAGLoads:
 
     def test_dag_has_correct_schedule(self):
         from congress_videos.youtube_channel_monitor_dag import dag
-        assert dag.schedule == '0 22 * * *'
+        assert dag.schedule == '0 * * * *'
+
+    def test_dag_serializes_runs(self):
+        from congress_videos.youtube_channel_monitor_dag import dag
+        assert dag.max_active_runs == 1
 
     def test_filter_unprocessed_videos_task_exists(self):
         from congress_videos.youtube_channel_monitor_dag import dag

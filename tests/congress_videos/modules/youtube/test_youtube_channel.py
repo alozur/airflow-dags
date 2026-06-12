@@ -203,13 +203,14 @@ class TestFilterPlenarySessionVideos:
 
         assert result["total_matches"] == 0
 
-    def test_date_mismatch_returns_zero_matches(self):
-        """Video with correct title but wrong date is excluded."""
+    def test_date_outside_lookback_window_returns_zero_matches(self):
+        """Video with correct title but a date outside the lookback window is excluded.
+        Published 3 days earlier with the default lookback_days=1 -> dropped."""
         from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
 
         video = self._make_video(
             title="Sesion Plenaria (original)",
-            published_at="2025-05-21T10:00:00Z",  # one day earlier
+            published_at="2025-05-19T10:00:00Z",  # 3 days earlier, outside window
         )
         channel_videos = self._make_channel_videos([video])
 
@@ -268,6 +269,31 @@ class TestFilterPlenarySessionVideos:
             target_date="2025-05-22",
         )
 
+        assert result["total_matches"] == 2
+
+    def test_lookback_range_keeps_today_and_yesterday_drops_older(self):
+        """With lookback_days=1 and a fixed reference date, videos published on
+        the target date and the day before are KEPT; one 3 days earlier is DROPPED."""
+        from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
+
+        target_date = "2025-05-22"
+        videos = [
+            self._make_video("Sesion Plenaria HOY", "2025-05-22T09:00:00Z", "vid-today"),
+            self._make_video("Sesion Plenaria AYER", "2025-05-21T18:00:00Z", "vid-yesterday"),
+            self._make_video("Sesion Plenaria VIEJA", "2025-05-19T10:00:00Z", "vid-old"),
+        ]
+        channel_videos = self._make_channel_videos(videos)
+
+        result = filter_plenary_session_videos(
+            channel_videos,
+            target_title="Sesion Plenaria",
+            target_date=target_date,
+            lookback_days=1,
+        )
+
+        kept_ids = {v["video_id"] for v in result["videos"]}
+        assert kept_ids == {"vid-today", "vid-yesterday"}
+        assert "vid-old" not in kept_ids
         assert result["total_matches"] == 2
 
 
@@ -349,7 +375,7 @@ class TestGetVideoDetails:
             "items": [
                 {
                     "contentDetails": {"duration": "PT45M"},
-                    "liveStreamingDetails": {},
+                    "liveStreamingDetails": {"actualEndTime": "2025-05-22T11:00:00Z"},
                     "snippet": {"title": "Short"},
                 }
             ]
@@ -425,7 +451,7 @@ class TestGetVideoDetails:
             "items": [
                 {
                     "contentDetails": {"duration": "PT10M"},
-                    "liveStreamingDetails": {},
+                    "liveStreamingDetails": {"actualEndTime": "2025-05-22T11:00:00Z"},
                     "snippet": {"title": "Test"},
                 }
             ]
@@ -453,6 +479,101 @@ class TestGetVideoDetails:
 
         assert "youtube_url" in result["videos"][0]
         assert "abc123" in result["videos"][0]["youtube_url"]
+
+
+# --------------------------------------------------------------------------- #
+# get_video_details — VOD freshness guard
+# --------------------------------------------------------------------------- #
+
+class TestGetVideoDetailsFreshnessGuard:
+
+    def _plenary(self, video_id: str = "vid-fresh") -> dict:
+        return {
+            "videos": [
+                {
+                    "video_id": video_id,
+                    "title": "Sesion Plenaria",
+                    "description": "",
+                    "published_at": "2025-05-22T09:00:00Z",
+                    "thumbnail_url": "https://example.com/t.jpg",
+                    "channel_title": "Test",
+                }
+            ]
+        }
+
+    def _fake_service(self, actual_end_time):
+        """Build a fake YouTube service returning a single video with the given
+        actualEndTime (None means the key is absent)."""
+        live_details = {}
+        if actual_end_time is not None:
+            live_details["actualEndTime"] = actual_end_time
+
+        fake_service = MagicMock()
+        fake_service.videos.return_value.list.return_value.execute.return_value = {
+            "items": [
+                {
+                    "contentDetails": {"duration": "PT1H"},
+                    "liveStreamingDetails": live_details,
+                    "snippet": {"title": "Sesion Plenaria"},
+                }
+            ]
+        }
+        return fake_service
+
+    def test_skips_video_without_actual_end_time(self, monkeypatch, mocker):
+        """actualEndTime=None (still live / no data) is skipped."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake-key")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=self._fake_service(None),
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import get_video_details
+
+        result = get_video_details(self._plenary(), min_hours_since_end=2)
+
+        assert result["total_videos"] == 0
+        assert result["videos"] == []
+
+    def test_skips_video_ended_10_minutes_ago(self, monkeypatch, mocker):
+        """A broadcast that ended 10 minutes ago is under the 2h margin -> skipped."""
+        from datetime import datetime, timedelta, timezone
+
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake-key")
+        ended_recently = (
+            datetime.now(timezone.utc) - timedelta(minutes=10)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=self._fake_service(ended_recently),
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import get_video_details
+
+        result = get_video_details(self._plenary(), min_hours_since_end=2)
+
+        assert result["total_videos"] == 0
+        assert result["videos"] == []
+
+    def test_keeps_video_ended_5_hours_ago(self, monkeypatch, mocker):
+        """A broadcast that ended 5 hours ago is past the 2h margin -> kept."""
+        from datetime import datetime, timedelta, timezone
+
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake-key")
+        ended_long_ago = (
+            datetime.now(timezone.utc) - timedelta(hours=5)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=self._fake_service(ended_long_ago),
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import get_video_details
+
+        result = get_video_details(self._plenary(), min_hours_since_end=2)
+
+        assert result["total_videos"] == 1
+        assert result["videos"][0]["video_id"] == "vid-fresh"
 
 
 # --------------------------------------------------------------------------- #
