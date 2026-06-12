@@ -1,17 +1,14 @@
 """Custom PostgreSQL operators for Airflow."""
 
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Dict, Optional
 
 from airflow.models import BaseOperator
-from airflow.utils.decorators import apply_defaults
 
 from .database import CongressionalVideoDB
 
 class PostgreSQLOperator(BaseOperator):
     """Custom operator for PostgreSQL operations with XCom integration"""
 
-    @apply_defaults
     def __init__(
         self,
         operation: str,
@@ -301,9 +298,9 @@ class PostgreSQLOperator(BaseOperator):
                         except Exception as e:
                             print(f"❌ ERROR updating YouTube status for {entry_id}: {e}")
                     else:
-                        print(f"⚠️ Skipping: missing entry_id or video_id")
+                        print("⚠️ Skipping: missing entry_id or video_id")
                 else:
-                    print(f"⚠️ Skipping failed upload")
+                    print("⚠️ Skipping failed upload")
 
             result = {'updated_videos': updated_count, 'total_uploads': len(upload_details)}
 
