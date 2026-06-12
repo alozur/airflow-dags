@@ -19,7 +19,11 @@ from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
 from congress_videos.config.paths import DOWNLOADS_DIR, PROJECT_DATA_DIR
 from congress_videos.modules.database import CongressionalVideoDB
-from congress_videos.modules.video_splitter import convert_srt_time_to_seconds, split_video_chapter
+from congress_videos.modules.video_splitter import (
+    build_ffmpeg_cut_cmd,
+    compute_ffmpeg_timeout,
+    split_video_chapter,
+)
 from congress_videos.srt_helpers import find_srt_for_chapter, select_pretrim_window
 from utils.airflow_helpers import ensure_project_data_directory, xcom_task
 from utils.env_loader import load_env_if_local
@@ -65,16 +69,14 @@ def _ffmpeg_extract_window(source_path: str, dest_path: str, start_secs: float, 
     """Re-extract a precise time window from source into dest_path using ffmpeg."""
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
     duration = end_secs - start_secs
-    cmd = [
-        'ffmpeg', '-y',
-        '-ss', str(start_secs),
-        '-t', str(duration),
-        '-i', source_path,
-        '-c', 'copy',
-        '-avoid_negative_ts', 'make_zero',
-        dest_path,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    cmd = build_ffmpeg_cut_cmd(
+        src=source_path,
+        out=dest_path,
+        start=start_secs,
+        duration=duration,
+    )
+    timeout = compute_ffmpeg_timeout(duration)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg window extract failed: {result.stderr}")
 
