@@ -136,6 +136,41 @@ def filter_plenary_session_videos(channel_videos, target_title: str, target_date
     }
 
 
+def filter_unprocessed_videos(plenary_videos: dict) -> dict:
+    """
+    Drop videos whose video_id is already fully processed in the DB.
+
+    Input/output shape: {'total_matches': int, 'videos': list, 'target_date': str}
+    Preserves 'target_date' and any other top-level keys; rewrites only
+    'videos' and recomputes 'total_matches'.
+
+    FAIL-CLOSED: on DB error this raises (does NOT treat all as unprocessed).
+    PRODUCTION path only (test mode never reaches this task).
+    """
+    if not plenary_videos or not plenary_videos.get('videos'):
+        return plenary_videos or {'total_matches': 0, 'videos': []}
+
+    from congress_videos.modules.database import CongressionalVideoDB
+
+    videos = plenary_videos['videos']
+    video_ids = [v['video_id'] for v in videos if v.get('video_id')]
+
+    db = CongressionalVideoDB()
+    already_processed = db.get_processed_video_ids(video_ids)
+
+    kept = [v for v in videos if v.get('video_id') not in already_processed]
+    skipped = len(videos) - len(kept)
+    logging.info(
+        "Idempotency filter: %d candidate(s), %d already processed, %d to process. Skipped ids: %s",
+        len(videos), skipped, len(kept), sorted(already_processed),
+    )
+
+    result = dict(plenary_videos)            # preserve target_date + any extra keys
+    result['videos'] = kept
+    result['total_matches'] = len(kept)
+    return result
+
+
 def get_video_details(plenary_videos):
     """
     Get detailed information for videos (duration, timing, etc.).

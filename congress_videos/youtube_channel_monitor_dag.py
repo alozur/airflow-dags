@@ -144,6 +144,20 @@ with DAG(
         python_callable=check_plenary_found,
     )
 
+    # Step 2b: Idempotency filter - drop videos already fully processed in DB.
+    # Runs BEFORE any download/transcription. PRODUCTION path only
+    # (test path goes t0_test >> [t3a, t3b] and never reaches this task).
+    t2b = PythonOperator(
+        task_id='filter_unprocessed_videos',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: yt_channel.filter_unprocessed_videos(
+                ti.xcom_pull(key='plenary_videos')
+            ),
+            'plenary_videos',          # overwrite same key
+        ),
+    )
+
     # Step 3a: Get video details (duration, timing, etc.)
     # Note: We already filtered for completed streams, no need to check status again
     # trigger_rule: Execute if any upstream task succeeds (test or production path)
@@ -427,7 +441,7 @@ with DAG(
     t0_test >> [t3a, t3b]
 
     # Production mode path: fetch from channel
-    t1 >> t2 >> t2a
+    t1 >> t2 >> t2b >> t2a
 
     # Branch: no plenary sessions found
     t2a >> t_end

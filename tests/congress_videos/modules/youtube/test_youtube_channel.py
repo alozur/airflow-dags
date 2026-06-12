@@ -453,3 +453,101 @@ class TestGetVideoDetails:
 
         assert "youtube_url" in result["videos"][0]
         assert "abc123" in result["videos"][0]["youtube_url"]
+
+
+# --------------------------------------------------------------------------- #
+# filter_unprocessed_videos — idempotency pre-download filter
+# --------------------------------------------------------------------------- #
+
+class TestFilterUnprocessedVideos:
+
+    def _plenary(self, video_ids, target_date="2025-10-08"):
+        return {
+            "total_matches": len(video_ids),
+            "videos": [{"video_id": vid, "title": f"T-{vid}"} for vid in video_ids],
+            "target_date": target_date,
+        }
+
+    def test_drops_processed_keeps_unprocessed_and_preserves_target_date(self, mocker):
+        """Processed video_ids are dropped, unprocessed kept, target_date preserved."""
+        mock_db_cls = mocker.patch(
+            "congress_videos.modules.database.CongressionalVideoDB"
+        )
+        mock_db_cls.return_value.get_processed_video_ids.return_value = {"A"}
+
+        from congress_videos.modules.youtube.youtube_channel import filter_unprocessed_videos
+
+        result = filter_unprocessed_videos(self._plenary(["A", "B"]))
+
+        kept_ids = [v["video_id"] for v in result["videos"]]
+        assert kept_ids == ["B"]
+        assert result["total_matches"] == 1
+        assert result["target_date"] == "2025-10-08"
+
+    def test_all_processed_yields_zero_matches(self, mocker):
+        """When every candidate is processed, total_matches collapses to 0."""
+        mock_db_cls = mocker.patch(
+            "congress_videos.modules.database.CongressionalVideoDB"
+        )
+        mock_db_cls.return_value.get_processed_video_ids.return_value = {"A", "B"}
+
+        from congress_videos.modules.youtube.youtube_channel import filter_unprocessed_videos
+
+        result = filter_unprocessed_videos(self._plenary(["A", "B"]))
+
+        assert result["videos"] == []
+        assert result["total_matches"] == 0
+        assert result["target_date"] == "2025-10-08"
+
+    def test_none_processed_keeps_all(self, mocker):
+        """No processed rows -> nothing filtered."""
+        mock_db_cls = mocker.patch(
+            "congress_videos.modules.database.CongressionalVideoDB"
+        )
+        mock_db_cls.return_value.get_processed_video_ids.return_value = set()
+
+        from congress_videos.modules.youtube.youtube_channel import filter_unprocessed_videos
+
+        result = filter_unprocessed_videos(self._plenary(["A", "B"]))
+
+        assert [v["video_id"] for v in result["videos"]] == ["A", "B"]
+        assert result["total_matches"] == 2
+
+    def test_empty_input_does_not_touch_db(self, mocker):
+        """Empty 'videos' returns input unchanged and never instantiates the DB."""
+        mock_db_cls = mocker.patch(
+            "congress_videos.modules.database.CongressionalVideoDB"
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_unprocessed_videos
+
+        empty = {"total_matches": 0, "videos": [], "target_date": "2025-10-08"}
+        result = filter_unprocessed_videos(empty)
+
+        assert result == empty
+        mock_db_cls.assert_not_called()
+
+    def test_none_input_does_not_touch_db(self, mocker):
+        """None input returns a safe empty dict and never instantiates the DB."""
+        mock_db_cls = mocker.patch(
+            "congress_videos.modules.database.CongressionalVideoDB"
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_unprocessed_videos
+
+        result = filter_unprocessed_videos(None)
+
+        assert result == {"total_matches": 0, "videos": []}
+        mock_db_cls.assert_not_called()
+
+    def test_db_error_propagates_fail_closed(self, mocker):
+        """DB error must propagate (fail-closed) — videos are NOT treated as unprocessed."""
+        mock_db_cls = mocker.patch(
+            "congress_videos.modules.database.CongressionalVideoDB"
+        )
+        mock_db_cls.return_value.get_processed_video_ids.side_effect = RuntimeError("db down")
+
+        from congress_videos.modules.youtube.youtube_channel import filter_unprocessed_videos
+
+        with pytest.raises(RuntimeError, match="db down"):
+            filter_unprocessed_videos(self._plenary(["A", "B"]))
