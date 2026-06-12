@@ -732,7 +732,7 @@ class CongressionalVideoDB:
         - is_uploaded_to_youtube = TRUE (only already-published chapters)
         - relevance_score >= min_relevance_score
         - Duration between 120 and 900 seconds (2-15 min)
-        - No existing video_shorts row with reap_status IN ('pending', 'processing', 'downloaded')
+        - No existing video_shorts row for the chapter (any reap_status)
 
         Args:
             limit: Maximum number of chapters to return (None = no limit, default None)
@@ -760,7 +760,6 @@ class CongressionalVideoDB:
                       AND NOT EXISTS (
                           SELECT 1 FROM {shorts_table} vs
                           WHERE vs.chapter_id = vc.chapter_id
-                            AND vs.reap_status IN ('pending', 'processing', 'downloaded')
                       )
                     ORDER BY vc.relevance_score DESC, vc.created_at DESC
                 """
