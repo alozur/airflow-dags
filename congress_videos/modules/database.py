@@ -1104,3 +1104,28 @@ class CongressionalVideoDB:
                 )
                 row = cur.fetchone()
                 return dict(row) if row else None
+
+    def get_processed_video_ids(self, video_ids: list[str]) -> set[str]:
+        """
+        Return the subset of video_ids already fully processed
+        (is_processed = TRUE) in youtube_source_videos.
+
+        Cheap pre-download idempotency check. Empty input -> empty set
+        (no query executed). Read-only; raises on DB error (fail-closed).
+        """
+        if not video_ids:
+            return set()
+
+        youtube_videos_table = self.pg_conn.get_qualified_table('youtube_source_videos')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT video_id
+                    FROM {youtube_videos_table}
+                    WHERE video_id = ANY(%s) AND is_processed = TRUE
+                    """,
+                    (video_ids,),
+                )
+                return {row['video_id'] for row in cur.fetchall()}
