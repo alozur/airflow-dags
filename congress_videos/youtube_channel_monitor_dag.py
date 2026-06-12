@@ -27,7 +27,6 @@ from airflow.operators.python import BranchPythonOperator, PythonOperator
 
 from congress_videos.config.constants import (
     YOUTUBE_CHANNEL_ID,
-    YOUTUBE_CHANNEL_HANDLE,
     TARGET_VIDEO_TITLE
 )
 from congress_videos.modules import youtube as yt_channel
@@ -58,7 +57,7 @@ with DAG(
     'congress_youtube_channel_monitor',
     default_args=default_args,
     description='Monitor YouTube channel for Congress plenary sessions and identify finished streams',
-    schedule_interval='0 * * * *',  # Run every hour on the hour
+    schedule='0 * * * *',  # Run every hour on the hour
     start_date=datetime(2025, 10, 9),
     catchup=False,
     max_active_runs=1,  # Serialize runs so overlapping hourly runs don't race on the same video_id
@@ -210,7 +209,7 @@ with DAG(
         subtitle_results = ti.xcom_pull(key='youtube_subtitles')
 
         if subtitle_results and subtitle_results.get('total_downloaded', 0) > 0:
-            logging.info(f"✅ Subtitles downloaded from YouTube! Skipping audio extraction and transcription.")
+            logging.info("✅ Subtitles downloaded from YouTube! Skipping audio extraction and transcription.")
             # Subtitles available - go directly to split_srt_by_silence
             return 'split_srt_by_silence'
         else:
@@ -355,25 +354,47 @@ with DAG(
                 target_date=context["params"].get("target_date"),
                 min_silence_seconds=15,
                 min_chunk_duration_minutes=10,
-                max_chunk_duration_minutes=20
+                max_chunk_duration_minutes=20,
+                use_adaptive=True,  # #13: adaptive silence threshold active in production
             ),
             'silence_chunks'
         ),
         trigger_rule='none_failed_min_one_success'  # Run if either path succeeded
     )
 
-    # Step 5f: Summarize silence chunks (TASK 2)
-    # Extract speakers, topics, and timeline from each chunk in JSON format
+    # Step 5f: Summarize silence chunks (TASK 2) — PARALLELIZED (#9)
+    # Dynamic task mapping: each silence-chunk is summarized in its own mapped
+    # task instance (.expand), then re-grouped into the chunk_summaries shape.
+    # Chunks are path-only refs (#7), so each mapped XCom payload stays <1MB.
+
+    # 5f-1: flatten silence_chunks (nested per-video) into a flat list of
+    # chunk-refs that dynamic task mapping can expand over.
+    t5f_flatten = PythonOperator(
+        task_id='flatten_chunks_for_mapping',
+        python_callable=lambda ti: yt_channel.flatten_chunks_for_mapping(
+            ti.xcom_pull(key='silence_chunks')
+        ),
+    )
+
+    # 5f-2: mapped summarization — one task instance per chunk-ref. Empty input
+    # ⇒ zero mapped instances (Airflow supports empty expand).
+    t5f_map = PythonOperator.partial(
+        task_id='summarize_one_chunk',
+        python_callable=yt_channel.summarize_one_chunk,
+    ).expand(op_args=t5f_flatten.output.map(lambda ref: [ref]))
+
+    # 5f-3: reduce mapped results back into the chunk_summaries shape consumed
+    # by identify_interesting_chapters (identical to the serial output).
     t5f = PythonOperator(
-        task_id='summarize_silence_chunks',
+        task_id='aggregate_chunk_summaries',
         python_callable=lambda ti, **context: xcom_task(
             ti,
-            lambda: yt_channel.summarize_silence_chunks(
-                ti.xcom_pull(key='silence_chunks'),
-                target_date=context["params"].get("target_date")
+            lambda: yt_channel.regroup_summarized_chunks(
+                ti.xcom_pull(task_ids='summarize_one_chunk')
             ),
             'chunk_summaries'
         ),
+        trigger_rule='none_failed_min_one_success',  # tolerate per-chunk failures
     )
 
     # Step 6: Use AI to identify interesting chapters within each chunk
@@ -480,9 +501,11 @@ with DAG(
     # These run sequentially since agenda_section depends on session_date
     t5b >> t5c >> t5d
 
-    # After splitting SRT by silence (TASK 1), summarize each chunk (TASK 2)
-    # Both subtitle and transcription paths converge at t5e
-    t5e >> t5f
+    # After splitting SRT by silence (TASK 1), summarize each chunk (TASK 2).
+    # Both subtitle and transcription paths converge at t5e. Summarization is
+    # parallelized via dynamic task mapping (#9):
+    #   t5e -> flatten -> [summarize_one_chunk mapped] -> aggregate (t5f)
+    t5e >> t5f_flatten >> t5f_map >> t5f
 
     # After chunk summaries and SRT chunks are ready, identify interesting chapters
     # We need both: t5f (chunk summaries) and t5e (SRT chunks)

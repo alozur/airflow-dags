@@ -68,3 +68,43 @@ class TestFilterUnprocessedVideosTopology:
         # and the test task is not upstream of t2b
         upstream_ids = {t.task_id for t in t2b.get_flat_relatives(upstream=True)}
         assert "create_test_video_data" not in upstream_ids
+
+
+# ---------------------------------------------------------------------------
+# Improvement #9 — dynamic task mapping for per-chunk summarization
+# (t5f_flatten -> t5f_map (.partial().expand()) -> t5f aggregate)
+# ---------------------------------------------------------------------------
+
+class TestDynamicChunkSummarizationMapping:
+    """Verify improvement #9: per-chunk summarization is fanned out via
+    Airflow dynamic task mapping (.expand) instead of a single serial task."""
+
+    def test_mapped_summarize_task_exists(self):
+        from congress_videos.youtube_channel_monitor_dag import dag
+        task_ids = {t.task_id for t in dag.tasks}
+        assert "flatten_chunks_for_mapping" in task_ids
+        assert "summarize_one_chunk" in task_ids
+        assert "aggregate_chunk_summaries" in task_ids
+
+    def test_summarize_one_chunk_is_a_mapped_task(self):
+        """The summarization task must be an expanded/mapped operator, not a
+        plain PythonOperator. Checked by class name to stay version-robust:
+        Airflow 2.10 exposes MappedOperator under airflow.models.mappedoperator,
+        Airflow 3.x under airflow.sdk.definitions.mappedoperator."""
+        from congress_videos.youtube_channel_monitor_dag import dag
+        mapped = dag.get_task("summarize_one_chunk")
+        assert type(mapped).__name__ == "MappedOperator"
+
+    def test_dynamic_mapping_wiring_is_present(self):
+        """Structural wiring: flatten -> map -> aggregate."""
+        from congress_videos.youtube_channel_monitor_dag import dag
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+
+        flatten = tasks_by_id["flatten_chunks_for_mapping"]
+        mapped = tasks_by_id["summarize_one_chunk"]
+        aggregate = tasks_by_id["aggregate_chunk_summaries"]
+
+        # flatten -> map
+        assert mapped.task_id in {t.task_id for t in flatten.downstream_list}
+        # map -> aggregate
+        assert aggregate.task_id in {t.task_id for t in mapped.downstream_list}
