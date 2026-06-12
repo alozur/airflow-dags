@@ -29,7 +29,7 @@ with DAG(
     dag_id="git_sync_dag",
     description="Pull latest DAG changes from GitHub repository",
     start_date=datetime(2024, 1, 1),
-    schedule_interval=None,
+    schedule=None,
     catchup=False,
     tags=["utility", "git", "sync"],
 ) as dag:
