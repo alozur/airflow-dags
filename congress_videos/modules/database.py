@@ -5,6 +5,7 @@ Database operations specific to congressional video management.
 from utils.postgres_helpers import PostgresConnection
 from typing import Dict, List, Optional, Any
 from datetime import date
+from contextlib import closing
 import logging
 
 logger = logging.getLogger(__name__)
@@ -517,137 +518,167 @@ class CongressionalVideoDB:
             return {
                 'total_videos_saved': 0,
                 'total_chapters_saved': 0,
+                'total_videos_failed': 0,
                 'videos': []
             }
 
         save_results = {
             'total_videos_saved': 0,
             'total_chapters_saved': 0,
+            'total_videos_failed': 0,
             'videos': []
         }
 
         youtube_videos_table = self.pg_conn.get_qualified_table('youtube_source_videos')
         chapters_table = self.pg_conn.get_qualified_table('video_chapters')
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                for video_data in scored_chapters_data['videos']:
-                    video_id = video_data.get('video_id')
-                    video_title = video_data.get('video_title', 'Unknown Video')
-                    scored_chapters = video_data.get('scored_chapters', [])
+        # Each video is isolated inside its own SAVEPOINT so that a failure on one
+        # video (e.g. an aborted statement) does not poison the whole transaction
+        # and discard the videos that did succeed. closing() guarantees the raw
+        # connection is closed — `with conn` only manages the transaction, not the
+        # connection lifecycle.
+        with closing(self.pg_conn.get_connection()) as conn:
+            with conn:
+                with conn.cursor() as cur:
+                    for video_data in scored_chapters_data['videos']:
+                        video_id = video_data.get('video_id')
+                        video_title = video_data.get('video_title', 'Unknown Video')
+                        scored_chapters = video_data.get('scored_chapters', [])
 
-                    if video_data.get('error'):
-                        logger.warning(f"Skipping video {video_id} due to error: {video_data.get('error')}")
-                        save_results['videos'].append({
-                            'video_id': video_id,
-                            'chapters_saved': 0,
-                            'error': video_data.get('error')
-                        })
-                        continue
+                        if video_data.get('error'):
+                            logger.warning(f"Skipping video {video_id} due to error: {video_data.get('error')}")
+                            save_results['videos'].append({
+                                'video_id': video_id,
+                                'chapters_saved': 0,
+                                'error': video_data.get('error')
+                            })
+                            continue
 
-                    try:
-                        # Step 1: Upsert YouTube source video
-                        video_url = f"https://www.youtube.com/watch?v={video_id}"
-                        total_chapters = len(scored_chapters)
-
-                        cur.execute(f"""
-                            INSERT INTO {youtube_videos_table}
-                            (video_id, video_title, video_url, session_number, session_date, total_chapters, is_processed)
-                            VALUES (%s, %s, %s, %s, %s, %s, TRUE)
-                            ON CONFLICT (video_id) DO UPDATE SET
-                                video_title = EXCLUDED.video_title,
-                                session_number = EXCLUDED.session_number,
-                                session_date = EXCLUDED.session_date,
-                                total_chapters = EXCLUDED.total_chapters,
-                                is_processed = TRUE,
-                                updated_at = CURRENT_TIMESTAMP
-                            RETURNING video_id
-                        """, (video_id, video_title, video_url, session_number, session_date, total_chapters))
-
-                        logger.info(f"Saved/updated YouTube source video: {video_id}")
-
-                        # Step 2: Save all chapters for this video
-                        chapters_saved_count = 0
-
-                        for chapter in scored_chapters:
-                            # Extract chapter data
-                            title = chapter.get('title', 'Untitled Chapter')
-                            description = chapter.get('description', '')
-                            start_time = chapter.get('start_time')
-                            end_time = chapter.get('end_time')
-                            duration_minutes = chapter.get('duration_minutes', 0)
-
-                            # Speaker and topic arrays
-                            speakers = chapter.get('speakers', [])
-                            topics = chapter.get('topics', [])
-
-                            # Scoring data
-                            relevance_score = chapter.get('relevance_score', 0)
-                            speaker_pts = chapter.get('speaker_relevance_points', 0)
-                            topic_pts = chapter.get('topic_relevance_points', 0)
-                            interest_pts = chapter.get('public_interest_points', 0)
-                            scoring_reasoning = chapter.get('scoring_reasoning', '')
-                            key_speakers = chapter.get('key_speakers', speakers)
-                            is_current_topic = chapter.get('is_current_topic', False)
-                            scoring_error = chapter.get('scoring_error')
+                        cur.execute("SAVEPOINT sp_video")
+                        try:
+                            # Step 1: Upsert YouTube source video
+                            video_url = f"https://www.youtube.com/watch?v={video_id}"
+                            total_chapters = len(scored_chapters)
 
                             cur.execute(f"""
-                                INSERT INTO {chapters_table}
-                                (video_id, title, description, start_time, end_time, duration_minutes,
-                                 speakers, topics, relevance_score, speaker_relevance_points, topic_relevance_points,
-                                 public_interest_points, scoring_reasoning, key_speakers, is_current_topic,
-                                 scoring_error, scored_at)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                                ON CONFLICT (video_id, start_time, end_time) DO UPDATE SET
-                                    title = EXCLUDED.title, description = EXCLUDED.description,
-                                    duration_minutes = EXCLUDED.duration_minutes, speakers = EXCLUDED.speakers,
-                                    topics = EXCLUDED.topics, relevance_score = EXCLUDED.relevance_score,
-                                    speaker_relevance_points = EXCLUDED.speaker_relevance_points,
-                                    topic_relevance_points = EXCLUDED.topic_relevance_points,
-                                    public_interest_points = EXCLUDED.public_interest_points,
-                                    scoring_reasoning = EXCLUDED.scoring_reasoning, key_speakers = EXCLUDED.key_speakers,
-                                    is_current_topic = EXCLUDED.is_current_topic, scoring_error = EXCLUDED.scoring_error,
-                                    scored_at = CURRENT_TIMESTAMP
-                                RETURNING chapter_id
-                            """, (
-                                video_id, title, description, start_time, end_time, duration_minutes,
-                                speakers, topics, relevance_score, speaker_pts, topic_pts,
-                                interest_pts, scoring_reasoning, key_speakers, is_current_topic,
-                                scoring_error
-                            ))
+                                INSERT INTO {youtube_videos_table}
+                                (video_id, video_title, video_url, session_number, session_date, total_chapters, is_processed)
+                                VALUES (%s, %s, %s, %s, %s, %s, TRUE)
+                                ON CONFLICT (video_id) DO UPDATE SET
+                                    video_title = EXCLUDED.video_title,
+                                    session_number = EXCLUDED.session_number,
+                                    session_date = EXCLUDED.session_date,
+                                    total_chapters = EXCLUDED.total_chapters,
+                                    is_processed = TRUE,
+                                    updated_at = CURRENT_TIMESTAMP
+                                RETURNING video_id
+                            """, (video_id, video_title, video_url, session_number, session_date, total_chapters))
 
-                            chapter_id = cur.fetchone()['chapter_id']
-                            chapters_saved_count += 1
+                            logger.info(f"Saved/updated YouTube source video: {video_id}")
+
+                            # Step 2: Save all chapters for this video
+                            chapters_saved_count = 0
+
+                            for chapter in scored_chapters:
+                                # Extract chapter data
+                                title = chapter.get('title', 'Untitled Chapter')
+                                description = chapter.get('description', '')
+                                start_time = chapter.get('start_time')
+                                end_time = chapter.get('end_time')
+                                duration_minutes = chapter.get('duration_minutes', 0)
+
+                                # Speaker and topic arrays
+                                speakers = chapter.get('speakers', [])
+                                topics = chapter.get('topics', [])
+
+                                # Scoring data
+                                relevance_score = chapter.get('relevance_score', 0)
+                                speaker_pts = chapter.get('speaker_relevance_points', 0)
+                                topic_pts = chapter.get('topic_relevance_points', 0)
+                                interest_pts = chapter.get('public_interest_points', 0)
+                                scoring_reasoning = chapter.get('scoring_reasoning', '')
+                                key_speakers = chapter.get('key_speakers', speakers)
+                                is_current_topic = chapter.get('is_current_topic', False)
+                                scoring_error = chapter.get('scoring_error')
+
+                                cur.execute(f"""
+                                    INSERT INTO {chapters_table}
+                                    (video_id, title, description, start_time, end_time, duration_minutes,
+                                     speakers, topics, relevance_score, speaker_relevance_points, topic_relevance_points,
+                                     public_interest_points, scoring_reasoning, key_speakers, is_current_topic,
+                                     scoring_error, scored_at)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                                    ON CONFLICT (video_id, start_time, end_time) DO UPDATE SET
+                                        title = EXCLUDED.title, description = EXCLUDED.description,
+                                        duration_minutes = EXCLUDED.duration_minutes, speakers = EXCLUDED.speakers,
+                                        topics = EXCLUDED.topics, relevance_score = EXCLUDED.relevance_score,
+                                        speaker_relevance_points = EXCLUDED.speaker_relevance_points,
+                                        topic_relevance_points = EXCLUDED.topic_relevance_points,
+                                        public_interest_points = EXCLUDED.public_interest_points,
+                                        scoring_reasoning = EXCLUDED.scoring_reasoning, key_speakers = EXCLUDED.key_speakers,
+                                        is_current_topic = EXCLUDED.is_current_topic, scoring_error = EXCLUDED.scoring_error,
+                                        scored_at = CURRENT_TIMESTAMP
+                                    RETURNING chapter_id
+                                """, (
+                                    video_id, title, description, start_time, end_time, duration_minutes,
+                                    speakers, topics, relevance_score, speaker_pts, topic_pts,
+                                    interest_pts, scoring_reasoning, key_speakers, is_current_topic,
+                                    scoring_error
+                                ))
+
+                                chapter_id = cur.fetchone()['chapter_id']
+                                chapters_saved_count += 1
+
+                                logger.info(
+                                    f"Saved chapter {chapter_id}: '{title}' (score: {relevance_score}/5)"
+                                )
+
+                            # Both steps succeeded for this video — make it durable
+                            # within the transaction so a later video's failure
+                            # cannot roll it back.
+                            cur.execute("RELEASE SAVEPOINT sp_video")
+
+                            save_results['total_videos_saved'] += 1
+                            save_results['total_chapters_saved'] += chapters_saved_count
+                            save_results['videos'].append({
+                                'video_id': video_id,
+                                'chapters_saved': chapters_saved_count,
+                                'error': None
+                            })
 
                             logger.info(
-                                f"Saved chapter {chapter_id}: '{title}' (score: {relevance_score}/5)"
+                                f"Successfully saved {chapters_saved_count} chapters for video {video_id}"
                             )
 
-                        save_results['total_videos_saved'] += 1
-                        save_results['total_chapters_saved'] += chapters_saved_count
-                        save_results['videos'].append({
-                            'video_id': video_id,
-                            'chapters_saved': chapters_saved_count,
-                            'error': None
-                        })
+                        except Exception as e:
+                            # Roll back ONLY this video's work and clear the
+                            # aborted-statement state so the remaining videos in
+                            # the batch can still be processed.
+                            cur.execute("ROLLBACK TO SAVEPOINT sp_video")
+                            error_msg = f"Error saving chapters for video {video_id}: {str(e)}"
+                            logger.error(error_msg, exc_info=True)
+                            save_results['total_videos_failed'] += 1
+                            save_results['videos'].append({
+                                'video_id': video_id,
+                                'chapters_saved': 0,
+                                'error': error_msg
+                            })
 
-                        logger.info(
-                            f"Successfully saved {chapters_saved_count} chapters for video {video_id}"
-                        )
-
-                    except Exception as e:
-                        error_msg = f"Error saving chapters for video {video_id}: {str(e)}"
-                        logger.error(error_msg, exc_info=True)
-                        save_results['videos'].append({
-                            'video_id': video_id,
-                            'chapters_saved': 0,
-                            'error': error_msg
-                        })
-
+        # `with conn:` has committed the videos whose savepoints were released.
         logger.info(
             f"Chapter save complete: {save_results['total_videos_saved']} videos, "
-            f"{save_results['total_chapters_saved']} chapters saved to database"
+            f"{save_results['total_chapters_saved']} chapters saved to database "
+            f"({save_results['total_videos_failed']} video(s) failed)"
         )
+
+        # Total failure: at least one video was attempted and every attempt
+        # failed. Raise so the Airflow task fails visibly instead of silently
+        # reporting success and letting the hourly DAG reprocess forever.
+        if save_results['total_videos_saved'] == 0 and save_results['total_videos_failed'] > 0:
+            raise RuntimeError(
+                f"save_youtube_chapters_to_db: all {save_results['total_videos_failed']} "
+                f"video(s) failed to save; see logs"
+            )
 
         return save_results
 
