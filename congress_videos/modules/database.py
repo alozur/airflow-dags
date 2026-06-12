@@ -591,8 +591,6 @@ class CongressionalVideoDB:
                             is_current_topic = chapter.get('is_current_topic', False)
                             scoring_error = chapter.get('scoring_error')
 
-                            # Insert chapter (no conflict handling - allow duplicates for now)
-                            # In production, you might want to add a unique constraint on (video_id, start_time, end_time)
                             cur.execute(f"""
                                 INSERT INTO {chapters_table}
                                 (video_id, title, description, start_time, end_time, duration_minutes,
@@ -600,6 +598,16 @@ class CongressionalVideoDB:
                                  public_interest_points, scoring_reasoning, key_speakers, is_current_topic,
                                  scoring_error, scored_at)
                                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                                ON CONFLICT (video_id, start_time, end_time) DO UPDATE SET
+                                    title = EXCLUDED.title, description = EXCLUDED.description,
+                                    duration_minutes = EXCLUDED.duration_minutes, speakers = EXCLUDED.speakers,
+                                    topics = EXCLUDED.topics, relevance_score = EXCLUDED.relevance_score,
+                                    speaker_relevance_points = EXCLUDED.speaker_relevance_points,
+                                    topic_relevance_points = EXCLUDED.topic_relevance_points,
+                                    public_interest_points = EXCLUDED.public_interest_points,
+                                    scoring_reasoning = EXCLUDED.scoring_reasoning, key_speakers = EXCLUDED.key_speakers,
+                                    is_current_topic = EXCLUDED.is_current_topic, scoring_error = EXCLUDED.scoring_error,
+                                    scored_at = CURRENT_TIMESTAMP
                                 RETURNING chapter_id
                             """, (
                                 video_id, title, description, start_time, end_time, duration_minutes,

@@ -271,6 +271,15 @@ class TestMigrationIdempotency:
     def test_migration_files_exist(self):
         assert len(_MIGRATION_FILES) > 0, f"No .sql files found in {MIGRATIONS_DIR}"
 
+    def test_008_video_chapters_unique_segment_exists_with_index(self):
+        """Migration 008 must exist and create the unique segment index."""
+        path = MIGRATIONS_DIR / "008_video_chapters_unique_segment.sql"
+        assert path.exists(), f"Missing migration: {path}"
+        sql = path.read_text()
+        assert "uq_video_chapters_segment" in sql
+        assert "CREATE UNIQUE INDEX IF NOT EXISTS" in sql
+        assert "(video_id, start_time, end_time)" in sql
+
     @pytest.mark.parametrize("path", _MIGRATION_FILES, ids=lambda p: p.name)
     def test_no_bare_create_table(self, path: Path):
         sql = path.read_text()
