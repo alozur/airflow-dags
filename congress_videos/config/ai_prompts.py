@@ -436,6 +436,6 @@ IMPORTANTE:
 - Devuelve SOLO el JSON, sin markdown ni explicaciones adicionales
 - Sé crítico y objetivo: no todos los debates merecen puntos altos
 - La evaluación debe reflejar el interés REAL para audiencia general de YouTube
-- Considera el contexto político español actual (fecha: octubre 2025)
+- Considera el contexto político español actual (fecha: {current_date})
 
 Devuelve SOLO el JSON."""
