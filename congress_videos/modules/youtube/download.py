@@ -1137,6 +1137,39 @@ def _dedup_overlapping_chapters(chapters: list[dict]) -> list[dict]:
     return [ch for ch, ok in zip(sorted_chapters, keep) if ok]
 
 
+def _filter_timeline_by_range(timeline, start_time, end_time) -> list[dict]:
+    """Keep timeline moments whose ``time`` falls within [start_time, end_time].
+
+    Timeline moments carry ABSOLUTE source-video timestamps — the same basis as
+    the chunk/chapter ``start_time``/``end_time`` — so a chunk-level timeline can
+    be scoped down to a sub-chapter identified by the LLM. Moments with a missing
+    or unparseable ``time`` are dropped. If the chapter bounds are unparseable the
+    full timeline is returned unchanged (better to over-include than lose data).
+    """
+    if not timeline:
+        return []
+    try:
+        lo = parse_timestamp(start_time)
+        hi = parse_timestamp(end_time)
+    except (ValueError, TypeError):
+        return list(timeline)
+
+    kept = []
+    for moment in timeline:
+        if not isinstance(moment, dict):
+            continue
+        ts = moment.get('time')
+        if not ts:
+            continue
+        try:
+            secs = parse_timestamp(ts)
+        except (ValueError, TypeError):
+            continue
+        if lo <= secs <= hi:
+            kept.append(moment)
+    return kept
+
+
 def _build_fallback_chunk_entry(chunk_number: int, summary_chunk: dict) -> dict:
     """Build a deterministic whole-chunk fallback when LLM analysis fails or returns empty.
 
@@ -1169,6 +1202,8 @@ def _build_fallback_chunk_entry(chunk_number: int, summary_chunk: dict) -> dict:
         'start_time': summary_chunk['start_time'],
         'end_time': summary_chunk['end_time'],
         'duration_minutes': summary_chunk.get('duration_minutes', 0),
+        # Fallback covers the whole chunk, so the full chunk timeline applies.
+        'timeline': summary_chunk.get('timeline', []),
         'skipped_ai_analysis': True,
         'fallback': True,
         'source': 'fallback',
@@ -1298,6 +1333,8 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
                         'duration_minutes': chunk_duration,
                         'speakers': [s.get('name', 'Unknown') for s in summary_chunk.get('speakers', [])],
                         'topics': summary_chunk.get('topics', []),
+                        # Whole chunk == whole chapter, so the full chunk timeline applies.
+                        'timeline': summary_chunk.get('timeline', []),
                         'skipped_ai_analysis': True,  # Flag to indicate this wasn't analyzed by AI
                         'reason': reason
                     }
@@ -1400,6 +1437,13 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
                         if min_chapter_duration <= duration <= max_optimal_duration:
                             # Add skipped_ai_analysis flag to each chapter
                             chapter['skipped_ai_analysis'] = False  # AI was used to analyze and create this chapter
+                            # Scope the chunk-level timeline down to this sub-chapter's
+                            # [start, end] span (absolute timestamps on both sides).
+                            chapter['timeline'] = _filter_timeline_by_range(
+                                summary_chunk.get('timeline', []),
+                                chapter.get('start_time'),
+                                chapter.get('end_time'),
+                            )
                             valid_chapters.append(chapter)
                         else:
                             logging.warning(
@@ -1534,7 +1578,8 @@ def merge_interesting_chapters(identified_chapters, target_date: str):
                         'end_time': chapter.get('end_time', ''),
                         'duration_minutes': chapter.get('duration_minutes', 0),
                         'speakers': chapter.get('speakers', []),
-                        'topics': chapter.get('topics', [])
+                        'topics': chapter.get('topics', []),
+                        'timeline': chapter.get('timeline', [])
                     })
 
             # --- #5: Final range validation pass at merge stage ----------------

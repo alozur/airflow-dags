@@ -241,3 +241,90 @@ class TestGetProcessedVideoIds:
         assert len(sql) == 1
         assert "is_processed = TRUE" in sql[0]
         assert "SELECT" in sql[0]
+
+
+# --------------------------------------------------------------------------- #
+# 5. Timeline persistence — JSONB column round-trips through the INSERT
+# --------------------------------------------------------------------------- #
+
+class TestTimelinePersistence:
+
+    @staticmethod
+    def _chapter_insert(cur: MagicMock):
+        """Return (sql, params) of the video_chapters INSERT call."""
+        for c in cur.execute.call_args_list:
+            if c.args and "video_chapters" in c.args[0] and "INSERT INTO" in c.args[0]:
+                return c.args[0], (c.args[1] if len(c.args) > 1 else None)
+        return None, None
+
+    def test_timeline_serialized_as_jsonb_in_insert(self):
+        import json
+
+        cur = _make_cursor()
+        db, _conn = _make_db(cur)
+
+        timeline = [
+            {"time": "00:01:00", "speaker": "A", "content": "intro"},
+            {"time": "00:02:00", "speaker": "B", "content": "reply"},
+        ]
+        chapter = {
+            "title": "Chapter 1",
+            "description": "desc",
+            "start_time": "00:00:00,000",
+            "end_time": "00:05:00,000",
+            "duration_minutes": 5.0,
+            "speakers": ["A"],
+            "topics": ["T"],
+            "timeline": timeline,
+            "relevance_score": 4,
+            "speaker_relevance_points": 2,
+            "topic_relevance_points": 1,
+            "public_interest_points": 1,
+            "scoring_reasoning": "because",
+            "key_speakers": ["A"],
+            "is_current_topic": True,
+            "scoring_error": None,
+        }
+        data = {"videos": [{"video_id": "vidA", "video_title": "T", "scored_chapters": [chapter]}]}
+
+        db.save_youtube_chapters_to_db(scored_chapters_data=data, session_number=1)
+
+        sql, params = self._chapter_insert(cur)
+        # Column present and bound with a jsonb cast.
+        assert "timeline" in sql
+        assert "%s::jsonb" in sql
+        assert "timeline = EXCLUDED.timeline" in sql
+        # Timeline is serialized with json.dumps at the 9th param (after topics).
+        assert params[8] == json.dumps(timeline)
+        assert json.loads(params[8]) == timeline
+
+    def test_missing_timeline_defaults_to_empty_json_array(self):
+        import json
+
+        cur = _make_cursor()
+        db, _conn = _make_db(cur)
+
+        # No "timeline" key — must default to an empty JSON array, never NULL.
+        chapter = {
+            "title": "Chapter 1",
+            "description": "desc",
+            "start_time": "00:00:00,000",
+            "end_time": "00:05:00,000",
+            "duration_minutes": 5.0,
+            "speakers": ["A"],
+            "topics": ["T"],
+            "relevance_score": 4,
+            "speaker_relevance_points": 2,
+            "topic_relevance_points": 1,
+            "public_interest_points": 1,
+            "scoring_reasoning": "because",
+            "key_speakers": ["A"],
+            "is_current_topic": True,
+            "scoring_error": None,
+        }
+        data = {"videos": [{"video_id": "vidA", "video_title": "T", "scored_chapters": [chapter]}]}
+
+        db.save_youtube_chapters_to_db(scored_chapters_data=data, session_number=1)
+
+        _sql, params = self._chapter_insert(cur)
+        assert params[8] == json.dumps([])

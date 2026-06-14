@@ -24,6 +24,7 @@ from utils.ai_helpers import (
     truncate_text,
 )
 from utils.llm_cache import cached_json_completion
+from utils.time_utils import format_youtube_timestamp, parse_timestamp
 
 
 _SPANISH_MONTHS = {
@@ -239,6 +240,91 @@ Este vídeo forma parte de las sesiones de control al Gobierno, donde los diputa
         }
 
 
+# YouTube chapter requirements (https://support.google.com/youtube/answer/9884579):
+# first marker must be 00:00, at least 3 markers, each chapter >= 10 seconds.
+_YT_MIN_CHAPTERS = 3
+_YT_MIN_CHAPTER_SECONDS = 10
+
+
+def _chapter_label(moment, topics, index):
+    """Build a chapter title with the agreed fallback cascade.
+
+    Cascade: moment speaker -> matching/first topic -> generic "Intervención N".
+    """
+    speaker = (moment.get("speaker") or "").strip()
+    if speaker:
+        return speaker
+
+    if topics:
+        topic = topics[index] if index < len(topics) else topics[0]
+        topic = (topic or "").strip()
+        if topic:
+            return topic
+
+    return f"Intervención {index + 1}"
+
+
+def build_youtube_chapters_block(timeline, chapter_start_time, topics=None):
+    """Build a YouTube chapter block from a chapter timeline.
+
+    The timeline holds key moments with ABSOLUTE source-video timestamps. Each
+    chapter is uploaded as an independent clip, so timestamps are re-based to
+    00:00 relative to ``chapter_start_time``.
+
+    Args:
+        timeline: List of {time, speaker, content} dicts (absolute timestamps).
+        chapter_start_time: Clip start in the source video ("HH:MM:SS[,mmm]").
+        topics: Optional list of topic strings for the title fallback cascade.
+
+    Returns:
+        A newline-joined block of "MM:SS Title" lines (first is "00:00"),
+        or "" if YouTube's chapter requirements cannot be met.
+    """
+    if not timeline:
+        return ""
+
+    try:
+        base = parse_timestamp(chapter_start_time) if chapter_start_time else 0.0
+    except (ValueError, TypeError):
+        base = 0.0
+
+    # Re-base each moment to clip-relative seconds, dropping unparseable times.
+    rebased = []
+    for moment in timeline:
+        raw_time = moment.get("time")
+        if not raw_time:
+            continue
+        try:
+            absolute = parse_timestamp(raw_time)
+        except (ValueError, TypeError):
+            continue
+        rebased.append((max(absolute - base, 0.0), moment))
+
+    if not rebased:
+        return ""
+
+    rebased.sort(key=lambda item: item[0])
+
+    # YouTube requires the first marker at 00:00.
+    rebased[0] = (0.0, rebased[0][1])
+
+    # Enforce minimum 10s spacing between consecutive chapters.
+    kept = []
+    for rel_seconds, moment in rebased:
+        if kept and rel_seconds - kept[-1][0] < _YT_MIN_CHAPTER_SECONDS:
+            continue
+        kept.append((rel_seconds, moment))
+
+    # Below 3 markers YouTube ignores chapters entirely — emit nothing.
+    if len(kept) < _YT_MIN_CHAPTERS:
+        return ""
+
+    return "\n".join(
+        f"{format_youtube_timestamp(rel_seconds)} {_chapter_label(moment, topics, index)}"
+        for index, (rel_seconds, moment) in enumerate(kept)
+    )
+
+
 def generate_youtube_metadata_for_selected_videos(top_videos):
     """
     Generates YouTube metadata (titles and descriptions) for chapters from uploadable_chapters view.
@@ -289,6 +375,27 @@ def generate_youtube_metadata_for_selected_videos(top_videos):
         description_result = generate_youtube_description(
             main_content, speakers_info, video_metadata, session_number, session_date
         )
+
+        # Append YouTube chapter markers built from the chapter timeline.
+        # Timestamps are re-based to 00:00 relative to this clip's start_time.
+        chapters_block = build_youtube_chapters_block(
+            video.get("timeline", []),
+            video.get("start_time"),
+            video.get("topics", []),
+        )
+        if chapters_block and not description_result.get("error"):
+            desc = (
+                description_result["description"]
+                + "\n\n" + "─" * 40 + "\n🕒 CAPÍTULOS\n" + chapters_block
+            )
+            description_result["description"] = desc
+            description_result["character_count"] = len(desc)
+            description_result["word_count"] = len(desc.split())
+            num_chapters = chapters_block.count("\n") + 1
+            logging.info(
+                f"Added {num_chapters} YouTube chapters to description "
+                f"for chapter {chapter_id}"
+            )
 
         topic_metadata = {
             "chapter_id": chapter_id,
@@ -376,6 +483,7 @@ def score_chapters_relevance(merged_chapters):
                             'duration_minutes': float,
                             'speakers': [str],
                             'topics': [str],
+                            'timeline': [{'time': str, 'speaker': str, 'content': str}],  # propagated via **chapter
                             'start_time': str,
                             'end_time': str,
                             'relevance_score': int (0-5, sum of the 3 criteria below),

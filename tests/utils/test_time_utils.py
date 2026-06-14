@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import pytest
 
-from utils.time_utils import format_timestamp, parse_timestamp
+from utils.time_utils import (
+    format_timestamp,
+    format_youtube_timestamp,
+    parse_timestamp,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -132,3 +136,21 @@ class TestFormatTimestamp:
         original = "00:01:30,500"
         result = format_timestamp(parse_timestamp(original), with_ms=True)
         assert result == original
+
+
+class TestFormatYoutubeTimestamp:
+
+    @pytest.mark.parametrize(
+        "seconds, expected",
+        [
+            (0.0, "00:00"),
+            (5.0, "00:05"),
+            (90.0, "01:30"),
+            (90.9, "01:30"),  # milliseconds dropped (truncated)
+            (3600.0, "1:00:00"),  # hour present -> no leading-zero hour
+            (3930.0, "1:05:30"),
+        ],
+    )
+    def test_format_youtube_various_values(self, seconds: float, expected: str) -> None:
+        """format_youtube_timestamp uses M:SS below an hour and H:MM:SS above."""
+        assert format_youtube_timestamp(seconds) == expected

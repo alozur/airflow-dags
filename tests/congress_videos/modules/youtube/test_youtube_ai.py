@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from congress_videos.modules.youtube.youtube_ai import (
+    build_youtube_chapters_block,
     generate_youtube_description,
     generate_youtube_title,
     score_chapters_relevance,
@@ -320,3 +321,131 @@ class TestScoreChaptersRelevance:
         assert result["total_videos"] == 2
         assert result["total_chapters_scored"] == 3
         assert result["successful_scores"] == 3
+
+
+# ---------------------------------------------------------------------------
+# build_youtube_chapters_block
+# ---------------------------------------------------------------------------
+
+def _make_timeline_moment(time: str, speaker: str = "", content: str = "x") -> dict:
+    return {"time": time, "speaker": speaker, "content": content}
+
+
+def test_build_youtube_chapters_block_rebases_to_clip_start():
+    timeline = [
+        _make_timeline_moment("01:10:00", "Pedro Sánchez"),
+        _make_timeline_moment("01:12:30", "Alberto Núñez Feijóo"),
+        _make_timeline_moment("01:15:00", "Yolanda Díaz"),
+    ]
+    block = build_youtube_chapters_block(timeline, "01:10:00,000")
+
+    assert block.splitlines() == [
+        "00:00 Pedro Sánchez",
+        "02:30 Alberto Núñez Feijóo",
+        "05:00 Yolanda Díaz",
+    ]
+
+
+def test_build_youtube_chapters_block_first_marker_is_zero():
+    # Clip starts before the first key moment — first marker must still be 00:00.
+    timeline = [
+        _make_timeline_moment("00:00:30", "A"),
+        _make_timeline_moment("00:01:00", "B"),
+        _make_timeline_moment("00:02:00", "C"),
+    ]
+    block = build_youtube_chapters_block(timeline, "00:00:00")
+
+    assert block.splitlines()[0] == "00:00 A"
+
+
+def test_build_youtube_chapters_block_speaker_fallback_to_topic():
+    timeline = [
+        _make_timeline_moment("00:00:00", "Speaker One"),
+        _make_timeline_moment("00:01:00", ""),  # no speaker -> topic
+        _make_timeline_moment("00:02:00", "   "),  # blank speaker -> topic
+    ]
+    block = build_youtube_chapters_block(
+        timeline, "00:00:00", topics=["Sanidad", "Economía", "Vivienda"]
+    )
+
+    lines = block.splitlines()
+    assert lines[0] == "00:00 Speaker One"
+    assert lines[1] == "01:00 Economía"
+    assert lines[2] == "02:00 Vivienda"
+
+
+def test_build_youtube_chapters_block_fallback_to_generic_when_no_topic():
+    timeline = [
+        _make_timeline_moment("00:00:00", ""),
+        _make_timeline_moment("00:01:00", ""),
+        _make_timeline_moment("00:02:00", ""),
+    ]
+    block = build_youtube_chapters_block(timeline, "00:00:00", topics=[])
+
+    assert block.splitlines() == [
+        "00:00 Intervención 1",
+        "01:00 Intervención 2",
+        "02:00 Intervención 3",
+    ]
+
+
+def test_build_youtube_chapters_block_enforces_min_spacing():
+    # The 8s-apart moment is dropped (< 10s minimum chapter length).
+    timeline = [
+        _make_timeline_moment("00:00:00", "A"),
+        _make_timeline_moment("00:00:08", "B"),  # too close -> dropped
+        _make_timeline_moment("00:00:30", "C"),
+        _make_timeline_moment("00:01:00", "D"),
+    ]
+    block = build_youtube_chapters_block(timeline, "00:00:00")
+
+    lines = block.splitlines()
+    assert "B" not in block
+    assert lines == ["00:00 A", "00:30 C", "01:00 D"]
+
+
+def test_build_youtube_chapters_block_below_min_chapters_returns_empty():
+    timeline = [
+        _make_timeline_moment("00:00:00", "A"),
+        _make_timeline_moment("00:01:00", "B"),
+    ]
+    assert build_youtube_chapters_block(timeline, "00:00:00") == ""
+
+
+def test_build_youtube_chapters_block_empty_timeline_returns_empty():
+    assert build_youtube_chapters_block([], "00:00:00") == ""
+
+
+def test_build_youtube_chapters_block_unparseable_start_defaults_to_zero():
+    timeline = [
+        _make_timeline_moment("00:00:00", "A"),
+        _make_timeline_moment("00:01:00", "B"),
+        _make_timeline_moment("00:02:00", "C"),
+    ]
+    block = build_youtube_chapters_block(timeline, "not-a-timestamp")
+
+    assert block.splitlines()[0] == "00:00 A"
+
+
+def test_build_youtube_chapters_block_drops_unparseable_moment_times():
+    timeline = [
+        _make_timeline_moment("00:00:00", "A"),
+        _make_timeline_moment("bogus", "B"),  # dropped
+        _make_timeline_moment("00:01:00", "C"),
+        _make_timeline_moment("00:02:00", "D"),
+    ]
+    block = build_youtube_chapters_block(timeline, "00:00:00")
+
+    assert "B" not in block
+    assert block.splitlines() == ["00:00 A", "01:00 C", "02:00 D"]
+
+
+def test_build_youtube_chapters_block_long_clip_uses_hour_format():
+    timeline = [
+        _make_timeline_moment("00:00:00", "A"),
+        _make_timeline_moment("00:30:00", "B"),
+        _make_timeline_moment("01:05:30", "C"),
+    ]
+    block = build_youtube_chapters_block(timeline, "00:00:00")
+
+    assert block.splitlines()[2] == "1:05:30 C"

@@ -98,3 +98,24 @@ def format_timestamp(seconds: float, *, with_ms: bool = True) -> str:
     if with_ms:
         return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
     return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def format_youtube_timestamp(seconds: float) -> str:
+    """Format total seconds as a YouTube chapter timestamp.
+
+    YouTube accepts ``M:SS`` and ``H:MM:SS`` (no leading-zero hours, no
+    milliseconds). Markers are whole-second offsets.
+
+    Examples:
+        >>> format_youtube_timestamp(90)
+        '01:30'
+        >>> format_youtube_timestamp(3930)
+        '1:05:30'
+    """
+    total_s = int(seconds)
+    h = total_s // 3600
+    m = (total_s % 3600) // 60
+    s = total_s % 60
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"

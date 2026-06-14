@@ -6,6 +6,7 @@ from utils.postgres_helpers import PostgresConnection
 from typing import Dict, List, Optional, Any
 from datetime import date
 from contextlib import closing
+import json
 import logging
 
 logger = logging.getLogger(__name__)
@@ -591,6 +592,11 @@ class CongressionalVideoDB:
                                 speakers = chapter.get('speakers', [])
                                 topics = chapter.get('topics', [])
 
+                                # Timeline (key moments) — stored as JSONB.
+                                # List of {time, speaker, content} with absolute
+                                # source-video timestamps.
+                                timeline = chapter.get('timeline', [])
+
                                 # Scoring data
                                 relevance_score = chapter.get('relevance_score', 0)
                                 speaker_pts = chapter.get('speaker_relevance_points', 0)
@@ -604,14 +610,14 @@ class CongressionalVideoDB:
                                 cur.execute(f"""
                                     INSERT INTO {chapters_table}
                                     (video_id, title, description, start_time, end_time, duration_minutes,
-                                     speakers, topics, relevance_score, speaker_relevance_points, topic_relevance_points,
+                                     speakers, topics, timeline, relevance_score, speaker_relevance_points, topic_relevance_points,
                                      public_interest_points, scoring_reasoning, key_speakers, is_current_topic,
                                      scoring_error, scored_at)
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                                     ON CONFLICT (video_id, start_time, end_time) DO UPDATE SET
                                         title = EXCLUDED.title, description = EXCLUDED.description,
                                         duration_minutes = EXCLUDED.duration_minutes, speakers = EXCLUDED.speakers,
-                                        topics = EXCLUDED.topics, relevance_score = EXCLUDED.relevance_score,
+                                        topics = EXCLUDED.topics, timeline = EXCLUDED.timeline, relevance_score = EXCLUDED.relevance_score,
                                         speaker_relevance_points = EXCLUDED.speaker_relevance_points,
                                         topic_relevance_points = EXCLUDED.topic_relevance_points,
                                         public_interest_points = EXCLUDED.public_interest_points,
@@ -621,7 +627,7 @@ class CongressionalVideoDB:
                                     RETURNING chapter_id
                                 """, (
                                     video_id, title, description, start_time, end_time, duration_minutes,
-                                    speakers, topics, relevance_score, speaker_pts, topic_pts,
+                                    speakers, topics, json.dumps(timeline), relevance_score, speaker_pts, topic_pts,
                                     interest_pts, scoring_reasoning, key_speakers, is_current_topic,
                                     scoring_error
                                 ))
