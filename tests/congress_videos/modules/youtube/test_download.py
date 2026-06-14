@@ -1748,7 +1748,7 @@ class TestIdentifyInterestingChaptersMapReduce:
 class TestSummarizeOneChunk:
     """The standalone callable Airflow dynamic task mapping expands over."""
 
-    def _chunk(self, number=1):
+    def _chunk(self, number=1, video_id="vid123", video_title="Test Video"):
         return {
             "chunk_number": number,
             "start_time": "00:00:00",
@@ -1756,6 +1756,8 @@ class TestSummarizeOneChunk:
             "duration_seconds": 1800,
             "duration_minutes": 30,
             "content": "Contenido de prueba",
+            "video_id": video_id,
+            "video_title": video_title,
         }
 
     def test_returns_summary_on_success(self, mocker):
@@ -1769,6 +1771,8 @@ class TestSummarizeOneChunk:
         result = summarize_one_chunk(self._chunk(1))
         assert result["chunk_number"] == 1
         assert result["topics"] == ["T"]
+        assert result["video_id"] == "vid123"
+        assert result["video_title"] == "Test Video"
         assert "error" not in result
 
     def test_failure_captured_not_raised(self, mocker):
