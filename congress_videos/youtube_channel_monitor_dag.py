@@ -27,10 +27,12 @@ from airflow.operators.python import BranchPythonOperator, PythonOperator
 
 from congress_videos.config.constants import (
     YOUTUBE_CHANNEL_ID,
-    TARGET_VIDEO_TITLE
+    TARGET_VIDEO_TITLE,
+    VAD_ENABLED,
 )
 from congress_videos.modules import youtube as yt_channel
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
+from congress_videos.modules.vad_helpers import trim_chapter_silence_with_vad
 from utils.airflow_helpers import xcom_task
 from utils.env_loader import load_env_if_local
 
@@ -439,6 +441,33 @@ with DAG(
         ),
     )
 
+    # Step 8b: VAD chapter-start adjustment (between scoring and DB save)
+    # For every scored chapter, run VAD ONCE over the chapter's own audio span and
+    # trim the silence on BOTH edges: raise its start_time to the first sustained
+    # speech and lower its end_time to just after the last sustained speech, so
+    # persisted chapters no longer open in the silent "dead start" nor end in
+    # trailing applause/silence. Best-effort: any VAD failure / no-detection leaves
+    # that edge unchanged; never blocks the DAG. Re-pushes the corrected
+    # scored_chapters under the same XCom key so t9_db saves the VAD-trimmed spans.
+    def _trim_chapter_silence(ti, **context):
+        scored = ti.xcom_pull(key='scored_chapters')
+        if not VAD_ENABLED:
+            logging.info("VAD disabled (VAD_ENABLED=False) — passthrough, chapters unchanged.")
+            return scored
+        return trim_chapter_silence_with_vad(
+            scored,
+            target_date=context["params"].get("target_date"),
+        )
+
+    t_trim = PythonOperator(
+        task_id='trim_chapter_silence',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: _trim_chapter_silence(ti, **context),
+            'scored_chapters'  # overwrite same key with VAD-trimmed spans
+        ),
+    )
+
     # Step 9: Save scored chapters to database
     # Stores YouTube videos and their chapters with relevance scores in PostgreSQL
     t9_db = PostgreSQLOperator(
@@ -518,7 +547,10 @@ with DAG(
     # After merging chapters, score their relevance with AI
     t7 >> t8
 
-    # After scoring chapters, save them to the database
+    # After scoring, run VAD chapter silence-trim (both edges) before persisting
+    t8 >> t_trim
+
+    # After trimming the silence, save the chapters to the database
     # Note: session_number and session_date come from t5c and t5d tasks
-    # We need both scoring (t8) and session info (t5c) to be complete
-    [t8, t5c] >> t9_db
+    # We need both the VAD-trimmed scoring (t_trim) and session info (t5c)
+    [t_trim, t5c] >> t9_db

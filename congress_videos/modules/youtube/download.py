@@ -785,6 +785,8 @@ def summarize_one_chunk(chunk_ref: dict) -> dict:
         "end_time": chunk_ref['end_time'],
         "duration_seconds": chunk_ref.get('duration_seconds'),
         "duration_minutes": chunk_ref.get('duration_minutes'),
+        "video_id": chunk_ref.get('video_id'),
+        "video_title": chunk_ref.get('video_title'),
     }
 
     try:

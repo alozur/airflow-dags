@@ -12,3 +12,13 @@ lxml>=4.9.3
 
 # To avoid SSL warnings suppression issues
 urllib3>=2.0.4
+
+# Voice Activity Detection (VAD) for clip pre-trim — default backend.
+# Lightweight C extension, no torch. Required when vad_backend="webrtc" (default).
+webrtcvad>=2.0.10
+
+# Optional VAD extras — install ONLY when vad_backend="silero".
+# These are heavy (torch) and are lazy-imported inside detect_speech_start so the
+# default webrtc path and CI never pull them in. Uncomment to enable silero:
+#   silero-vad>=5.1
+#   torch>=2.0   # CPU build is enough; production NAS is CPU-only (device="cpu")
