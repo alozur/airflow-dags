@@ -32,7 +32,7 @@ x-airflow-common:
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
 
     # Installed packages
-    _PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-postgres openai beautifulsoup4 requests urllib3 google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client Pillow PyPDF2 yt-dlp pytubefix openai-whisper"
+    _PIP_ADDITIONAL_REQUIREMENTS: "apache-airflow-providers-postgres openai beautifulsoup4 requests urllib3 google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client Pillow PyPDF2 yt-dlp pytubefix openai-whisper webrtcvad-wheels"
 
     # DAG folder and performance tweaks
     AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags/repo

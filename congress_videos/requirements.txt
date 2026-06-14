@@ -15,7 +15,10 @@ urllib3>=2.0.4
 
 # Voice Activity Detection (VAD) for clip pre-trim — default backend.
 # Lightweight C extension, no torch. Required when vad_backend="webrtc" (default).
-webrtcvad>=2.0.10
+# Use the -wheels fork: ships prebuilt wheels (no gcc needed in the Airflow image)
+# and exposes the SAME `import webrtcvad` module. Installed at runtime via
+# _PIP_ADDITIONAL_REQUIREMENTS in docker-compose*.yml, NOT from this file.
+webrtcvad-wheels>=2.0.10
 
 # Optional VAD extras — install ONLY when vad_backend="silero".
 # These are heavy (torch) and are lazy-imported inside detect_speech_start so the
