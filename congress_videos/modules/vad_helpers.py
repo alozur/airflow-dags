@@ -216,16 +216,13 @@ def extract_audio_wav(
     ]
     timeout = compute_ffmpeg_timeout(0)  # audio extract is cheap; use base overhead
     log.info(
-        "vad.extract_audio_wav.start",
-        video_path=video_path,
-        wav_path=wav_path,
-        start_secs=start_secs,
-        duration_secs=duration_secs,
+        "vad.extract_audio_wav.start video_path=%s wav_path=%s start_secs=%s duration_secs=%s",
+        video_path, wav_path, start_secs, duration_secs,
     )
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg audio extract failed: {result.stderr}")
-    log.info("vad.extract_audio_wav.done", wav_path=wav_path)
+    log.info("vad.extract_audio_wav.done wav_path=%s", wav_path)
     return wav_path
 
 
@@ -240,13 +237,12 @@ def _webrtc_segments(audio_path: str, sample_rate: int) -> list[tuple[float, flo
 
     with wave.open(audio_path, "rb") as wav:
         if wav.getnchannels() != 1:
-            log.warning("vad.webrtc.not_mono", channels=wav.getnchannels())
+            log.warning("vad.webrtc.not_mono channels=%s", wav.getnchannels())
             return []
         if wav.getframerate() != sample_rate:
             log.warning(
-                "vad.webrtc.sample_rate_mismatch",
-                expected=sample_rate,
-                actual=wav.getframerate(),
+                "vad.webrtc.sample_rate_mismatch expected=%s actual=%s",
+                sample_rate, wav.getframerate(),
             )
             return []
         n_frames = wav.getnframes()
@@ -284,7 +280,7 @@ def _silero_segments(audio_path: str, sample_rate: int) -> list[tuple[float, flo
         import torch
         from silero_vad import get_speech_timestamps, load_silero_vad
     except ImportError as exc:
-        log.warning("vad.silero.import_failed", error=str(exc))
+        log.warning("vad.silero.import_failed error=%s", exc)
         return None
 
     with wave.open(audio_path, "rb") as wav:
@@ -347,7 +343,7 @@ def detect_speech_bounds(
         if segments is None:
             return None, None
     else:
-        log.warning("vad.unknown_backend", backend=backend)
+        log.warning("vad.unknown_backend backend=%s", backend)
         return None, None
 
     start = first_sustained_speech_start(
@@ -363,11 +359,8 @@ def detect_speech_bounds(
         end_margin_secs=end_margin_secs,
     )
     log.info(
-        "vad.detect_speech_bounds.done",
-        backend=backend,
-        segments=len(segments),
-        speech_start=start,
-        speech_end=end,
+        "vad.detect_speech_bounds.done backend=%s segments=%s speech_start=%s speech_end=%s",
+        backend, len(segments), start, end,
     )
     return start, end
 
@@ -442,10 +435,8 @@ def _trim_one_chapter(
         )
     except Exception as exc:  # noqa: BLE001 — VAD is best-effort, never fail the task
         log.warning(
-            "vad.trim_chapter.failed",
-            start_time=start_raw,
-            end_time=end_raw,
-            error=str(exc),
+            "vad.trim_chapter.failed start_time=%s end_time=%s error=%s",
+            start_raw, end_raw, exc,
         )
         return
     finally:
@@ -465,20 +456,15 @@ def _trim_one_chapter(
         if new_end < chapter_end and _chapter_span_ok(new_start, new_end, min_chapter_secs):
             new_end_srt = format_timestamp(new_end, with_ms=True)
             log.info(
-                "vad.trim_chapter.end_lowered",
-                old_end=end_raw,
-                new_end=new_end_srt,
-                end_offset=end_offset,
+                "vad.trim_chapter.end_lowered old_end=%s new_end=%s end_offset=%s",
+                end_raw, new_end_srt, end_offset,
             )
             chapter["end_time"] = new_end_srt
         else:
             new_end = chapter_end  # rejected → end stays original for the start guard
             log.warning(
-                "vad.trim_chapter.end_kept",
-                end_time=end_raw,
-                candidate_end=min(chapter_start + end_offset, chapter_end),
-                new_start=new_start,
-                min_chapter_secs=min_chapter_secs,
+                "vad.trim_chapter.end_kept end_time=%s candidate_end=%s new_start=%s min_chapter_secs=%s",
+                end_raw, min(chapter_start + end_offset, chapter_end), new_start, min_chapter_secs,
             )
 
     # --- start edge: apply only if it RISES and the chapter stays usable ---
@@ -486,19 +472,14 @@ def _trim_one_chapter(
         if new_start > chapter_start and _chapter_span_ok(new_start, new_end, min_chapter_secs):
             new_start_srt = format_timestamp(new_start, with_ms=True)
             log.info(
-                "vad.trim_chapter.start_raised",
-                old_start=start_raw,
-                new_start=new_start_srt,
-                start_offset=start_offset,
+                "vad.trim_chapter.start_raised old_start=%s new_start=%s start_offset=%s",
+                start_raw, new_start_srt, start_offset,
             )
             chapter["start_time"] = new_start_srt
         elif new_start > chapter_start:
             log.warning(
-                "vad.trim_chapter.start_kept",
-                start_time=start_raw,
-                new_start=new_start,
-                new_end=new_end,
-                min_chapter_secs=min_chapter_secs,
+                "vad.trim_chapter.start_kept start_time=%s new_start=%s new_end=%s min_chapter_secs=%s",
+                start_raw, new_start, new_end, min_chapter_secs,
             )
 
 
@@ -561,10 +542,8 @@ def trim_chapter_silence_with_vad(
         source_video = _find_source_video(target_date, str(video_id))
         if not source_video:
             log.warning(
-                "vad.trim.video_not_found",
-                video_id=video_id,
-                target_date=target_date,
-                chapters=len(chapters),
+                "vad.trim.video_not_found video_id=%s target_date=%s chapters=%s",
+                video_id, target_date, len(chapters),
             )
             continue  # best-effort: keep all chapters of this video unchanged
 
