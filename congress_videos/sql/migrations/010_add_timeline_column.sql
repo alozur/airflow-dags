@@ -21,7 +21,11 @@ ALTER TABLE video_chapters
 
 -- Step 2: Recreate uploadable_chapters to expose vc.timeline.
 -- Definition copied from 007_update_uploadable_chapters_order.sql + vc.timeline.
-CREATE OR REPLACE VIEW uploadable_chapters AS
+-- NOTE: must DROP + CREATE, not CREATE OR REPLACE. CREATE OR REPLACE VIEW can only
+-- APPEND columns at the end; inserting vc.timeline between topics and start_time
+-- renames an existing view column, which PostgreSQL rejects.
+DROP VIEW IF EXISTS uploadable_chapters;
+CREATE VIEW uploadable_chapters AS
 SELECT
     vc.chapter_id,
     vc.video_id,
