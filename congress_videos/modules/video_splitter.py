@@ -109,7 +109,9 @@ def split_video_chapter(source_video_path, output_path, start_time, end_time):
     Split a video segment using ffmpeg.
 
     Uses ffmpeg to extract a specific time range from the source video.
-    Fast processing with copy codec (no re-encoding).
+    Frame-accurate extraction via input-seeking + re-encode (libx264/aac);
+    see :func:`build_ffmpeg_cut_cmd`. The source video is never modified — the
+    segment is written to ``output_path`` as a new file.
 
     Args:
         source_video_path: Path to source video file
