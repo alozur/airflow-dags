@@ -27,7 +27,7 @@ import tempfile
 import wave
 
 import numpy as np
-import structlog
+import logging
 
 from congress_videos.config.constants import (
     VAD_BACKEND,
@@ -42,7 +42,7 @@ from congress_videos.config.paths import get_download_video_path
 from congress_videos.modules.video_splitter import compute_ffmpeg_timeout
 from utils.time_utils import format_timestamp, parse_timestamp
 
-log = structlog.get_logger(__name__)
+log = logging.getLogger(__name__)
 
 _MEDIA_SUFFIXES = (".mp4", ".mkv", ".webm")
 
