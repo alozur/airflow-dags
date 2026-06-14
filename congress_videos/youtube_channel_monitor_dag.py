@@ -451,6 +451,9 @@ with DAG(
     # scored_chapters under the same XCom key so t9_db saves the VAD-trimmed spans.
     def _trim_chapter_silence(ti, **context):
         scored = ti.xcom_pull(key='scored_chapters')
+        if not scored:
+            logging.warning("No scored_chapters available — VAD passthrough, nothing to trim.")
+            return scored
         if not VAD_ENABLED:
             logging.info("VAD disabled (VAD_ENABLED=False) — passthrough, chapters unchanged.")
             return scored
@@ -466,6 +469,10 @@ with DAG(
             lambda: _trim_chapter_silence(ti, **context),
             'scored_chapters'  # overwrite same key with VAD-trimmed spans
         ),
+        # Wait for BOTH scoring (t8) and the video download (t3c2) to reach a
+        # terminal state. all_done (not all_success) so a failed/slow download
+        # never blocks persisting chapters — VAD is best-effort.
+        trigger_rule='all_done',
     )
 
     # Step 9: Save scored chapters to database
@@ -547,8 +554,15 @@ with DAG(
     # After merging chapters, score their relevance with AI
     t7 >> t8
 
-    # After scoring, run VAD chapter silence-trim (both edges) before persisting
-    t8 >> t_trim
+    # After scoring, run VAD chapter silence-trim (both edges) before persisting.
+    # t_trim ALSO waits on t3c2 (download_video_from_youtube): VAD reads the
+    # downloaded mp4 from disk via _find_source_video, so it must NOT start while
+    # the (multi-hour) video is still being written — otherwise ffmpeg hits
+    # "moov atom not found" on the half-written file. When subtitles are available
+    # the chunk/score pipeline races ahead of the parallel video download, so this
+    # join is required. trigger_rule='all_done' keeps VAD best-effort: a download
+    # failure must never block persisting the scored chapters.
+    [t8, t3c2] >> t_trim
 
     # After trimming the silence, save the chapters to the database
     # Note: session_number and session_date come from t5c and t5d tasks
