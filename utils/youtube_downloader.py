@@ -116,6 +116,7 @@ def download_with_pytubefix(
                     "-i", audio_path,
                     "-c:v", "copy",
                     "-c:a", "aac",
+                    "-movflags", "+faststart",
                     str(final_path)
                 ]
 
