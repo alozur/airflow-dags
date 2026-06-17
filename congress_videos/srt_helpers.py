@@ -7,6 +7,7 @@ from typing import Optional
 
 from congress_videos.config.paths import DOWNLOADS_DIR, PROJECT_DATA_DIR
 from utils.ai_helpers import generate_json_completion
+from utils.time_utils import parse_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +57,24 @@ def find_srt_for_chapter(
     return None
 
 
-def parse_srt_to_text(srt_path: str, max_chars: int = 8000) -> str:
+# When None is passed as max_chars, this cap guards against pathologically large
+# pre-trim SRTs (>300k chars) that would blow the model's context.
+PRETRIM_MAX_CHARS = 120_000
+_PRETRIM_PATHOLOGICAL_THRESHOLD = 300_000
+
+
+def parse_srt_to_text(srt_path: str, max_chars: int | None = None) -> str:
     """
     Parse SRT file and return text with timestamps for AI analysis.
 
     Format: "00:01:23 --> 00:01:45\\nHello world\\n\\n00:01:46 --> 00:02:01\\nNext line\\n\\n..."
-    Truncates to max_chars to stay within token limits.
+
+    Args:
+        srt_path: Path to the SRT file.
+        max_chars: Maximum characters to return.  When ``None`` (default) the
+            full parsed text is returned, capped only when the raw file exceeds
+            ``_PRETRIM_PATHOLOGICAL_THRESHOLD`` (300k chars).  Pass an explicit
+            integer to enforce a hard limit (e.g. for legacy callers).
     """
     try:
         with open(srt_path, "r", encoding="utf-8", errors="replace") as f:
@@ -91,15 +104,37 @@ def parse_srt_to_text(srt_path: str, max_chars: int = 8000) -> str:
             parts.append(f"{timestamp_line}\n{' '.join(text_lines)}")
 
     result = "\n\n".join(parts)
-    return result[:max_chars]
+
+    if max_chars is not None:
+        return result[:max_chars]
+
+    # Pathological guard: warn and cap at PRETRIM_MAX_CHARS when unbounded.
+    if len(result) > _PRETRIM_PATHOLOGICAL_THRESHOLD:
+        logger.warning(
+            "parse_srt_to_text: SRT text is %d chars (> %d); "
+            "capping at PRETRIM_MAX_CHARS=%d to avoid context overflow",
+            len(result),
+            _PRETRIM_PATHOLOGICAL_THRESHOLD,
+            PRETRIM_MAX_CHARS,
+        )
+        return result[:PRETRIM_MAX_CHARS]
+
+    return result
 
 
 def _srt_timestamp_to_seconds(ts: str) -> float:
-    """Convert 'HH:MM:SS,mmm' to float seconds."""
-    ts = ts.strip()
-    time_part, ms_part = ts.split(",")
-    h, m, s = time_part.split(":")
-    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms_part) / 1000
+    """Convert an SRT timestamp string to float seconds.
+
+    Delegates to ``utils.time_utils.parse_timestamp`` which accepts
+    ``HH:MM:SS``, ``HH:MM:SS,mmm``, and ``HH:MM:SS.mmm``.
+
+    Args:
+        ts: Timestamp string.
+
+    Returns:
+        Total seconds as float.
+    """
+    return parse_timestamp(ts)
 
 
 def _parse_srt_blocks(srt_path: str) -> list[dict]:
@@ -184,7 +219,7 @@ def select_pretrim_window(
     Returns {"start_seconds": float, "end_seconds": float} or None on failure.
     Caller falls back to the full clip when None is returned.
     """
-    srt_text = parse_srt_to_text(srt_path)
+    srt_text = parse_srt_to_text(srt_path, max_chars=PRETRIM_MAX_CHARS)
     if not srt_text:
         logger.warning("select_pretrim_window: empty SRT text from %s", srt_path)
         return None

@@ -8,7 +8,7 @@ def say_hello():
 with DAG(
   dag_id="hello_world_dag",          # Name of the DAG
   start_date=datetime(2024, 1, 1),   # Start date
-  schedule_interval="@daily",        # Run daily
+  schedule="@daily",        # Run daily
   catchup=False                      # Don't run past dates
 ) as dag:
 

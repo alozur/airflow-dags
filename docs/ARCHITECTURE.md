@@ -51,7 +51,7 @@ independientes de YouTube.
   |     generate_youtube_metadata (GPT-3.5-turbo)
   |     generate_thumbnail_text (GPT-3.5-turbo, 3-6 palabras, max 40 chars)
   |     generate_thumbnails (Pillow 1280x720)
-  |     extract_chapter_videos (ffmpeg -c copy)
+  |     extract_chapter_videos (ffmpeg input-seek + re-encode libx264/aac, frame-accurate; original intacto)
   |     prepare_upload_config
   |     trigger_youtube_upload --> generic_youtube_uploader (polling)
   |     mark_chapters_uploaded (PostgreSQL UPDATE)

@@ -8,7 +8,7 @@ specifically for monitoring the Congress YouTube channel for plenary sessions.
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 import requests
@@ -89,7 +89,12 @@ def fetch_youtube_channel_videos(channel_id: str, max_results: int = 10):
         raise RuntimeError(error_msg) from e
 
 
-def filter_plenary_session_videos(channel_videos, target_title: str, target_date: str):
+def filter_plenary_session_videos(
+    channel_videos,
+    target_title: str,
+    target_date: str,
+    lookback_days: int = 1,
+):
     """
     Filter videos for "Sesión Plenaria (original)" based on title and date.
 
@@ -97,6 +102,8 @@ def filter_plenary_session_videos(channel_videos, target_title: str, target_date
         channel_videos: Results from fetch_youtube_channel_videos
         target_title: Title to filter for (e.g., "Sesión Plenaria (original)")
         target_date: Target date in YYYY-MM-DD format
+        lookback_days: Inclusive lookback window. A video is kept when its
+            published date falls in [target_date - lookback_days, target_date].
 
     Returns:
         Dict with filtered videos:
@@ -113,7 +120,11 @@ def filter_plenary_session_videos(channel_videos, target_title: str, target_date
         }
 
     target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
-    logging.info(f"Filtering for videos with title containing '{target_title}' on {target_date}")
+    range_start = target_date_obj - timedelta(days=lookback_days)
+    logging.info(
+        f"Filtering for videos with title containing '{target_title}' "
+        f"published in [{range_start} .. {target_date_obj}]"
+    )
 
     matching_videos = []
     for video in channel_videos['videos']:
@@ -123,8 +134,8 @@ def filter_plenary_session_videos(channel_videos, target_title: str, target_date
             published_at = datetime.fromisoformat(video['published_at'].replace('Z', '+00:00'))
             published_date = published_at.date()
 
-            # Check if date matches
-            if published_date == target_date_obj:
+            # Check if date falls within the inclusive lookback range
+            if range_start <= published_date <= target_date_obj:
                 logging.info(f"Match found: {video['title']} - {video['video_id']}")
                 matching_videos.append(video)
 
@@ -136,14 +147,57 @@ def filter_plenary_session_videos(channel_videos, target_title: str, target_date
     }
 
 
-def get_video_details(plenary_videos):
+def filter_unprocessed_videos(plenary_videos: dict) -> dict:
+    """
+    Drop videos whose video_id is already fully processed in the DB.
+
+    Input/output shape: {'total_matches': int, 'videos': list, 'target_date': str}
+    Preserves 'target_date' and any other top-level keys; rewrites only
+    'videos' and recomputes 'total_matches'.
+
+    FAIL-CLOSED: on DB error this raises (does NOT treat all as unprocessed).
+    PRODUCTION path only (test mode never reaches this task).
+    """
+    if not plenary_videos or not plenary_videos.get('videos'):
+        return plenary_videos or {'total_matches': 0, 'videos': []}
+
+    from congress_videos.modules.database import CongressionalVideoDB
+
+    videos = plenary_videos['videos']
+    video_ids = [v['video_id'] for v in videos if v.get('video_id')]
+
+    db = CongressionalVideoDB()
+    already_processed = db.get_processed_video_ids(video_ids)
+
+    kept = [v for v in videos if v.get('video_id') not in already_processed]
+    skipped = len(videos) - len(kept)
+    logging.info(
+        "Idempotency filter: %d candidate(s), %d already processed, %d to process. Skipped ids: %s",
+        len(videos), skipped, len(kept), sorted(already_processed),
+    )
+
+    result = dict(plenary_videos)            # preserve target_date + any extra keys
+    result['videos'] = kept
+    result['total_matches'] = len(kept)
+    return result
+
+
+def get_video_details(plenary_videos, min_hours_since_end: int = 2):
     """
     Get detailed information for videos (duration, timing, etc.).
 
     Note: We already filtered for completed streams, so no need to check status again.
 
+    Applies a VOD freshness guard: a broadcast that ended less than
+    ``min_hours_since_end`` hours ago is skipped (not appended to the result),
+    because its higher-quality VOD may still be processing on YouTube. Skipped
+    videos stay is_processed=FALSE and are retried by the next hourly run once
+    the margin has passed.
+
     Args:
         plenary_videos: Results from filter_plenary_session_videos
+        min_hours_since_end: Minimum hours that must have elapsed since the
+            broadcast ended before the video is eligible for download.
 
     Returns:
         Dict with enriched video information:
@@ -182,6 +236,24 @@ def get_video_details(plenary_videos):
 
             video_details = video_response['items'][0]
             live_details = video_details.get('liveStreamingDetails', {})
+
+            # VOD freshness guard: skip just-ended broadcasts whose VOD may
+            # still be processing on YouTube.
+            actual_end_time = live_details.get('actualEndTime')
+            if actual_end_time is None:
+                logging.info(
+                    f"Skipping {video_id}: no actualEndTime (still live or no data)"
+                )
+                continue
+
+            end_dt = datetime.fromisoformat(actual_end_time.replace('Z', '+00:00'))
+            elapsed = datetime.now(timezone.utc) - end_dt
+            if elapsed < timedelta(hours=min_hours_since_end):
+                logging.info(
+                    f"Skipping {video_id}: ended {elapsed} ago, "
+                    f"under the {min_hours_since_end}h freshness margin"
+                )
+                continue
 
             # Extract duration
             duration_iso = video_details['contentDetails']['duration']

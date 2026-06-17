@@ -55,7 +55,7 @@ with DAG(
     'congress_youtube_chapter_uploader',
     default_args=default_args,
     description='Upload top congressional video chapters to YouTube based on relevance score',
-    schedule_interval='0 17 * * *',  # Run at 17:00 UTC daily
+    schedule='0 17 * * *',  # Run at 17:00 UTC daily
     start_date=datetime(2025, 11, 14),
     catchup=False,
     tags=['congress', 'youtube', 'chapters'],
@@ -177,7 +177,7 @@ with DAG(
     def trigger_upload_with_config(ti, **context):
         """Trigger the generic YouTube uploader DAG with config from XCom."""
         import time
-        from airflow.models import DagRun, XCom
+        from airflow.models import XCom
 
         # Get config from XCom
         config = ti.xcom_pull(key='upload_config')

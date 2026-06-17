@@ -28,11 +28,10 @@ USAGE from another DAG:
     )
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.utils.dates import days_ago
 
 from utils.youtube_helpers import (
     validate_upload_config,
@@ -55,8 +54,8 @@ with DAG(
     dag_id='generic_youtube_uploader',
     default_args=default_args,
     description='Generic YouTube uploader - triggered by other DAGs with video upload config',
-    schedule_interval=None,  # Triggered only, never scheduled
-    start_date=days_ago(1),
+    schedule=None,  # Triggered only, never scheduled
+    start_date=datetime.now(timezone.utc) - timedelta(days=1),
     catchup=False,
     tags=['youtube', 'upload', 'generic', 'utils'],
     max_active_runs=3,  # Allow multiple uploads in parallel

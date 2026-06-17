@@ -27,11 +27,12 @@ from airflow.operators.python import BranchPythonOperator, PythonOperator
 
 from congress_videos.config.constants import (
     YOUTUBE_CHANNEL_ID,
-    YOUTUBE_CHANNEL_HANDLE,
-    TARGET_VIDEO_TITLE
+    TARGET_VIDEO_TITLE,
+    VAD_ENABLED,
 )
 from congress_videos.modules import youtube as yt_channel
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
+from congress_videos.modules.vad_helpers import trim_chapter_silence_with_vad
 from utils.airflow_helpers import xcom_task
 from utils.env_loader import load_env_if_local
 
@@ -42,8 +43,7 @@ load_env_if_local()
 POSTGRES_SCHEMA = os.getenv('POSTGRES_SCHEMA', 'development')
 IS_DEVELOPMENT = POSTGRES_SCHEMA == 'development'
 
-# Calculate yesterday's date
-yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+today_str = datetime.now().strftime("%Y-%m-%d")
 
 
 default_args = {
@@ -59,12 +59,15 @@ with DAG(
     'congress_youtube_channel_monitor',
     default_args=default_args,
     description='Monitor YouTube channel for Congress plenary sessions and identify finished streams',
-    schedule_interval='0 22 * * *',  # Run at 10:00 PM daily (after sessions typically end)
+    schedule='0 * * * *',  # Run every hour on the hour
     start_date=datetime(2025, 10, 9),
     catchup=False,
+    max_active_runs=1,  # Serialize runs so overlapping hourly runs don't race on the same video_id
     tags=['congress', 'youtube', 'monitor'],
-    params={  # Default to yesterday
-        "target_date": yesterday_str,
+    params={  # Default to today; lookback range covers yesterday too
+        "target_date": today_str,
+        "lookback_days": 1,  # Inclusive lookback window: target_date - lookback_days .. target_date
+        "min_hours_since_end": 2,  # Skip videos whose live broadcast ended less than this many hours ago
         "max_videos": 20,  # Maximum number of videos to check
         "chunk_duration_minutes": 30,  # Duration of each audio chunk in minutes (default: 30 minutes)
         "isTesting": False,  # Set to True manually when testing
@@ -121,7 +124,8 @@ with DAG(
             lambda: yt_channel.filter_plenary_session_videos(
                 ti.xcom_pull(key='channel_videos'),
                 target_title=TARGET_VIDEO_TITLE,
-                target_date=context["params"].get("target_date")
+                target_date=context["params"].get("target_date"),
+                lookback_days=context["params"].get("lookback_days", 1)
             ),
             'plenary_videos'
         ),
@@ -144,15 +148,30 @@ with DAG(
         python_callable=check_plenary_found,
     )
 
+    # Step 2b: Idempotency filter - drop videos already fully processed in DB.
+    # Runs BEFORE any download/transcription. PRODUCTION path only
+    # (test path goes t0_test >> [t3a, t3b] and never reaches this task).
+    t2b = PythonOperator(
+        task_id='filter_unprocessed_videos',
+        python_callable=lambda ti: xcom_task(
+            ti,
+            lambda: yt_channel.filter_unprocessed_videos(
+                ti.xcom_pull(key='plenary_videos')
+            ),
+            'plenary_videos',          # overwrite same key
+        ),
+    )
+
     # Step 3a: Get video details (duration, timing, etc.)
     # Note: We already filtered for completed streams, no need to check status again
     # trigger_rule: Execute if any upstream task succeeds (test or production path)
     t3a = PythonOperator(
         task_id='get_video_details',
-        python_callable=lambda ti: xcom_task(
+        python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.get_video_details(
-                ti.xcom_pull(key='plenary_videos')
+                ti.xcom_pull(key='plenary_videos'),
+                min_hours_since_end=context["params"].get("min_hours_since_end", 2)
             ),
             'video_details'
         ),
@@ -192,7 +211,7 @@ with DAG(
         subtitle_results = ti.xcom_pull(key='youtube_subtitles')
 
         if subtitle_results and subtitle_results.get('total_downloaded', 0) > 0:
-            logging.info(f"✅ Subtitles downloaded from YouTube! Skipping audio extraction and transcription.")
+            logging.info("✅ Subtitles downloaded from YouTube! Skipping audio extraction and transcription.")
             # Subtitles available - go directly to split_srt_by_silence
             return 'split_srt_by_silence'
         else:
@@ -337,25 +356,47 @@ with DAG(
                 target_date=context["params"].get("target_date"),
                 min_silence_seconds=15,
                 min_chunk_duration_minutes=10,
-                max_chunk_duration_minutes=20
+                max_chunk_duration_minutes=20,
+                use_adaptive=True,  # #13: adaptive silence threshold active in production
             ),
             'silence_chunks'
         ),
         trigger_rule='none_failed_min_one_success'  # Run if either path succeeded
     )
 
-    # Step 5f: Summarize silence chunks (TASK 2)
-    # Extract speakers, topics, and timeline from each chunk in JSON format
+    # Step 5f: Summarize silence chunks (TASK 2) — PARALLELIZED (#9)
+    # Dynamic task mapping: each silence-chunk is summarized in its own mapped
+    # task instance (.expand), then re-grouped into the chunk_summaries shape.
+    # Chunks are path-only refs (#7), so each mapped XCom payload stays <1MB.
+
+    # 5f-1: flatten silence_chunks (nested per-video) into a flat list of
+    # chunk-refs that dynamic task mapping can expand over.
+    t5f_flatten = PythonOperator(
+        task_id='flatten_chunks_for_mapping',
+        python_callable=lambda ti: yt_channel.flatten_chunks_for_mapping(
+            ti.xcom_pull(key='silence_chunks')
+        ),
+    )
+
+    # 5f-2: mapped summarization — one task instance per chunk-ref. Empty input
+    # ⇒ zero mapped instances (Airflow supports empty expand).
+    t5f_map = PythonOperator.partial(
+        task_id='summarize_one_chunk',
+        python_callable=yt_channel.summarize_one_chunk,
+    ).expand(op_args=t5f_flatten.output.map(lambda ref: [ref]))
+
+    # 5f-3: reduce mapped results back into the chunk_summaries shape consumed
+    # by identify_interesting_chapters (identical to the serial output).
     t5f = PythonOperator(
-        task_id='summarize_silence_chunks',
+        task_id='aggregate_chunk_summaries',
         python_callable=lambda ti, **context: xcom_task(
             ti,
-            lambda: yt_channel.summarize_silence_chunks(
-                ti.xcom_pull(key='silence_chunks'),
-                target_date=context["params"].get("target_date")
+            lambda: yt_channel.regroup_summarized_chunks(
+                ti.xcom_pull(task_ids='summarize_one_chunk')
             ),
             'chunk_summaries'
         ),
+        trigger_rule='none_failed_min_one_success',  # tolerate per-chunk failures
     )
 
     # Step 6: Use AI to identify interesting chapters within each chunk
@@ -400,6 +441,40 @@ with DAG(
         ),
     )
 
+    # Step 8b: VAD chapter-start adjustment (between scoring and DB save)
+    # For every scored chapter, run VAD ONCE over the chapter's own audio span and
+    # trim the silence on BOTH edges: raise its start_time to the first sustained
+    # speech and lower its end_time to just after the last sustained speech, so
+    # persisted chapters no longer open in the silent "dead start" nor end in
+    # trailing applause/silence. Best-effort: any VAD failure / no-detection leaves
+    # that edge unchanged; never blocks the DAG. Re-pushes the corrected
+    # scored_chapters under the same XCom key so t9_db saves the VAD-trimmed spans.
+    def _trim_chapter_silence(ti, **context):
+        scored = ti.xcom_pull(key='scored_chapters')
+        if not scored:
+            logging.warning("No scored_chapters available — VAD passthrough, nothing to trim.")
+            return scored
+        if not VAD_ENABLED:
+            logging.info("VAD disabled (VAD_ENABLED=False) — passthrough, chapters unchanged.")
+            return scored
+        return trim_chapter_silence_with_vad(
+            scored,
+            target_date=context["params"].get("target_date"),
+        )
+
+    t_trim = PythonOperator(
+        task_id='trim_chapter_silence',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: _trim_chapter_silence(ti, **context),
+            'scored_chapters'  # overwrite same key with VAD-trimmed spans
+        ),
+        # Wait for BOTH scoring (t8) and the video download (t3c2) to reach a
+        # terminal state. all_done (not all_success) so a failed/slow download
+        # never blocks persisting chapters — VAD is best-effort.
+        trigger_rule='all_done',
+    )
+
     # Step 9: Save scored chapters to database
     # Stores YouTube videos and their chapters with relevance scores in PostgreSQL
     t9_db = PostgreSQLOperator(
@@ -427,7 +502,7 @@ with DAG(
     t0_test >> [t3a, t3b]
 
     # Production mode path: fetch from channel
-    t1 >> t2 >> t2a
+    t1 >> t2 >> t2b >> t2a
 
     # Branch: no plenary sessions found
     t2a >> t_end
@@ -462,9 +537,11 @@ with DAG(
     # These run sequentially since agenda_section depends on session_date
     t5b >> t5c >> t5d
 
-    # After splitting SRT by silence (TASK 1), summarize each chunk (TASK 2)
-    # Both subtitle and transcription paths converge at t5e
-    t5e >> t5f
+    # After splitting SRT by silence (TASK 1), summarize each chunk (TASK 2).
+    # Both subtitle and transcription paths converge at t5e. Summarization is
+    # parallelized via dynamic task mapping (#9):
+    #   t5e -> flatten -> [summarize_one_chunk mapped] -> aggregate (t5f)
+    t5e >> t5f_flatten >> t5f_map >> t5f
 
     # After chunk summaries and SRT chunks are ready, identify interesting chapters
     # We need both: t5f (chunk summaries) and t5e (SRT chunks)
@@ -477,7 +554,17 @@ with DAG(
     # After merging chapters, score their relevance with AI
     t7 >> t8
 
-    # After scoring chapters, save them to the database
+    # After scoring, run VAD chapter silence-trim (both edges) before persisting.
+    # t_trim ALSO waits on t3c2 (download_video_from_youtube): VAD reads the
+    # downloaded mp4 from disk via _find_source_video, so it must NOT start while
+    # the (multi-hour) video is still being written — otherwise ffmpeg hits
+    # "moov atom not found" on the half-written file. When subtitles are available
+    # the chunk/score pipeline races ahead of the parallel video download, so this
+    # join is required. trigger_rule='all_done' keeps VAD best-effort: a download
+    # failure must never block persisting the scored chapters.
+    [t8, t3c2] >> t_trim
+
+    # After trimming the silence, save the chapters to the database
     # Note: session_number and session_date come from t5c and t5d tasks
-    # We need both scoring (t8) and session info (t5c) to be complete
-    [t8, t5c] >> t9_db
+    # We need both the VAD-trimmed scoring (t_trim) and session info (t5c)
+    [t_trim, t5c] >> t9_db

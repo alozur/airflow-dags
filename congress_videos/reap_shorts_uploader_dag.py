@@ -79,7 +79,7 @@ with DAG(
     'reap_shorts_uploader',
     default_args=default_args,
     description='Upload one Reap Short to YouTube per run with AI-generated title/description',
-    schedule='0,30 17-20 * * *',
+    schedule='0 8,10,13,15,18,20,22 * * *',
     start_date=datetime(2025, 11, 14),
     catchup=False,
     tags=['congress', 'youtube', 'shorts', 'reap'],

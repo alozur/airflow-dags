@@ -14,32 +14,33 @@ class TestParseTimestampToSeconds:
     @pytest.mark.parametrize(
         "timestamp, expected",
         [
-            ("00:00:00", 0),
-            ("00:01:00", 60),
-            ("01:00:00", 3600),
-            ("01:30:15", 5415),
-            ("00:00:30,500", 30),    # milliseconds stripped
-            ("02:00:00,000", 7200),  # milliseconds stripped, full hours
+            ("00:00:00", 0.0),
+            ("00:01:00", 60.0),
+            ("01:00:00", 3600.0),
+            ("01:30:15", 5415.0),
+            # Now millisecond-precise (float return, not int-truncated)
+            ("00:00:30,500", 30.5),
+            ("02:00:00,000", 7200.0),
         ],
     )
-    def test_parametrize_various_timestamps(self, timestamp: str, expected: int):
-        """Correctly converts HH:MM:SS and HH:MM:SS,mmm to total seconds."""
+    def test_parametrize_various_timestamps(self, timestamp: str, expected: float):
+        """Correctly converts HH:MM:SS and HH:MM:SS,mmm to total float seconds."""
         from utils.ai_chapter_analyzer import parse_timestamp_to_seconds
 
         assert parse_timestamp_to_seconds(timestamp) == expected
 
     def test_returns_zero_for_invalid_format(self):
-        """Malformed timestamp returns 0 (fallback behavior)."""
+        """Malformed timestamp returns 0.0 (graceful fallback behavior)."""
         from utils.ai_chapter_analyzer import parse_timestamp_to_seconds
 
         result = parse_timestamp_to_seconds("bad")
-        assert result == 0
+        assert result == 0.0
 
     def test_handles_leading_whitespace(self):
         """Timestamps with surrounding whitespace are handled."""
         from utils.ai_chapter_analyzer import parse_timestamp_to_seconds
 
-        assert parse_timestamp_to_seconds("  00:05:30  ") == 330
+        assert parse_timestamp_to_seconds("  00:05:30  ") == 330.0
 
 
 # --------------------------------------------------------------------------- #
@@ -268,6 +269,37 @@ class TestChunkBySilence:
 
         assert len(result) == 1
 
+    def test_use_adaptive_is_forwarded_to_detect_silence_gaps(self, mocker):
+        """#13 wiring: chunk_by_silence(use_adaptive=True) must call
+        detect_silence_gaps with use_adaptive=True so the adaptive path is
+        reachable in production."""
+        from utils import ai_chapter_analyzer
+
+        spy = mocker.patch.object(
+            ai_chapter_analyzer,
+            "detect_silence_gaps",
+            wraps=ai_chapter_analyzer.detect_silence_gaps,
+        )
+
+        srt = _make_srt([
+            ("00:00:00", "00:05:00", "A"),
+            ("00:35:00", "00:40:00", "B"),  # 30-min gap → always detected
+        ])
+        ai_chapter_analyzer.chunk_by_silence(
+            srt,
+            min_silence_seconds=15,
+            min_chunk_duration_minutes=0,
+            use_adaptive=True,
+            adaptive_percentile=80.0,
+        )
+
+        spy.assert_called_once()
+        _, kwargs = spy.call_args
+        assert kwargs.get("use_adaptive") is True, (
+            "chunk_by_silence must forward use_adaptive=True to detect_silence_gaps"
+        )
+        assert kwargs.get("adaptive_percentile") == 80.0
+
 
 # --------------------------------------------------------------------------- #
 # analyze_chapters_with_ai
@@ -364,3 +396,147 @@ class TestAnalyzeChaptersWithAi:
         assert result["success"] is False
         assert result["chapters"] == []
         assert "rate limit" in result["error"]
+
+
+# --------------------------------------------------------------------------- #
+# T2.3 — _adaptive_silence_threshold  (#13)
+# --------------------------------------------------------------------------- #
+
+class TestAdaptiveSilenceThreshold:
+    """Tests for spec #13: percentile-based adaptive silence threshold."""
+
+    def test_75th_percentile_of_known_distribution(self):
+        """Spec #13: [2,3,5,10,12,15,20,30] at p75 with linear interpolation.
+
+        Using the standard linear-interpolation formula (same as numpy default):
+          idx = 0.75 * (8-1) = 5.25  →  lower=5 (15.0), upper=6 (20.0), frac=0.25
+          value = 15 + 0.25 * (20 - 15) = 16.25
+
+        The spec's '≈17.5' referred to the midpoint method; our implementation uses
+        linear interpolation (matches numpy default). Expected value is 16.25.
+        """
+        from utils.ai_chapter_analyzer import _adaptive_silence_threshold
+
+        gaps = [2.0, 3.0, 5.0, 10.0, 12.0, 15.0, 20.0, 30.0]
+        result = _adaptive_silence_threshold(gaps, percentile=75.0, floor=8)
+
+        # Linear interpolation: 15 + 0.25*(20-15) = 16.25
+        assert abs(result - 16.25) < 0.01, f"Expected ~16.25, got {result}"
+        # And it must be above the floor
+        assert result >= 8.0
+
+    def test_floor_applied_when_percentile_below_floor(self):
+        """Floor ensures result never drops below the minimum."""
+        from utils.ai_chapter_analyzer import _adaptive_silence_threshold
+
+        # All tiny gaps → percentile would be <8 without floor
+        gaps = [0.1, 0.2, 0.3, 0.4, 0.5]
+        result = _adaptive_silence_threshold(gaps, percentile=50.0, floor=8)
+
+        assert result >= 8.0
+
+    def test_empty_gaps_returns_floor(self):
+        """Edge case: empty list returns floor value."""
+        from utils.ai_chapter_analyzer import _adaptive_silence_threshold
+
+        result = _adaptive_silence_threshold([], percentile=75.0, floor=8)
+
+        assert result == 8.0
+
+    def test_single_gap_returns_that_gap_or_floor(self):
+        """Edge case: single gap → any percentile equals that gap (if >= floor)."""
+        from utils.ai_chapter_analyzer import _adaptive_silence_threshold
+
+        result = _adaptive_silence_threshold([25.0], percentile=75.0, floor=8)
+
+        assert result == pytest.approx(25.0)
+
+
+# --------------------------------------------------------------------------- #
+# T2.3 — detect_silence_gaps with use_adaptive=True  (#13)
+# --------------------------------------------------------------------------- #
+
+class TestDetectSilenceGapsAdaptive:
+    """Integration tests for adaptive mode in detect_silence_gaps."""
+
+    def test_fixed_mode_unchanged_by_default(self):
+        """Spec #13: default (use_adaptive=False) behaves identically to pre-Batch2."""
+        from utils.ai_chapter_analyzer import detect_silence_gaps
+
+        srt = _make_srt([
+            ("00:00:00", "00:00:10", "A"),
+            ("00:00:40", "00:00:50", "B"),  # 30s gap
+            ("00:01:30", "00:01:40", "C"),  # 40s gap
+        ])
+
+        result_old = detect_silence_gaps(srt, min_silence_seconds=15)
+        result_fixed = detect_silence_gaps(srt, min_silence_seconds=15, use_adaptive=False)
+
+        assert result_old == result_fixed
+        assert len(result_fixed) == 2
+
+    def test_adaptive_uses_percentile_threshold(self):
+        """Spec #13: adaptive mode computes threshold from gap distribution."""
+        from utils.ai_chapter_analyzer import detect_silence_gaps
+
+        # Gaps: 2s (below), 5s, 10s, 12s, 15s, 20s, 30s (above p75≈17.5)
+        srt = _make_srt([
+            ("00:00:00", "00:00:05", "A"),
+            ("00:00:07", "00:00:08", "B"),  # gap ~2s
+            ("00:00:13", "00:00:15", "C"),  # gap ~5s
+            ("00:00:25", "00:00:27", "D"),  # gap ~10s
+            ("00:00:39", "00:00:41", "E"),  # gap ~12s
+            ("00:00:56", "00:00:58", "F"),  # gap ~15s
+            ("00:01:18", "00:01:20", "G"),  # gap ~20s
+            ("00:01:50", "00:01:52", "H"),  # gap ~30s
+        ])
+
+        result_adaptive = detect_silence_gaps(srt, min_silence_seconds=15, use_adaptive=True, adaptive_percentile=75)
+        result_fixed = detect_silence_gaps(srt, min_silence_seconds=15, use_adaptive=False)
+
+        # Adaptive should return fewer gaps than fixed (higher threshold)
+        assert len(result_adaptive) <= len(result_fixed)
+
+    def test_adaptive_fallback_when_no_gaps_pass(self, caplog):
+        """Spec #13: when adaptive produces 0 gaps, falls back to fixed with WARNING."""
+        import logging
+        from utils.ai_chapter_analyzer import detect_silence_gaps
+
+        # All gaps are tiny — p75 would be huge, but so are all gaps tiny.
+        # Actually we need a case where the adaptive threshold exceeds all gaps.
+        # Use p99 on a distribution where all gaps are 1-3s, but min_silence=0.5s
+        srt = _make_srt([
+            ("00:00:00", "00:00:05", "A"),
+            ("00:00:06", "00:00:11", "B"),   # 1s gap
+            ("00:00:12", "00:00:17", "C"),   # 1s gap
+            ("00:00:19", "00:00:24", "D"),   # 2s gap
+        ])
+
+        with caplog.at_level(logging.WARNING, logger="utils.ai_chapter_analyzer"):
+            # p99 of [1,1,2] = ~2s; min_silence=0.5s → all 3 gaps are above fixed threshold
+            # but with floor=8, adaptive threshold is 8s, which all 1-2s gaps fail.
+            result = detect_silence_gaps(
+                srt,
+                min_silence_seconds=1,
+                use_adaptive=True,
+                adaptive_percentile=75,
+            )
+
+        # Should have fallen back to fixed threshold (min_silence=1s)
+        # All 1-2s gaps pass the fixed threshold of 1s
+        assert len(result) > 0, "Expected fallback to fixed threshold producing gaps"
+        assert any("falling back" in r.message.lower() for r in caplog.records)
+
+    def test_single_gap_adaptive_returns_it(self):
+        """Spec #13: single gap in audio → adaptive returns that gap."""
+        from utils.ai_chapter_analyzer import detect_silence_gaps
+
+        srt = _make_srt([
+            ("00:00:00", "00:00:05", "A"),
+            ("00:05:00", "00:05:05", "B"),  # 295s gap — huge, definitely above p75
+        ])
+
+        result = detect_silence_gaps(srt, min_silence_seconds=15, use_adaptive=True)
+
+        assert len(result) == 1
+        assert result[0]["gap_duration_seconds"] == pytest.approx(295, rel=1e-2)

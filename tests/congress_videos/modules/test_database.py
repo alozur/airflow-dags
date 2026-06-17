@@ -816,3 +816,56 @@ class TestGetChapterMetadataSessionData:
         assert result is not None
         assert result["session_number"] is None
         assert result["session_date"] is None
+
+
+# --------------------------------------------------------------------------- #
+# get_processed_video_ids — idempotency pre-download lookup
+# --------------------------------------------------------------------------- #
+
+class TestGetProcessedVideoIds:
+
+    def test_empty_input_returns_empty_set_without_querying(self, db):
+        """Empty input -> empty set and the DB is never touched."""
+        instance, mock_cursor = db
+
+        result = instance.get_processed_video_ids([])
+
+        assert result == set()
+        mock_cursor.execute.assert_not_called()
+
+    def test_returns_set_of_processed_ids(self, db):
+        """Returns the subset of video_ids found as processed rows."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = [
+            {"video_id": "vidA"},
+            {"video_id": "vidB"},
+        ]
+
+        result = instance.get_processed_video_ids(["vidA", "vidB", "vidC"])
+
+        assert result == {"vidA", "vidB"}
+
+    def test_no_matches_returns_empty_set(self, db):
+        """fetchall empty -> empty set (nothing processed yet)."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        result = instance.get_processed_video_ids(["vidA", "vidB"])
+
+        assert result == set()
+
+    def test_uses_parametrized_any_query_on_correct_table(self, db):
+        """SQL targets youtube_source_videos, filters is_processed = TRUE via ANY(%s),
+        and passes the video_ids list as params (no value interpolation)."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+        video_ids = ["vidA", "vidB"]
+
+        instance.get_processed_video_ids(video_ids)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        params = mock_cursor.execute.call_args[0][1]
+        assert "youtube_source_videos" in sql
+        assert "is_processed = TRUE" in sql
+        assert "ANY(%s)" in sql
+        assert params == (video_ids,)

@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS production.video_chapters (
     -- Content metadata
     speakers TEXT[], -- Array of speaker names
     topics TEXT[], -- Array of topic keywords
+    timeline JSONB DEFAULT '[]'::jsonb, -- Key moments [{time, speaker, content}] with absolute source-video timestamps
 
     -- AI Relevance Scoring (0-5 scale, sum of 3 criteria)
     -- Score calculation: speaker_relevance_pts + topic_relevance_pts + public_interest_pts
@@ -125,6 +126,7 @@ SELECT
     vc.duration_minutes,
     vc.speakers,
     vc.topics,
+    vc.timeline,
     vc.start_time,
     vc.end_time,
     vc.relevance_score,

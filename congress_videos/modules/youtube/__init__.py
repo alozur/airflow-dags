@@ -17,12 +17,14 @@ def __getattr__(name):
     """
     # youtube_channel functions
     if name in ['fetch_youtube_channel_videos', 'filter_plenary_session_videos',
+                'filter_unprocessed_videos',
                 'get_video_details', 'get_video_descriptions', 'parse_description_links',
                 'scrape_press_release', 'download_and_read_agenda', 'extract_session_date',
                 'extract_agenda_section']:
         from .youtube_channel import (
             fetch_youtube_channel_videos,
             filter_plenary_session_videos,
+            filter_unprocessed_videos,
             get_video_details,
             get_video_descriptions,
             parse_description_links,
@@ -34,7 +36,7 @@ def __getattr__(name):
         return locals()[name]
 
     # download functions
-    elif name in ['download_video_from_youtube', 'extract_audio_from_youtube', 'create_test_video_data', 'transcribe_audio_with_whisper', 'merge_transcription_srt_files', 'identify_interesting_chapters', 'merge_interesting_chapters', 'try_download_subtitles_from_youtube', 'split_srt_by_silence', 'summarize_silence_chunks']:
+    elif name in ['download_video_from_youtube', 'extract_audio_from_youtube', 'create_test_video_data', 'transcribe_audio_with_whisper', 'merge_transcription_srt_files', 'identify_interesting_chapters', 'merge_interesting_chapters', 'try_download_subtitles_from_youtube', 'split_srt_by_silence', 'summarize_silence_chunks', 'summarize_one_chunk', 'aggregate_chunk_summaries', 'flatten_chunks_for_mapping', 'regroup_summarized_chunks']:
         from .download import (
             download_video_from_youtube,
             extract_audio_from_youtube,
@@ -46,6 +48,10 @@ def __getattr__(name):
             try_download_subtitles_from_youtube,
             split_srt_by_silence,
             summarize_silence_chunks,
+            summarize_one_chunk,
+            aggregate_chunk_summaries,
+            flatten_chunks_for_mapping,
+            regroup_summarized_chunks,
         )
         return locals()[name]
 
@@ -71,6 +77,7 @@ __all__ = [
     # youtube_channel functions
     'fetch_youtube_channel_videos',
     'filter_plenary_session_videos',
+    'filter_unprocessed_videos',
     'get_video_details',
     'get_video_descriptions',
     'parse_description_links',
@@ -89,6 +96,10 @@ __all__ = [
     'try_download_subtitles_from_youtube',
     'split_srt_by_silence',
     'summarize_silence_chunks',
+    'summarize_one_chunk',
+    'aggregate_chunk_summaries',
+    'flatten_chunks_for_mapping',
+    'regroup_summarized_chunks',
     # youtube_ai functions
     'generate_youtube_title',
     'generate_youtube_description',

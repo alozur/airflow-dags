@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS development.video_chapters (
     -- Content metadata
     speakers TEXT[], -- Array of speaker names
     topics TEXT[], -- Array of topic keywords
+    timeline JSONB DEFAULT '[]'::jsonb, -- Key moments [{time, speaker, content}] with absolute source-video timestamps
 
     -- AI Relevance Scoring (0-5 scale, sum of 3 criteria)
     -- Score calculation: speaker_relevance_pts + topic_relevance_pts + public_interest_pts
@@ -89,6 +90,11 @@ CREATE INDEX idx_video_chapters_relevance_score ON development.video_chapters(re
 CREATE INDEX idx_video_chapters_uploaded ON development.video_chapters(is_uploaded_to_youtube);
 CREATE INDEX idx_youtube_source_videos_session ON development.youtube_source_videos(session_number, session_date);
 
+-- Unique segment per video — backs the ON CONFLICT (video_id, start_time, end_time)
+-- upsert in database.save_youtube_chapters_to_db. Mirrors migration 008.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_video_chapters_segment
+    ON development.video_chapters (video_id, start_time, end_time);
+
 -- View: uploadable_chapters
 -- Shows chapters that are eligible for YouTube upload based on relevance score
 DROP VIEW IF EXISTS development.uploadable_chapters;
@@ -104,6 +110,7 @@ SELECT
     vc.duration_minutes,
     vc.speakers,
     vc.topics,
+    vc.timeline,
     vc.start_time,
     vc.end_time,
     vc.relevance_score,

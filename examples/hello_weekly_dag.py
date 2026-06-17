@@ -8,7 +8,7 @@ def say_hello_weekly():
 with DAG(
   dag_id="hello_weekly_dag",          # Unique name for the DAG
   start_date=datetime(2024, 1, 1),    # First possible run date
-  schedule_interval="@weekly",        # Run once a week
+  schedule="@weekly",        # Run once a week
   catchup=False                       # Don't backfill past runs
 ) as dag:
 
