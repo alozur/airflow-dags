@@ -1,7 +1,7 @@
 """
 Congress Reap Processor DAG
 
-Runs on its own cron schedule (daily at 14:30). On each run, claims exactly one
+Runs on its own cron schedule (daily at 14:30 and 17:30 UTC). On each run, claims exactly one
 video_shorts row with reap_status='pending' from the queue, uploads the staged clip
 to Reap, waits for job completion via sensor, and downloads all resulting shorts.
 """
@@ -121,7 +121,7 @@ with DAG(
     'congress_reap_processor',
     default_args=default_args,
     description='Claim one pending clip from the queue, upload to Reap, wait for completion, download shorts',
-    schedule='30 14 * * *',
+    schedule='30 14,17 * * *',
     start_date=datetime(2025, 11, 14),
     catchup=False,
     max_active_runs=1,
