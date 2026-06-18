@@ -340,6 +340,7 @@ def _make_chapter_metadata(**overrides) -> dict:
         "topics": ["presupuestos"],
         "scoring_reasoning": "Alta relevancia",
         "relevance_score": 4,
+        "youtube_video_id": None,
         "source_video_title": None,
         "source_video_url": None,
         "session_number": None,
@@ -350,19 +351,58 @@ def _make_chapter_metadata(**overrides) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# _generate_metadata — source video footer tests
+# _format_own_channel_footer — unit tests
+# ---------------------------------------------------------------------------
+
+class TestFormatOwnChannelFooter:
+
+    def test_returns_own_channel_url_when_id_present(self):
+        """Happy path: youtube_video_id set → footer with own-channel URL."""
+        from congress_videos.reap_shorts_uploader_dag import _format_own_channel_footer
+
+        result = _format_own_channel_footer('abc123')
+
+        assert result == '\n\n📺 Vídeo completo:\nhttps://www.youtube.com/watch?v=abc123'
+
+    def test_returns_empty_string_when_id_is_none(self):
+        """Null guard: youtube_video_id=None → no footer (hard contract)."""
+        from congress_videos.reap_shorts_uploader_dag import _format_own_channel_footer
+
+        result = _format_own_channel_footer(None)
+
+        assert result == ''
+
+    def test_returns_empty_string_when_id_is_empty_string(self):
+        """Empty-string guard: youtube_video_id='' → no footer."""
+        from congress_videos.reap_shorts_uploader_dag import _format_own_channel_footer
+
+        result = _format_own_channel_footer('')
+
+        assert result == ''
+
+    def test_source_url_never_appears_in_footer(self):
+        """No fallback to source URL — only own-channel URL is used."""
+        from congress_videos.reap_shorts_uploader_dag import _format_own_channel_footer
+
+        result = _format_own_channel_footer('yt-XYZ')
+
+        assert 'youtube.com/watch?v=yt-XYZ' in result
+        assert 'Extraído de:' not in result
+
+
+# ---------------------------------------------------------------------------
+# _generate_metadata — own-channel footer integration tests
 # ---------------------------------------------------------------------------
 
 class TestGenerateMetadataFooter:
 
-    def test_generate_metadata_footer_appended(self, mocker):
-        """AC#4 — description ends with footer when source_video_title and source_video_url are set."""
+    def test_generate_metadata_footer_appended_when_youtube_video_id_set(self, mocker):
+        """AC#4 — description ends with own-channel footer when youtube_video_id is set."""
         from congress_videos.reap_shorts_uploader_dag import _generate_metadata
 
         mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
         mock_db_cls.return_value.get_chapter_metadata.return_value = _make_chapter_metadata(
-            source_video_title="Sesión plenaria 2024-01-15",
-            source_video_url="https://youtube.com/watch?v=abc123",
+            youtube_video_id='yt-own-abc',
         )
 
         mocker.patch("os.path.exists", return_value=False)
@@ -373,17 +413,17 @@ class TestGenerateMetadataFooter:
 
         metadata = ti.xcom_store["shorts_metadata"]
         description = metadata[0]["description"]
-        expected_suffix = "\n\n📺 Extraído de: Sesión plenaria 2024-01-15\nhttps://youtube.com/watch?v=abc123"
+        expected_suffix = '\n\n📺 Vídeo completo:\nhttps://www.youtube.com/watch?v=yt-own-abc'
         assert description.endswith(expected_suffix), f"Description was: {description!r}"
 
-    def test_generate_metadata_no_footer_when_source_null(self, mocker):
-        """AC#5 — description is unchanged when source_video_title is None."""
+    def test_generate_metadata_no_footer_when_youtube_video_id_null(self, mocker):
+        """AC#5 — description has NO footer and source URL does NOT appear when youtube_video_id is None."""
         from congress_videos.reap_shorts_uploader_dag import _generate_metadata
 
         mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
         mock_db_cls.return_value.get_chapter_metadata.return_value = _make_chapter_metadata(
-            source_video_title=None,
-            source_video_url=None,
+            youtube_video_id=None,
+            source_video_url="https://youtube.com/watch?v=source-should-not-appear",
         )
 
         mocker.patch("os.path.exists", return_value=False)
@@ -394,7 +434,8 @@ class TestGenerateMetadataFooter:
 
         metadata = ti.xcom_store["shorts_metadata"]
         description = metadata[0]["description"]
-        assert "📺 Extraído de:" not in description
+        assert '📺 Vídeo completo:' not in description
+        assert 'source-should-not-appear' not in description
 
     def test_generate_metadata_source_fields_not_in_ai_prompt(self, mocker):
         """AC#6 — source_video_title and source_video_url must NOT appear in the AI user prompt."""
@@ -402,6 +443,7 @@ class TestGenerateMetadataFooter:
 
         mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
         mock_db_cls.return_value.get_chapter_metadata.return_value = _make_chapter_metadata(
+            youtube_video_id='yt-prompt-test',
             source_video_title="Sesión con fuente",
             source_video_url="https://youtube.com/watch?v=xyz789",
         )
