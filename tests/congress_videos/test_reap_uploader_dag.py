@@ -23,7 +23,7 @@ class TestReapShortsUploaderDAGLoads:
 
     def test_dag_schedule(self):
         from congress_videos.reap_shorts_uploader_dag import dag
-        assert dag.schedule == "0,30 17-20 * * *"
+        assert dag.schedule == '0 8,10,13,15,18,20,22 * * *'
 
     def test_dag_correct_task_ids(self):
         from congress_videos.reap_shorts_uploader_dag import dag
