@@ -1136,7 +1136,7 @@ class CongressionalVideoDB:
                 cur.execute(
                     f"""SELECT vc.chapter_id, vc.title, vc.description, vc.speakers,
                                vc.key_speakers, vc.topics, vc.scoring_reasoning,
-                               vc.relevance_score,
+                               vc.relevance_score, vc.youtube_video_id,
                                ysv.video_title AS source_video_title,
                                ysv.video_url   AS source_video_url,
                                ysv.session_number,

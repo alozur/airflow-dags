@@ -312,7 +312,7 @@ class TestGetChapterTitles:
 class TestGetChapterMetadata:
 
     def test_get_chapter_metadata_returns_source_fields(self, db):
-        """AC#1 — chapter with linked source video returns both source fields."""
+        """AC#1 — chapter with linked source video returns both source fields and youtube_video_id."""
         instance, mock_cursor = db
         mock_cursor.fetchone.return_value = {
             "chapter_id": 1,
@@ -323,6 +323,7 @@ class TestGetChapterMetadata:
             "topics": ["vivienda"],
             "scoring_reasoning": "Relevant",
             "relevance_score": 4,
+            "youtube_video_id": "yt-own-abc",
             "source_video_title": "Sesión plenaria 2024-01-15",
             "source_video_url": "https://youtube.com/watch?v=abc123",
         }
@@ -330,11 +331,12 @@ class TestGetChapterMetadata:
         result = instance.get_chapter_metadata(1)
 
         assert result is not None
+        assert result["youtube_video_id"] == "yt-own-abc"
         assert result["source_video_title"] == "Sesión plenaria 2024-01-15"
         assert result["source_video_url"] == "https://youtube.com/watch?v=abc123"
 
     def test_get_chapter_metadata_null_source(self, db):
-        """AC#2, AC#7 — chapter with no source video row returns None for both fields."""
+        """AC#2, AC#7 — chapter with no source video row returns None for source fields and youtube_video_id."""
         instance, mock_cursor = db
         mock_cursor.fetchone.return_value = {
             "chapter_id": 2,
@@ -345,6 +347,7 @@ class TestGetChapterMetadata:
             "topics": [],
             "scoring_reasoning": "",
             "relevance_score": 3,
+            "youtube_video_id": None,
             "source_video_title": None,
             "source_video_url": None,
         }
@@ -352,6 +355,7 @@ class TestGetChapterMetadata:
         result = instance.get_chapter_metadata(2)
 
         assert result is not None
+        assert result["youtube_video_id"] is None
         assert result["source_video_title"] is None
         assert result["source_video_url"] is None
 
@@ -376,12 +380,13 @@ class TestGetChapterMetadata:
         assert "youtube_source_videos" in sql
 
     def test_get_chapter_metadata_selects_source_columns(self, db):
-        """Query must select source_video_title and source_video_url aliases."""
+        """Query must select youtube_video_id, source_video_title and source_video_url aliases."""
         instance, mock_cursor = db
         mock_cursor.fetchone.return_value = None
 
         instance.get_chapter_metadata(1)
 
         sql = mock_cursor.execute.call_args[0][0]
+        assert "youtube_video_id" in sql
         assert "source_video_title" in sql
         assert "source_video_url" in sql
