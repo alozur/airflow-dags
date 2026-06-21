@@ -18,7 +18,7 @@ _DEFAULT_CLIP_PARAMS = {
     "reframeClips": True,
     "captionsPreset": "system_beasty",
     "genre": "talking",
-    "clipDurations": [[30, 60]],
+    "clipDurations": [[30, 60], [60, 90]],
 }
 
 

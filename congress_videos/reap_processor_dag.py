@@ -35,8 +35,8 @@ _REAP_CLIP_PROMPT = (
     "Prioritize: the President or opposition leader making a clear claim, heated exchanges, surprising "
     "revelations, or moments that capture the political conflict in one sentence. "
     "Skip procedural formalities, roll calls, and transition segments with no political content. "
-    "IMPORTANT: each clip must feature a single continuous speaker — never split-screen, "
-    "never simultaneous cuts between two speakers on screen at the same time."
+    "IMPORTANT: keep each clip on one single speaker, framed full-screen and centered, "
+    "holding that same person on camera from the first second to the last."
 )
 
 

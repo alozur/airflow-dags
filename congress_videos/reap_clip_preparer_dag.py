@@ -93,8 +93,8 @@ with DAG(
     params={
         "max_chapters": 0,
         "min_relevance_score": 3,
-        "pre_trim_threshold_secs": 300,
-        "pre_trim_target_secs": 300,
+        "pre_trim_threshold_secs": 600,
+        "pre_trim_target_secs": 600,
     }
 ) as dag:
 
