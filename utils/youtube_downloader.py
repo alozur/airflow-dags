@@ -68,16 +68,26 @@ def download_with_pytubefix(
         for s in all_streams[:15]:  # Log first 15
             logger.info(f"  - {s.resolution or 'audio'} | {s.mime_type} | adaptive={s.is_adaptive} | progressive={s.is_progressive}")
 
-        # First try: adaptive video stream at min_resolution or higher (720p+)
-        # Try without file_extension filter first (webm might have higher quality)
+        # First try: H264 (mp4) adaptive video at min_resolution or higher (720p+).
+        # Force subtype='mp4' → H264/avc1. webm adaptive streams are VP9/AV1, and
+        # YouTube's AV1 is often served corrupt: stream-copy passes the corruption
+        # through and re-encode chokes on it, yielding an invalid MP4 that YouTube
+        # rejects on upload ("procesamiento interrumpido"). H264 is robust and, at
+        # 720p/1080p, visually identical for our purposes.
         video_stream = yt.streams.filter(
             adaptive=True,
-            only_video=True
+            only_video=True,
+            subtype='mp4'
         ).filter(lambda s: s.resolution and int(s.resolution[:-1]) >= min_resolution).order_by('resolution').desc().first()
 
-        # If no stream found, try any adaptive video
+        # Fallback 1: any H264 (mp4) adaptive video, even below min_resolution
         if not video_stream:
-            logger.info("[pytubefix] No 720p+ found, trying any adaptive video...")
+            logger.info("[pytubefix] No 720p+ H264 found, trying any H264 (mp4) adaptive video...")
+            video_stream = yt.streams.filter(adaptive=True, only_video=True, subtype='mp4').order_by('resolution').desc().first()
+
+        # Fallback 2: any adaptive video (may be VP9/AV1) — last resort only
+        if not video_stream:
+            logger.info("[pytubefix] No H264 stream available, falling back to any adaptive video (may be AV1/VP9)...")
             video_stream = yt.streams.filter(adaptive=True, only_video=True).order_by('resolution').desc().first()
 
         if video_stream:
@@ -239,13 +249,15 @@ def download_youtube_video_for_upload(
     # Fall back to yt-dlp
     logger.info("Trying yt-dlp...")
 
-    # Format selection based on quality
-    # Use bestvideo+bestaudio with merge to avoid SABR streaming issues
-    # height>=720 ensures MINIMUM 720p quality
+    # Format selection based on quality.
+    # Prefer H264 (vcodec^=avc1) + m4a audio to avoid AV1/VP9 (see pytubefix note):
+    # AV1 from YouTube is often corrupt and produces invalid cuts YouTube rejects.
+    # Each entry falls back to any codec if no H264 stream exists.
+    # height>=720 ensures MINIMUM 720p quality.
     format_map = {
-        "720p": "bestvideo[height>=720]+bestaudio/bestvideo+bestaudio/best",
-        "1080p": "bestvideo[height>=1080]+bestaudio/bestvideo[height>=720]+bestaudio/best",
-        "best": "bestvideo[height>=720]+bestaudio/bestvideo+bestaudio/best",
+        "720p": "bestvideo[vcodec^=avc1][height>=720]+bestaudio[ext=m4a]/bestvideo[height>=720]+bestaudio/best",
+        "1080p": "bestvideo[vcodec^=avc1][height>=1080]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][height>=720]+bestaudio[ext=m4a]/bestvideo[height>=720]+bestaudio/best",
+        "best": "bestvideo[vcodec^=avc1][height>=720]+bestaudio[ext=m4a]/bestvideo[height>=720]+bestaudio/best",
     }
 
     format_string = format_map.get(quality, format_map["720p"])

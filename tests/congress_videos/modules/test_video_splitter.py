@@ -201,29 +201,29 @@ class TestExtractChaptersFromVideo:
 
 
 # ---------------------------------------------------------------------------
-# build_ffmpeg_cut_cmd (default: stream copy, output-seek, no decode)
+# build_ffmpeg_cut_cmd (default: frame-accurate re-encode, input-seek)
 # ---------------------------------------------------------------------------
 
 class TestBuildFfmpegCutCmd:
-    def test_output_seek_ss_before_input(self):
-        """Stream copy needs -ss BEFORE -i (output-seek) to avoid decoding."""
+    def test_default_input_seek_ss_after_input(self):
+        """Frame accuracy requires -ss AFTER -i (input-seek), not before."""
         cmd = build_ffmpeg_cut_cmd(src="in.mp4", out="out.mp4", start=10.0, duration=30.0)
         i_idx = cmd.index("-i")
         ss_idx = cmd.index("-ss")
-        assert ss_idx < i_idx, "-ss must come before -i so copy fast-seeks without decoding"
+        assert ss_idx > i_idx, "-ss must come after -i for frame-accurate cuts"
 
-    def test_default_uses_stream_copy(self):
-        """Default mode streams-copy (no decode); does not re-encode."""
+    def test_default_uses_reencode(self):
+        """Default mode re-encodes with libx264; does not stream-copy."""
         cmd = build_ffmpeg_cut_cmd(src="in.mp4", out="out.mp4", start=0.0, duration=5.0)
-        assert "copy" in cmd
-        assert "libx264" not in cmd
-
-    def test_reencode_true_uses_libx264_and_input_seek(self):
-        """reencode=True falls back to frame-accurate input-seek re-encode."""
-        cmd = build_ffmpeg_cut_cmd(src="in.mp4", out="out.mp4", start=10.0, duration=30.0, reencode=True)
         assert "libx264" in cmd
         assert "copy" not in cmd
-        assert cmd.index("-ss") > cmd.index("-i"), "-ss after -i for frame accuracy"
+
+    def test_reencode_false_uses_stream_copy_and_output_seek(self):
+        """reencode=False stream-copies with -ss BEFORE -i (no decode)."""
+        cmd = build_ffmpeg_cut_cmd(src="in.mp4", out="out.mp4", start=10.0, duration=30.0, reencode=False)
+        assert "copy" in cmd
+        assert "libx264" not in cmd
+        assert cmd.index("-ss") < cmd.index("-i"), "-ss before -i so copy fast-seeks without decoding"
 
     def test_source_and_output_present(self):
         cmd = build_ffmpeg_cut_cmd(src="src.mkv", out="dst.mp4", start=1.0, duration=2.0)

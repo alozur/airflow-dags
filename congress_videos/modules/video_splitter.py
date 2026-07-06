@@ -16,30 +16,28 @@ def build_ffmpeg_cut_cmd(
     out: str,
     start: float,
     duration: float,
-    reencode: bool = False,
+    reencode: bool = True,
 ) -> list[str]:
     """Build an ffmpeg cut command.
 
-    Default mode is *stream copy* (``-c copy``) with *output-seeking* (``-ss``
-    placed BEFORE ``-i``). ffmpeg fast-seeks to the nearest keyframe at or
-    before ``start`` and copies packets WITHOUT decoding. This is near-instant
-    and, critically, never decodes the source — so a corrupt/AV1 source that
-    would crash a re-encode (cascading OBU/parse errors, a bogus AAC channel
-    count breaking the resampler) is cut cleanly. The trade-off: cuts snap to
-    the nearest keyframe, so the start can drift by a few seconds — irrelevant
-    for chapter boundaries in a multi-hour session or a coarse pre-trim window.
+    Default mode re-encodes (``-c:v libx264`` / ``-c:a aac``) with
+    *input-seeking* (``-ss`` placed AFTER ``-i``), so cuts land on the exact
+    requested boundary instead of snapping to the nearest keyframe. The source
+    is now downloaded as H264 (see ``utils.youtube_downloader``), so decoding is
+    clean and does not hit the AV1 corruption that previously crashed re-encode.
+    The veryfast preset bounds CPU cost; chapter/short clips are short.
 
-    Set ``reencode=True`` for frame-accurate cuts (input-seek + libx264/aac).
-    Only use it on a clean source; it decodes every frame and will crash on a
-    corrupt one.
+    Set ``reencode=False`` for a stream copy (``-c copy``) with output-seeking
+    (``-ss`` before ``-i``): near-instant and never decodes, but cuts snap to the
+    nearest keyframe (few-second drift). Useful as a fallback on a suspect source.
 
     Args:
         src: Path to the source video.
         out: Path where the cut clip is written.
         start: Start offset in seconds from the beginning of ``src``.
         duration: Clip duration in seconds. Must be > 0.
-        reencode: When ``True``, re-encode with libx264/aac for frame accuracy
-            (input-seek). When ``False`` (default), stream-copy with keyframe
+        reencode: When ``True`` (default), re-encode with libx264/aac for frame
+            accuracy (input-seek). When ``False``, stream-copy with keyframe
             snapping (no decode).
 
     Returns:
@@ -131,11 +129,11 @@ def split_video_chapter(source_video_path, output_path, start_time, end_time):
     """
     Split a video segment using ffmpeg.
 
-    Uses ffmpeg to extract a specific time range from the source video via
-    stream copy (no decode); see :func:`build_ffmpeg_cut_cmd`. Cuts snap to the
-    nearest keyframe, so the start may drift by a few seconds — acceptable for
-    chapter boundaries and robust against corrupt/AV1 sources. The source video
-    is never modified — the segment is written to ``output_path`` as a new file.
+    Uses ffmpeg to extract a specific time range from the source video.
+    Frame-accurate extraction via input-seeking + re-encode (libx264/aac);
+    see :func:`build_ffmpeg_cut_cmd`. Relies on the source being H264 (the
+    downloader now forces it) so decoding is clean. The source video is never
+    modified — the segment is written to ``output_path`` as a new file.
 
     Args:
         source_video_path: Path to source video file
