@@ -365,7 +365,7 @@ class PostgreSQLOperator(BaseOperator):
 
             uploads_today = db.count_chapters_uploaded_today()
             queue_size = db.count_pending_uploadable_chapters(min_relevance_score)
-            max_uploads = 2 if queue_size > 15 else 1
+            max_uploads = 1  # Upload one chapter per day regardless of queue size
             remaining_quota = max(0, max_uploads - uploads_today)
 
             result = {
