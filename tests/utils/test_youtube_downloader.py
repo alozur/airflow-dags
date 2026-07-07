@@ -220,7 +220,9 @@ class TestDownloadWithPytubefix:
 class TestDownloadYoutubeVideoForUpload:
 
     def test_pytubefix_success_returns_immediately(self, tmp_path, mocker):
-        """If pytubefix succeeds, yt-dlp is never called."""
+        """If pytubefix succeeds, yt-dlp is never called (guard disabled to isolate
+        the download short-circuit from the live-status probe, which also uses
+        yt_dlp.YoutubeDL)."""
         mocker.patch(
             "utils.youtube_downloader.download_with_pytubefix",
             return_value={"success": True, "file_path": "/tmp/v.mp4", "resolution": "720p"},
@@ -230,7 +232,7 @@ class TestDownloadYoutubeVideoForUpload:
         from utils.youtube_downloader import download_youtube_video_for_upload
 
         result = download_youtube_video_for_upload(
-            "https://youtube.com/watch?v=x", str(tmp_path)
+            "https://youtube.com/watch?v=x", str(tmp_path), guard_live_status=False
         )
 
         assert result["success"] is True
@@ -846,3 +848,218 @@ class TestDownloadYoutubeSubtitles:
 
         assert result["success"] is False
         assert result["error"] is not None
+
+
+# ---------------------------------------------------------------------------
+# probe_live_status (finished-stream guard shared helper)
+# ---------------------------------------------------------------------------
+
+class TestProbeLiveStatus:
+
+    def _fake_ydl(self, info=None, exc=None):
+        fake_ydl = MagicMock()
+        fake_ydl.__enter__ = MagicMock(return_value=fake_ydl)
+        fake_ydl.__exit__ = MagicMock(return_value=False)
+        if exc is not None:
+            fake_ydl.extract_info.side_effect = exc
+        else:
+            fake_ydl.extract_info.return_value = info
+        return fake_ydl
+
+    @pytest.mark.parametrize(
+        "status",
+        ["was_live", "not_live", "post_live", "is_live", "is_upcoming"],
+    )
+    def test_returns_live_status_round_trip(self, mocker, status):
+        """Every yt-dlp live_status value round-trips unchanged."""
+        fake_ydl = self._fake_ydl(info={"live_status": status})
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", return_value=fake_ydl)
+
+        from utils.youtube_downloader import probe_live_status
+
+        assert probe_live_status("https://youtube.com/watch?v=x") == status
+        fake_ydl.extract_info.assert_called_once_with(
+            "https://youtube.com/watch?v=x", download=False
+        )
+
+    def test_missing_live_status_key_returns_none(self, mocker):
+        """A dict without live_status returns None."""
+        fake_ydl = self._fake_ydl(info={"id": "x"})
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", return_value=fake_ydl)
+
+        from utils.youtube_downloader import probe_live_status
+
+        assert probe_live_status("https://youtube.com/watch?v=x") is None
+
+    def test_download_error_returns_none(self, mocker):
+        """A yt_dlp DownloadError is swallowed -> None (never raises)."""
+        import yt_dlp
+
+        fake_ydl = self._fake_ydl(exc=yt_dlp.utils.DownloadError("rate limited"))
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", return_value=fake_ydl)
+
+        from utils.youtube_downloader import probe_live_status
+
+        assert probe_live_status("https://youtube.com/watch?v=x") is None
+
+    def test_generic_exception_returns_none(self, mocker):
+        """Any generic exception is swallowed -> None (never raises)."""
+        fake_ydl = self._fake_ydl(exc=RuntimeError("boom"))
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", return_value=fake_ydl)
+
+        from utils.youtube_downloader import probe_live_status
+
+        assert probe_live_status("https://youtube.com/watch?v=x") is None
+
+    def test_cookiefile_set_when_file_exists(self, tmp_path, mocker):
+        """cookiefile is added to the opts only when the file exists."""
+        cookies = tmp_path / "cookies.txt"
+        cookies.write_text("cookies")
+
+        captured: dict = {}
+
+        def capture_ydl(opts):
+            captured.update(opts)
+            fake_ydl = self._fake_ydl(info={"live_status": "was_live"})
+            return fake_ydl
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", side_effect=capture_ydl)
+
+        from utils.youtube_downloader import probe_live_status
+
+        probe_live_status("https://youtube.com/watch?v=x", str(cookies))
+
+        assert captured.get("cookiefile") == str(cookies)
+
+    def test_no_cookiefile_when_absent(self, mocker):
+        """No cookiefile key when cookies_file is None."""
+        captured: dict = {}
+
+        def capture_ydl(opts):
+            captured.update(opts)
+            return self._fake_ydl(info={"live_status": "was_live"})
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", side_effect=capture_ydl)
+
+        from utils.youtube_downloader import probe_live_status
+
+        probe_live_status("https://youtube.com/watch?v=x", None)
+
+        assert "cookiefile" not in captured
+
+    def test_timeout_forwarded_as_socket_timeout(self, mocker):
+        """timeout is forwarded to yt-dlp opts as socket_timeout."""
+        captured: dict = {}
+
+        def capture_ydl(opts):
+            captured.update(opts)
+            return self._fake_ydl(info={"live_status": "was_live"})
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", side_effect=capture_ydl)
+
+        from utils.youtube_downloader import probe_live_status
+
+        probe_live_status("https://youtube.com/watch?v=x", timeout=17)
+
+        assert captured.get("socket_timeout") == 17
+        assert captured.get("skip_download") is True
+
+
+# ---------------------------------------------------------------------------
+# download_youtube_video_for_upload — live_status guard (defense-in-depth)
+# ---------------------------------------------------------------------------
+
+class TestDownloadGuardLiveStatus:
+
+    @pytest.mark.parametrize("status", ["post_live", "is_live", "is_upcoming"])
+    def test_not_ready_status_skips_before_any_download(self, tmp_path, mocker, status):
+        """A not-ready live_status returns a skip result with no download attempt."""
+        mocker.patch(
+            "utils.youtube_downloader.probe_live_status", return_value=status
+        )
+        mock_pytubefix = mocker.patch("utils.youtube_downloader.download_with_pytubefix")
+        mock_ydl_class = mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL")
+
+        from utils.youtube_downloader import download_youtube_video_for_upload
+
+        result = download_youtube_video_for_upload(
+            "https://youtube.com/watch?v=x", str(tmp_path)
+        )
+
+        assert result["success"] is False
+        assert result["skipped"] is True
+        assert status in result["error"]
+        mock_pytubefix.assert_not_called()
+        mock_ydl_class.assert_not_called()
+
+    def test_guard_runs_before_pytubefix_attempt(self, tmp_path, mocker):
+        """With use_pytubefix_first=True, the guard short-circuits before pytubefix."""
+        mocker.patch(
+            "utils.youtube_downloader.probe_live_status", return_value="is_live"
+        )
+        mock_pytubefix = mocker.patch("utils.youtube_downloader.download_with_pytubefix")
+
+        from utils.youtube_downloader import download_youtube_video_for_upload
+
+        result = download_youtube_video_for_upload(
+            "https://youtube.com/watch?v=x", str(tmp_path), use_pytubefix_first=True
+        )
+
+        assert result["skipped"] is True
+        mock_pytubefix.assert_not_called()
+
+    @pytest.mark.parametrize("status", ["was_live", "not_live"])
+    def test_ready_status_proceeds_to_download(self, tmp_path, mocker, status):
+        """A ready live_status lets the normal download path proceed."""
+        mocker.patch(
+            "utils.youtube_downloader.probe_live_status", return_value=status
+        )
+        mock_pytubefix = mocker.patch(
+            "utils.youtube_downloader.download_with_pytubefix",
+            return_value={"success": True, "file_path": "/tmp/v.mp4", "resolution": "720p"},
+        )
+
+        from utils.youtube_downloader import download_youtube_video_for_upload
+
+        result = download_youtube_video_for_upload(
+            "https://youtube.com/watch?v=x", str(tmp_path)
+        )
+
+        assert result["success"] is True
+        mock_pytubefix.assert_called_once()
+
+    def test_probe_error_none_proceeds_to_download(self, tmp_path, mocker):
+        """A probe error (None) is non-blocking: the download proceeds."""
+        mocker.patch(
+            "utils.youtube_downloader.probe_live_status", return_value=None
+        )
+        mock_pytubefix = mocker.patch(
+            "utils.youtube_downloader.download_with_pytubefix",
+            return_value={"success": True, "file_path": "/tmp/v.mp4", "resolution": "720p"},
+        )
+
+        from utils.youtube_downloader import download_youtube_video_for_upload
+
+        result = download_youtube_video_for_upload(
+            "https://youtube.com/watch?v=x", str(tmp_path)
+        )
+
+        assert result["success"] is True
+        mock_pytubefix.assert_called_once()
+
+    def test_guard_disabled_issues_no_probe(self, tmp_path, mocker):
+        """guard_live_status=False never probes and keeps the legacy flow."""
+        mock_probe = mocker.patch("utils.youtube_downloader.probe_live_status")
+        mocker.patch(
+            "utils.youtube_downloader.download_with_pytubefix",
+            return_value={"success": True, "file_path": "/tmp/v.mp4", "resolution": "720p"},
+        )
+
+        from utils.youtube_downloader import download_youtube_video_for_upload
+
+        result = download_youtube_video_for_upload(
+            "https://youtube.com/watch?v=x", str(tmp_path), guard_live_status=False
+        )
+
+        assert result["success"] is True
+        mock_probe.assert_not_called()

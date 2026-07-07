@@ -14,6 +14,53 @@ import yt_dlp
 
 logger = logging.getLogger(__name__)
 
+# yt-dlp live_status values that correspond to a genuinely-downloadable VOD.
+READY_LIVE_STATUSES = frozenset({"was_live", "not_live"})
+
+
+def probe_live_status(
+    youtube_url: str,
+    cookies_file: str | None = None,
+    *,
+    timeout: int = 30,
+) -> str | None:
+    """
+    Return yt-dlp ``live_status`` for a URL, or ``None`` on ANY error.
+
+    Runs ``extract_info(youtube_url, download=False)`` and returns
+    ``info.get('live_status')`` (one of ``is_live`` / ``is_upcoming`` /
+    ``post_live`` / ``was_live`` / ``not_live``). NEVER raises: network,
+    rate-limit, or parse errors are caught and logged, returning ``None`` so
+    callers can fail-closed. Reuses the downloader's ``cookies_file`` so the
+    probed status matches what an actual download would see (cookies/geo).
+
+    Args:
+        youtube_url: YouTube video URL to probe.
+        cookies_file: Optional path to a cookies.txt file. Added to the yt-dlp
+            options only when the file exists on disk.
+        timeout: Socket timeout in seconds, forwarded as ``socket_timeout``.
+
+    Returns:
+        The ``live_status`` string, or ``None`` on any error or when the key
+        is absent.
+    """
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "socket_timeout": timeout,
+    }
+    if cookies_file and Path(cookies_file).exists():
+        ydl_opts["cookiefile"] = cookies_file
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(youtube_url, download=False)
+        return info.get("live_status")
+    except Exception as e:
+        logger.warning(f"probe_live_status failed for {youtube_url}: {e}")
+        return None
+
 
 def download_with_pytubefix(
     youtube_url: str,
@@ -197,6 +244,7 @@ def download_youtube_video_for_upload(
     quality: str = "720p",
     cookies_file: str = "/opt/airflow/data/congress_videos/youtube_cookies.txt",
     use_pytubefix_first: bool = True,
+    guard_live_status: bool = True,
 ) -> Dict[str, any]:
     """
     Download YouTube video in format ready for re-upload to YouTube.
@@ -210,6 +258,10 @@ def download_youtube_video_for_upload(
         quality: Video quality (720p, 1080p, best)
         cookies_file: Path to YouTube cookies.txt file (for bypassing restrictions)
         use_pytubefix_first: Try pytubefix before yt-dlp (default True)
+        guard_live_status: When True, probe ``live_status`` before any download
+            attempt and return a clean skip result for a not-ready VOD
+            (post_live / is_live / is_upcoming). A probe error (None) is
+            non-blocking and the download proceeds (default True).
 
     Returns:
         Dictionary with download info:
@@ -231,6 +283,27 @@ def download_youtube_video_for_upload(
         ...     print(f"Downloaded: {result['file_path']}")
     """
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    # Defense-in-depth readiness guard: probe live_status BEFORE any download
+    # attempt (the pytubefix path exposes no clean live_status). A not-ready VOD
+    # (post_live / is_live / is_upcoming) would otherwise crash ffmpeg later with
+    # "moov atom not found". A probe error (None) is non-blocking here — the
+    # pre-branch task gate is the primary defense — so the download proceeds.
+    if guard_live_status:
+        status = probe_live_status(youtube_url, cookies_file)
+        if status is not None and status not in READY_LIVE_STATUSES:
+            logger.warning(
+                f"Skipping {youtube_url}: live_status={status!r} (not a ready VOD)"
+            )
+            return {
+                "success": False,
+                "skipped": True,
+                "file_path": None,
+                "file_size_mb": None,
+                "duration": None,
+                "title": None,
+                "error": f"live_status {status!r} not ready — skipped download",
+            }
 
     # Map quality string to minimum resolution
     quality_to_resolution = {"720p": 720, "1080p": 1080, "best": 720}

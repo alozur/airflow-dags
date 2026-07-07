@@ -1865,3 +1865,51 @@ class TestFlattenAndRegroup:
         )
         out = regroup_summarized_chunks([])
         assert out == {"total_videos": 0, "videos": []}
+
+
+# ---------------------------------------------------------------------------
+# guard_enabled -> guard_live_status forwarding (finished-stream-guard E.1)
+# ---------------------------------------------------------------------------
+
+class TestDownloadGuardForwarding:
+
+    def _patch_paths(self, mocker, tmp_path):
+        mocker.patch(
+            "congress_videos.modules.youtube.download.get_download_video_path",
+            return_value=str(tmp_path / "downloads" / "2025-01-01" / "vid001"),
+        )
+        mocker.patch("congress_videos.modules.youtube.download.ensure_directory_exists")
+
+    def _spy_downloader(self, mocker):
+        return mocker.patch(
+            "congress_videos.modules.youtube.download.download_youtube_video_for_upload",
+            return_value={
+                "success": True,
+                "file_path": "/tmp/video.mp4",
+                "file_size_mb": 100,
+                "duration": 1800,
+                "title": "Test",
+            },
+        )
+
+    def test_default_forwards_guard_live_status_true(self, mocker, tmp_path):
+        self._patch_paths(mocker, tmp_path)
+        spy = self._spy_downloader(mocker)
+
+        from congress_videos.modules.youtube.download import download_video_from_youtube
+
+        download_video_from_youtube(_make_video_details(_make_video()), "2025-01-01")
+
+        assert spy.call_args.kwargs["guard_live_status"] is True
+
+    def test_guard_disabled_forwards_guard_live_status_false(self, mocker, tmp_path):
+        self._patch_paths(mocker, tmp_path)
+        spy = self._spy_downloader(mocker)
+
+        from congress_videos.modules.youtube.download import download_video_from_youtube
+
+        download_video_from_youtube(
+            _make_video_details(_make_video()), "2025-01-01", guard_enabled=False
+        )
+
+        assert spy.call_args.kwargs["guard_live_status"] is False

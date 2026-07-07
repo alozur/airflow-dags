@@ -17,7 +17,7 @@ def __getattr__(name):
     """
     # youtube_channel functions
     if name in ['fetch_youtube_channel_videos', 'filter_plenary_session_videos',
-                'filter_unprocessed_videos',
+                'filter_unprocessed_videos', 'filter_finished_streams',
                 'get_video_details', 'get_video_descriptions', 'parse_description_links',
                 'scrape_press_release', 'download_and_read_agenda', 'extract_session_date',
                 'extract_agenda_section']:
@@ -25,6 +25,7 @@ def __getattr__(name):
             fetch_youtube_channel_videos,
             filter_plenary_session_videos,
             filter_unprocessed_videos,
+            filter_finished_streams,
             get_video_details,
             get_video_descriptions,
             parse_description_links,
@@ -78,6 +79,7 @@ __all__ = [
     'fetch_youtube_channel_videos',
     'filter_plenary_session_videos',
     'filter_unprocessed_videos',
+    'filter_finished_streams',
     'get_video_details',
     'get_video_descriptions',
     'parse_description_links',

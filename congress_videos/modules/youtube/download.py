@@ -106,7 +106,7 @@ def create_test_video_data(test_video_url: str = "https://www.youtube.com/watch?
     return mock_plenary_videos
 
 
-def download_video_from_youtube(video_details, target_date: str):
+def download_video_from_youtube(video_details, target_date: str, guard_enabled: bool = True):
     """
     Download video from YouTube in best quality.
 
@@ -115,6 +115,8 @@ def download_video_from_youtube(video_details, target_date: str):
     Args:
         video_details: Results from get_video_details (contains youtube_url)
         target_date: Target date in YYYY-MM-DD format (for organizing downloads)
+        guard_enabled: Forwarded as ``guard_live_status`` to the downloader so a
+            not-ready VOD is skipped before any download attempt (default True).
 
     Returns:
         Dict with download results:
@@ -150,7 +152,8 @@ def download_video_from_youtube(video_details, target_date: str):
             result = download_youtube_video_for_upload(
                 youtube_url=youtube_url,
                 output_dir=video_download_dir,
-                quality="best"  # Download best available quality
+                quality="best",  # Download best available quality
+                guard_live_status=guard_enabled,
             )
 
             if result['success']:

@@ -68,6 +68,8 @@ with DAG(
         "target_date": today_str,
         "lookback_days": 1,  # Inclusive lookback window: target_date - lookback_days .. target_date
         "min_hours_since_end": 2,  # Skip videos whose live broadcast ended less than this many hours ago
+        "guard_enabled": True,  # Finished-stream guard: drop not-ready VODs before the branch (+ downloader guard)
+        "guard_floor_minutes": 10,  # Cheap pre-probe skip: drop candidates that ended less than this ago
         "max_videos": 20,  # Maximum number of videos to check
         "chunk_duration_minutes": 30,  # Duration of each audio chunk in minutes (default: 30 minutes)
         "isTesting": False,  # Set to True manually when testing
@@ -162,6 +164,24 @@ with DAG(
         ),
     )
 
+    # Step 2c: Finished-stream guard - drop candidates that are not a genuinely
+    # downloadable VOD (still live / upcoming / post_live still remuxing) BEFORE
+    # the branch, so check_if_plenary_found sees a truthful total_matches.
+    # Overwrites the same 'plenary_videos' XCom (mirrors t2b). PRODUCTION path
+    # only. Gated behind guard_enabled for config-only rollback.
+    t2_guard = PythonOperator(
+        task_id='filter_finished_streams',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: yt_channel.filter_finished_streams(
+                ti.xcom_pull(key='plenary_videos'),
+                guard_enabled=context["params"].get("guard_enabled", True),
+                guard_floor_minutes=context["params"].get("guard_floor_minutes", 10),
+            ),
+            'plenary_videos',          # overwrite same key
+        ),
+    )
+
     # Step 3a: Get video details (duration, timing, etc.)
     # Note: We already filtered for completed streams, no need to check status again
     # trigger_rule: Execute if any upstream task succeeds (test or production path)
@@ -232,7 +252,8 @@ with DAG(
             ti,
             lambda: yt_channel.download_video_from_youtube(
                 ti.xcom_pull(key='video_details'),
-                target_date=context["params"].get("target_date")
+                target_date=context["params"].get("target_date"),
+                guard_enabled=context["params"].get("guard_enabled", True)
             ),
             'downloaded_videos'
         ),
@@ -502,7 +523,7 @@ with DAG(
     t0_test >> [t3a, t3b]
 
     # Production mode path: fetch from channel
-    t1 >> t2 >> t2b >> t2a
+    t1 >> t2 >> t2b >> t2_guard >> t2a
 
     # Branch: no plenary sessions found
     t2a >> t_end

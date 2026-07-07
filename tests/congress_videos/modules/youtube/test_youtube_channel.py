@@ -672,3 +672,386 @@ class TestFilterUnprocessedVideos:
 
         with pytest.raises(RuntimeError, match="db down"):
             filter_unprocessed_videos(self._plenary(["A", "B"]))
+
+
+# --------------------------------------------------------------------------- #
+# filter_finished_streams — pre-branch readiness gate
+# --------------------------------------------------------------------------- #
+
+from datetime import datetime, timedelta, timezone
+
+
+def _iso_minutes_ago(minutes: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+
+def _item(
+    broadcast: str = "none",
+    concurrent=None,
+    actual_end: str | None = None,
+) -> dict:
+    live: dict = {}
+    if concurrent is not None:
+        live["concurrentViewers"] = concurrent
+    if actual_end is not None:
+        live["actualEndTime"] = actual_end
+    return {
+        "snippet": {"liveBroadcastContent": broadcast, "title": "Sesion Plenaria"},
+        "contentDetails": {"duration": "PT1H"},
+        "liveStreamingDetails": live,
+    }
+
+
+def _service(items_by_id: dict) -> MagicMock:
+    """Fake YouTube service: videos().list(id='A,B,..').execute() -> {'items': [...]}.
+
+    Mirrors the batched Data API call: ``id`` is a comma-joined list of ids and
+    each returned item carries its own ``id`` so callers can index by it.
+    """
+    fake_service = MagicMock()
+
+    def _list(part, id):  # noqa: A002 - mirror the API kwarg name
+        m = MagicMock()
+        items = []
+        for vid in id.split(","):
+            for it in items_by_id.get(vid, []):
+                items.append({**it, "id": vid})
+        m.execute.return_value = {"items": items}
+        return m
+
+    fake_service.videos.return_value.list.side_effect = _list
+    return fake_service
+
+
+def _plenary(video_ids, target_date="2025-10-08", extra=None):
+    videos = [{"video_id": vid, "title": f"T-{vid}"} for vid in video_ids]
+    d = {"total_matches": len(videos), "videos": videos, "target_date": target_date}
+    if extra:
+        d.update(extra)
+    return d
+
+
+class TestFilterFinishedStreams:
+
+    # --- case (a): Data API cuts (no probe) --------------------------------- #
+
+    def test_live_broadcast_dropped_without_probe(self, monkeypatch, mocker):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"A": [_item(broadcast="live")]}),
+        )
+        probe = mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status"
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        result = filter_finished_streams(_plenary(["A"]))
+
+        assert result["total_matches"] == 0
+        assert probe.call_count == 0
+
+    def test_concurrent_viewers_dropped_without_probe(self, monkeypatch, mocker):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        item = _item(actual_end=_iso_minutes_ago(600), concurrent="1234")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"A": [item]}),
+        )
+        probe = mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status"
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        result = filter_finished_streams(_plenary(["A"]))
+
+        assert result["total_matches"] == 0
+        assert probe.call_count == 0
+
+    def test_missing_actual_end_time_dropped_without_probe(self, monkeypatch, mocker):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"A": [_item(actual_end=None)]}),
+        )
+        probe = mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status"
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        result = filter_finished_streams(_plenary(["A"]))
+
+        assert result["total_matches"] == 0
+        assert probe.call_count == 0
+
+    # --- case (c): floor skip (no probe) ------------------------------------ #
+
+    def test_floor_skip_drops_without_probe(self, monkeypatch, mocker):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        item = _item(actual_end=_iso_minutes_ago(3))
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"A": [item]}),
+        )
+        probe = mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status"
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        result = filter_finished_streams(_plenary(["A"]), guard_floor_minutes=10)
+
+        assert result["total_matches"] == 0
+        assert probe.call_count == 0
+
+    # --- case (b): authoritative probe -------------------------------------- #
+
+    @pytest.mark.parametrize("status", ["post_live", "is_live", "is_upcoming"])
+    def test_probe_not_ready_dropped(self, monkeypatch, mocker, status):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        item = _item(actual_end=_iso_minutes_ago(600))
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"A": [item]}),
+        )
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            return_value=status,
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        result = filter_finished_streams(_plenary(["A"]))
+
+        assert result["total_matches"] == 0
+
+    @pytest.mark.parametrize("status", ["was_live", "not_live"])
+    def test_probe_ready_kept(self, monkeypatch, mocker, status):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        item = _item(actual_end=_iso_minutes_ago(600))
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"A": [item]}),
+        )
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            return_value=status,
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        result = filter_finished_streams(_plenary(["A"]))
+
+        assert result["total_matches"] == 1
+        assert result["videos"][0]["video_id"] == "A"
+
+    def test_margin_passed_but_post_live_still_dropped(self, monkeypatch, mocker):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        item = _item(actual_end=_iso_minutes_ago(240))  # 4 hours ago
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"A": [item]}),
+        )
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            return_value="post_live",
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        result = filter_finished_streams(_plenary(["A"]), guard_floor_minutes=10)
+
+        assert result["total_matches"] == 0
+
+    # --- fail-closed -------------------------------------------------------- #
+
+    def test_probe_raises_only_that_candidate_dropped(self, monkeypatch, mocker):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        items = {
+            "A": [_item(actual_end=_iso_minutes_ago(600))],
+            "B": [_item(actual_end=_iso_minutes_ago(600))],
+        }
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service(items),
+        )
+
+        def _probe(url, cookies=None):
+            if "A" in url:
+                raise RuntimeError("probe boom")
+            return "was_live"
+
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            side_effect=_probe,
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        result = filter_finished_streams(_plenary(["A", "B"]))
+
+        assert result["total_matches"] == 1
+        assert result["videos"][0]["video_id"] == "B"
+
+    def test_probe_none_dropped_fail_closed(self, monkeypatch, mocker):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        item = _item(actual_end=_iso_minutes_ago(600))
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"A": [item]}),
+        )
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            return_value=None,
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        result = filter_finished_streams(_plenary(["A"]))
+
+        assert result["total_matches"] == 0
+
+    def test_missing_video_id_dropped_others_evaluated(self, monkeypatch, mocker):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"B": [_item(actual_end=_iso_minutes_ago(600))]}),
+        )
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            return_value="was_live",
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        plenary = {
+            "total_matches": 2,
+            "videos": [{"title": "no-id"}, {"video_id": "B", "title": "T-B"}],
+            "target_date": "2025-10-08",
+        }
+        result = filter_finished_streams(plenary)
+
+        assert result["total_matches"] == 1
+        assert result["videos"][0]["video_id"] == "B"
+
+    # --- shape preservation ------------------------------------------------- #
+
+    def test_shape_preserved_and_input_not_corrupted(self, monkeypatch, mocker):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        item = _item(actual_end=_iso_minutes_ago(600))
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"A": [item]}),
+        )
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            return_value="was_live",
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        plenary = _plenary(["A"], extra={"custom_key": "keep-me"})
+        original_videos = plenary["videos"]
+        result = filter_finished_streams(plenary)
+
+        assert set(["total_matches", "videos", "target_date"]).issubset(result.keys())
+        assert result["target_date"] == "2025-10-08"
+        assert result["custom_key"] == "keep-me"
+        assert result["total_matches"] == len(result["videos"])
+        # input list object not mutated in place
+        assert plenary["videos"] is original_videos
+        assert len(original_videos) == 1
+
+    def test_mixed_batch_counts_only_survivors(self, monkeypatch, mocker):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        items = {
+            vid: [_item(actual_end=_iso_minutes_ago(600))] for vid in ("A", "B", "C")
+        }
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service(items),
+        )
+
+        def _probe(url, cookies=None):
+            return "was_live" if "A" in url else "post_live"
+
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            side_effect=_probe,
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        result = filter_finished_streams(_plenary(["A", "B", "C"]))
+
+        assert result["total_matches"] == 1
+        assert [v["video_id"] for v in result["videos"]] == ["A"]
+
+    # --- passthroughs ------------------------------------------------------- #
+
+    def test_empty_input_returned_as_is_no_calls(self, monkeypatch, mocker):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        build = mocker.patch("congress_videos.modules.youtube.youtube_channel.build")
+        probe = mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status"
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        empty = {"total_matches": 0, "videos": [], "target_date": "2025-10-08"}
+        result = filter_finished_streams(empty)
+
+        assert result == empty
+        build.assert_not_called()
+        probe.assert_not_called()
+
+    def test_guard_disabled_passthrough_no_calls(self, monkeypatch, mocker):
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        build = mocker.patch("congress_videos.modules.youtube.youtube_channel.build")
+        probe = mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status"
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        plenary = _plenary(["A", "B"])
+        result = filter_finished_streams(plenary, guard_enabled=False)
+
+        assert result == plenary
+        assert result["total_matches"] == 2
+        build.assert_not_called()
+        probe.assert_not_called()
+
+    def test_missing_api_key_raises_value_error(self, monkeypatch, mocker):
+        monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            side_effect=AssertionError("should not be called"),
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        with pytest.raises(ValueError, match="YOUTUBE_API_KEY"):
+            filter_finished_streams(_plenary(["A"]))
+
+
+# --------------------------------------------------------------------------- #
+# Package export (FR12)
+# --------------------------------------------------------------------------- #
+
+class TestFilterFinishedStreamsExport:
+
+    def test_importable_from_package_root(self):
+        from congress_videos.modules.youtube import filter_finished_streams
+
+        assert callable(filter_finished_streams)
+
+    def test_listed_in_all(self):
+        import congress_videos.modules.youtube as pkg
+
+        assert "filter_finished_streams" in pkg.__all__

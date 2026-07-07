@@ -16,6 +16,8 @@ from bs4 import BeautifulSoup
 from googleapiclient.discovery import build
 from PyPDF2 import PdfReader
 
+from utils.youtube_downloader import READY_LIVE_STATUSES, probe_live_status
+
 
 def fetch_youtube_channel_videos(channel_id: str, max_results: int = 10):
     """
@@ -174,6 +176,140 @@ def filter_unprocessed_videos(plenary_videos: dict) -> dict:
     logging.info(
         "Idempotency filter: %d candidate(s), %d already processed, %d to process. Skipped ids: %s",
         len(videos), skipped, len(kept), sorted(already_processed),
+    )
+
+    result = dict(plenary_videos)            # preserve target_date + any extra keys
+    result['videos'] = kept
+    result['total_matches'] = len(kept)
+    return result
+
+
+def filter_finished_streams(
+    plenary_videos: dict,
+    *,
+    guard_enabled: bool = True,
+    guard_floor_minutes: int = 10,
+    cookies_file: str | None = None,
+) -> dict:
+    """
+    Drop candidates that are not a genuinely-downloadable VOD.
+
+    Input/output shape: {'total_matches': int, 'videos': list, 'target_date': str}
+    Preserves 'target_date' and any other top-level keys; rewrites only
+    'videos' and recomputes 'total_matches' (identical idiom to
+    filter_unprocessed_videos).
+
+    Per candidate:
+      (1) YouTube Data API videos().list live-state pre-filter — DROP when
+          snippet.liveBroadcastContent in {'live','upcoming'}, when
+          liveStreamingDetails.concurrentViewers is present (broadcasting now),
+          or when actualEndTime is missing; DROP without probing when
+          elapsed < guard_floor_minutes (obviously too fresh).
+      (2) yt-dlp probe_live_status on the survivors — KEEP only when
+          live_status in READY_LIVE_STATUSES.
+
+    FAIL-CLOSED: a per-candidate error (Data API / parse / probe returning None)
+    drops ONLY that candidate; other candidates keep being evaluated and the
+    task never raises. guard_enabled=False → returns plenary_videos unchanged
+    (passthrough). Empty / falsy input → returned as-is. Missing YOUTUBE_API_KEY
+    raises ValueError before the loop (consistent with get_video_details).
+
+    Args:
+        plenary_videos: Results from filter_unprocessed_videos.
+        guard_enabled: When False, pure passthrough (no Data API / probe calls).
+        guard_floor_minutes: Cheap pre-probe skip threshold in minutes.
+        cookies_file: Optional cookies.txt path forwarded to the probe.
+
+    Returns:
+        Dict with the same shape as the input, with not-ready candidates removed
+        and 'total_matches' recomputed to the kept count.
+    """
+    if not plenary_videos or not plenary_videos.get('videos'):
+        return plenary_videos or {'total_matches': 0, 'videos': []}
+
+    if not guard_enabled:
+        logging.info("Finished-stream guard disabled (guard_enabled=False); passthrough")
+        return plenary_videos
+
+    youtube_api_key = os.getenv('YOUTUBE_API_KEY')
+
+    if not youtube_api_key:
+        error_msg = "YOUTUBE_API_KEY environment variable not set"
+        logging.error(error_msg)
+        raise ValueError(error_msg)
+
+    youtube = build('youtube', 'v3', developerKey=youtube_api_key)
+
+    videos = plenary_videos['videos']
+
+    # Single batched Data API call for all candidate ids (no per-candidate call).
+    ids = [v['video_id'] for v in videos if v.get('video_id')]
+    resp = youtube.videos().list(
+        part='snippet,contentDetails,liveStreamingDetails',
+        id=','.join(ids)
+    ).execute()
+    by_id = {it['id']: it for it in resp.get('items', [])}
+
+    kept = []
+
+    for video in videos:
+        video_id = video.get('video_id')
+        try:
+            if not video_id:
+                logging.info("Dropping candidate without video_id (fail-closed)")
+                continue
+
+            youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+
+            item = by_id.get(video_id)
+            if item is None:
+                logging.info(f"Dropping {video_id}: not found via Data API")
+                continue
+
+            snippet = item.get('snippet', {})
+            live_details = item.get('liveStreamingDetails', {})
+
+            # (a) Data API live-state pre-filter
+            broadcast = snippet.get('liveBroadcastContent')
+            if broadcast in ('live', 'upcoming'):
+                logging.info(f"Dropping {video_id}: liveBroadcastContent={broadcast!r}")
+                continue
+
+            if live_details.get('concurrentViewers') is not None:
+                logging.info(f"Dropping {video_id}: concurrentViewers present (broadcasting)")
+                continue
+
+            actual_end_time = live_details.get('actualEndTime')
+            if actual_end_time is None:
+                logging.info(f"Dropping {video_id}: no actualEndTime (still live or no data)")
+                continue
+
+            end_dt = datetime.fromisoformat(actual_end_time.replace('Z', '+00:00'))
+            elapsed = datetime.now(timezone.utc) - end_dt
+
+            # (c) cheap pre-probe skip: obviously too fresh
+            if elapsed < timedelta(minutes=guard_floor_minutes):
+                logging.info(
+                    f"Dropping {video_id}: ended {elapsed} ago, under the "
+                    f"{guard_floor_minutes}min floor (skip probe)"
+                )
+                continue
+
+            # (b) authoritative yt-dlp probe (only survivors reach here)
+            status = probe_live_status(youtube_url, cookies_file)
+            if status in READY_LIVE_STATUSES:
+                kept.append(video)
+            else:
+                logging.info(f"Dropping {video_id}: live_status={status!r} (not a ready VOD)")
+
+        except Exception as e:
+            # FR5: fail-closed — drop only this candidate, never crash the task.
+            logging.warning(f"Dropping {video_id}: guard error (fail-closed): {e}")
+            continue
+
+    logging.info(
+        "Finished-stream guard: %d candidate(s), %d kept, %d dropped.",
+        len(videos), len(kept), len(videos) - len(kept),
     )
 
     result = dict(plenary_videos)            # preserve target_date + any extra keys
