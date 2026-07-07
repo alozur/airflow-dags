@@ -1031,29 +1031,45 @@ class CongressionalVideoDB:
         """
         Get downloaded Shorts clips that are ready for YouTube upload.
 
-        Returns clips ordered by virality score descending so the best clips
-        are uploaded first. Only clips with a local file present are returned.
+        Only returns clips whose parent long-form video (chapter) is already
+        uploaded to YouTube. Clips are ordered by the chapter's YouTube upload
+        date descending (most recently uploaded long-form video first), then by
+        virality score descending as a tie-breaker within the same long-form
+        video. Only clips with a local file present are returned.
 
         Args:
             limit: Maximum number of rows to return (default 2)
             min_virality_score: Minimum virality score threshold (default 0.0)
 
         Returns:
-            List of video_shorts records ordered by reap_virality_score DESC
+            List of video_shorts records ordered by parent chapter
+            youtube_upload_date DESC, then reap_virality_score DESC
         """
         shorts_table = self.pg_conn.get_qualified_table('video_shorts')
+        chapters_table = self.pg_conn.get_qualified_table('video_chapters')
 
         min_virality_score = min_virality_score if min_virality_score is not None else 0.0
 
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(f"""
-                    SELECT * FROM {shorts_table}
-                    WHERE is_uploaded = FALSE
-                      AND local_file_path IS NOT NULL
-                      AND reap_status = 'downloaded'
-                      AND (reap_virality_score >= %s OR reap_virality_score IS NULL)
-                    ORDER BY reap_virality_score DESC NULLS LAST
+                    SELECT vs.* FROM {shorts_table} vs
+                    WHERE vs.is_uploaded = FALSE
+                      AND vs.local_file_path IS NOT NULL
+                      AND vs.reap_status = 'downloaded'
+                      AND (vs.reap_virality_score >= %s OR vs.reap_virality_score IS NULL)
+                      AND EXISTS (
+                          SELECT 1 FROM {chapters_table} vc
+                          WHERE vc.chapter_id = vs.chapter_id
+                            AND vc.youtube_upload_date IS NOT NULL
+                      )
+                    ORDER BY (
+                        SELECT vc.youtube_upload_date
+                        FROM {chapters_table} vc
+                        WHERE vc.chapter_id = vs.chapter_id
+                        LIMIT 1
+                    ) DESC NULLS LAST,
+                    vs.reap_virality_score DESC NULLS LAST
                     LIMIT %s
                 """, (min_virality_score, limit))
                 shorts = cur.fetchall()
