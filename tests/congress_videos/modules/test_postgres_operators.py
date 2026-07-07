@@ -367,10 +367,10 @@ class TestExecuteCheckUploadQuota:
         assert result["uploads_today"] == 0
         assert result["queue_size"] == 10
 
-    def test_max_uploads_1_when_queue_large(
+    def test_max_uploads_2_when_queue_large(
         self, mock_db, mock_task_instance, make_context
     ):
-        """max_uploads stays 1 regardless of queue size (one upload per day)."""
+        """max_uploads=2 when queue_size > 15 (clear the backlog faster)."""
         from congress_videos.modules.postgres_operators import PostgreSQLOperator
 
         mock_db.count_chapters_uploaded_today.return_value = 0
@@ -380,8 +380,8 @@ class TestExecuteCheckUploadQuota:
         ctx = make_context(params={}, ti=mock_task_instance)
         result = op.execute(ctx)
 
-        assert result["max_uploads"] == 1
-        assert result["remaining_quota"] == 1
+        assert result["max_uploads"] == 2
+        assert result["remaining_quota"] == 2
 
     def test_remaining_quota_zero_when_quota_reached(
         self, mock_db, mock_task_instance, make_context
