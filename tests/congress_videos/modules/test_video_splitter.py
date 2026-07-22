@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from unittest.mock import MagicMock
 
@@ -315,3 +317,102 @@ class TestComputeFfmpegTimeout:
 
     def test_returns_int(self):
         assert isinstance(compute_ffmpeg_timeout(45.7), int)
+
+
+# ---------------------------------------------------------------------------
+# AV1 integration cut (requires ffmpeg + AV1 encoder)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.integration
+@pytest.mark.slow
+class TestAv1CutIntegration:
+    """Exercise a real ffmpeg cut on a synthetic AV1 source.
+
+    Requires ffmpeg with an AV1 encoder installed.  Auto-skips without
+    failing the suite when the binary or encoder is missing.
+    """
+
+    SOURCE_DURATION = 10.0          # seconds
+    SOURCE_SIZE = "128x64"
+    SOURCE_RATE = 25                # fps
+
+    def _av1_encoder_available(self) -> str | None:
+        """Return the first available AV1 encoder name, or None."""
+        if not shutil.which("ffmpeg"):
+            return None
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True, text=True, timeout=30,
+        )
+        for name in ("libaom-av1", "libsvtav1", "librav1e"):
+            if name in result.stdout:
+                return name
+        return None
+
+    def _gen_source(self, tmp_path: str, encoder: str) -> str:
+        """Generate a short synthetic AV1 video at *tmp_path*."""
+        path = os.path.join(tmp_path, "source_av1.mp4")
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", f"testsrc=duration={self.SOURCE_DURATION}"
+                   f":size={self.SOURCE_SIZE}:rate={self.SOURCE_RATE}",
+            "-c:v", encoder,
+            "-crf", "63",
+            "-g", "25",
+        ]
+        # Speed preset differs per encoder
+        if encoder == "libaom-av1":
+            cmd.extend(["-cpu-used", "6"])
+        else:
+            cmd.extend(["-preset", "10"])
+        cmd.append(path)
+
+        subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=True)
+        return path
+
+    def test_av1_source_cut_produces_h264_aac(self, tmp_path):
+        """A real AV1 source cut by split_video_chapter yields h264+aac."""
+        encoder = self._av1_encoder_available()
+        if encoder is None:
+            pytest.skip("ffmpeg with AV1 encoder not available")
+
+        source = self._gen_source(str(tmp_path), encoder)
+        output = os.path.join(str(tmp_path), "chapter.mp4")
+        start_srt = "00:00:01,000"
+        end_srt = "00:00:04,000"
+
+        result = split_video_chapter(source, output, start_srt, end_srt)
+
+        assert result["success"] is True
+        assert result["output_path"] == output
+        # Output duration should be ~3 s (end_srt - start_srt) within ±1 frame
+        assert result["duration_seconds"] == pytest.approx(3.0, abs=0.04)
+
+        # Verify the output codecs via ffprobe
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "csv=p=0",
+                output,
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert probe.returncode == 0
+        assert "h264" in probe.stdout.strip().lower()
+
+        probe_a = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "a:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "csv=p=0",
+                output,
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        # Audio stream may be absent in the synthetic source
+        if probe_a.returncode == 0 and probe_a.stdout.strip():
+            assert "aac" in probe_a.stdout.strip().lower()
