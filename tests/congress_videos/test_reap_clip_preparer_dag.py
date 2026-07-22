@@ -83,9 +83,9 @@ class TestCongressReapClipPreparerDAGLoads:
 class TestFfmpegExtractWindow:
 
     def test_uses_precise_input_seek_command_and_adaptive_timeout(self, mocker, tmp_path):
-        """The window extractor must build a frame-accurate (-ss after -i)
-        re-encode command and pass an adaptive timeout that scales with the
-        clip duration (base=120 + factor=8 * duration)."""
+        """The window extractor must build a frame-accurate (-ss before -i)
+        re-encode command with -err_detect ignore_err and pass an adaptive
+        timeout that scales with the clip duration (base=120 + factor=8 * duration)."""
         import congress_videos.reap_clip_preparer_dag as mod
 
         mocker.patch("os.makedirs")
@@ -101,8 +101,9 @@ class TestFfmpegExtractWindow:
 
         run.assert_called_once()
         cmd = run.call_args[0][0]
-        # Frame accuracy: -ss after -i, full re-encode (no stream copy).
-        assert cmd.index("-ss") > cmd.index("-i")
+        # Frame accuracy: -ss before -i (input seek + accurate_seek), full re-encode (no stream copy).
+        assert cmd.index("-ss") < cmd.index("-i"), "-ss before -i with accurate_seek gives frame accuracy without full-prefix decode"
+        assert "-err_detect" in cmd and cmd[cmd.index("-err_detect") + 1] == "ignore_err"
         assert "copy" not in cmd
         assert "libx264" in cmd
         # Adaptive timeout for a 30s clip: 120 + 8 * 30 = 360.
