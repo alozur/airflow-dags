@@ -205,12 +205,12 @@ class TestExtractChaptersFromVideo:
 # ---------------------------------------------------------------------------
 
 class TestBuildFfmpegCutCmd:
-    def test_default_input_seek_ss_after_input(self):
-        """Frame accuracy requires -ss AFTER -i (input-seek), not before."""
+    def test_default_input_seek_ss_before_input(self):
+        """Input seeking: -ss BEFORE -i so exposure shrinks to the cut window."""
         cmd = build_ffmpeg_cut_cmd(src="in.mp4", out="out.mp4", start=10.0, duration=30.0)
         i_idx = cmd.index("-i")
         ss_idx = cmd.index("-ss")
-        assert ss_idx > i_idx, "-ss must come after -i for frame-accurate cuts"
+        assert ss_idx < i_idx, "-ss must come before -i for input-seeking re-encode"
 
     def test_default_uses_reencode(self):
         """Default mode re-encodes with libx264; does not stream-copy."""
@@ -218,12 +218,54 @@ class TestBuildFfmpegCutCmd:
         assert "libx264" in cmd
         assert "copy" not in cmd
 
-    def test_reencode_false_uses_stream_copy_and_output_seek(self):
-        """reencode=False stream-copies with -ss BEFORE -i (no decode)."""
-        cmd = build_ffmpeg_cut_cmd(src="in.mp4", out="out.mp4", start=10.0, duration=30.0, reencode=False)
+    def test_reencode_false_uses_stream_copy_and_input_seek(self):
+        """reencode=False stream-copies with -ss BEFORE -i (no decode, keyframe snap)."""
+        src = "in.mp4"
+        out = "out.mp4"
+        start = 10.0
+        duration = 30.0
+        cmd = build_ffmpeg_cut_cmd(src=src, out=out, start=start, duration=duration, reencode=False)
         assert "copy" in cmd
         assert "libx264" not in cmd
+        assert "-err_detect" not in cmd
         assert cmd.index("-ss") < cmd.index("-i"), "-ss before -i so copy fast-seeks without decoding"
+        assert cmd == [
+            'ffmpeg', '-y',
+            '-ss', str(start),
+            '-i', src,
+            '-t', str(duration),
+            '-c', 'copy',
+            '-avoid_negative_ts', 'make_zero',
+            out,
+        ]
+
+    def test_err_detect_ignore_err_is_input_option(self):
+        """-err_detect ignore_err appears as an input option, before -i."""
+        cmd = build_ffmpeg_cut_cmd(src="in.mp4", out="out.mp4", start=10.0, duration=30.0)
+        assert "-err_detect" in cmd
+        assert cmd[cmd.index("-err_detect") + 1] == "ignore_err"
+        assert cmd.index("-err_detect") < cmd.index("-i")
+
+    def test_default_command_exact_shape(self):
+        """Re-encode branch matches the design template exactly."""
+        src = "in.mp4"
+        out = "out.mp4"
+        start = 10.0
+        duration = 30.0
+        cmd = build_ffmpeg_cut_cmd(src=src, out=out, start=start, duration=duration)
+        assert cmd == [
+            'ffmpeg', '-y',
+            '-err_detect', 'ignore_err',
+            '-ss', str(start),
+            '-i', src,
+            '-t', str(duration),
+            '-c:v', 'libx264',
+            '-preset', 'veryfast',
+            '-crf', '20',
+            '-c:a', 'aac',
+            '-avoid_negative_ts', 'make_zero',
+            out,
+        ]
 
     def test_source_and_output_present(self):
         cmd = build_ffmpeg_cut_cmd(src="src.mkv", out="dst.mp4", start=1.0, duration=2.0)
