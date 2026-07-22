@@ -2,6 +2,9 @@
 Video splitting module using ffmpeg.
 
 Splits downloaded YouTube videos into chapters based on start_time and end_time.
+Sources may be H264 or AV1; the re-encode branch uses input-seeking
+(``-ss`` before ``-i``) so AV1 decode exposure is the cut window only,
+and ``-err_detect ignore_err`` bounds in-window corruption to glitches.
 """
 
 import logging
@@ -20,16 +23,17 @@ def build_ffmpeg_cut_cmd(
 ) -> list[str]:
     """Build an ffmpeg cut command.
 
-    Default mode re-encodes (``-c:v libx264`` / ``-c:a aac``) with
-    *input-seeking* (``-ss`` placed AFTER ``-i``), so cuts land on the exact
-    requested boundary instead of snapping to the nearest keyframe. The source
-    is now downloaded as H264 (see ``utils.youtube_downloader``), so decoding is
-    clean and does not hit the AV1 corruption that previously crashed re-encode.
-    The veryfast preset bounds CPU cost; chapter/short clips are short.
+    Default mode re-encodes (``-c:v libx264`` / ``-c:a aac``) with *input-seeking*
+    (``-ss`` placed BEFORE ``-i``).  ffmpeg ``accurate_seek`` (default since 2.1)
+    seeks to the nearest keyframe at the container level, then decode-discards
+    to the requested start — frame-accurate within ≤40 ms without decoding the
+    full source prefix.  ``-err_detect ignore_err`` is added as an input option so
+    that in-window AV1 bitstream corruption produces a bounded visual glitch
+    instead of a fatal exit.
 
-    Set ``reencode=False`` for a stream copy (``-c copy``) with output-seeking
-    (``-ss`` before ``-i``): near-instant and never decodes, but cuts snap to the
-    nearest keyframe (few-second drift). Useful as a fallback on a suspect source.
+    Set ``reencode=False`` for a stream copy (``-c copy``) with input-seeking:
+    near-instant and never decodes, but cuts snap to the nearest keyframe
+    (few-second drift).  Useful as a fallback on a suspect source.
 
     Args:
         src: Path to the source video.
@@ -50,12 +54,16 @@ def build_ffmpeg_cut_cmd(
         raise ValueError("clip duration is 0 seconds")
 
     if reencode:
-        # Input-seek (-ss after -i) → frame-accurate, but decodes every frame.
+        # Input-seek (-ss before -i) → demuxer seeks to the nearest keyframe, then
+        # accurate_seek decode-discards to the exact frame.  Exposure is the cut
+        # window only, not the full source prefix.  -err_detect ignore_err bounds
+        # in-window AV1 corruption to a visual glitch instead of a fatal exit.
         return [
             'ffmpeg',
             '-y',
-            '-i', src,
+            '-err_detect', 'ignore_err',
             '-ss', str(start),
+            '-i', src,
             '-t', str(duration),
             '-c:v', 'libx264',
             '-preset', 'veryfast',
@@ -65,7 +73,7 @@ def build_ffmpeg_cut_cmd(
             out,
         ]
 
-    # Output-seek (-ss before -i) + stream copy → no decode, keyframe-snapped.
+    # Stream-copy (-ss before -i, -c copy) → no decode, keyframe-snapped.
     return [
         'ffmpeg',
         '-y',
@@ -130,10 +138,11 @@ def split_video_chapter(source_video_path, output_path, start_time, end_time):
     Split a video segment using ffmpeg.
 
     Uses ffmpeg to extract a specific time range from the source video.
-    Frame-accurate extraction via input-seeking + re-encode (libx264/aac);
-    see :func:`build_ffmpeg_cut_cmd`. Relies on the source being H264 (the
-    downloader now forces it) so decoding is clean. The source video is never
-    modified — the segment is written to ``output_path`` as a new file.
+    Frame-accurate extraction via input-seeking (``-ss`` before ``-i``) +
+    re-encode (libx264/aac); see :func:`build_ffmpeg_cut_cmd`.  Sources may be
+    H264 or AV1; ``-err_detect ignore_err`` bounds in-window AV1 corruption to
+    glitches instead of fatal exits.  The source video is never modified — the
+    segment is written to ``output_path`` as a new file.
 
     Args:
         source_video_path: Path to source video file
