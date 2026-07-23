@@ -11,6 +11,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+CHAPTER_UPLOAD_ABANDON_THRESHOLD = 3  # 3rd recorded failure excludes the chapter
+
 class CongressionalVideoDB:
     """Database operations for congressional video management"""
 
@@ -766,6 +768,43 @@ class CongressionalVideoDB:
                     WHERE chapter_id = %s
                 """, (youtube_video_id, chapter_id))
                 logger.info(f"Marked chapter {chapter_id} as uploaded to YouTube: {youtube_video_id}")
+
+    def record_chapter_upload_failure(self, chapter_id: int, error_message: str | None = None) -> None:
+        """
+        Record a failed per-chapter YouTube upload attempt.
+
+        Increments the cumulative failure counter and, once it reaches
+        CHAPTER_UPLOAD_ABANDON_THRESHOLD (3), marks the chapter abandoned so it is
+        excluded from uploadable_chapters. The row is never deleted; the counter is
+        cumulative for the life of the row and never resets or un-abandons.
+
+        Args:
+            chapter_id: Database ID of the chapter that failed to upload.
+            error_message: Optional last error text from the upload result payload.
+        """
+        chapters_table = self.pg_conn.get_qualified_table('video_chapters')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    UPDATE {chapters_table} SET
+                        upload_attempts = upload_attempts + 1,
+                        last_upload_error = %s,
+                        is_upload_abandoned = (upload_attempts + 1 >= {CHAPTER_UPLOAD_ABANDON_THRESHOLD}),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE chapter_id = %s
+                    RETURNING upload_attempts, is_upload_abandoned
+                """, (error_message, chapter_id))
+                result = cur.fetchone()
+                logger.info(
+                    f"Recorded upload failure for chapter {chapter_id} "
+                    f"(threshold={CHAPTER_UPLOAD_ABANDON_THRESHOLD})"
+                )
+                if result and result.get('upload_attempts') == CHAPTER_UPLOAD_ABANDON_THRESHOLD:
+                    logger.warning(
+                        f"Chapter {chapter_id} abandoned after "
+                        f"{CHAPTER_UPLOAD_ABANDON_THRESHOLD} failed uploads"
+                    )
 
     # ==================== Video Shorts (Reap Pipeline) ====================
 

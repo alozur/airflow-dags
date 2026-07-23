@@ -93,6 +93,11 @@ CREATE TABLE IF NOT EXISTS production.video_chapters (
     youtube_video_id VARCHAR(50), -- YouTube video ID once uploaded as separate video
     youtube_upload_date TIMESTAMP,
 
+    -- Upload failure tracking (soft-delete after repeated failures)
+    upload_attempts INTEGER DEFAULT 0,
+    is_upload_abandoned BOOLEAN DEFAULT FALSE,
+    last_upload_error TEXT,
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -145,6 +150,7 @@ JOIN production.youtube_source_videos ysv ON vc.video_id = ysv.video_id
 WHERE
     vc.is_uploaded_to_youtube = FALSE
     AND vc.relevance_score >= 2  -- Only high-relevance chapters (score >= 2/5)
+    AND vc.is_upload_abandoned = FALSE
 ORDER BY
     vc.relevance_score DESC,  -- Higher relevance score first
     vc.created_at DESC;        -- Newer chapters first
@@ -194,5 +200,8 @@ COMMENT ON COLUMN production.video_chapters.relevance_score IS 'Total relevance 
 COMMENT ON COLUMN production.video_chapters.speaker_relevance_points IS 'Speaker relevance (0-2): Are key political figures involved?';
 COMMENT ON COLUMN production.video_chapters.topic_relevance_points IS 'Topic relevance (0-2): Is it a current/hot topic in Spain?';
 COMMENT ON COLUMN production.video_chapters.public_interest_points IS 'Public interest (0-1): Could it generate media interest?';
+COMMENT ON COLUMN production.video_chapters.upload_attempts IS 'Cumulative count of recorded per-chapter upload FAILURES (successes never touch it)';
+COMMENT ON COLUMN production.video_chapters.is_upload_abandoned IS 'TRUE once upload_attempts reaches the abandon threshold (3); excludes the chapter from uploadable_chapters';
+COMMENT ON COLUMN production.video_chapters.last_upload_error IS 'Last recorded per-chapter upload failure message';
 COMMENT ON VIEW production.uploadable_chapters IS 'Shows chapters eligible for YouTube upload (relevance_score >= 2)';
 COMMENT ON VIEW production.chapter_statistics IS 'Provides aggregate statistics about chapters by source video';

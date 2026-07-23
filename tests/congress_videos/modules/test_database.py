@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import date
 from unittest.mock import MagicMock, call, patch
@@ -605,6 +606,74 @@ class TestMarkChapterUploaded:
         sql, params = mock_cursor.execute.call_args[0]
         assert "yt-safe-id" not in sql
         assert "yt-safe-id" in params
+
+
+# --------------------------------------------------------------------------- #
+# record_chapter_upload_failure
+# --------------------------------------------------------------------------- #
+
+class TestRecordChapterUploadFailure:
+
+    def test_normal_increment_updates_attempts_and_error(self, db):
+        """Non-threshold-crossing failure increments upload_attempts, stores error."""
+        instance, mock_cursor = db
+
+        instance.record_chapter_upload_failure(chapter_id=7, error_message="quota exceeded")
+
+        sql, params = mock_cursor.execute.call_args[0]
+        assert "UPDATE" in sql
+        assert "upload_attempts = upload_attempts + 1" in sql
+        assert "is_upload_abandoned" in sql
+        assert "last_upload_error" in sql
+        assert params == ("quota exceeded", 7)
+
+    def test_threshold_crossing_sets_abandoned_condition(self, db):
+        """SQL encodes the >= 3 (CHAPTER_UPLOAD_ABANDON_THRESHOLD) abandon condition."""
+        instance, mock_cursor = db
+
+        instance.record_chapter_upload_failure(chapter_id=9, error_message="timeout")
+
+        sql, _ = mock_cursor.execute.call_args[0]
+        assert ">= 3" in sql
+
+    def test_error_message_none_path(self, db):
+        """error_message=None is passed through as a None param, not a crash."""
+        instance, mock_cursor = db
+
+        instance.record_chapter_upload_failure(chapter_id=11, error_message=None)
+
+        sql, params = mock_cursor.execute.call_args[0]
+        assert params == (None, 11)
+
+    def test_warning_logged_when_threshold_crossed_on_this_call(self, db, caplog):
+        """A distinct WARNING fires when this call is the one crossing the abandon threshold."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "upload_attempts": 3,
+            "is_upload_abandoned": True,
+        }
+
+        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.database"):
+            instance.record_chapter_upload_failure(chapter_id=42, error_message="boom")
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "42" in warnings[0].message
+        assert "abandoned" in warnings[0].message.lower()
+
+    def test_no_warning_logged_for_ordinary_retry_increment(self, db, caplog):
+        """An ordinary (non-crossing) failure increment does not emit the abandonment WARNING."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "upload_attempts": 1,
+            "is_upload_abandoned": False,
+        }
+
+        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.database"):
+            instance.record_chapter_upload_failure(chapter_id=43, error_message="boom")
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 0
 
 
 # --------------------------------------------------------------------------- #

@@ -1,0 +1,54 @@
+strict_tdd: true
+context: |
+  airflow-dags is a Node.js/TypeScript, Python project.
+  Detected markers: pyproject.toml, GitHub Actions.
+  Additional evidence: Test-like files detected (52); examples: tests/__init__.py, tests/conftest.py, tests/congress_videos/__init__.py, tests/congress_videos/config/__init__.py, tests/congress_videos/config/test_paths.py.
+  Primary test command: pytest.
+  Unit tests: pytest (pytest).
+  Integration tests: none.
+  E2E tests: none.
+rules:
+  proposal:
+    require_problem_statement: true
+  spec:
+    require_acceptance_criteria: true
+  design:
+    require_tradeoffs: true
+  tasks:
+    protect_review_workload: true
+  apply:
+    test_command: "pytest"
+  verify:
+    test_command: "pytest"
+testing:
+  detected: "2026-07-23"
+  runner:
+    command: "pytest"
+    framework: "pytest"
+  layers:
+    unit: "pytest"
+    integration: ""
+    e2e: ""
+  commands:
+    unit:
+      - scope: "."
+        command: "pytest"
+        framework: "pytest"
+    integration:
+      []
+    e2e:
+      []
+  coverage:
+    command: ""
+    commands:
+      []
+quality:
+  lint: ""
+  lint_commands:
+    []
+  typecheck: ""
+  typecheck_commands:
+    []
+  format: ""
+  format_commands:
+    []

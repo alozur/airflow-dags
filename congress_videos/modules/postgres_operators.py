@@ -1,10 +1,13 @@
 """Custom PostgreSQL operators for Airflow."""
 
+import logging
 from typing import Dict, Optional
 
 from airflow.models import BaseOperator
 
 from .database import CongressionalVideoDB
+
+logger = logging.getLogger(__name__)
 
 class PostgreSQLOperator(BaseOperator):
     """Custom operator for PostgreSQL operations with XCom integration"""
@@ -399,6 +402,7 @@ class PostgreSQLOperator(BaseOperator):
             else:
                 updated_count = 0
                 failed_count = 0
+                recorded_failures = 0
                 details = []
 
                 for upload_detail in upload_results['upload_details']:
@@ -425,12 +429,35 @@ class PostgreSQLOperator(BaseOperator):
                             })
                             print(f"❌ Failed to mark chapter {chapter_id}: {e}")
                     elif not success:
-                        print(f"⏭️ Skipping chapter {chapter_id}: upload was not successful")
-                        details.append({
-                            'chapter_id': chapter_id,
-                            'status': 'skipped',
-                            'reason': 'upload_failed'
-                        })
+                        if chapter_id:
+                            try:
+                                db.record_chapter_upload_failure(chapter_id, upload_detail.get('error'))
+                                recorded_failures += 1
+                                details.append({
+                                    'chapter_id': chapter_id,
+                                    'status': 'failure_recorded',
+                                })
+                                print(f"📉 Recorded upload failure for chapter {chapter_id}")
+                            except Exception as e:
+                                failed_count += 1
+                                details.append({
+                                    'chapter_id': chapter_id,
+                                    'status': 'failed',
+                                    'error': str(e),
+                                })
+                                print(f"❌ Failed to record upload failure for chapter {chapter_id}: {e}")
+                                logger.error(
+                                    f"Failed to RECORD upload failure for chapter {chapter_id} in the "
+                                    f"database (this attempt's failure count is now uncounted): {e}"
+                                )
+                        else:
+                            # Defensive: no resolvable chapter_id — cannot target a row, log-and-skip (no DB write)
+                            print("⏭️ Skipping failed upload with no chapter_id")
+                            details.append({
+                                'chapter_id': chapter_id,
+                                'status': 'skipped',
+                                'reason': 'upload_failed_no_chapter_id',
+                            })
                     elif success and (not chapter_id or not youtube_video_id):
                         # Debug: upload succeeded but missing tracking fields
                         print(f"⚠️ Upload succeeded but missing fields: chapter_id={chapter_id}, youtube_video_id={youtube_video_id}")
@@ -444,9 +471,10 @@ class PostgreSQLOperator(BaseOperator):
                 result = {
                     'updated_chapters': updated_count,
                     'failed_updates': failed_count,
+                    'recorded_failures': recorded_failures,
                     'details': details
                 }
-                print(f"✅ Updated {updated_count} chapters, {failed_count} failed")
+                print(f"✅ Updated {updated_count} chapters, {failed_count} failed, {recorded_failures} failures recorded")
 
         elif self.operation == 'get_chapters_for_shorts':
             """Get video chapters eligible for Reap Shorts processing"""
