@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 import types
 from unittest.mock import MagicMock
@@ -536,8 +537,8 @@ class TestExecuteMarkChaptersUploaded:
         assert result["updated_chapters"] == 1
         mock_db.mark_chapter_uploaded.assert_called_once_with("ch-01", "yt-xyz")
 
-    def test_skips_failed_upload(self, mock_db, mock_task_instance, make_context):
-        """Failed upload is skipped and recorded as 'skipped' in details."""
+    def test_failed_upload_records_failure(self, mock_db, mock_task_instance, make_context):
+        """Failed upload with a resolvable chapter_id records the failure via the DB."""
         from congress_videos.modules.postgres_operators import PostgreSQLOperator
 
         mock_task_instance.xcom_store["upload_results"] = {
@@ -554,7 +555,117 @@ class TestExecuteMarkChaptersUploaded:
         result = op.execute(make_context(ti=mock_task_instance))
 
         assert result["updated_chapters"] == 0
+        mock_db.record_chapter_upload_failure.assert_called_once_with("ch-02", None)
         mock_db.mark_chapter_uploaded.assert_not_called()
+
+    def test_failed_upload_with_error_records_error_text(
+        self, mock_db, mock_task_instance, make_context
+    ):
+        """Failed upload carrying an 'error' string forwards it to record_chapter_upload_failure."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_task_instance.xcom_store["upload_results"] = {
+            "upload_details": [
+                {
+                    "chapter_id": "ch-03",
+                    "youtube_video_id": None,
+                    "success": False,
+                    "error": "quota exceeded",
+                }
+            ]
+        }
+
+        op = PostgreSQLOperator(task_id="t", operation="mark_chapters_uploaded")
+        op.execute(make_context(ti=mock_task_instance))
+
+        mock_db.record_chapter_upload_failure.assert_called_once_with("ch-03", "quota exceeded")
+
+    def test_failed_upload_no_chapter_id_is_defensively_skipped(
+        self, mock_db, mock_task_instance, make_context
+    ):
+        """Failed upload with no resolvable chapter_id never calls the DB and never crashes."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_task_instance.xcom_store["upload_results"] = {
+            "upload_details": [
+                {
+                    "chapter_id": None,
+                    "youtube_video_id": None,
+                    "success": False,
+                    "error": "unknown",
+                }
+            ]
+        }
+
+        op = PostgreSQLOperator(task_id="t", operation="mark_chapters_uploaded")
+        result = op.execute(make_context(ti=mock_task_instance))
+
+        mock_db.record_chapter_upload_failure.assert_not_called()
+        assert any(
+            d["status"] == "skipped" and d.get("reason") == "upload_failed_no_chapter_id"
+            for d in result["details"]
+        )
+
+    def test_two_failed_uploads_recorded_independently(
+        self, mock_db, mock_task_instance, make_context
+    ):
+        """Two distinct failed chapters in one batch each record their own failure."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_task_instance.xcom_store["upload_results"] = {
+            "upload_details": [
+                {
+                    "chapter_id": "ch-10",
+                    "youtube_video_id": None,
+                    "success": False,
+                    "error": "err-a",
+                },
+                {
+                    "chapter_id": "ch-11",
+                    "youtube_video_id": None,
+                    "success": False,
+                    "error": "err-b",
+                },
+            ]
+        }
+
+        op = PostgreSQLOperator(task_id="t", operation="mark_chapters_uploaded")
+        op.execute(make_context(ti=mock_task_instance))
+
+        mock_db.record_chapter_upload_failure.assert_any_call("ch-10", "err-a")
+        mock_db.record_chapter_upload_failure.assert_any_call("ch-11", "err-b")
+        assert mock_db.record_chapter_upload_failure.call_count == 2
+
+    def test_db_write_failure_while_recording_is_distinguishably_logged(
+        self, mock_db, mock_task_instance, make_context, caplog
+    ):
+        """If record_chapter_upload_failure itself raises, log a distinguishable ERROR
+        (recording the failure was lost) and keep the loop going without raising."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db.record_chapter_upload_failure.side_effect = Exception("transient DB error")
+
+        mock_task_instance.xcom_store["upload_results"] = {
+            "upload_details": [
+                {
+                    "chapter_id": "ch-20",
+                    "youtube_video_id": None,
+                    "success": False,
+                    "error": "upload failed",
+                }
+            ]
+        }
+
+        op = PostgreSQLOperator(task_id="t", operation="mark_chapters_uploaded")
+
+        with caplog.at_level(logging.ERROR):
+            result = op.execute(make_context(ti=mock_task_instance))
+
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(errors) == 1
+        assert "ch-20" in errors[0].message
+        assert "record" in errors[0].message.lower()
+        assert any(d["status"] == "failed" for d in result["details"])
 
     def test_successful_upload_missing_fields_recorded_as_skipped(
         self, mock_db, mock_task_instance, make_context
