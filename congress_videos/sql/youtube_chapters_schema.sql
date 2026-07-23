@@ -79,6 +79,11 @@ CREATE TABLE IF NOT EXISTS development.video_chapters (
     youtube_video_id VARCHAR(50), -- YouTube video ID once uploaded as separate video
     youtube_upload_date TIMESTAMP,
 
+    -- Upload failure tracking (soft-delete after repeated failures)
+    upload_attempts INTEGER DEFAULT 0,
+    is_upload_abandoned BOOLEAN DEFAULT FALSE,
+    last_upload_error TEXT,
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -129,6 +134,7 @@ JOIN development.youtube_source_videos ysv ON vc.video_id = ysv.video_id
 WHERE
     vc.is_uploaded_to_youtube = FALSE
     AND vc.relevance_score >= 2  -- Only high-relevance chapters (score >= 4/5)
+    AND vc.is_upload_abandoned = FALSE
 ORDER BY
     ysv.session_date DESC NULLS LAST,  -- Most recent session first
     vc.relevance_score DESC,           -- Highest score within same session
@@ -173,5 +179,8 @@ COMMENT ON COLUMN development.video_chapters.relevance_score IS 'Total relevance
 COMMENT ON COLUMN development.video_chapters.speaker_relevance_points IS 'Speaker relevance (0-2): Are key political figures involved?';
 COMMENT ON COLUMN development.video_chapters.topic_relevance_points IS 'Topic relevance (0-2): Is it a current/hot topic in Spain?';
 COMMENT ON COLUMN development.video_chapters.public_interest_points IS 'Public interest (0-1): Could it generate media interest?';
+COMMENT ON COLUMN development.video_chapters.upload_attempts IS 'Cumulative count of recorded per-chapter upload FAILURES (successes never touch it)';
+COMMENT ON COLUMN development.video_chapters.is_upload_abandoned IS 'TRUE once upload_attempts reaches the abandon threshold (3); excludes the chapter from uploadable_chapters';
+COMMENT ON COLUMN development.video_chapters.last_upload_error IS 'Last recorded per-chapter upload failure message';
 COMMENT ON VIEW development.uploadable_chapters IS 'Shows chapters eligible for YouTube upload (relevance_score >= 4)';
 COMMENT ON VIEW development.chapter_statistics IS 'Provides aggregate statistics about chapters by source video';
