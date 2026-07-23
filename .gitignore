@@ -225,3 +225,9 @@ congress_channel_logo.png
 channels4_profile.jpg
 test_thumbnail*.jpg
 thumbnail_*.jpg
+thumbnail_*.png
+
+# Local tool state
+.atl/
+.pi/
+opencode.json
