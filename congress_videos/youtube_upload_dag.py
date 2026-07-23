@@ -27,10 +27,6 @@ from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
-from congress_videos.modules.youtube import youtube_ai
-from congress_videos.modules.youtube import prepare_chapter_upload_config
-from congress_videos.modules import thumbnail_generator as thumb_gen
-from congress_videos.modules import video_splitter
 from utils.airflow_helpers import ensure_project_data_directory, xcom_task
 from utils.env_loader import load_env_if_local
 
@@ -99,69 +95,54 @@ with DAG(
         output_xcom_key='uploadable_chapters'
     )
 
-    # Step 2: Generate YouTube metadata for chapters
-    # Uses chapter title, description, speakers, and topics to create
-    # optimized YouTube titles and descriptions
-    t2 = PythonOperator(
-        task_id='generate_youtube_metadata',
-        python_callable=lambda ti: xcom_task(
+    def _generate_youtube_metadata(ti):
+        from congress_videos.modules.youtube import youtube_ai
+        return xcom_task(
             ti,
             lambda: youtube_ai.generate_youtube_metadata_for_selected_videos(
                 ti.xcom_pull(key='uploadable_chapters')
             ),
             'youtube_metadata_results'
-        ),
-    )
+        )
 
-    # Step 3: Generate thumbnail text using AI (3-6 words, max 40 chars)
-    t3 = PythonOperator(
-        task_id='generate_thumbnail_text',
-        python_callable=lambda ti: xcom_task(
+    def _generate_thumbnail_text(ti):
+        from congress_videos.modules import thumbnail_generator as thumb_gen
+        return xcom_task(
             ti,
             lambda: thumb_gen.generate_thumbnail_text_for_videos(
                 ti.xcom_pull(key='uploadable_chapters'),
                 ti.xcom_pull(key='youtube_metadata_results')
             ),
             'thumbnail_text_results'
-        ),
-    )
+        )
 
-    # Step 4: Generate thumbnails and save to video_id/chapter_id/ folder
-    # Creates folder structure: data/congress_videos/{video_id}/{chapter_id}/thumbnail.png
-    t4 = PythonOperator(
-        task_id='generate_thumbnails',
-        python_callable=lambda ti: xcom_task(
+    def _generate_thumbnails(ti):
+        from congress_videos.modules import thumbnail_generator as thumb_gen
+        return xcom_task(
             ti,
             lambda: thumb_gen.generate_video_thumbnails(
                 ti.xcom_pull(key='uploadable_chapters'),
                 ti.xcom_pull(key='thumbnail_text_results'),
-                None,  # No download_results for chapters
+                None,
                 ti.xcom_pull(key='data_directory_path')
             ),
             'thumbnail_results'
-        ),
-    )
+        )
 
-    # Step 5: Extract chapter videos from source YouTube videos using ffmpeg
-    # For each chapter, extracts video segment using start_time and end_time
-    # Saves to: data/congress_videos/{video_id}/{chapter_id}/chapter_video.mp4
-    t5 = PythonOperator(
-        task_id='extract_chapter_videos',
-        python_callable=lambda ti: xcom_task(
+    def _extract_chapter_videos(ti):
+        from congress_videos.modules import video_splitter
+        return xcom_task(
             ti,
             lambda: video_splitter.extract_chapters_from_video(
                 ti.xcom_pull(key='uploadable_chapters'),
                 ti.xcom_pull(key='data_directory_path')
             ),
             'chapter_extraction_results'
-        ),
-    )
+        )
 
-    # Step 6: Prepare upload configuration for generic YouTube uploader DAG
-    # Combines extraction results, metadata, and thumbnails into upload config
-    t6 = PythonOperator(
-        task_id='prepare_upload_config',
-        python_callable=lambda ti, **context: xcom_task(
+    def _prepare_upload_config(ti, **context):
+        from congress_videos.modules.youtube import prepare_chapter_upload_config
+        return xcom_task(
             ti,
             lambda: prepare_chapter_upload_config(
                 ti.xcom_pull(key='chapter_extraction_results'),
@@ -170,7 +151,36 @@ with DAG(
                 is_testing=context["params"].get("isTesting", False)
             ),
             'upload_config'
-        ),
+        )
+
+    # Step 2: Generate YouTube metadata for chapters
+    t2 = PythonOperator(
+        task_id='generate_youtube_metadata',
+        python_callable=_generate_youtube_metadata,
+    )
+
+    # Step 3: Generate thumbnail text using AI (3-6 words, max 40 chars)
+    t3 = PythonOperator(
+        task_id='generate_thumbnail_text',
+        python_callable=_generate_thumbnail_text,
+    )
+
+    # Step 4: Generate thumbnails and save to video_id/chapter_id/ folder
+    t4 = PythonOperator(
+        task_id='generate_thumbnails',
+        python_callable=_generate_thumbnails,
+    )
+
+    # Step 5: Extract chapter videos from source YouTube videos using ffmpeg
+    t5 = PythonOperator(
+        task_id='extract_chapter_videos',
+        python_callable=_extract_chapter_videos,
+    )
+
+    # Step 6: Prepare upload configuration for generic YouTube uploader DAG
+    t6 = PythonOperator(
+        task_id='prepare_upload_config',
+        python_callable=_prepare_upload_config,
     )
 
     # Step 7: Trigger generic YouTube uploader DAG and wait for completion
