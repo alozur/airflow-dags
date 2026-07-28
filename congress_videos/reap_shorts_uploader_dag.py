@@ -336,9 +336,32 @@ with DAG(
 
         logging.info(f"Upload summary: {successful} successful, {failed} failed")
 
+    def _check_short_upload_failures(ti, **context):
+        upload_results = ti.xcom_pull(key='upload_results')
+        if upload_results is None:
+            raise Exception("Upload results XCom missing — data integrity unknown")
+        upload_details = upload_results.get('upload_details', [])
+        if not upload_details:
+            logging.info("No upload results to check")
+            return
+        failed = [
+            d for d in upload_details
+            if not (d.get('success') and d.get('reap_clip_id') and d.get('youtube_video_id'))
+        ]
+        if failed:
+            raise Exception(
+                f"{len(failed)} short(s) failed to upload (DB writes already committed)"
+            )
+        logging.info("All shorts uploaded successfully")
+
     t4 = PythonOperator(
         task_id='mark_shorts_uploaded',
         python_callable=_mark_shorts_uploaded,
     )
 
-    t1 >> t2 >> t3 >> t4
+    t5 = PythonOperator(
+        task_id='check_short_upload_failures',
+        python_callable=_check_short_upload_failures,
+    )
+
+    t1 >> t2 >> t3 >> t4 >> t5
