@@ -71,6 +71,7 @@ class TestSplitVideoChapter:
         source.write_bytes(b"\x00" * 100)
         output = str(tmp_path / "chapter.mp4")
 
+        mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
         mock_run = mocker.patch("congress_videos.modules.video_splitter.subprocess.run")
         mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
         mocker.patch("congress_videos.modules.video_splitter.os.path.getsize", return_value=1_048_576)
@@ -87,6 +88,7 @@ class TestSplitVideoChapter:
         source.write_bytes(b"\x00" * 100)
         output = str(tmp_path / "chapter.mp4")
 
+        mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
         mock_run = mocker.patch("congress_videos.modules.video_splitter.subprocess.run")
         mock_run.return_value = MagicMock(returncode=1, stderr="ffmpeg: fatal error occurred", stdout="")
 
@@ -100,6 +102,7 @@ class TestSplitVideoChapter:
         source.write_bytes(b"\x00" * 100)
         output = str(tmp_path / "chapter.mp4")
 
+        mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
         mock_run = mocker.patch("congress_videos.modules.video_splitter.subprocess.run")
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="ffmpeg", timeout=600)
 
@@ -122,6 +125,7 @@ class TestSplitVideoChapter:
         source.write_bytes(b"\x00" * 100)
         output = str(tmp_path / "chapter.mp4")
 
+        mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
         mock_run = mocker.patch("congress_videos.modules.video_splitter.subprocess.run")
         mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
         mocker.patch("congress_videos.modules.video_splitter.os.path.getsize", return_value=512)
@@ -129,8 +133,144 @@ class TestSplitVideoChapter:
         result = split_video_chapter(str(source), output, "00:00:00,000", "00:00:30,000")
 
         for key in ["success", "output_path", "file_size_bytes", "file_size_mb",
-                    "duration_seconds", "start_time", "end_time", "error"]:
+                    "duration_seconds", "start_time", "end_time", "error",
+                    "source_codec", "cut_mode"]:
             assert key in result, f"Missing key: {key}"
+
+
+# ---------------------------------------------------------------------------
+# split_video_chapter — codec-aware cuts (ffmpeg-codec-aware-cuts, Slice 2)
+# ---------------------------------------------------------------------------
+
+class TestSplitVideoChapterCodecAware:
+    def _ok_run(self, mocker, tmp_path):
+        mocker.patch("congress_videos.modules.video_splitter.os.path.getsize", return_value=1024)
+        return mocker.patch(
+            "congress_videos.modules.video_splitter.subprocess.run",
+            return_value=MagicMock(returncode=0, stderr="", stdout=""),
+        )
+
+    def test_h264_source_passes_reencode_true_to_build_cmd(self, mocker, tmp_path):
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"\x00" * 100)
+        output = str(tmp_path / "chapter.mp4")
+
+        mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
+        self._ok_run(mocker, tmp_path)
+        mock_build = mocker.patch(
+            "congress_videos.modules.video_splitter.build_ffmpeg_cut_cmd",
+            wraps=build_ffmpeg_cut_cmd,
+        )
+
+        split_video_chapter(str(source), output, "00:00:00,000", "00:01:00,000", codec_cache=None)
+
+        assert mock_build.call_args.kwargs["reencode"] is True
+
+    def test_av1_source_passes_reencode_false_to_build_cmd(self, mocker, tmp_path):
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"\x00" * 100)
+        output = str(tmp_path / "chapter.mp4")
+
+        mocker.patch("utils.codec_detection.detect_video_codec", return_value="av1")
+        self._ok_run(mocker, tmp_path)
+        mock_build = mocker.patch(
+            "congress_videos.modules.video_splitter.build_ffmpeg_cut_cmd",
+            wraps=build_ffmpeg_cut_cmd,
+        )
+
+        split_video_chapter(str(source), output, "00:00:00,000", "00:01:00,000", codec_cache=None)
+
+        assert mock_build.call_args.kwargs["reencode"] is False
+
+    def test_unknown_codec_fails_safe_to_stream_copy(self, mocker, tmp_path):
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"\x00" * 100)
+        output = str(tmp_path / "chapter.mp4")
+
+        mocker.patch("utils.codec_detection.detect_video_codec", return_value="unknown")
+        self._ok_run(mocker, tmp_path)
+        mock_build = mocker.patch(
+            "congress_videos.modules.video_splitter.build_ffmpeg_cut_cmd",
+            wraps=build_ffmpeg_cut_cmd,
+        )
+
+        split_video_chapter(str(source), output, "00:00:00,000", "00:01:00,000", codec_cache=None)
+
+        assert mock_build.call_args.kwargs["reencode"] is False
+
+    def test_success_result_carries_source_codec_and_cut_mode(self, mocker, tmp_path):
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"\x00" * 100)
+        output = str(tmp_path / "chapter.mp4")
+
+        mocker.patch("utils.codec_detection.detect_video_codec", return_value="av1")
+        self._ok_run(mocker, tmp_path)
+
+        result = split_video_chapter(str(source), output, "00:00:00,000", "00:01:00,000")
+
+        assert result["source_codec"] == "av1"
+        assert result["cut_mode"] == "stream_copy"
+
+    def test_timeout_after_probe_reports_the_probed_codec(self, mocker, tmp_path):
+        """The probe runs before the ffmpeg call, so a later ffmpeg timeout still
+        reports the codec that was already determined."""
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"\x00" * 100)
+        output = str(tmp_path / "chapter.mp4")
+
+        mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
+        mocker.patch(
+            "congress_videos.modules.video_splitter.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="ffmpeg", timeout=600),
+        )
+
+        result = split_video_chapter(str(source), output, "00:00:00,000", "00:01:00,000")
+
+        assert result["source_codec"] == "h264"
+        assert result["cut_mode"] == "reencode"
+
+    def test_failure_before_probe_reports_unknown_codec_and_stream_copy(self, mocker, tmp_path):
+        """source_codec defaults to 'unknown' before the try, per design Decision 3:
+        a failure that happens before the codec probe (e.g. missing source file)
+        must still report a consistent, safe audit value."""
+        missing = str(tmp_path / "missing.mp4")
+        output = str(tmp_path / "chapter.mp4")
+
+        result = split_video_chapter(missing, output, "00:00:00,000", "00:01:00,000")
+
+        assert result["source_codec"] == "unknown"
+        assert result["cut_mode"] == "stream_copy"
+
+    def test_generic_failure_reports_source_codec_and_cut_mode(self, mocker, tmp_path):
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"\x00" * 100)
+        output = str(tmp_path / "chapter.mp4")
+
+        mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
+        mocker.patch(
+            "congress_videos.modules.video_splitter.subprocess.run",
+            return_value=MagicMock(returncode=1, stderr="boom", stdout=""),
+        )
+
+        result = split_video_chapter(str(source), output, "00:00:00,000", "00:01:00,000")
+
+        assert "source_codec" in result
+        assert "cut_mode" in result
+
+    def test_codec_cache_threading_probes_once_across_two_calls(self, mocker, tmp_path):
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"\x00" * 100)
+        output1 = str(tmp_path / "chapter1.mp4")
+        output2 = str(tmp_path / "chapter2.mp4")
+
+        mock_detect = mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
+        self._ok_run(mocker, tmp_path)
+
+        codec_cache: dict = {}
+        split_video_chapter(str(source), output1, "00:00:00,000", "00:01:00,000", codec_cache=codec_cache)
+        split_video_chapter(str(source), output2, "00:01:00,000", "00:02:00,000", codec_cache=codec_cache)
+
+        assert mock_detect.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +329,7 @@ class TestExtractChaptersFromVideo:
             }
         ]
 
+        mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
         mock_run = mocker.patch("congress_videos.modules.video_splitter.subprocess.run")
         mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
         mocker.patch("congress_videos.modules.video_splitter.os.path.getsize", return_value=2_097_152)
@@ -200,6 +341,67 @@ class TestExtractChaptersFromVideo:
         assert result["failed_extractions"] == 0
         assert result["results"][0]["chapter_id"] == 42
         assert result["results"][0]["success"] is True
+
+    def test_shares_one_codec_cache_across_all_chapters_from_same_source(self, mocker, tmp_path):
+        """extract_chapters_from_video must create one codec_cache before its loop
+        and thread it into every split_video_chapter call, so N chapters from the
+        same source share one probe."""
+        video_id = "testvid"
+        date_folder = "2025-01-01"
+
+        video_folder = tmp_path / "downloads" / date_folder / video_id
+        video_folder.mkdir(parents=True)
+        fake_video = video_folder / "session.mp4"
+        fake_video.write_bytes(b"\x00" * 100)
+
+        chapters = [
+            {
+                "chapter_id": cid,
+                "video_id": video_id,
+                "start_time": "00:00:00,000",
+                "end_time": "00:05:00,000",
+                "source_video_title": "Test Session",
+            }
+            for cid in (1, 2, 3)
+        ]
+
+        mock_detect = mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
+        mock_run = mocker.patch("congress_videos.modules.video_splitter.subprocess.run")
+        mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
+        mocker.patch("congress_videos.modules.video_splitter.os.path.getsize", return_value=2_097_152)
+
+        result = extract_chapters_from_video(chapters, str(tmp_path))
+
+        assert result["successful_extractions"] == 3
+        assert mock_detect.call_count == 1
+
+    def test_does_not_cross_contaminate_cache_between_different_sources(self, mocker, tmp_path):
+        """Two different source paths in sequence must yield 2 separate probes."""
+        date_folder = "2025-01-01"
+        chapters = []
+        for i, video_id in enumerate(("vid_a", "vid_b")):
+            video_folder = tmp_path / "downloads" / date_folder / video_id
+            video_folder.mkdir(parents=True)
+            (video_folder / "session.mp4").write_bytes(b"\x00" * 100)
+            chapters.append(
+                {
+                    "chapter_id": i,
+                    "video_id": video_id,
+                    "start_time": "00:00:00,000",
+                    "end_time": "00:05:00,000",
+                    "source_video_title": "Test Session",
+                }
+            )
+
+        mock_detect = mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
+        mock_run = mocker.patch("congress_videos.modules.video_splitter.subprocess.run")
+        mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
+        mocker.patch("congress_videos.modules.video_splitter.os.path.getsize", return_value=2_097_152)
+
+        result = extract_chapters_from_video(chapters, str(tmp_path))
+
+        assert result["successful_extractions"] == 2
+        assert mock_detect.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -371,8 +573,17 @@ class TestAv1CutIntegration:
         subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=True)
         return path
 
-    def test_av1_source_cut_produces_h264_aac(self, tmp_path):
-        """A real AV1 source cut by split_video_chapter yields h264+aac."""
+    def test_av1_source_cut_stream_copies_and_preserves_av1(self, tmp_path):
+        """A real AV1 source cut by split_video_chapter stream-copies (fail-safe),
+        never re-encodes, and the output keeps the source's av1 codec.
+
+        Pre-dates the codec-aware-cuts feature: this test originally asserted
+        AV1 sources got re-encoded to h264/aac (the old always-reencode
+        behavior). That policy was deliberately replaced by codec-aware
+        detection: av1 (and unknown) sources now stream-copy instead of
+        re-encoding, to avoid the dav1d-vs-YouTube-AV1 decode crashes that
+        motivated this feature. Updated to assert the new, correct contract.
+        """
         encoder = self._av1_encoder_available()
         if encoder is None:
             pytest.skip("ffmpeg with AV1 encoder not available")
@@ -388,8 +599,12 @@ class TestAv1CutIntegration:
         assert result["output_path"] == output
         # Output duration should be ~3 s (end_srt - start_srt) within ±1 frame
         assert result["duration_seconds"] == pytest.approx(3.0, abs=0.04)
+        # Codec-aware decision: av1 source -> stream-copy, never reencode
+        assert result["source_codec"] == "av1"
+        assert result["cut_mode"] == "stream_copy"
 
-        # Verify the output codecs via ffprobe
+        # Verify the output codec via ffprobe: stream-copy means the video
+        # stream is copied byte-for-byte, so it MUST still be av1, not h264.
         probe = subprocess.run(
             [
                 "ffprobe", "-v", "error",
@@ -401,18 +616,4 @@ class TestAv1CutIntegration:
             capture_output=True, text=True, timeout=30,
         )
         assert probe.returncode == 0
-        assert "h264" in probe.stdout.strip().lower()
-
-        probe_a = subprocess.run(
-            [
-                "ffprobe", "-v", "error",
-                "-select_streams", "a:0",
-                "-show_entries", "stream=codec_name",
-                "-of", "csv=p=0",
-                output,
-            ],
-            capture_output=True, text=True, timeout=30,
-        )
-        # Audio stream may be absent in the synthetic source
-        if probe_a.returncode == 0 and probe_a.stdout.strip():
-            assert "aac" in probe_a.stdout.strip().lower()
+        assert "av1" in probe.stdout.strip().lower()
