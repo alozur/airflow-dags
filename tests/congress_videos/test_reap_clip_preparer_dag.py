@@ -125,6 +125,43 @@ class TestFfmpegExtractWindow:
                 end_secs=5.0,
             )
 
+    def test_reencode_true_default_preserves_backward_compat(self, mocker, tmp_path):
+        """Omitting reencode keeps the existing re-encode default for backward compat."""
+        import congress_videos.reap_clip_preparer_dag as mod
+
+        mocker.patch("os.makedirs")
+        run = mocker.patch(
+            "congress_videos.reap_clip_preparer_dag.subprocess.run",
+            return_value=MagicMock(returncode=0, stderr=""),
+        )
+
+        mod._ffmpeg_extract_window(
+            source_path="src.mp4", dest_path=str(tmp_path / "out.mp4"),
+            start_secs=10.0, end_secs=40.0,
+        )
+
+        cmd = run.call_args[0][0]
+        assert "libx264" in cmd
+        assert "copy" not in cmd
+
+    def test_reencode_false_selects_stream_copy_shape(self, mocker, tmp_path):
+        import congress_videos.reap_clip_preparer_dag as mod
+
+        mocker.patch("os.makedirs")
+        run = mocker.patch(
+            "congress_videos.reap_clip_preparer_dag.subprocess.run",
+            return_value=MagicMock(returncode=0, stderr=""),
+        )
+
+        mod._ffmpeg_extract_window(
+            source_path="src.mp4", dest_path=str(tmp_path / "out.mp4"),
+            start_secs=10.0, end_secs=40.0, reencode=False,
+        )
+
+        cmd = run.call_args[0][0]
+        assert "copy" in cmd
+        assert "libx264" not in cmd
+
 
 # ---------------------------------------------------------------------------
 # TestQueryChapters
@@ -212,7 +249,8 @@ class TestExtractAndPretrimClip:
             "scoring_reasoning": "Good debate",
         }
 
-    def _setup_mocks(self, mocker, *, source_video="/data/video.mp4", duration_seconds=240):
+    def _setup_mocks(self, mocker, *, source_video="/data/video.mp4", duration_seconds=240,
+                      source_codec="h264"):
         mocker.patch(
             "congress_videos.reap_clip_preparer_dag._find_source_video",
             return_value=source_video,
@@ -222,6 +260,10 @@ class TestExtractAndPretrimClip:
             "congress_videos.reap_clip_preparer_dag.split_video_chapter",
             return_value={"success": True, "error": None, "duration_seconds": duration_seconds},
         )
+        # Mock codec detection so the loop's own get_cached_codec call doesn't hit
+        # the real ffprobe (or collide with the shared "subprocess.run" ffprobe
+        # safety-gate mock used by _patch_ffprobe_ok/_patch_ffprobe_blocked).
+        return mocker.patch("utils.codec_detection.detect_video_codec", return_value=source_codec)
 
     def _patch_ffprobe_ok(self, mocker, duration_secs: float = 240.0):
         """Mock ffprobe returning a valid duration within safe limits."""
@@ -476,6 +518,7 @@ class TestExtractAndPretrimClip:
             "congress_videos.reap_clip_preparer_dag.split_video_chapter",
             return_value={"success": True, "error": None, "duration_seconds": 240},
         )
+        mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
 
         call_count = {"n": 0}
         def fake_subprocess_run(cmd, *args, **kwargs):
@@ -504,3 +547,125 @@ class TestExtractAndPretrimClip:
         # Good clip was inserted before the exception
         mock_db.insert_video_short.assert_called_once()
         assert ti.xcom_store.get("clips_queued") == 1
+
+    def test_pretrim_uses_raw_source_codec_not_clip_path(self, mocker):
+        """The pre-trim's reencode decision must come from the raw source_video_path
+        already in loop scope, NOT a fresh probe of clip_path (the just-cut chapter)."""
+        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
+
+        self._setup_mocks(mocker, duration_seconds=720, source_codec="av1")
+        self._patch_ffprobe_ok(mocker, duration_secs=360.0)
+
+        chapter = self._default_chapter()
+        chapter["start_time"] = "00:00:00"
+        chapter["end_time"] = "00:12:00"  # 720s > threshold 480
+
+        mocker.patch(
+            "congress_videos.reap_clip_preparer_dag.find_srt_for_chapter",
+            return_value=None,
+        )
+        mock_ffmpeg = mocker.patch("congress_videos.reap_clip_preparer_dag._ffmpeg_extract_window")
+
+        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapters_for_shorts.return_value = [chapter]
+        mock_db.insert_video_short.return_value = 1
+
+        ti = _make_ti()
+        _extract_and_pretrim_clip(ti, params=self._params())
+
+        mock_ffmpeg.assert_called_once()
+        # av1 raw source -> reencode=False must be threaded into the pre-trim call.
+        assert mock_ffmpeg.call_args.kwargs["reencode"] is False
+
+    def test_pretrim_reencode_true_for_h264_raw_source(self, mocker):
+        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
+
+        self._setup_mocks(mocker, duration_seconds=720, source_codec="h264")
+        self._patch_ffprobe_ok(mocker, duration_secs=360.0)
+
+        chapter = self._default_chapter()
+        chapter["start_time"] = "00:00:00"
+        chapter["end_time"] = "00:12:00"
+
+        mocker.patch(
+            "congress_videos.reap_clip_preparer_dag.find_srt_for_chapter",
+            return_value=None,
+        )
+        mock_ffmpeg = mocker.patch("congress_videos.reap_clip_preparer_dag._ffmpeg_extract_window")
+
+        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapters_for_shorts.return_value = [chapter]
+        mock_db.insert_video_short.return_value = 1
+
+        ti = _make_ti()
+        _extract_and_pretrim_clip(ti, params=self._params())
+
+        mock_ffmpeg.assert_called_once()
+        assert mock_ffmpeg.call_args.kwargs["reencode"] is True
+
+    def test_pretrim_log_line_extended_with_source_codec_and_cut_mode(self, mocker, caplog):
+        """The existing pre-trim info log line must be extended with
+        source_codec/cut_mode; no DB schema / result-dict field is added at this
+        site (pre-trim has no returned result dict)."""
+        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
+
+        self._setup_mocks(mocker, duration_seconds=720, source_codec="h264")
+        self._patch_ffprobe_ok(mocker, duration_secs=360.0)
+
+        chapter = self._default_chapter()
+        chapter["start_time"] = "00:00:00"
+        chapter["end_time"] = "00:12:00"
+
+        mocker.patch(
+            "congress_videos.reap_clip_preparer_dag.find_srt_for_chapter",
+            return_value=None,
+        )
+        mocker.patch("congress_videos.reap_clip_preparer_dag._ffmpeg_extract_window")
+
+        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapters_for_shorts.return_value = [chapter]
+        mock_db.insert_video_short.return_value = 1
+
+        ti = _make_ti()
+        with caplog.at_level("INFO"):
+            _extract_and_pretrim_clip(ti, params=self._params())
+
+        pretrim_logs = [r.getMessage() for r in caplog.records if "pre-trimmed" in r.message]
+        assert pretrim_logs, "expected a pre-trimmed info log line"
+        assert "source_codec=h264" in pretrim_logs[0]
+        assert "cut_mode=reencode" in pretrim_logs[0]
+
+    def test_chapter_cut_and_pretrim_share_one_probe_for_same_source(self, mocker):
+        """When split_video_chapter and the pre-trim step process the SAME source
+        video within the same DAG task run, they must share the same codec_cache
+        instance so only one probe occurs total across both call sites."""
+        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
+
+        mock_detect = self._setup_mocks(mocker, duration_seconds=720, source_codec="h264")
+        self._patch_ffprobe_ok(mocker, duration_secs=360.0)
+
+        chapter = self._default_chapter()
+        chapter["start_time"] = "00:00:00"
+        chapter["end_time"] = "00:12:00"
+
+        mocker.patch(
+            "congress_videos.reap_clip_preparer_dag.find_srt_for_chapter",
+            return_value=None,
+        )
+        mocker.patch("congress_videos.reap_clip_preparer_dag._ffmpeg_extract_window")
+
+        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapters_for_shorts.return_value = [chapter]
+        mock_db.insert_video_short.return_value = 1
+
+        ti = _make_ti()
+        _extract_and_pretrim_clip(ti, params=self._params())
+
+        # split_video_chapter is mocked away entirely (its own internal probe
+        # doesn't run), so this confirms the loop-scoped probe for the pre-trim
+        # decision happens exactly once per chapter/source.
+        assert mock_detect.call_count == 1

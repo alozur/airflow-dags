@@ -12,10 +12,35 @@ from typing import Dict, List, Optional
 
 import yt_dlp
 
+from utils.codec_detection import detect_video_codec
+
 logger = logging.getLogger(__name__)
 
 # yt-dlp live_status values that correspond to a genuinely-downloadable VOD.
 READY_LIVE_STATUSES = frozenset({"was_live", "not_live"})
+
+
+def _warn_if_not_h264(file_path: str, *, context: str) -> str:
+    """Detect the downloaded file's codec and warn when it is not H264.
+
+    Reuses :func:`utils.codec_detection.detect_video_codec` — no reimplementation.
+    Logging only; never raises and never changes the download result.
+
+    Args:
+        file_path: Path to the downloaded video file.
+        context: Video id or URL, included in the warning for correlation.
+
+    Returns:
+        The detected codec string (``"h264"`` | ``"av1"`` | ``"unknown"``).
+    """
+    codec = detect_video_codec(file_path)
+    if codec != "h264":
+        logger.warning(
+            "Downloaded file for %s has codec=%r but avc1/H264 was requested "
+            "(yt-dlp/pytubefix fallback accepted a non-H264 stream): %s",
+            context, codec, file_path,
+        )
+    return codec
 
 
 def probe_live_status(
@@ -315,6 +340,10 @@ def download_youtube_video_for_upload(
         result = download_with_pytubefix(youtube_url, output_dir, min_resolution)
         if result["success"]:
             logger.info(f"pytubefix succeeded! Resolution: {result.get('resolution')}")
+            try:
+                _warn_if_not_h264(result["file_path"], context=youtube_url)
+            except Exception as e:
+                logger.warning("codec-mismatch check failed for %s: %s", youtube_url, e)
             return result
         else:
             logger.warning(f"pytubefix failed: {result.get('error')}. Falling back to yt-dlp...")
@@ -382,6 +411,14 @@ def download_youtube_video_for_upload(
                 logger.info(f"   Size: {file_size_mb:.2f} MB")
                 logger.info(f"   Duration: {info.get('duration_string')}")
                 logger.info(f"   Ready for YouTube upload!")
+                try:
+                    _warn_if_not_h264(str(file_path), context=info.get("id") or youtube_url)
+                except Exception as e:
+                    logger.warning(
+                        "codec-mismatch check failed for %s: %s",
+                        info.get("id") or youtube_url,
+                        e,
+                    )
             else:
                 result["error"] = f"File not found: {output_file}"
                 logger.error(result["error"])
