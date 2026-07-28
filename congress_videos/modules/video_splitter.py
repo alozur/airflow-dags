@@ -11,6 +11,11 @@ import logging
 import os
 import subprocess
 
+from utils.codec_detection import (
+    cut_mode_for_reencode,
+    get_cached_codec,
+    reencode_for_codec,
+)
 from utils.time_utils import parse_timestamp
 
 
@@ -133,7 +138,7 @@ def convert_srt_time_to_seconds(srt_time: str) -> float:
         return 0.0
 
 
-def split_video_chapter(source_video_path, output_path, start_time, end_time):
+def split_video_chapter(source_video_path, output_path, start_time, end_time, codec_cache=None):
     """
     Split a video segment using ffmpeg.
 
@@ -149,10 +154,20 @@ def split_video_chapter(source_video_path, output_path, start_time, end_time):
         output_path: Path where the extracted chapter will be saved
         start_time: Start time in SRT format (HH:MM:SS,mmm)
         end_time: End time in SRT format (HH:MM:SS,mmm)
+        codec_cache: Optional shared dict for memoizing codec probes across
+            calls (see :func:`utils.codec_detection.get_cached_codec`).
+            Passing ``None`` disables memoization (each call probes).
 
     Returns:
-        Dict with success status and file info
+        Dict with success status and file info. Always includes
+        ``source_codec`` (the detected/cached source codec, or
+        ``"unknown"`` if detection was never reached) and ``cut_mode``
+        (``"reencode"`` or ``"stream_copy"``, from
+        :func:`utils.codec_detection.cut_mode_for_reencode`) in both the
+        success dict and both failure-path dicts.
     """
+    source_codec = "unknown"
+    reencode = False
     try:
         # Ensure source video exists
         if not os.path.exists(source_video_path):
@@ -170,12 +185,17 @@ def split_video_chapter(source_video_path, output_path, start_time, end_time):
         output_dir = os.path.dirname(output_path)
         os.makedirs(output_dir, exist_ok=True)
 
+        # Determine codec-aware re-encode decision before building the command.
+        source_codec = get_cached_codec(source_video_path, codec_cache)
+        reencode = reencode_for_codec(source_codec)
+
         # Build frame-accurate ffmpeg command (input-seek + re-encode).
         ffmpeg_command = build_ffmpeg_cut_cmd(
             src=source_video_path,
             out=output_path,
             start=start_seconds,
             duration=duration_seconds,
+            reencode=reencode,
         )
         timeout = compute_ffmpeg_timeout(duration_seconds)
 
@@ -208,6 +228,8 @@ def split_video_chapter(source_video_path, output_path, start_time, end_time):
             "duration_seconds": duration_seconds,
             "start_time": start_time,
             "end_time": end_time,
+            "source_codec": source_codec,
+            "cut_mode": cut_mode_for_reencode(reencode),
             "error": None
         }
 
@@ -217,6 +239,11 @@ def split_video_chapter(source_video_path, output_path, start_time, end_time):
         return {
             "success": False,
             "output_path": None,
+            "source_codec": source_codec,
+            # Reuses the `reencode` local computed in the try block (defaulted to
+            # False above, matching reencode_for_codec's fail-safe stream-copy
+            # default for "unknown") instead of recomputing it here.
+            "cut_mode": cut_mode_for_reencode(reencode),
             "error": error_msg
         }
     except Exception as e:
@@ -225,6 +252,11 @@ def split_video_chapter(source_video_path, output_path, start_time, end_time):
         return {
             "success": False,
             "output_path": None,
+            "source_codec": source_codec,
+            # Reuses the `reencode` local computed in the try block (defaulted to
+            # False above, matching reencode_for_codec's fail-safe stream-copy
+            # default for "unknown") instead of recomputing it here.
+            "cut_mode": cut_mode_for_reencode(reencode),
             "error": error_msg
         }
 
@@ -279,6 +311,8 @@ def extract_chapters_from_video(uploadable_chapters, data_directory):
         'results': []
     }
 
+    codec_cache: dict = {}
+
     for chapter in uploadable_chapters:
         chapter_id = chapter.get('chapter_id')
         video_id = chapter.get('video_id')
@@ -331,7 +365,8 @@ def extract_chapters_from_video(uploadable_chapters, data_directory):
                 source_video_path=source_video_path,
                 output_path=output_path,
                 start_time=start_time,
-                end_time=end_time
+                end_time=end_time,
+                codec_cache=codec_cache,
             )
 
             result['chapter_id'] = chapter_id

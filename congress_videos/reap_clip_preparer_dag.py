@@ -26,6 +26,11 @@ from congress_videos.modules.video_splitter import (
 )
 from congress_videos.srt_helpers import find_srt_for_chapter, select_pretrim_window
 from utils.airflow_helpers import ensure_project_data_directory, xcom_task
+from utils.codec_detection import (
+    cut_mode_for_reencode,
+    get_cached_codec,
+    reencode_for_codec,
+)
 from utils.env_loader import load_env_if_local
 
 load_env_if_local()
@@ -65,8 +70,16 @@ def _find_source_video(video_id: str) -> str | None:
     return None
 
 
-def _ffmpeg_extract_window(source_path: str, dest_path: str, start_secs: float, end_secs: float) -> None:
-    """Re-extract a precise time window from source into dest_path using ffmpeg."""
+def _ffmpeg_extract_window(
+    source_path: str, dest_path: str, start_secs: float, end_secs: float, reencode: bool = True
+) -> None:
+    """Re-extract a precise time window from source into dest_path using ffmpeg.
+
+    ``reencode`` defaults to ``True`` to preserve backward compatibility for any
+    caller that omits it. The pre-trim call site passes the raw source's cached
+    codec decision (see ``_extract_and_pretrim_clip``) so this mirrors the
+    chapter cut's re-encode-vs-stream-copy choice for the same source.
+    """
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
     duration = end_secs - start_secs
     cmd = build_ffmpeg_cut_cmd(
@@ -74,6 +87,7 @@ def _ffmpeg_extract_window(source_path: str, dest_path: str, start_secs: float, 
         out=dest_path,
         start=start_secs,
         duration=duration,
+        reencode=reencode,
     )
     timeout = compute_ffmpeg_timeout(duration)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -130,6 +144,7 @@ with DAG(
         target_secs = context['params']['pre_trim_target_secs']
         inserted_count = 0
         blocked_chapters = []
+        codec_cache: dict = {}
 
         for chapter in chapters:
             chapter_id = chapter['chapter_id']
@@ -144,6 +159,14 @@ with DAG(
                 )
                 continue
 
+            # Deliberate: this is the raw source's codec decision (probed from
+            # source_video_path, cached in codec_cache). It is reused below for the
+            # pre-trim step against clip_path (the already-cut chapter) because
+            # stream-copy preserves the source's original codec into the cut chapter --
+            # re-probing clip_path would be a redundant probe. Do not "optimize" this.
+            source_codec = get_cached_codec(source_video_path, codec_cache)
+            reencode = reencode_for_codec(source_codec)
+
             chapter_folder = os.path.join(PROJECT_DATA_DIR, str(video_id), str(chapter_id))
             os.makedirs(chapter_folder, exist_ok=True)
             clip_path = os.path.join(chapter_folder, f'chapter_{chapter_id}.mp4')
@@ -153,6 +176,7 @@ with DAG(
                 output_path=clip_path,
                 start_time=_interval_to_srt(start_time),
                 end_time=_interval_to_srt(end_time),
+                codec_cache=codec_cache,
             )
 
             if not result['success']:
@@ -191,17 +215,24 @@ with DAG(
                 trimmed_path = os.path.join(chapter_folder, f'chapter_{chapter_id}_trimmed.mp4')
 
                 try:
+                    # `reencode` reuses the RAW SOURCE's codec decision computed above
+                    # (from source_video_path), NOT a fresh probe of clip_path (the
+                    # already-cut chapter). Deliberate: stream-copy preserves the
+                    # source's original codec into the cut chapter, so re-probing
+                    # clip_path would be redundant. Do not "optimize" this into a probe.
                     _ffmpeg_extract_window(
                         source_path=clip_path,
                         dest_path=trimmed_path,
                         start_secs=pretrim_start,
                         end_secs=pretrim_end,
+                        reencode=reencode,
                     )
                     clip_path = trimmed_path
                     duration = pretrim_end - pretrim_start
                     logging.info(
-                        "Chapter %s pre-trimmed: %.1f–%.1fs (%.0fs) srt_window=%s",
+                        "Chapter %s pre-trimmed: %.1f–%.1fs (%.0fs) srt_window=%s source_codec=%s cut_mode=%s",
                         chapter_id, pretrim_start, pretrim_end, duration, pretrim_used_srt,
+                        source_codec, cut_mode_for_reencode(reencode),
                     )
                 except RuntimeError as exc:
                     logging.error(

@@ -1063,3 +1063,138 @@ class TestDownloadGuardLiveStatus:
 
         assert result["success"] is True
         mock_probe.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _warn_if_not_h264 (ffmpeg-codec-aware-cuts, Slice 3)
+# ---------------------------------------------------------------------------
+
+class TestWarnIfNotH264:
+    def test_h264_detected_logs_no_warning(self, mocker, caplog):
+        from utils.youtube_downloader import _warn_if_not_h264
+
+        mocker.patch("utils.youtube_downloader.detect_video_codec", return_value="h264")
+
+        with caplog.at_level("WARNING"):
+            codec = _warn_if_not_h264("/tmp/video.mp4", context="vid123")
+
+        assert codec == "h264"
+        assert not any(r.levelname == "WARNING" for r in caplog.records)
+
+    def test_av1_detected_logs_warning_with_context(self, mocker, caplog):
+        from utils.youtube_downloader import _warn_if_not_h264
+
+        mocker.patch("utils.youtube_downloader.detect_video_codec", return_value="av1")
+
+        with caplog.at_level("WARNING"):
+            codec = _warn_if_not_h264("/tmp/video.mp4", context="vid123")
+
+        assert codec == "av1"
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert warnings
+        message = warnings[0].getMessage()
+        assert "av1" in message
+        assert "vid123" in message
+        assert "avc1" in message.lower() or "h264" in message.lower()
+
+    def test_unknown_detected_logs_warning(self, mocker, caplog):
+        from utils.youtube_downloader import _warn_if_not_h264
+
+        mocker.patch("utils.youtube_downloader.detect_video_codec", return_value="unknown")
+
+        with caplog.at_level("WARNING"):
+            codec = _warn_if_not_h264("/tmp/video.mp4", context="vid123")
+
+        assert codec == "unknown"
+        assert any(r.levelname == "WARNING" for r in caplog.records)
+
+    def test_reuses_shared_detect_video_codec_no_reimplementation(self, mocker):
+        from utils.youtube_downloader import _warn_if_not_h264
+
+        mock_detect = mocker.patch(
+            "utils.youtube_downloader.detect_video_codec", return_value="h264"
+        )
+        _warn_if_not_h264("/tmp/video.mp4", context="ctx")
+
+        mock_detect.assert_called_once_with("/tmp/video.mp4")
+
+
+class TestWarnIfNotH264WiredIntoYtdlpSuccessPath:
+    def test_called_post_download_in_ytdlp_success_block(self, tmp_path, mocker):
+        """_warn_if_not_h264 must be invoked after the yt-dlp success logs, with
+        context=info.get('id') or youtube_url, and must not change any
+        format_map/ydl_opts/download-behavior args (same download call as before)."""
+        mocker.patch(
+            "utils.youtube_downloader.download_with_pytubefix",
+            return_value={"success": False, "error": "fail"},
+        )
+
+        fake_file = tmp_path / "vid123_Test Video.mp4"
+        fake_file.write_bytes(b"\x00" * 1024)
+
+        fake_info = _make_ydl_info()
+        fake_ydl = MagicMock()
+        fake_ydl.__enter__ = MagicMock(return_value=fake_ydl)
+        fake_ydl.__exit__ = MagicMock(return_value=False)
+        fake_ydl.extract_info.return_value = fake_info
+        fake_ydl.prepare_filename.return_value = str(fake_file)
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", return_value=fake_ydl)
+        mock_warn = mocker.patch(
+            "utils.youtube_downloader._warn_if_not_h264", return_value="h264"
+        )
+
+        from utils.youtube_downloader import download_youtube_video_for_upload
+
+        result = download_youtube_video_for_upload(
+            "https://youtube.com/watch?v=x", str(tmp_path)
+        )
+
+        assert result["success"] is True
+        mock_warn.assert_called_once_with(str(fake_file), context="vid123")
+
+    def test_not_called_when_yt_dlp_download_fails(self, tmp_path, mocker):
+        mocker.patch(
+            "utils.youtube_downloader.download_with_pytubefix",
+            return_value={"success": False, "error": "fail"},
+        )
+
+        fake_ydl = MagicMock()
+        fake_ydl.__enter__ = MagicMock(return_value=fake_ydl)
+        fake_ydl.__exit__ = MagicMock(return_value=False)
+        fake_ydl.extract_info.return_value = _make_ydl_info()
+        fake_ydl.prepare_filename.return_value = str(tmp_path / "does_not_exist.mp4")
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", return_value=fake_ydl)
+        mock_warn = mocker.patch("utils.youtube_downloader._warn_if_not_h264")
+
+        from utils.youtube_downloader import download_youtube_video_for_upload
+
+        result = download_youtube_video_for_upload(
+            "https://youtube.com/watch?v=x", str(tmp_path)
+        )
+
+        assert result["success"] is False
+        mock_warn.assert_not_called()
+
+    def test_called_before_early_return_on_pytubefix_success(self, tmp_path, mocker):
+        """Secondary insertion point (design Decision 4): the pytubefix success
+        early-return path also observes AV1 via the same helper."""
+        mocker.patch(
+            "utils.youtube_downloader.download_with_pytubefix",
+            return_value={"success": True, "file_path": "/tmp/pytubefix_video.mp4", "resolution": "720p"},
+        )
+        mock_ydl_class = mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL")
+        mock_warn = mocker.patch("utils.youtube_downloader._warn_if_not_h264", return_value="h264")
+
+        from utils.youtube_downloader import download_youtube_video_for_upload
+
+        result = download_youtube_video_for_upload(
+            "https://youtube.com/watch?v=x", str(tmp_path), guard_live_status=False
+        )
+
+        assert result["success"] is True
+        mock_warn.assert_called_once_with(
+            "/tmp/pytubefix_video.mp4", context="https://youtube.com/watch?v=x"
+        )
+        mock_ydl_class.assert_not_called()
