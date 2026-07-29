@@ -333,6 +333,10 @@ with DAG(
                 successful += 1
             else:
                 failed += 1
+                if reap_clip_id:
+                    db.record_short_upload_failure(reap_clip_id, detail.get('error'))
+                else:
+                    logging.warning(f"Skipping failure recording — detail without reap_clip_id: {detail}")
 
         logging.info(f"Upload summary: {successful} successful, {failed} failed")
 

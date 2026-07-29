@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 
@@ -224,6 +226,55 @@ class TestMarkShortsUploaded:
 
         ti = _make_ti({})
         _mark_shorts_uploaded(ti, params={})
+
+    def test_failed_upload_calls_record_short_upload_failure(self, mocker):
+        from congress_videos.reap_shorts_uploader_dag import _mark_shorts_uploaded
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+
+        upload_results = {
+            "upload_details": [
+                {
+                    "reap_clip_id": "c-fail",
+                    "youtube_video_id": None,
+                    "success": False,
+                    "error": "Upload failed",
+                }
+            ]
+        }
+
+        ti = _make_ti({"upload_results": upload_results})
+        _mark_shorts_uploaded(ti, params={})
+
+        mock_db.record_short_upload_failure.assert_called_once_with("c-fail", "Upload failed")
+        mock_db.mark_short_uploaded.assert_not_called()
+
+    def test_failed_upload_missing_reap_clip_id_warns_and_skips(self, mocker, caplog):
+        from congress_videos.reap_shorts_uploader_dag import _mark_shorts_uploaded
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+
+        upload_results = {
+            "upload_details": [
+                {
+                    "reap_clip_id": None,
+                    "youtube_video_id": None,
+                    "success": False,
+                    "error": "Upload failed",
+                }
+            ]
+        }
+
+        with caplog.at_level(logging.WARNING):
+            ti = _make_ti({"upload_results": upload_results})
+            _mark_shorts_uploaded(ti, params={})
+
+        mock_db.record_short_upload_failure.assert_not_called()
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "reap_clip_id" in warnings[0].message
 
 
 # ---------------------------------------------------------------------------
