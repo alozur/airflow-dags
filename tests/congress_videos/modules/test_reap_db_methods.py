@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 
@@ -243,6 +245,15 @@ class TestGetPendingShorts:
         assert 0.6 in params
         assert 2 in params
 
+    def test_query_excludes_abandoned_shorts(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_pending_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "is_upload_abandoned = FALSE" in sql
+
 
 # --------------------------------------------------------------------------- #
 # mark_short_uploaded
@@ -268,6 +279,74 @@ class TestMarkShortUploaded:
         sql, params = mock_cursor.execute.call_args[0]
         assert "clip-safe" not in sql
         assert "clip-safe" in params
+
+
+# --------------------------------------------------------------------------- #
+# record_short_upload_failure
+# --------------------------------------------------------------------------- #
+
+class TestRecordShortUploadFailure:
+
+    def test_normal_increment_updates_attempts_and_error(self, db):
+        """Non-threshold-crossing failure increments upload_attempts, stores error."""
+        instance, mock_cursor = db
+
+        instance.record_short_upload_failure(reap_clip_id="clip-001", error_message="quota exceeded")
+
+        sql, params = mock_cursor.execute.call_args[0]
+        assert "UPDATE" in sql
+        assert "upload_attempts = upload_attempts + 1" in sql
+        assert "is_upload_abandoned" in sql
+        assert "last_upload_error" in sql
+        assert params == ("quota exceeded", "clip-001")
+
+    def test_threshold_crossing_sets_abandoned_condition(self, db):
+        """SQL encodes the >= 3 (SHORTS_UPLOAD_ABANDON_THRESHOLD) abandon condition."""
+        instance, mock_cursor = db
+
+        instance.record_short_upload_failure(reap_clip_id="clip-002", error_message="timeout")
+
+        sql, _ = mock_cursor.execute.call_args[0]
+        assert ">= 3" in sql
+
+    def test_error_message_none_path(self, db):
+        """error_message=None is passed through as a None param, not a crash."""
+        instance, mock_cursor = db
+
+        instance.record_short_upload_failure(reap_clip_id="clip-003", error_message=None)
+
+        sql, params = mock_cursor.execute.call_args[0]
+        assert params == (None, "clip-003")
+
+    def test_warning_logged_when_threshold_crossed_on_this_call(self, db, caplog):
+        """A distinct WARNING fires when this call is the one crossing the abandon threshold."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "upload_attempts": 3,
+            "is_upload_abandoned": True,
+        }
+
+        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.database"):
+            instance.record_short_upload_failure(reap_clip_id="clip-004", error_message="boom")
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "clip-004" in warnings[0].message
+        assert "abandoned" in warnings[0].message.lower()
+
+    def test_no_warning_logged_for_ordinary_retry_increment(self, db, caplog):
+        """An ordinary (non-crossing) failure increment does not emit the abandonment WARNING."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "upload_attempts": 1,
+            "is_upload_abandoned": False,
+        }
+
+        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.database"):
+            instance.record_short_upload_failure(reap_clip_id="clip-005", error_message="boom")
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 0
 
 
 # --------------------------------------------------------------------------- #
