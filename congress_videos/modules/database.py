@@ -12,6 +12,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 CHAPTER_UPLOAD_ABANDON_THRESHOLD = 3  # 3rd recorded failure excludes the chapter
+SHORTS_UPLOAD_ABANDON_THRESHOLD = 3   # 3rd recorded failure excludes the short
 
 class CongressionalVideoDB:
     """Database operations for congressional video management"""
@@ -1094,6 +1095,7 @@ class CongressionalVideoDB:
                 cur.execute(f"""
                     SELECT vs.* FROM {shorts_table} vs
                     WHERE vs.is_uploaded = FALSE
+                      AND vs.is_upload_abandoned = FALSE
                       AND vs.local_file_path IS NOT NULL
                       AND vs.reap_status = 'downloaded'
                       AND (vs.reap_virality_score >= %s OR vs.reap_virality_score IS NULL)
@@ -1140,6 +1142,43 @@ class CongressionalVideoDB:
                 logger.info(
                     f"Marked short clip {reap_clip_id} as uploaded to YouTube: {youtube_video_id}"
                 )
+
+    def record_short_upload_failure(self, reap_clip_id: str, error_message: str | None = None) -> None:
+        """
+        Record a failed per-short YouTube upload attempt.
+
+        Increments the cumulative failure counter and, once it reaches
+        SHORTS_UPLOAD_ABANDON_THRESHOLD (3), marks the short abandoned so it is
+        excluded from get_pending_shorts. The row is never deleted; the counter is
+        cumulative for the life of the row and never resets or un-abandons.
+
+        Args:
+            reap_clip_id: Unique Reap clip identifier (used as the row lookup key).
+            error_message: Optional last error text from the upload result payload.
+        """
+        shorts_table = self.pg_conn.get_qualified_table('video_shorts')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    UPDATE {shorts_table} SET
+                        upload_attempts = upload_attempts + 1,
+                        last_upload_error = %s,
+                        is_upload_abandoned = (upload_attempts + 1 >= {SHORTS_UPLOAD_ABANDON_THRESHOLD}),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE reap_clip_id = %s
+                    RETURNING upload_attempts, is_upload_abandoned
+                """, (error_message, reap_clip_id))
+                result = cur.fetchone()
+                logger.info(
+                    f"Recorded upload failure for short clip {reap_clip_id} "
+                    f"(threshold={SHORTS_UPLOAD_ABANDON_THRESHOLD})"
+                )
+                if result and result.get('upload_attempts') == SHORTS_UPLOAD_ABANDON_THRESHOLD:
+                    logger.warning(
+                        f"Short clip {reap_clip_id} abandoned after "
+                        f"{SHORTS_UPLOAD_ABANDON_THRESHOLD} failed uploads"
+                    )
 
     def _count_records(self, table_or_view: str, where_clause: str = "", params: tuple = ()) -> int:
         table = self.pg_conn.get_qualified_table(table_or_view)
