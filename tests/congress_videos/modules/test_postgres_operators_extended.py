@@ -3,27 +3,16 @@
 from __future__ import annotations
 
 import logging
-import sys
-import types
 from unittest.mock import MagicMock
 
 import pytest
 
-
-# --------------------------------------------------------------------------- #
-# Shim: apply_defaults was removed in Airflow 3
-# --------------------------------------------------------------------------- #
-
-def _noop_apply_defaults(func):
-    return func
-
-
-if "airflow.utils.decorators" not in sys.modules:
-    _mod = types.ModuleType("airflow.utils.decorators")
-    _mod.apply_defaults = _noop_apply_defaults
-    sys.modules["airflow.utils.decorators"] = _mod
-else:
-    sys.modules["airflow.utils.decorators"].apply_defaults = _noop_apply_defaults
+# NOTE: no `airflow.utils.decorators` stub here. The real `apache-airflow==2.10.2`
+# package is now a declared runtime dependency (see pyproject.toml) and already
+# provides `apply_defaults`. A previous shim unconditionally replaced
+# `sys.modules["airflow.utils.decorators"]` with a fake module missing symbols
+# like `fixup_decorator_warning_stack`, which poisoned every later import of
+# `airflow.models.baseoperator` for the rest of the pytest process. Removed.
 
 
 # --------------------------------------------------------------------------- #

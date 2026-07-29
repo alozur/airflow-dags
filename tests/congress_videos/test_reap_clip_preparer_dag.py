@@ -51,7 +51,7 @@ class TestCongressReapClipPreparerDAGLoads:
 
     def test_dag_has_correct_schedule(self):
         from congress_videos.reap_clip_preparer_dag import dag
-        assert dag.schedule == '0 15 * * *'
+        assert dag.schedule_interval == '0 15 * * *'
 
     def test_dag_correct_task_ids(self):
         from congress_videos.reap_clip_preparer_dag import dag

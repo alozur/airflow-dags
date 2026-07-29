@@ -75,7 +75,7 @@ class TestRunMigrationsDAGLoads:
 
     def test_dag_schedule_is_none(self):
         from utils.migrations_dag import dag
-        assert dag.schedule is None
+        assert dag.schedule_interval is None
 
     def test_ensure_runs_before_apply(self):
         from utils.migrations_dag import dag

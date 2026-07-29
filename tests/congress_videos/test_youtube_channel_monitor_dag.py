@@ -17,7 +17,7 @@ class TestCongressYoutubeChannelMonitorDAGLoads:
 
     def test_dag_has_correct_schedule(self):
         from congress_videos.youtube_channel_monitor_dag import dag
-        assert dag.schedule == '0 * * * *'
+        assert dag.schedule_interval == '0 * * * *'
 
     def test_dag_serializes_runs(self):
         from congress_videos.youtube_channel_monitor_dag import dag
