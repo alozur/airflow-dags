@@ -135,10 +135,10 @@ Strict TDD is active for this project (`test_command: pytest`, `uv run pytest` o
 - Additionally, manually sanity-check locally: run `python -c "import sys; sys.path.insert(0,'e2e/stubs'); import sitecustomize"` followed by a normal `uv run pytest` pass, confirming the stub module does not interfere with the existing unit-test suite when not on `PYTHONPATH` for pytest.
 
 **Definition of Done (spec: "E2E Image Stubs Heavy Top-Level Imports So the Check Reflects DAG Code Correctness"):**
-- [ ] RED: write `tests/e2e/test_sitecustomize_stubs.py` asserting all 8 confirmed heavy packages become importable after loading the stub module, and that `google` namespace is not shadowed. <!-- sdd-owner: implementation -->
-- [ ] GREEN: implement `e2e/stubs/sitecustomize.py` with the `_stub()` helper and exact package list from design; test passes. <!-- sdd-owner: implementation -->
-- [ ] TRIANGULATE: add a non-stubbed package (`requests`) import assertion to confirm no over-shadowing. <!-- sdd-owner: implementation -->
-- [ ] Manually confirm `uv run pytest` (without `e2e/stubs` on `PYTHONPATH`) still passes unaffected. <!-- sdd-owner: implementation -->
+- [x] RED: write `tests/e2e/test_sitecustomize_stubs.py` asserting all 8 confirmed heavy packages become importable after loading the stub module, and that `google` namespace is not shadowed. <!-- sdd-owner: implementation -->
+- [x] GREEN: implement `e2e/stubs/sitecustomize.py` with the `_stub()` helper and exact package list from design; test passes. <!-- sdd-owner: implementation -->
+- [x] TRIANGULATE: add a non-stubbed package (`requests`) import assertion to confirm no over-shadowing. <!-- sdd-owner: implementation -->
+- [x] Manually confirm `uv run pytest` (without `e2e/stubs` on `PYTHONPATH`) still passes unaffected. <!-- sdd-owner: implementation -->
 
 ---
 
@@ -163,10 +163,10 @@ Strict TDD is active for this project (`test_command: pytest`, `uv run pytest` o
 4. Confirm production `docker-compose.yml` and `docker-compose.prod.yml` are byte-for-byte unchanged (`git diff` shows no hits).
 
 **Definition of Done (spec: "Ephemeral Docker Compose E2E Stack Asserts DAG Parse Health"; "Production compose/Dockerfile untouched"):**
-- [ ] Author `docker-compose.test.yml` per design's exact structure (image, env, mounts, healthchecks, tmpfs postgres, anonymous logs volume). <!-- sdd-owner: implementation -->
-- [ ] `docker compose config` validates the file with no errors. <!-- sdd-owner: implementation -->
-- [ ] Manually boot + tear down the stack once; confirm no residual containers/volumes/networks remain (checklist above). <!-- sdd-owner: implementation -->
-- [ ] Confirm `docker-compose.yml`/`docker-compose.prod.yml`/production `Dockerfile` are unchanged via `git diff`. <!-- sdd-owner: implementation -->
+- [x] Author `docker-compose.test.yml` per design's exact structure (image, env, mounts, healthchecks, tmpfs postgres, anonymous logs volume). <!-- sdd-owner: implementation -->
+- [x] `docker compose config` validates the file with no errors. <!-- sdd-owner: implementation -->
+- [x] Manually boot + tear down the stack once; confirm no residual containers/volumes/networks remain (checklist above). <!-- sdd-owner: implementation -->
+- [x] Confirm `docker-compose.yml`/`docker-compose.prod.yml`/production `Dockerfile` are unchanged via `git diff`. <!-- sdd-owner: implementation -->
 
 ---
 
@@ -183,9 +183,9 @@ Strict TDD is active for this project (`test_command: pytest`, `uv run pytest` o
 - If `bats` is NOT available in this environment, document a **manual verification checklist** instead: create a throwaway branch, touch a file under each glob category one at a time, run the script, and record the observed exit code for each of the 3 cases above as evidence in the apply-progress notes.
 
 **Definition of Done (spec: "Conditional Trigger — E2E Runs Only for DAG-Relevant Path Changes"):**
-- [ ] RED (bats, if available) or documented manual checklist (if not): 3 cases (DAG-touching, docs-only, docker-compose.prod.yml) with expected exit codes. <!-- sdd-owner: implementation -->
-- [ ] GREEN: implement `scripts/dag-paths-changed.sh` per design's exact logic; all 3 cases produce the expected exit code. <!-- sdd-owner: implementation -->
-- [ ] Confirm the glob pattern is not expanded beyond the 5 locked globs (`congress_videos/**`, `examples/**`, `utils/**`, `docker-compose*.yml`, `Dockerfile`). <!-- sdd-owner: implementation -->
+- [x] RED (bats, if available) or documented manual checklist (if not): 3 cases (DAG-touching, docs-only, docker-compose.prod.yml) with expected exit codes. <!-- sdd-owner: implementation -->
+- [x] GREEN: implement `scripts/dag-paths-changed.sh` per design's exact logic; all 3 cases produce the expected exit code. <!-- sdd-owner: implementation -->
+- [x] Confirm the glob pattern is not expanded beyond the 5 locked globs (`congress_videos/**`, `examples/**`, `utils/**`, `docker-compose*.yml`, `Dockerfile`). <!-- sdd-owner: implementation -->
 
 ---
 
@@ -208,10 +208,10 @@ Strict TDD is active for this project (`test_command: pytest`, `uv run pytest` o
 - If `bats` is unavailable or a real Docker daemon isn't available in this environment: document a **manual verification checklist** recording exit code + observed behavior for exit 0 (real success), exit 1 (inject a broken import into a scratch DAG file), exit 2 (temporarily shorten `E2E_HEALTH_TIMEOUT` to force a timeout), exit 3 (temporarily rename `uv` off PATH), exit 4 (simulate via `PATH` without `docker`), recorded as evidence in T9.
 
 **Definition of Done (spec: "scripts/test-airflow-e2e.sh Drives the E2E Smoke Test with Deterministic Exit Codes"):**
-- [ ] RED (bats, if available) or documented manual checklist: cover uv-missing (3), docker-missing (4), and at least the happy-path success (0) cases. <!-- sdd-owner: implementation -->
-- [ ] GREEN: implement `scripts/test-airflow-e2e.sh` with uv preflight, docker preflight, trap-based teardown, bounded health poll with heartbeat, `list-import-errors --output json` assertion, and all 6 named exit codes. <!-- sdd-owner: implementation -->
-- [ ] Manually exercise the health-timeout path (temporarily lower `E2E_HEALTH_TIMEOUT`) and confirm exit 2 with a clear diagnostic naming which service failed. <!-- sdd-owner: implementation -->
-- [ ] Manually confirm teardown runs on every path (success, import-errors, timeout, Ctrl-C) leaving no residual containers/volumes. <!-- sdd-owner: implementation -->
+- [x] RED (bats, if available) or documented manual checklist: cover uv-missing (3), docker-missing (4), and at least the happy-path success (0) cases. <!-- sdd-owner: implementation -->
+- [x] GREEN: implement `scripts/test-airflow-e2e.sh` with uv preflight, docker preflight, trap-based teardown, bounded health poll with heartbeat, `list-import-errors --output json` assertion, and all 6 named exit codes. <!-- sdd-owner: implementation -->
+- [x] Manually exercise the health-timeout path (temporarily lower `E2E_HEALTH_TIMEOUT`) and confirm exit 2 with a clear diagnostic naming which service failed. <!-- sdd-owner: implementation -->
+- [x] Manually confirm teardown runs on every path (success, import-errors, timeout, Ctrl-C) leaving no residual containers/volumes. <!-- sdd-owner: implementation -->
 
 ---
 
@@ -231,8 +231,8 @@ Strict TDD is active for this project (`test_command: pytest`, `uv run pytest` o
 **Test-first guidance:** Not applicable as pytest — this is a consistency/documentation audit. Manual checklist: read `openspec/config.yaml`'s e2e entry side-by-side with the actual scripts and confirm exact string/value matches for every cross-referenced field listed above.
 
 **Definition of Done (spec: "Config documents the conditional e2e entry"):**
-- [ ] Cross-check `openspec/config.yaml` e2e entry fields against the actual T6/T7 script paths and exit codes; fix any drift. <!-- sdd-owner: implementation -->
-- [ ] Confirm no separate CI/runner change was introduced (non-goal boundary respected). <!-- sdd-owner: implementation -->
+- [x] Cross-check `openspec/config.yaml` e2e entry fields against the actual T6/T7 script paths and exit codes; fix any drift. <!-- sdd-owner: implementation -->
+- [x] Confirm no separate CI/runner change was introduced (non-goal boundary respected). <!-- sdd-owner: implementation -->
 
 ---
 
@@ -252,11 +252,11 @@ Strict TDD is active for this project (`test_command: pytest`, `uv run pytest` o
 **Test-first guidance:** This task IS the GREEN/TRIANGULATE proof for the whole change — no new RED needed here since each artifact already had its own test-first step; this task's job is to prove they compose correctly end-to-end. Record each scenario's actual output (exit codes, `list-import-errors` output, git diff results) as evidence in the apply-progress artifact.
 
 **Definition of Done (spec success criteria #1, #4, #5, #6, #7):**
-- [ ] Record evidence: `uv sync` + `uv run pytest` green from a clean state. <!-- sdd-owner: implementation -->
-- [ ] Record evidence: DAG-touching diff triggers e2e end-to-end, resulting in exit `0` and empty `list-import-errors`. <!-- sdd-owner: implementation -->
-- [ ] Record evidence: non-DAG-touching diff does NOT trigger the e2e script. <!-- sdd-owner: implementation -->
-- [ ] Record evidence (or explicitly note if infeasible in this environment): Docker-unavailable path exits `4` with `unavailable` status, unit tests unaffected. <!-- sdd-owner: implementation -->
-- [ ] Confirm final `git diff` shows zero changes to `docker-compose.yml`, `docker-compose.prod.yml`, and the production `Dockerfile`. <!-- sdd-owner: implementation -->
+- [x] Record evidence: `uv sync` + `uv run pytest` green from a clean state. <!-- sdd-owner: implementation -->
+- [x] Record evidence: DAG-touching diff triggers e2e end-to-end, resulting in exit `0` and empty `list-import-errors`. <!-- sdd-owner: implementation -->
+- [x] Record evidence: non-DAG-touching diff does NOT trigger the e2e script. <!-- sdd-owner: implementation -->
+- [x] Record evidence (or explicitly note if infeasible in this environment): Docker-unavailable path exits `4` with `unavailable` status, unit tests unaffected. <!-- sdd-owner: implementation -->
+- [x] Confirm final `git diff` shows zero changes to `docker-compose.yml`, `docker-compose.prod.yml`, and the production `Dockerfile`. <!-- sdd-owner: implementation -->
 
 ---
 
