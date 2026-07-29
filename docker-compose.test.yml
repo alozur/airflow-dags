@@ -1,0 +1,106 @@
+# Ephemeral e2e smoke-test stack. NOT for production. Disposable state only.
+#
+# Invoke with an isolated project name so this stack never collides with the
+# production stack's containers/volumes/networks:
+#   docker compose -p airflow-dags-e2e -f docker-compose.test.yml up -d
+#   docker compose -p airflow-dags-e2e -f docker-compose.test.yml down -v --remove-orphans
+#
+# See scripts/test-airflow-e2e.sh for the driver that boots this stack, polls health,
+# asserts `airflow dags list-import-errors` is empty, and tears down unconditionally.
+x-airflow-common: &airflow-common
+  # Lightweight stock image; matches production Airflow 2.10.2 (Dockerfile base). No
+  # build, no _PIP_ADDITIONAL_REQUIREMENTS (design.md Note N1, revised decision).
+  image: apache/airflow:2.10.2-python3.12
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__FERNET_KEY: "T1Qut8bLd0Bpi6r6l3wYK0eXf2m0m0m0m0m0m0m0m0="  # throwaway test key (N4)
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+    # NOTE (N1/N7 — RESOLVED): NO _PIP_ADDITIONAL_REQUIREMENTS — project-specific heavy
+    # deps are intentionally absent (lightweight-image tradeoff). Parse-time top-level
+    # heavy imports are satisfied by no-op STUB modules shipped in ./e2e/stubs and
+    # auto-loaded at interpreter startup via PYTHONPATH + sitecustomize.py (the
+    # container analog of conftest.py). See design.md "Stub modules for e2e (N7
+    # resolution)" and Note N7.
+    PYTHONPATH: /opt/airflow/stubs
+    # Neutralize env vars DAGs read at import time (parity with conftest.py test env).
+    OPENAI_API_KEY: "test-openai-key-not-real"
+    YOUTUBE_API_KEY: "test-youtube-api-key"
+    REAP_API_KEY: "test-reap-api-key"
+    POSTGRES_HOST: "postgres"
+    POSTGRES_PORT: "5432"
+    POSTGRES_DB: "airflow"
+    POSTGRES_USER: "airflow"
+    POSTGRES_PASSWORD: "airflow"
+    POSTGRES_SCHEMA: "public"
+  volumes:
+    - ./:/opt/airflow/dags:ro           # local checkout bind-mount (no git-sync); read-only
+    - ./e2e/stubs:/opt/airflow/stubs:ro # no-op stub modules for heavy top-level imports (N7); mounted OUTSIDE the dags folder so DagBag never parses them
+    - airflow_logs:/opt/airflow/logs
+  tmpfs:
+    # Mask the local dev checkout's .venv (created by `uv sync`, T1) inside the
+    # container. A real local .venv contains a `lib64 -> lib` symlink; Airflow's
+    # DagBag safe-mode directory walk follows it and raises "Detected recursive loop"
+    # (confirmed by real boot evidence, T5), which crashes `list-import-errors`
+    # entirely regardless of DAG content. Overlaying an empty, ephemeral tmpfs at this
+    # path inside the container hides the host's real .venv from Airflow without
+    # touching the host filesystem or the shared root .airflowignore.
+    - /opt/airflow/dags/.venv
+  # default bridge network only (no external networks)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    tmpfs:
+      - /var/lib/postgresql/data   # ephemeral, no named volume (Q5 disposability)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  airflow-init:
+    <<: *airflow-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    user: "50000:0"
+    command:
+      - -c
+      - "airflow db migrate && airflow users create --username admin --password admin --firstname a --lastname b --role Admin --email a@b.c || true"
+    restart: "no"
+
+  airflow-scheduler:
+    <<: *airflow-common
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $(hostname)"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  airflow-webserver:
+    <<: *airflow-common
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: webserver
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+volumes:
+  airflow_logs:    # anonymous-style; removed by `down -v` every run (Q5 disposability)
