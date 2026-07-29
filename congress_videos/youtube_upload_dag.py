@@ -244,10 +244,29 @@ with DAG(
                         })
                     ti.xcom_push(key='upload_results', value={'upload_details': upload_details})
 
-                if dag_run.state == 'failed':
-                    raise Exception(f"Upload DAG failed: {dag_run.run_id}")
-
                 return dag_run.run_id
+
+    def _check_upload_failures(ti):
+        """Raise after DB writes so failures are visible in the Airflow UI."""
+        updates = ti.xcom_pull(key='chapter_upload_updates')
+        if updates is None:
+            raise Exception(
+                "chapter_upload_updates XCom missing after mark_chapters_uploaded succeeded"
+            )
+
+        recorded = updates.get('recorded_failures', 0)
+        failed = updates.get('failed_updates', 0)
+        if recorded > 0 or failed > 0:
+            bad = [
+                d for d in updates.get('details', [])
+                if d.get('status') in ('failure_recorded', 'failed')
+            ]
+            raise Exception(
+                f"Chapter upload failures: {recorded} recorded, {failed} "
+                f"DB-update failures. Chapters: {[d.get('chapter_id') for d in bad]}"
+            )
+
+        logging.info("No chapter upload failures recorded")
 
     t7 = PythonOperator(
         task_id='trigger_youtube_upload',
@@ -262,5 +281,11 @@ with DAG(
         output_xcom_key='chapter_upload_updates'
     )
 
+    # Step 9: Alert when chapter upload failures were recorded (after DB write)
+    t9 = PythonOperator(
+        task_id='check_upload_failures',
+        python_callable=_check_upload_failures,
+    )
+
     # Task dependencies
-    t0 >> t1_quota >> t1_skip >> t1_db >> t2 >> t3 >> t4 >> t5 >> t6 >> t7 >> t8_db
+    t0 >> t1_quota >> t1_skip >> t1_db >> t2 >> t3 >> t4 >> t5 >> t6 >> t7 >> t8_db >> t9

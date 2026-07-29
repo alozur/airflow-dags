@@ -212,8 +212,8 @@ class TestUploadVideosFromConfig:
 
         assert result["successful_uploads"] == 1
 
-    def test_failed_uploads_raises_exception(self, tmp_path, mocker):
-        """Any failed uploads raises Exception with count in message."""
+    def test_failed_uploads_returns_results(self, tmp_path, mocker):
+        """Failed uploads return the results dict instead of raising."""
         mocker.patch(
             "utils.youtube_helpers.upload_multiple_videos",
             return_value={
@@ -237,5 +237,10 @@ class TestUploadVideosFromConfig:
             ],
         }
 
-        with pytest.raises(Exception, match="1 video"):
-            upload_videos_from_config(conf)
+        result = upload_videos_from_config(conf)
+
+        assert result["total_videos"] == 2
+        assert result["successful_uploads"] == 1
+        assert result["failed_uploads"] == 1
+        assert len(result["upload_details"]) == 2
+        assert result["upload_details"][1]["error"] == "quota exceeded"

@@ -435,8 +435,9 @@ def upload_videos_from_config(conf):
         - failed_uploads: Number of failed uploads
         - upload_details: List of detailed results per video
 
-    Raises:
-        Exception: If any uploads fail
+        The results dict is returned unconditionally, including when some or all
+        uploads fail. Callers are responsible for inspecting `failed_uploads` and
+        handling failures as needed.
     """
     token_file = conf['token_file']
     videos = conf['videos']
@@ -460,13 +461,12 @@ def upload_videos_from_config(conf):
     logging.info(f"Successful: {results['successful_uploads']}")
     logging.info(f"Failed: {results['failed_uploads']}")
 
-    # Raise error if any uploads failed
+    # Log any failed uploads for visibility; return results unconditionally
     if results['failed_uploads'] > 0:
         error_details = [
             detail for detail in results['upload_details']
             if not detail.get('success', False)
         ]
         logging.error(f"Failed uploads: {error_details}")
-        raise Exception(f"{results['failed_uploads']} video(s) failed to upload")
 
     return results
