@@ -1,0 +1,37 @@
+{
+  "head": {
+    "vars": ["person", "personLabel", "image"]
+  },
+  "results": {
+    "bindings": [
+      {
+        "person": {"type": "uri", "value": "http://www.wikidata.org/entity/Q1000001"},
+        "personLabel": {"type": "literal", "value": "Ana López Sánchez", "xml:lang": "es"},
+        "image": {
+          "type": "uri",
+          "value": "http://commons.wikimedia.org/wiki/Special:FilePath/Ana%20Lopez%20Sanchez.jpg"
+        }
+      },
+      {
+        "person": {"type": "uri", "value": "http://www.wikidata.org/entity/Q1000002"},
+        "personLabel": {"type": "literal", "value": "José Núñez Fernández", "xml:lang": "es"},
+        "image": {
+          "type": "uri",
+          "value": "http://commons.wikimedia.org/wiki/Special:FilePath/Jose%20Nunez%20A.jpg"
+        }
+      },
+      {
+        "person": {"type": "uri", "value": "http://www.wikidata.org/entity/Q1000003"},
+        "personLabel": {"type": "literal", "value": "José Núñez Fernández", "xml:lang": "es"}
+      },
+      {
+        "person": {"type": "uri", "value": "http://www.wikidata.org/entity/Q1000004"},
+        "personLabel": {"type": "literal", "value": "María Pérez García Ruiz", "xml:lang": "es"},
+        "image": {
+          "type": "uri",
+          "value": "http://commons.wikimedia.org/wiki/Special:FilePath/Maria%20Perez%20Garcia%20Ruiz.jpg"
+        }
+      }
+    ]
+  }
+}
