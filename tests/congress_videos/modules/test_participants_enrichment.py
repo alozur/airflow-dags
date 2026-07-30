@@ -17,7 +17,7 @@ def _load_wikidata_fixture() -> dict:
     return json.loads((FIXTURES_DIR / "sample_wikidata_sparql.json").read_text(encoding="utf-8"))
 
 
-def _load_search_diputados_fixture() -> list:
+def _load_search_diputados_fixture() -> dict:
     return json.loads((FIXTURES_DIR / "sample_search_diputados.json").read_text(encoding="utf-8"))
 
 
@@ -332,7 +332,7 @@ class TestFetchCongresCodParlamentario:
         from congress_videos.modules.participants_enrichment import fetch_congreso_cod_parlamentario
 
         fixture_data = _load_search_diputados_fixture()
-        # Wrap in {"data": [...]} envelope to test both shapes
+        # Live shape: {"data": [...]} envelope with TitleCase "Apellidos, Nombre" in apellidosNombre.
         mock_requests.post.return_value = mock_requests.make_response(
             status_code=200,
             json_data=fixture_data,
@@ -341,10 +341,12 @@ class TestFetchCongresCodParlamentario:
         result = fetch_congreso_cod_parlamentario()
 
         assert isinstance(result, dict)
-        # Entry 1: codParlamentario="ABC123", nombre="García López, María"
-        # normalize_member_name("García López, María") → "maria garcia lopez"
-        assert "maria garcia lopez" in result
-        assert result["maria garcia lopez"] == "ABC123"
+        # Entry: codParlamentario=160, apellidosNombre="Abades Martínez, Cristina"
+        # normalize_member_name("Abades Martínez, Cristina") → "cristina abades martinez"
+        assert result["cristina abades martinez"] == "160"
+        assert result["santiago abascal conde"] == "317"
+        # Entry missing cod and entry missing name are both skipped.
+        assert len(result) == 2
 
     def test_defensive_alternate_cod_key(self, mock_requests):
         """Entry using 'codigo' instead of 'codParlamentario' → cod still resolved."""
@@ -449,6 +451,49 @@ class TestFetchCongresCodParlamentario:
 
         assert mock_requests.get.called
         assert mock_requests.post.call_count == 0
+
+    def test_post_body_includes_portlet_form_fields(self, mock_requests):
+        """POST body must carry the Liferay _diputadomodule_* form fields.
+
+        A bare {"idLegislatura": 15} body makes the searchDiputados portlet
+        return {"data": []} (verified live), so the full portlet dataRequest
+        is required.
+        """
+        from congress_videos.modules.participants_enrichment import fetch_congreso_cod_parlamentario
+
+        mock_requests.post.return_value = mock_requests.make_response(
+            status_code=200, json_data={"data": []}
+        )
+
+        fetch_congreso_cod_parlamentario()
+
+        _, call_kwargs = mock_requests.post.call_args
+        body = call_kwargs.get("data", {})
+        assert "_diputadomodule_idLegislatura" in body
+        assert "_diputadomodule_filtroProvincias" in body
+
+    def test_prefers_apellidos_nombre_over_given_name(self, mock_requests):
+        """When both 'nombre' (given only) and 'apellidosNombre' (full) exist,
+        the full name must win — otherwise the normalized-name join fails."""
+        from congress_videos.modules.participants_enrichment import fetch_congreso_cod_parlamentario
+
+        entries = {
+            "data": [
+                {
+                    "codParlamentario": 500,
+                    "nombre": "Cristina",
+                    "apellidosNombre": "Abades Martínez, Cristina",
+                }
+            ]
+        }
+        mock_requests.post.return_value = mock_requests.make_response(
+            status_code=200, json_data=entries
+        )
+
+        result = fetch_congreso_cod_parlamentario()
+
+        assert result["cristina abades martinez"] == "500"
+        assert "cristina" not in result  # must NOT key by the given name alone
 
 
 # ===========================================================================
