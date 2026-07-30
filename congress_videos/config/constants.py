@@ -44,6 +44,17 @@ VAD_SAMPLE_RATE = 16000  # mono WAV sample rate fed to the VAD backend
 VAD_MIN_CHAPTER_SECS = 5.0  # never trim an edge so far the chapter is shorter than this
 
 # -------------------------
+# Congress Participants Sync (Wikidata enrichment)
+# -------------------------
+# Index page listing DiputadosActivos__{timestamp}.json downloads; overridden by env
+# var CONGRESO_DEPUTIES_URL when set.
+CONGRESO_DEPUTIES_INDEX = "https://www.congreso.es/webpublica/opendata/diputados/"
+WIKIDATA_SPARQL_URL = "https://query.wikidata.org/sparql"
+WIKIDATA_POSITION_QID = "Q18171345"  # member of the Congress of Deputies
+WIKIDATA_FUZZY_THRESHOLD = 0.90
+WIKIDATA_TIMEOUT = 30
+
+# -------------------------
 # Global Settings
 # -------------------------
 # Disable SSL warnings for congressional website
