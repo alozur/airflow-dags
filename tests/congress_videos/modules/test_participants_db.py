@@ -148,6 +148,20 @@ class TestUpsertBatch:
         assert "Smith, John" in params
         assert "PartyB" in params
 
+    def test_sql_preserves_group_entry_date_via_coalesce_excluded_first(self, db_fixture):
+        """SQL uses EXCLUDED-first COALESCE for group_entry_date.
+
+        Incoming None must not wipe out a previously stored group_entry_date.
+        EXCLUDED-first order means a fresh real value wins over stored; None
+        incoming falls through to the stored value.
+        """
+        instance, _conn, mock_cursor = db_fixture
+
+        instance.upsert_batch([_make_record()])
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "COALESCE(EXCLUDED.group_entry_date, congress_participants.group_entry_date)" in sql
+
 
 # ===========================================================================
 # T-03 RED: lookup functions

@@ -32,9 +32,19 @@ class CongressParticipantsDB:
         Insert or update a batch of ParticipantRecord rows.
 
         Uses ON CONFLICT (normalized_name) DO UPDATE so re-running the weekly
-        ingestion is idempotent. COALESCE preserves any previously enriched
-        photo_url: ingestion always sends photo_url=None, so without COALESCE
-        every run would blank out photos set by the enrichment step.
+        ingestion is idempotent.
+
+        COALESCE ordering rationale:
+        - ``photo_url`` uses **table-first** COALESCE
+          ``COALESCE(congress_participants.photo_url, EXCLUDED.photo_url)``:
+          the stored enriched value wins over the always-None ingest value.
+        - ``group_entry_date`` uses **EXCLUDED-first** COALESCE
+          ``COALESCE(EXCLUDED.group_entry_date, congress_participants.group_entry_date)``:
+          ingestion now always sends ``None`` because the opendataExport portlet
+          omits this field.  EXCLUDED-first means a fresh real value from a
+          future API run will still win when present; an incoming ``None``
+          preserves whatever was previously stored, avoiding silent data loss.
+          The asymmetry is deliberate — do not reorder these COALESCEs.
 
         Args:
             records: List of ParticipantRecord dicts from parse_deputies().
@@ -59,7 +69,7 @@ class CongressParticipantsDB:
                 biography            = EXCLUDED.biography,
                 full_membership_date = EXCLUDED.full_membership_date,
                 start_date           = EXCLUDED.start_date,
-                group_entry_date     = EXCLUDED.group_entry_date,
+                group_entry_date     = COALESCE(EXCLUDED.group_entry_date, congress_participants.group_entry_date),
                 photo_url            = COALESCE(congress_participants.photo_url, EXCLUDED.photo_url),
                 updated_at           = NOW()
         """

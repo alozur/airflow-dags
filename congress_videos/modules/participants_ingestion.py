@@ -1,9 +1,9 @@
 """
 Ingestion of active Spanish Congress of Deputies members.
 
-Downloads the official ``DiputadosActivos__{timestamp}.json`` feed from
-congreso.es, normalizes member names into a stable upsert key, and parses
-each entry into a JSON-serializable participant record.
+Downloads the official active-deputies JSON feed from congreso.es via a POST
+to the Liferay opendataExport portlet, normalizes member names into a stable
+upsert key, and parses each entry into a JSON-serializable participant record.
 """
 
 from __future__ import annotations
@@ -14,20 +14,37 @@ import re
 import unicodedata
 from datetime import datetime
 from typing import Any, TypedDict
-from urllib.parse import urljoin
 
 import requests
-from bs4 import BeautifulSoup
 
-from congress_videos.config.constants import CONGRESO_DEPUTIES_INDEX
+from congress_videos.config.constants import (
+    CONGRESO_BROWSER_USER_AGENT,
+    CONGRESO_DEPUTIES_PORTLET_URL,
+    LEGISLATURE_ID,
+)
 
 logger = logging.getLogger(__name__)
 
 _DEPUTIES_URL_ENV_VAR = "CONGRESO_DEPUTIES_URL"
-_INDEX_REQUEST_TIMEOUT = 30
-_DOWNLOAD_LINK_PATTERN = re.compile(r"DiputadosActivos__.*\.json", re.IGNORECASE)
+_REQUEST_TIMEOUT = 30
 _SOURCE_DATE_FORMAT = "%d/%m/%Y"
 _OUTPUT_DATE_FORMAT = "%Y-%m-%d"
+
+# Liferay portlet form-field template.  fileType MUST be lowercase "json";
+# "JSON" causes a 400 response from the portlet.
+_PORTLET_FORM_FIELDS: dict[str, Any] = {
+    "_diputadomodule_idLegislatura": LEGISLATURE_ID,
+    "_diputadomodule_filtroProvincias": "[]",
+    "_diputadomodule_fileIndex": 0,
+    "_diputadomodule_fileType": "json",
+    "_diputadomodule_genero": "",
+    "_diputadomodule_grupo": "",
+    "_diputadomodule_tipo": "",
+    "_diputadomodule_nombre": "",
+    "_diputadomodule_apellidos": "",
+    "_diputadomodule_formacion": "",
+    "_diputadomodule_nombreCircunscripcion": "",
+}
 
 
 class ParticipantRecord(TypedDict):
@@ -49,7 +66,7 @@ def normalize_member_name(name: str) -> str:
     """
     Build the stable, accent-insensitive upsert key for a deputy name.
 
-    Steps: strip -> reorder "surnames, given" (official NOMBRE order) ->
+    Steps: strip -> reorder "surnames, given" (official Nombre order) ->
     strip accents (NFKD, drop combining marks) -> casefold -> non-alphanumeric
     characters (including hyphens in compound surnames) become spaces ->
     collapse whitespace.
@@ -67,48 +84,59 @@ def normalize_member_name(name: str) -> str:
     return re.sub(r"\s+", " ", spaced).strip()
 
 
-def resolve_download_url() -> str:
-    """
-    Resolve the current ``DiputadosActivos__{timestamp}.json`` download URL.
-
-    ``CONGRESO_DEPUTIES_URL`` env var overrides discovery entirely (escape
-    hatch for when the index page HTML structure changes). Otherwise scrapes
-    ``CONGRESO_DEPUTIES_INDEX`` for the matching link.
-    """
-    override = os.environ.get(_DEPUTIES_URL_ENV_VAR)
-    if override:
-        return override
-
-    response = requests.get(CONGRESO_DEPUTIES_INDEX, timeout=_INDEX_REQUEST_TIMEOUT)
-    response.raise_for_status()
-
-    soup = BeautifulSoup(response.content, "html.parser")
-    for anchor in soup.find_all("a", href=True):
-        href = anchor["href"]
-        if _DOWNLOAD_LINK_PATTERN.search(href):
-            return urljoin(CONGRESO_DEPUTIES_INDEX, href)
-
-    raise ValueError(
-        f"Could not find a DiputadosActivos download link on {CONGRESO_DEPUTIES_INDEX}"
-    )
-
-
 def fetch_active_deputies() -> list[dict[str, Any]]:
     """
     Download the official active-deputies JSON feed.
 
-    HTTP errors propagate via ``raise_for_status`` and malformed JSON raises
-    ``ValueError`` — ingestion failures must fail the task visibly, never
-    silently proceed with stale data.
+    Default path: POST to the Liferay opendataExport portlet with a
+    browser-grade User-Agent and the required form fields.  The response is a
+    bare JSON array (~350 records) with TitleCase keys.
+
+    Env-override path: when CONGRESO_DEPUTIES_URL is set, perform a GET to
+    that URL instead (escape hatch for static-file local testing).
+
+    Error handling:
+    - HTTP 403: raises RuntimeError with a WAF-diagnostic message (URL +
+      response body snippet) so an endpoint change or WAF block is
+      distinguishable from a transient outage.
+    - Other HTTP errors: propagate via raise_for_status() as requests.HTTPError.
+    - Malformed JSON: raises ValueError with the request URL.
+    - Empty payload: raises ValueError (zero active deputies is anomalous).
     """
-    url = resolve_download_url()
-    response = requests.get(url, timeout=_INDEX_REQUEST_TIMEOUT)
+    override = os.environ.get(_DEPUTIES_URL_ENV_VAR)
+
+    if override:
+        response = requests.get(override, timeout=_REQUEST_TIMEOUT)
+        url = override
+    else:
+        response = requests.post(
+            CONGRESO_DEPUTIES_PORTLET_URL,
+            data=dict(_PORTLET_FORM_FIELDS),
+            headers={"User-Agent": CONGRESO_BROWSER_USER_AGENT},
+            timeout=_REQUEST_TIMEOUT,
+        )
+        url = CONGRESO_DEPUTIES_PORTLET_URL
+
+    if response.status_code == 403:
+        snippet = (response.text or "")[:500]
+        raise RuntimeError(
+            f"congreso.es returned 403 for {url} — likely WAF block or portlet endpoint"
+            f" change (not a transient outage). Response body snippet: {snippet!r}"
+        )
+
     response.raise_for_status()
 
     try:
-        return response.json()
+        payload = response.json()
     except ValueError as exc:
         raise ValueError(f"Malformed JSON response from {url}") from exc
+
+    if not payload:
+        raise ValueError(
+            f"Empty deputies payload from {url} — no active deputies is anomalous"
+        )
+
+    return payload
 
 
 def _parse_source_date(value: str | None) -> str | None:
@@ -124,14 +152,22 @@ def _parse_source_date(value: str | None) -> str | None:
 
 def parse_deputies(raw: list[dict[str, Any]]) -> list[ParticipantRecord]:
     """
-    Parse raw ``DiputadosActivos`` entries into ``ParticipantRecord`` dicts.
+    Parse raw opendataExport entries into ``ParticipantRecord`` dicts.
+
+    Expects TitleCase keys from the opendataExport portlet response:
+    ``Nombre``, ``Formacion``, ``GrupoParlamentario``, ``Circunscripcion``,
+    ``Biografia``, ``FechaAlta``, ``FechaCondicionPlena``.
+
+    ``group_entry_date`` is always ``None`` — the field
+    ``FECHAALTAENGRUPOPARLAMENTARIO`` is absent from the opendataExport
+    response.
 
     An empty payload raises ``ValueError`` — zero active deputies is
     anomalous and warrants alerting rather than silently upserting nothing.
-    A record missing ``NOMBRE`` is skipped and logged rather than aborting
+    A record missing ``Nombre`` is skipped and logged rather than aborting
     the whole batch — one malformed upstream entry should not block every
     other deputy from syncing. If every entry ends up skipped (e.g. an
-    upstream schema change dropping NOMBRE from every record), that is
+    upstream schema change dropping Nombre from every record), that is
     treated the same as an empty payload and raises ``ValueError`` — the
     batch must never silently degrade to zero parsed deputies.
     Duplicate normalized names within the batch are logged (first
@@ -144,9 +180,9 @@ def parse_deputies(raw: list[dict[str, Any]]) -> list[ParticipantRecord]:
     records: list[ParticipantRecord] = []
     seen_normalized: set[str] = set()
     for entry in raw:
-        display_name = entry.get("NOMBRE")
+        display_name = entry.get("Nombre")
         if not display_name:
-            logger.warning("Skipping deputy entry with missing NOMBRE: %r", entry)
+            logger.warning("Skipping deputy entry with missing Nombre: %r", entry)
             continue
 
         normalized_name = normalize_member_name(display_name)
@@ -162,20 +198,20 @@ def parse_deputies(raw: list[dict[str, Any]]) -> list[ParticipantRecord]:
             ParticipantRecord(
                 normalized_name=normalized_name,
                 display_name=display_name,
-                party=entry.get("FORMACIONELECTORAL"),
-                parliamentary_group=entry.get("GRUPOPARLAMENTARIO"),
-                constituency=entry.get("CIRCUNSCRIPCION"),
-                biography=entry.get("BIOGRAFIA"),
-                full_membership_date=_parse_source_date(entry.get("FECHACONDICIONPLENA")),
-                start_date=_parse_source_date(entry.get("FECHAALTA")),
-                group_entry_date=_parse_source_date(entry.get("FECHAALTAENGRUPOPARLAMENTARIO")),
+                party=entry.get("Formacion"),
+                parliamentary_group=entry.get("GrupoParlamentario"),
+                constituency=entry.get("Circunscripcion"),
+                biography=entry.get("Biografia"),
+                full_membership_date=_parse_source_date(entry.get("FechaCondicionPlena")),
+                start_date=_parse_source_date(entry.get("FechaAlta")),
+                group_entry_date=None,
                 photo_url=None,
             )
         )
 
     if not records:
         raise ValueError(
-            "All deputy entries were skipped (missing NOMBRE) — "
+            "All deputy entries were skipped (missing Nombre) — "
             "possible upstream schema change, treating as anomalous"
         )
 
