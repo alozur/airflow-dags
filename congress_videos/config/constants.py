@@ -44,11 +44,23 @@ VAD_SAMPLE_RATE = 16000  # mono WAV sample rate fed to the VAD backend
 VAD_MIN_CHAPTER_SECS = 5.0  # never trim an edge so far the chapter is shorter than this
 
 # -------------------------
-# Congress Participants Sync (Wikidata enrichment)
+# Congress Participants Sync (opendataExport portlet + Wikidata enrichment)
 # -------------------------
-# Index page listing DiputadosActivos__{timestamp}.json downloads; overridden by env
-# var CONGRESO_DEPUTIES_URL when set.
-CONGRESO_DEPUTIES_INDEX = "https://www.congreso.es/webpublica/opendata/diputados/"
+# Liferay opendataExport portlet — single POST replaces the old directory-scrape.
+# Use CONGRESO_DEPUTIES_URL env var to override with a static-file URL (escape hatch).
+CONGRESO_DEPUTIES_PORTLET_URL = (
+    "https://www.congreso.es/es/busqueda-de-diputados"
+    "?p_p_id=diputadomodule"
+    "&p_p_lifecycle=2"
+    "&p_p_state=normal"
+    "&p_p_mode=view"
+    "&p_p_resource_id=opendataExport"
+    "&p_p_cacheability=cacheLevelPage"
+)
+# Browser-grade User-Agent required by the portlet WAF; do not use the requests default.
+CONGRESO_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+)
 WIKIDATA_SPARQL_URL = "https://query.wikidata.org/sparql"
 WIKIDATA_POSITION_QID = "Q18171345"  # member of the Congress of Deputies
 WIKIDATA_FUZZY_THRESHOLD = 0.90
