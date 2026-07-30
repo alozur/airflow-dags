@@ -46,6 +46,7 @@ dependencies = [
     # mechanism, likely an older Python there). If local whisper-model
     # execution is ever needed outside Docker, add it as an optional
     # dependency group instead of the default runtime group.
+    "rapidfuzz>=3.14.5",
 ]
 
 [dependency-groups]

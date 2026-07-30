@@ -54,6 +54,8 @@ WIKIDATA_POSITION_QID = "Q18171345"  # member of the Congress of Deputies
 WIKIDATA_FUZZY_THRESHOLD = 0.90
 WIKIDATA_TIMEOUT = 30
 
+WIKIDATA_USER_AGENT = "airflow-dags/1.0 (https://github.com/alozur/airflow-dags; alonsozurera@gmail.com)"
+
 # -------------------------
 # Global Settings
 # -------------------------
