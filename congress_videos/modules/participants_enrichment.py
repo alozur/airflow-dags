@@ -1,19 +1,28 @@
 """
-Wikidata photo enrichment for the congress_participants table.
+Wikidata photo enrichment and congreso.es official-photo fallback for the congress_participants table.
 
 Queries the Wikidata SPARQL endpoint for Spanish Congress of Deputies members,
 fuzzy-joins SPARQL labels to normalized_name rows, and back-fills photo_url
 for rows where it is currently NULL.
+
+Also provides a deterministic fallback that fetches codParlamentario values via
+the searchDiputados Liferay portlet and builds official photo URLs from the
+congreso.es deterministic path.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 
 import requests
 from rapidfuzz.fuzz import token_sort_ratio
 
 from congress_videos.config.constants import (
+    CONGRESO_BROWSER_USER_AGENT,
+    CONGRESO_PHOTO_URL_TEMPLATE,
+    CONGRESO_SEARCH_DIPUTADOS_URL,
+    LEGISLATURE_ID,
     WIKIDATA_FUZZY_THRESHOLD,
     WIKIDATA_SPARQL_URL,
     WIKIDATA_TIMEOUT,
@@ -23,6 +32,165 @@ from congress_videos.modules.participants_db import CongressParticipantsDB
 from congress_videos.modules.participants_ingestion import normalize_member_name
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+_SEARCH_DIPUTADOS_ENV_VAR = "CONGRESO_SEARCH_DIPUTADOS_URL_OVERRIDE"
+_REQUEST_TIMEOUT = 30
+
+# Candidate key lists for defensive extraction from searchDiputados portlet.
+# The live response schema is unconfirmed from this environment; order matters —
+# first non-empty key value wins.
+_COD_CANDIDATE_KEYS = ["codParlamentario", "codigo", "cod", "id"]
+_NAME_CANDIDATE_KEYS = ["nombre", "nombreCompleto", "apellidosNombre", "nombreCircunscripcion"]
+
+
+def fetch_congreso_cod_parlamentario() -> dict[str, str]:
+    """Bulk searchDiputados POST → {normalized_name: codParlamentario}.
+
+    Issues exactly one POST to CONGRESO_SEARCH_DIPUTADOS_URL per call, using
+    a browser User-Agent header as required by the portlet WAF.
+
+    Env-override path: when CONGRESO_SEARCH_DIPUTADOS_URL_OVERRIDE is set,
+    performs a GET to that URL instead (escape hatch for static-file local testing).
+
+    Defensive key extraction tries candidate key lists for both codParlamentario
+    and the deputy name fields (first non-empty wins). Entries missing either
+    key are skipped with a DEBUG log — live key names from the portlet are
+    unconfirmed until a Verify step runs against the live endpoint.
+
+    Returns:
+        Dict mapping normalized_name (str) → codParlamentario (str) for all
+        parseable entries in the response.
+
+    Raises:
+        RuntimeError: if the endpoint returns HTTP 403 (WAF block / endpoint change).
+        requests.HTTPError: on other non-2xx responses.
+    """
+    override = os.environ.get(_SEARCH_DIPUTADOS_ENV_VAR)
+
+    if override:
+        response = requests.get(override, timeout=_REQUEST_TIMEOUT)
+        url = override
+    else:
+        response = requests.post(
+            CONGRESO_SEARCH_DIPUTADOS_URL,
+            data={"idLegislatura": LEGISLATURE_ID},
+            headers={"User-Agent": CONGRESO_BROWSER_USER_AGENT},
+            timeout=_REQUEST_TIMEOUT,
+        )
+        url = CONGRESO_SEARCH_DIPUTADOS_URL
+
+    if response.status_code == 403:
+        snippet = (response.text or "")[:200]
+        raise RuntimeError(
+            f"searchDiputados 403: {url} — possible WAF block or endpoint change."
+            f" Response body snippet: {snippet!r}"
+        )
+
+    response.raise_for_status()
+
+    payload = response.json()
+    # The portlet may return a bare list or a {"data": [...]} envelope.
+    if isinstance(payload, dict):
+        entries = payload.get("data", [])
+    else:
+        entries = payload
+
+    result: dict[str, str] = {}
+    for entry in entries:
+        # Extract codParlamentario using candidate keys; first non-empty wins.
+        cod = None
+        for key in _COD_CANDIDATE_KEYS:
+            value = entry.get(key)
+            if value:
+                cod = str(value)
+                break
+
+        if not cod:
+            logger.debug("fetch_congreso_cod_parlamentario: skipping entry with no cod key — %r", entry)
+            continue
+
+        # Extract deputy name using candidate keys; first non-empty wins.
+        raw_name = None
+        for key in _NAME_CANDIDATE_KEYS:
+            value = entry.get(key)
+            if value:
+                raw_name = str(value)
+                break
+
+        if not raw_name:
+            logger.debug("fetch_congreso_cod_parlamentario: skipping entry with no name key — %r", entry)
+            continue
+
+        normalized = normalize_member_name(raw_name)
+        result[normalized] = cod
+
+    logger.info("fetch_congreso_cod_parlamentario: resolved %d deputies", len(result))
+    return result
+
+
+def fill_congreso_photo_fallback() -> dict:
+    """For each participant with photo_url IS NULL: look up codParlamentario by
+    normalized_name, build the deterministic congreso.es photo URL, and write it
+    via update_photo_url (which guards with WHERE photo_url IS NULL to avoid
+    overwriting existing Wikidata Commons photos).
+
+    Issues exactly one bulk searchDiputados POST per call — never one request per deputy.
+
+    Error handling: any exception from fetch_congreso_cod_parlamentario (including
+    RuntimeError on 403, or requests.ConnectionError on network failure) is caught,
+    logged at ERROR level, and results in an early return with filled=0 and an error
+    key. The DAG task never fails due to a fallback source outage.
+
+    Returns:
+        Dict with keys:
+          - ``filled`` (int): rows successfully updated
+          - ``skipped_no_cod`` (int): rows skipped because no codParlamentario was found
+          - ``source_count`` (int): number of deputies in the searchDiputados response
+          - ``error`` (str): error message if the fetch failed (only present on error path)
+    """
+    db = CongressParticipantsDB()
+
+    try:
+        cod_map = fetch_congreso_cod_parlamentario()
+    except Exception as exc:
+        logger.error("fill_congreso_photo_fallback: fetch failed — %s", exc)
+        return {"filled": 0, "skipped_no_cod": 0, "source_count": 0, "error": str(exc)}
+
+    source_count = len(cod_map)
+    all_rows = db.get_all_participants()
+    null_photo_rows = [r for r in all_rows if r.get("photo_url") is None]
+
+    filled = 0
+    skipped_no_cod = 0
+
+    for row in null_photo_rows:
+        key = row["normalized_name"]
+        cod = cod_map.get(key)
+
+        if not cod:
+            logger.warning(
+                "fill_congreso_photo_fallback: no codParlamentario for %r — skipping", key
+            )
+            skipped_no_cod += 1
+            continue
+
+        # Optimistic URL write — no HEAD pre-check (deterministic URL; broken-image cost
+        # is trivial compared to ~350 extra HEAD requests/week + WAF exposure).
+        url = CONGRESO_PHOTO_URL_TEMPLATE.format(cod=cod, leg=LEGISLATURE_ID)
+        db.update_photo_url(key, url)
+        filled += 1
+
+    logger.info(
+        "fill_congreso_photo_fallback: filled=%d skipped_no_cod=%d source_count=%d",
+        filled,
+        skipped_no_cod,
+        source_count,
+    )
+    return {"filled": filled, "skipped_no_cod": skipped_no_cod, "source_count": source_count}
+
 
 # ---------------------------------------------------------------------------
 # SPARQL query: current members of the Spanish Congress of Deputies (Q18171345)

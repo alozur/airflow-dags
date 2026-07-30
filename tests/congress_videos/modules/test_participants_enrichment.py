@@ -1,4 +1,4 @@
-"""Tests for participants_enrichment.py — Slice 2 (T-11 through T-14)."""
+"""Tests for participants_enrichment.py — Slice 2 (T-11 through T-14) + congreso photo fallback."""
 
 from __future__ import annotations
 
@@ -8,12 +8,17 @@ from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+import requests as req_lib
 
 FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures"
 
 
 def _load_wikidata_fixture() -> dict:
     return json.loads((FIXTURES_DIR / "sample_wikidata_sparql.json").read_text(encoding="utf-8"))
+
+
+def _load_search_diputados_fixture() -> list:
+    return json.loads((FIXTURES_DIR / "sample_search_diputados.json").read_text(encoding="utf-8"))
 
 
 @pytest.fixture(autouse=True)
@@ -312,3 +317,335 @@ class TestEnrichMissingPhotos:
         assert "skipped_ambiguous" in result
         assert "skipped_no_match" in result
         assert "skipped_no_image" in result
+
+
+# ===========================================================================
+# TASK 4 RED: fetch_congreso_cod_parlamentario
+# ===========================================================================
+
+
+class TestFetchCongresCodParlamentario:
+    """Tests for fetch_congreso_cod_parlamentario() — RED phase."""
+
+    def test_returns_dict_keyed_by_normalized_name(self, mock_requests):
+        """Fixture response → dict keyed by normalized name with codParlamentario value."""
+        from congress_videos.modules.participants_enrichment import fetch_congreso_cod_parlamentario
+
+        fixture_data = _load_search_diputados_fixture()
+        # Wrap in {"data": [...]} envelope to test both shapes
+        mock_requests.post.return_value = mock_requests.make_response(
+            status_code=200,
+            json_data=fixture_data,
+        )
+
+        result = fetch_congreso_cod_parlamentario()
+
+        assert isinstance(result, dict)
+        # Entry 1: codParlamentario="ABC123", nombre="García López, María"
+        # normalize_member_name("García López, María") → "maria garcia lopez"
+        assert "maria garcia lopez" in result
+        assert result["maria garcia lopez"] == "ABC123"
+
+    def test_defensive_alternate_cod_key(self, mock_requests):
+        """Entry using 'codigo' instead of 'codParlamentario' → cod still resolved."""
+        from congress_videos.modules.participants_enrichment import fetch_congreso_cod_parlamentario
+
+        entries = [{"codigo": "DEF456", "nombre": "Pérez Ruiz, Juan"}]
+        mock_requests.post.return_value = mock_requests.make_response(
+            status_code=200,
+            json_data=entries,
+        )
+
+        result = fetch_congreso_cod_parlamentario()
+
+        assert "juan perez ruiz" in result
+        assert result["juan perez ruiz"] == "DEF456"
+
+    def test_defensive_alternate_name_key(self, mock_requests):
+        """Entry using 'apellidosNombre' instead of 'nombre' → name still resolved."""
+        from congress_videos.modules.participants_enrichment import fetch_congreso_cod_parlamentario
+
+        entries = [{"codParlamentario": "GHI789", "apellidosNombre": "Ruiz Gómez, Laura"}]
+        mock_requests.post.return_value = mock_requests.make_response(
+            status_code=200,
+            json_data=entries,
+        )
+
+        result = fetch_congreso_cod_parlamentario()
+
+        assert "laura ruiz gomez" in result
+        assert result["laura ruiz gomez"] == "GHI789"
+
+    def test_skips_entry_missing_cod_key(self, mock_requests):
+        """Entry with no cod candidate key is absent from result (no KeyError)."""
+        from congress_videos.modules.participants_enrichment import fetch_congreso_cod_parlamentario
+
+        entries = [{"nombre": "Sin Código, Deputy"}]
+        mock_requests.post.return_value = mock_requests.make_response(
+            status_code=200,
+            json_data=entries,
+        )
+
+        result = fetch_congreso_cod_parlamentario()
+
+        assert len(result) == 0
+
+    def test_skips_entry_missing_name_key(self, mock_requests):
+        """Entry with no name candidate key is absent from result."""
+        from congress_videos.modules.participants_enrichment import fetch_congreso_cod_parlamentario
+
+        entries = [{"codParlamentario": "GHI789"}]
+        mock_requests.post.return_value = mock_requests.make_response(
+            status_code=200,
+            json_data=entries,
+        )
+
+        result = fetch_congreso_cod_parlamentario()
+
+        assert len(result) == 0
+
+    def test_browser_user_agent_sent(self, mock_requests):
+        """POST is called with User-Agent header equal to CONGRESO_BROWSER_USER_AGENT."""
+        from congress_videos.modules.participants_enrichment import fetch_congreso_cod_parlamentario
+        from congress_videos.config.constants import CONGRESO_BROWSER_USER_AGENT
+
+        mock_requests.post.return_value = mock_requests.make_response(status_code=200, json_data=[])
+
+        fetch_congreso_cod_parlamentario()
+
+        assert mock_requests.post.called
+        _, call_kwargs = mock_requests.post.call_args
+        headers = call_kwargs.get("headers", {})
+        assert headers.get("User-Agent") == CONGRESO_BROWSER_USER_AGENT
+
+    def test_exactly_one_post_per_call(self, mock_requests):
+        """requests.post is called exactly once per invocation."""
+        from congress_videos.modules.participants_enrichment import fetch_congreso_cod_parlamentario
+
+        mock_requests.post.return_value = mock_requests.make_response(status_code=200, json_data=[])
+
+        fetch_congreso_cod_parlamentario()
+
+        assert mock_requests.post.call_count == 1
+
+    def test_403_raises_runtime_error(self, mock_requests):
+        """HTTP 403 → RuntimeError raised with URL and body snippet."""
+        from congress_videos.modules.participants_enrichment import fetch_congreso_cod_parlamentario
+
+        error_response = mock_requests.make_response(status_code=403, text="WAF blocked")
+        mock_requests.post.return_value = error_response
+
+        with pytest.raises(RuntimeError, match="403"):
+            fetch_congreso_cod_parlamentario()
+
+    def test_env_override_uses_get_not_post(self, mock_requests, monkeypatch):
+        """CONGRESO_SEARCH_DIPUTADOS_URL_OVERRIDE set → GET is used, POST is not called."""
+        from congress_videos.modules.participants_enrichment import fetch_congreso_cod_parlamentario
+
+        monkeypatch.setenv("CONGRESO_SEARCH_DIPUTADOS_URL_OVERRIDE", "http://static.example.com/search.json")
+        mock_requests.get.return_value = mock_requests.make_response(status_code=200, json_data=[])
+
+        fetch_congreso_cod_parlamentario()
+
+        assert mock_requests.get.called
+        assert mock_requests.post.call_count == 0
+
+
+# ===========================================================================
+# TASK 6 RED: fill_congreso_photo_fallback
+# ===========================================================================
+
+
+def _make_participant_row(**overrides) -> dict:
+    """Build a minimal participant DB row."""
+    base = {
+        "normalized_name": "garcia lopez maria",
+        "display_name": "García López, María",
+        "photo_url": None,
+    }
+    base.update(overrides)
+    return base
+
+
+class TestFillCongresoPhotoFallback:
+    """Tests for fill_congreso_photo_fallback() — RED phase."""
+
+    def test_builds_correct_url_and_calls_update_photo_url(self, mock_psycopg2_connection, monkeypatch):
+        """Null-photo row + matching cod → update_photo_url called with correct URL."""
+        from congress_videos.modules import participants_enrichment as mod
+
+        row = _make_participant_row(normalized_name="garcia lopez maria", photo_url=None)
+        mock_db = MagicMock()
+        mock_db.get_all_participants.return_value = [row]
+        mock_db.update_photo_url = MagicMock()
+
+        monkeypatch.setattr(mod, "CongressParticipantsDB", lambda: mock_db)
+        monkeypatch.setattr(
+            mod, "fetch_congreso_cod_parlamentario",
+            lambda: {"garcia lopez maria": "ABC123"},
+        )
+
+        mod.fill_congreso_photo_fallback()
+
+        mock_db.update_photo_url.assert_called_once_with(
+            "garcia lopez maria",
+            "https://www.congreso.es/docu/imgweb/diputados/ABC123_15.jpg",
+        )
+
+    def test_url_uses_legislature_id_15(self, mock_psycopg2_connection, monkeypatch):
+        """Constructed URL contains '_15.jpg' (LEGISLATURE_ID=15)."""
+        from congress_videos.modules import participants_enrichment as mod
+
+        row = _make_participant_row(normalized_name="garcia lopez maria", photo_url=None)
+        mock_db = MagicMock()
+        mock_db.get_all_participants.return_value = [row]
+        mock_db.update_photo_url = MagicMock()
+
+        monkeypatch.setattr(mod, "CongressParticipantsDB", lambda: mock_db)
+        monkeypatch.setattr(
+            mod, "fetch_congreso_cod_parlamentario",
+            lambda: {"garcia lopez maria": "ABC123"},
+        )
+
+        mod.fill_congreso_photo_fallback()
+
+        _, call_args = mock_db.update_photo_url.call_args
+        passed_url = mock_db.update_photo_url.call_args[0][1]
+        assert "_15.jpg" in passed_url
+
+    def test_existing_photo_rows_not_overwritten(self, mock_psycopg2_connection, monkeypatch):
+        """Row with non-null photo_url → update_photo_url NOT called."""
+        from congress_videos.modules import participants_enrichment as mod
+
+        row = _make_participant_row(
+            normalized_name="garcia lopez maria",
+            photo_url="https://commons.wikimedia.org/existing.jpg",
+        )
+        mock_db = MagicMock()
+        mock_db.get_all_participants.return_value = [row]
+        mock_db.update_photo_url = MagicMock()
+
+        monkeypatch.setattr(mod, "CongressParticipantsDB", lambda: mock_db)
+        monkeypatch.setattr(
+            mod, "fetch_congreso_cod_parlamentario",
+            lambda: {"garcia lopez maria": "ABC123"},
+        )
+
+        mod.fill_congreso_photo_fallback()
+
+        mock_db.update_photo_url.assert_not_called()
+
+    def test_name_join_miss_skips_and_increments_skipped_no_cod(self, mock_psycopg2_connection, monkeypatch):
+        """Cod dict has no key for participant → skipped_no_cod == 1, update NOT called."""
+        from congress_videos.modules import participants_enrichment as mod
+
+        row = _make_participant_row(normalized_name="unknown deputy", photo_url=None)
+        mock_db = MagicMock()
+        mock_db.get_all_participants.return_value = [row]
+        mock_db.update_photo_url = MagicMock()
+
+        monkeypatch.setattr(mod, "CongressParticipantsDB", lambda: mock_db)
+        monkeypatch.setattr(
+            mod, "fetch_congreso_cod_parlamentario",
+            lambda: {"garcia lopez maria": "ABC123"},
+        )
+
+        result = mod.fill_congreso_photo_fallback()
+
+        mock_db.update_photo_url.assert_not_called()
+        assert result["skipped_no_cod"] == 1
+
+    def test_name_join_miss_logs_warning(self, mock_psycopg2_connection, monkeypatch, caplog):
+        """Name-join miss → WARNING logged containing the normalized_name."""
+        from congress_videos.modules import participants_enrichment as mod
+
+        row = _make_participant_row(normalized_name="unknown deputy", photo_url=None)
+        mock_db = MagicMock()
+        mock_db.get_all_participants.return_value = [row]
+        mock_db.update_photo_url = MagicMock()
+
+        monkeypatch.setattr(mod, "CongressParticipantsDB", lambda: mock_db)
+        monkeypatch.setattr(
+            mod, "fetch_congreso_cod_parlamentario",
+            lambda: {},
+        )
+
+        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.participants_enrichment"):
+            mod.fill_congreso_photo_fallback()
+
+        assert any("unknown deputy" in r.message for r in caplog.records)
+
+    def test_fetch_error_returns_filled_zero_no_exception(self, mock_psycopg2_connection, monkeypatch):
+        """fetch_congreso_cod_parlamentario raises RuntimeError → returns dict with filled==0 and error key."""
+        from congress_videos.modules import participants_enrichment as mod
+
+        mock_db = MagicMock()
+        mock_db.get_all_participants.return_value = []
+        monkeypatch.setattr(mod, "CongressParticipantsDB", lambda: mock_db)
+
+        def _raise():
+            raise RuntimeError("searchDiputados 403: ...")
+
+        monkeypatch.setattr(mod, "fetch_congreso_cod_parlamentario", _raise)
+
+        result = mod.fill_congreso_photo_fallback()
+
+        assert result["filled"] == 0
+        assert "error" in result
+
+    def test_network_error_returns_filled_zero_no_exception(self, mock_psycopg2_connection, monkeypatch):
+        """fetch_congreso_cod_parlamentario raises ConnectionError → returns dict with filled==0."""
+        from congress_videos.modules import participants_enrichment as mod
+
+        mock_db = MagicMock()
+        mock_db.get_all_participants.return_value = []
+        monkeypatch.setattr(mod, "CongressParticipantsDB", lambda: mock_db)
+
+        def _raise():
+            raise req_lib.ConnectionError("Network unreachable")
+
+        monkeypatch.setattr(mod, "fetch_congreso_cod_parlamentario", _raise)
+
+        result = mod.fill_congreso_photo_fallback()
+
+        assert result["filled"] == 0
+        assert "error" in result
+
+    def test_return_dict_has_required_keys(self, mock_psycopg2_connection, monkeypatch):
+        """Normal path return value has filled, skipped_no_cod, source_count keys."""
+        from congress_videos.modules import participants_enrichment as mod
+
+        mock_db = MagicMock()
+        mock_db.get_all_participants.return_value = []
+        monkeypatch.setattr(mod, "CongressParticipantsDB", lambda: mock_db)
+        monkeypatch.setattr(mod, "fetch_congreso_cod_parlamentario", lambda: {})
+
+        result = mod.fill_congreso_photo_fallback()
+
+        assert "filled" in result
+        assert "skipped_no_cod" in result
+        assert "source_count" in result
+
+    def test_only_one_bulk_fetch_per_call(self, mock_psycopg2_connection, monkeypatch):
+        """fetch_congreso_cod_parlamentario called exactly once even with 3 null-photo rows."""
+        from congress_videos.modules import participants_enrichment as mod
+
+        rows = [
+            _make_participant_row(normalized_name=f"deputy {i}", photo_url=None)
+            for i in range(3)
+        ]
+        mock_db = MagicMock()
+        mock_db.get_all_participants.return_value = rows
+
+        call_counter = {"count": 0}
+
+        def _fetch():
+            call_counter["count"] += 1
+            return {}
+
+        monkeypatch.setattr(mod, "CongressParticipantsDB", lambda: mock_db)
+        monkeypatch.setattr(mod, "fetch_congreso_cod_parlamentario", _fetch)
+
+        mod.fill_congreso_photo_fallback()
+
+        assert call_counter["count"] == 1

@@ -69,6 +69,23 @@ WIKIDATA_TIMEOUT = 30
 WIKIDATA_USER_AGENT = "airflow-dags/1.0 (https://github.com/alozur/airflow-dags; alonsozurera@gmail.com)"
 
 # -------------------------
+# Congreso.es photo fallback (searchDiputados portlet + deterministic photo URL)
+# -------------------------
+# Env override: set CONGRESO_SEARCH_DIPUTADOS_URL_OVERRIDE to a static-file URL for local testing.
+CONGRESO_SEARCH_DIPUTADOS_URL = (
+    "https://www.congreso.es/es/busqueda-de-diputados"
+    "?p_p_id=diputadomodule"
+    "&p_p_lifecycle=2"
+    "&p_p_state=normal"
+    "&p_p_mode=view"
+    "&p_p_resource_id=searchDiputados"
+    "&p_p_cacheability=cacheLevelPage"
+)
+CONGRESO_PHOTO_URL_TEMPLATE = (
+    "https://www.congreso.es/docu/imgweb/diputados/{cod}_{leg}.jpg"
+)
+
+# -------------------------
 # Global Settings
 # -------------------------
 # Disable SSL warnings for congressional website

@@ -42,12 +42,18 @@ class TestCongressParticipantsSyncDAGLoads:
 
 
 class TestCongressParticipantsSyncDAGTasks:
-    """Verify the task graph: exactly 3 tasks with correct IDs."""
+    """Verify the task graph: exactly 4 tasks with correct IDs."""
 
-    def test_dag_has_exactly_three_tasks(self):
-        """DAG contains exactly 3 tasks."""
+    def test_dag_has_exactly_four_tasks(self):
+        """DAG contains exactly 4 tasks."""
         from congress_videos.congress_participants_sync_dag import dag
-        assert len(dag.tasks) == 3
+        assert len(dag.tasks) == 4
+
+    def test_task_id_fill_congreso_photo_fallback_exists(self):
+        """Task 'fill_congreso_photo_fallback' is present."""
+        from congress_videos.congress_participants_sync_dag import dag
+        task_ids = {t.task_id for t in dag.tasks}
+        assert "fill_congreso_photo_fallback" in task_ids
 
     def test_task_id_fetch_and_parse_exists(self):
         """Task 'fetch_and_parse' is present."""
@@ -95,12 +101,28 @@ class TestCongressParticipantsSyncDAGDependencies:
         direct_downstream_ids = {t.task_id for t in fetch_task.downstream_list}
         assert "enrich_missing_photos" not in direct_downstream_ids
 
-    def test_enrich_has_no_downstream(self):
-        """enrich_missing_photos is the terminal task — no downstream tasks."""
+    def test_enrich_is_upstream_of_fill_congreso(self):
+        """enrich_missing_photos >> fill_congreso_photo_fallback."""
         from congress_videos.congress_participants_sync_dag import dag
         tasks = {t.task_id: t for t in dag.tasks}
         enrich_task = tasks["enrich_missing_photos"]
-        assert len(enrich_task.downstream_list) == 0
+        downstream_ids = {t.task_id for t in enrich_task.downstream_list}
+        assert "fill_congreso_photo_fallback" in downstream_ids
+
+    def test_fill_congreso_has_no_downstream(self):
+        """fill_congreso_photo_fallback is the terminal task — no downstream tasks."""
+        from congress_videos.congress_participants_sync_dag import dag
+        tasks = {t.task_id: t for t in dag.tasks}
+        fill_task = tasks["fill_congreso_photo_fallback"]
+        assert len(fill_task.downstream_list) == 0
+
+    def test_fill_congreso_sole_upstream_is_enrich(self):
+        """fill_congreso_photo_fallback has exactly one upstream: enrich_missing_photos."""
+        from congress_videos.congress_participants_sync_dag import dag
+        tasks = {t.task_id: t for t in dag.tasks}
+        fill_task = tasks["fill_congreso_photo_fallback"]
+        upstream_ids = {t.task_id for t in fill_task.upstream_list}
+        assert upstream_ids == {"enrich_missing_photos"}
 
 
 class TestCongressParticipantsSyncDAGDefaultArgs:

@@ -1,0 +1,24 @@
+[
+  {
+    "codParlamentario": "ABC123",
+    "nombre": "García López, María",
+    "partido": "PartidoA",
+    "circunscripcion": "Madrid"
+  },
+  {
+    "codigo": "DEF456",
+    "apellidosNombre": "López Sánchez, Ana",
+    "partido": "PartidoB",
+    "circunscripcion": "Barcelona"
+  },
+  {
+    "nombre": "Sin Código, Deputy",
+    "partido": "PartidoC",
+    "circunscripcion": "Valencia"
+  },
+  {
+    "codParlamentario": "GHI789",
+    "partido": "PartidoD",
+    "circunscripcion": "Sevilla"
+  }
+]
