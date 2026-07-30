@@ -40,10 +40,28 @@ _SEARCH_DIPUTADOS_ENV_VAR = "CONGRESO_SEARCH_DIPUTADOS_URL_OVERRIDE"
 _REQUEST_TIMEOUT = 30
 
 # Candidate key lists for defensive extraction from searchDiputados portlet.
-# The live response schema is unconfirmed from this environment; order matters —
-# first non-empty key value wins.
+# Verified live (2026-07-30, Spain egress): the portlet returns {"data": [...]}
+# with keys apellidosNombre ("Apellidos, Nombre" full name) and codParlamentario
+# (int). apellidosNombre MUST come before nombre — nombre is the given name only,
+# which would break the normalized-name join. Order matters — first non-empty wins.
 _COD_CANDIDATE_KEYS = ["codParlamentario", "codigo", "cod", "id"]
-_NAME_CANDIDATE_KEYS = ["nombre", "nombreCompleto", "apellidosNombre", "nombreCircunscripcion"]
+_NAME_CANDIDATE_KEYS = ["apellidosNombre", "nombreCompleto", "nombre"]
+
+# Liferay searchDiputados dataRequest body. Verified live: a bare
+# {"idLegislatura": 15} body makes the portlet return {"data": []}. The full
+# _diputadomodule_* form fields are required (same portlet as opendataExport,
+# minus the file-export fileIndex/fileType fields).
+_SEARCH_PORTLET_FORM_FIELDS: dict[str, object] = {
+    "_diputadomodule_idLegislatura": LEGISLATURE_ID,
+    "_diputadomodule_filtroProvincias": "[]",
+    "_diputadomodule_genero": "",
+    "_diputadomodule_grupo": "",
+    "_diputadomodule_tipo": "",
+    "_diputadomodule_nombre": "",
+    "_diputadomodule_apellidos": "",
+    "_diputadomodule_formacion": "",
+    "_diputadomodule_nombreCircunscripcion": "",
+}
 
 
 def fetch_congreso_cod_parlamentario() -> dict[str, str]:
@@ -76,7 +94,7 @@ def fetch_congreso_cod_parlamentario() -> dict[str, str]:
     else:
         response = requests.post(
             CONGRESO_SEARCH_DIPUTADOS_URL,
-            data={"idLegislatura": LEGISLATURE_ID},
+            data=dict(_SEARCH_PORTLET_FORM_FIELDS),
             headers={"User-Agent": CONGRESO_BROWSER_USER_AGENT},
             timeout=_REQUEST_TIMEOUT,
         )

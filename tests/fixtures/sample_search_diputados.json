@@ -1,24 +1,29 @@
-[
-  {
-    "codParlamentario": "ABC123",
-    "nombre": "García López, María",
-    "partido": "PartidoA",
-    "circunscripcion": "Madrid"
-  },
-  {
-    "codigo": "DEF456",
-    "apellidosNombre": "López Sánchez, Ana",
-    "partido": "PartidoB",
-    "circunscripcion": "Barcelona"
-  },
-  {
-    "nombre": "Sin Código, Deputy",
-    "partido": "PartidoC",
-    "circunscripcion": "Valencia"
-  },
-  {
-    "codParlamentario": "GHI789",
-    "partido": "PartidoD",
-    "circunscripcion": "Sevilla"
-  }
-]
+{
+  "data": [
+    {
+      "codParlamentario": 160,
+      "apellidosNombre": "Abades Martínez, Cristina",
+      "nombre": "Cristina",
+      "apellidos": "Abades Martínez",
+      "formacion": "PSOE",
+      "nombreCircunscripcion": "Madrid"
+    },
+    {
+      "codParlamentario": 317,
+      "apellidosNombre": "Abascal Conde, Santiago",
+      "nombre": "Santiago",
+      "apellidos": "Abascal Conde",
+      "formacion": "VOX",
+      "nombreCircunscripcion": "Madrid"
+    },
+    {
+      "apellidosNombre": "Sin Código, Diputado",
+      "nombre": "Diputado",
+      "formacion": "MixtoTest"
+    },
+    {
+      "codParlamentario": 69,
+      "formacion": "SinNombreTest"
+    }
+  ]
+}
