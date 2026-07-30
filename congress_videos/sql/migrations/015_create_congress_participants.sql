@@ -10,8 +10,8 @@
 -- The migration runner runs `SET search_path TO {schema}, public` before executing, so
 -- table names are intentionally UNQUALIFIED.
 --
--- Example (development): psql ... -c "SET search_path TO development, public;" -f 013_create_congress_participants.sql
--- Example (production):  psql ... -c "SET search_path TO production, public;"  -f 013_create_congress_participants.sql
+-- Example (development): psql ... -c "SET search_path TO development, public;" -f 015_create_congress_participants.sql
+-- Example (production):  psql ... -c "SET search_path TO production, public;"  -f 015_create_congress_participants.sql
 
 CREATE TABLE IF NOT EXISTS congress_participants (
     normalized_name                TEXT        UNIQUE NOT NULL,

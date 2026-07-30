@@ -305,17 +305,18 @@ class TestUpdatePhotoUrl:
 # ===========================================================================
 
 
-class TestMigration014:
+class TestMigration016:
 
-    _MIGRATION_PATH = (
-        "/home/alozur/src/github.com/alozur/airflow-dags-worktrees/"
-        "congress-participants-db/congress_videos/sql/migrations/014_add_nickname.sql"
+    from pathlib import Path as _Path
+    _MIGRATION_PATH = str(
+        _Path(__file__).resolve().parents[3]
+        / "congress_videos/sql/migrations/016_add_nickname.sql"
     )
 
     def test_migration_file_exists(self):
         """Migration file must exist at the expected path."""
         from pathlib import Path
-        assert Path(self._MIGRATION_PATH).exists(), "014_add_nickname.sql not found"
+        assert Path(self._MIGRATION_PATH).exists(), "016_add_nickname.sql not found"
 
     def test_sql_contains_add_column_if_not_exists_nickname_text(self):
         """SQL contains ADD COLUMN IF NOT EXISTS nickname TEXT."""
