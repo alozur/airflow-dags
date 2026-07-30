@@ -3,13 +3,15 @@ Congress Participants Sync DAG.
 
 Weekly pipeline that ingests the active Spanish Congress of Deputies roster
 from congreso.es, upserts rows into the ``congress_participants`` table, and
-back-fills photo URLs from Wikidata for any rows still missing one.
+back-fills photo URLs — first from Wikidata, then from the congreso.es official
+deterministic URL as a fallback.
 
 Schedule: every Monday at 03:00 UTC  (``0 3 * * 1``)
 Tasks:
-  1. fetch_and_parse       — resolve download URL, fetch JSON, parse deputies
-  2. upsert_participants   — bulk-upsert via CongressParticipantsDB.upsert_batch
-  3. enrich_missing_photos — fuzzy-join Wikidata photos to null-photo rows
+  1. fetch_and_parse              — resolve download URL, fetch JSON, parse deputies
+  2. upsert_participants          — bulk-upsert via CongressParticipantsDB.upsert_batch
+  3. enrich_missing_photos        — fuzzy-join Wikidata photos to null-photo rows
+  4. fill_congreso_photo_fallback — write deterministic congreso.es URLs for still-null rows
 
 The pipeline is idempotent: running it twice on the same source data produces
 the same DB state as running it once (ON CONFLICT DO UPDATE + COALESCE guard).
@@ -23,7 +25,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 
 from congress_videos.modules.participants_db import CongressParticipantsDB
-from congress_videos.modules.participants_enrichment import enrich_missing_photos
+from congress_videos.modules.participants_enrichment import enrich_missing_photos, fill_congreso_photo_fallback
 from congress_videos.modules.participants_ingestion import fetch_active_deputies, parse_deputies
 from utils.airflow_helpers import xcom_task
 from utils.env_loader import load_env_if_local
@@ -79,4 +81,13 @@ with DAG(
         ),
     )
 
-    t1 >> t2 >> t3
+    t4 = PythonOperator(
+        task_id="fill_congreso_photo_fallback",
+        python_callable=lambda ti, **ctx: xcom_task(
+            ti,
+            lambda: fill_congreso_photo_fallback(),
+            "fill_congreso_result",
+        ),
+    )
+
+    t1 >> t2 >> t3 >> t4
