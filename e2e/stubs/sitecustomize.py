@@ -56,6 +56,8 @@ _stub("googleapiclient.discovery", build=lambda *a, **k: None)
 _stub("googleapiclient.http", MediaFileUpload=object)
 _stub("PyPDF2", PdfReader=object)
 _stub("numpy")
+_stub("rapidfuzz")
+_stub("rapidfuzz.fuzz", token_sort_ratio=lambda *a, **k: 0.0)
 
 # google-auth: register ONLY the submodules, never a fake top-level `google`, so a real
 # `google` namespace package (e.g. google.protobuf pulled in by Airflow/grpc) is NOT
