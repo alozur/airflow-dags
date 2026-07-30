@@ -318,7 +318,7 @@ def filter_finished_streams(
     return result
 
 
-def get_video_details(plenary_videos, min_hours_since_end: int = 2):
+def get_video_details(plenary_videos, min_hours_since_end: int = 12):
     """
     Get detailed information for videos (duration, timing, etc.).
 
@@ -406,6 +406,10 @@ def get_video_details(plenary_videos, min_hours_since_end: int = 2):
 
             enriched_video = {
                 **video,
+                # Issue #25: explicitly set title from the real API response so the
+                # actual snippet.title always wins over any placeholder from the input
+                # dict (e.g. the mock title injected by create_test_video_data()).
+                'title': video_details['snippet']['title'],
                 'duration_seconds': duration_seconds,
                 'duration_formatted': f"{hours}:{minutes:02d}:{seconds:02d}",
                 'actual_start_time': live_details.get('actualStartTime'),

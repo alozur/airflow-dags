@@ -1243,10 +1243,53 @@ class CongressionalVideoDB:
                 row = cur.fetchone()
                 return dict(row) if row else None
 
-    def get_processed_video_ids(self, video_ids: list[str]) -> set[str]:
+    def record_source_integrity_failure(
+        self, video_id: str, retry_after_hours: int = 12
+    ) -> None:
+        """Early-upsert an integrity failure for a source video.
+
+        Sets ``download_retry_after = NOW() + retry_after_hours`` so the video is
+        excluded from ``filter_unprocessed_videos`` until the VOD has had time to
+        finalise on YouTube.
+
+        Rules:
+        - ``is_processed`` is intentionally NOT in the DO UPDATE SET clause so a
+          row that was already marked ``is_processed = TRUE`` never regresses to FALSE.
+        - ``GREATEST(...)`` ensures ``download_retry_after`` only ever advances forward;
+          a second call with a *smaller* window does not decrease an existing future
+          timestamp.
+        - On INSERT the row starts with ``is_processed = FALSE`` and the computed
+          retry timestamp.
+
+        Args:
+            video_id: YouTube video ID.
+            retry_after_hours: Hours to defer re-download (default 12).
         """
-        Return the subset of video_ids already fully processed
-        (is_processed = TRUE) in youtube_source_videos.
+        tbl = self.pg_conn.get_qualified_table('youtube_source_videos')
+        video_url = f'https://www.youtube.com/watch?v={video_id}'
+
+        with closing(self.pg_conn.get_connection()) as conn:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        INSERT INTO {tbl} (video_id, video_url, is_processed, download_retry_after)
+                        VALUES (%s, %s, FALSE, NOW() + (%s || ' hours')::interval)
+                        ON CONFLICT (video_id) DO UPDATE SET
+                            download_retry_after = GREATEST(
+                                {tbl}.download_retry_after,
+                                EXCLUDED.download_retry_after),
+                            updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (video_id, video_url, str(retry_after_hours)),
+                    )
+
+    def get_processed_video_ids(self, video_ids: list[str]) -> set[str]:
+        """Return the subset of video_ids that should be skipped for download.
+
+        A video is skipped when EITHER:
+        - ``is_processed = TRUE`` (already fully processed), OR
+        - ``download_retry_after > NOW()`` (deferred within the integrity retry window).
 
         Cheap pre-download idempotency check. Empty input -> empty set
         (no query executed). Read-only; raises on DB error (fail-closed).
@@ -1262,7 +1305,8 @@ class CongressionalVideoDB:
                     f"""
                     SELECT video_id
                     FROM {youtube_videos_table}
-                    WHERE video_id = ANY(%s) AND is_processed = TRUE
+                    WHERE video_id = ANY(%s)
+                      AND (is_processed = TRUE OR download_retry_after > NOW())
                     """,
                     (video_ids,),
                 )

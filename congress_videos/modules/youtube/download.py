@@ -24,6 +24,77 @@ from utils.youtube_downloader import (
 LARGE_SRT_THRESHOLD = 100_000
 
 
+def _run_ffprobe(file_path: str) -> bool:
+    """Run a fast container-level integrity probe against a downloaded source file.
+
+    Uses ``ffprobe -v error -i <file_path>`` (headers/index only — no full decode).
+    A clean probe is defined as: returncode 0 AND stderr contains no error-level output.
+
+    Fail-safe: any exception (FileNotFoundError, TimeoutExpired, or unexpected error)
+    returns False so a missing/broken binary never silently passes a corrupt source through.
+
+    Args:
+        file_path: Absolute path to the downloaded video file.
+
+    Returns:
+        True if the probe is clean; False on any error or exception.
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-i', file_path],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0 or result.stderr.strip():
+            return False
+        return True
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception) as exc:
+        logging.error("ffprobe integrity check failed for %s: %s", file_path, exc)
+        return False
+
+
+def check_source_video_integrity(downloaded_videos: dict) -> dict:
+    """Run ffprobe against each downloaded source file and annotate the result.
+
+    Consumes the ``download_video_from_youtube`` return structure
+    (``{'total_downloaded', 'videos': [{video_id, file_path, ...}]}``) and returns
+    the same structure with a per-video ``integrity_ok: bool`` key and a top-level
+    ``failed_video_ids: list[str]``.
+
+    Entries that already have no ``file_path`` (download errors) are treated as
+    ``integrity_ok=False`` without attempting a probe.
+
+    Args:
+        downloaded_videos: Return value of ``download_video_from_youtube``.
+
+    Returns:
+        The same dict shape with added ``integrity_ok`` per video and
+        ``failed_video_ids`` at the top level.
+    """
+    videos = downloaded_videos.get('videos', [])
+    failed: list[str] = []
+    result_videos: list[dict] = []
+
+    for v in videos:
+        video_id = v.get('video_id', '')
+        file_path = v.get('file_path')
+
+        if not file_path:
+            # No file path means the download itself failed — treat as failed probe.
+            result_videos.append({**v, 'integrity_ok': False})
+            failed.append(video_id)
+            continue
+
+        ok = _run_ffprobe(file_path)
+        result_videos.append({**v, 'integrity_ok': ok})
+        if not ok:
+            failed.append(video_id)
+
+    return {**downloaded_videos, 'videos': result_videos, 'failed_video_ids': failed}
+
+
 def _chunk_text(chunk: dict) -> str:
     """Return a chunk's SRT text, reading from disk when stored as a path.
 

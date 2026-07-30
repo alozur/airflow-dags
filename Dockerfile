@@ -19,8 +19,8 @@ RUN apt-get update && \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Verify installations
-RUN ffmpeg -version && node --version
+# Verify installations (ffprobe ships with the ffmpeg apt package)
+RUN ffmpeg -version && ffprobe -version && node --version
 
 # Switch back to airflow user
 USER airflow

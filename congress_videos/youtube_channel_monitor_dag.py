@@ -67,7 +67,7 @@ with DAG(
     params={  # Default to today; lookback range covers yesterday too
         "target_date": today_str,
         "lookback_days": 1,  # Inclusive lookback window: target_date - lookback_days .. target_date
-        "min_hours_since_end": 2,  # Skip videos whose live broadcast ended less than this many hours ago
+        "min_hours_since_end": 12,  # Skip videos whose live broadcast ended less than this many hours ago
         "guard_enabled": True,  # Finished-stream guard: drop not-ready VODs before the branch (+ downloader guard)
         "guard_floor_minutes": 10,  # Cheap pre-probe skip: drop candidates that ended less than this ago
         "max_videos": 20,  # Maximum number of videos to check
@@ -191,7 +191,7 @@ with DAG(
             ti,
             lambda: yt_channel.get_video_details(
                 ti.xcom_pull(key='plenary_videos'),
-                min_hours_since_end=context["params"].get("min_hours_since_end", 2)
+                min_hours_since_end=context["params"].get("min_hours_since_end", 12)
             ),
             'video_details'
         ),
@@ -258,6 +258,38 @@ with DAG(
             'downloaded_videos'
         ),
         trigger_rule='none_failed_min_one_success'  # Run regardless of which branch
+    )
+
+    # Step 3c2b: Post-download container-level integrity gate (ffprobe)
+    # Runs after t3c2 (download_video_from_youtube). Probes each downloaded source
+    # file with ffprobe -v error -i <path>. Clean probe → video proceeds to t_trim.
+    # Failed probe → record_source_integrity_failure() defers the video 12h and the
+    # video is excluded from trim/split until it re-enters filter_unprocessed_videos.
+    # trigger_rule matches t3c2 (none_failed_min_one_success) so it runs regardless
+    # of which subtitle branch was taken.
+    def _check_source_integrity(ti, **context):
+        from congress_videos.modules.database import CongressionalVideoDB
+        downloaded = ti.xcom_pull(key='downloaded_videos')
+        if not downloaded:
+            logging.warning("No downloaded_videos XCom available for integrity check — passthrough.")
+            return {'total_downloaded': 0, 'videos': [], 'failed_video_ids': []}
+        enriched = yt_channel.check_source_video_integrity(downloaded)
+        failed_ids = enriched.get('failed_video_ids', [])
+        if failed_ids:
+            db = CongressionalVideoDB()
+            for video_id in failed_ids:
+                logging.warning("Integrity probe FAILED for %s — deferring 12h.", video_id)
+                db.record_source_integrity_failure(video_id, retry_after_hours=12)
+        return enriched
+
+    t3c2_integrity = PythonOperator(
+        task_id='check_source_integrity',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: _check_source_integrity(ti, **context),
+            'downloaded_videos'  # re-push enriched dict under the same key
+        ),
+        trigger_rule='none_failed_min_one_success',
     )
 
     # Step 3d: Extract audio from YouTube (only if subtitles not available)
@@ -576,14 +608,15 @@ with DAG(
     t7 >> t8
 
     # After scoring, run VAD chapter silence-trim (both edges) before persisting.
-    # t_trim ALSO waits on t3c2 (download_video_from_youtube): VAD reads the
-    # downloaded mp4 from disk via _find_source_video, so it must NOT start while
-    # the (multi-hour) video is still being written — otherwise ffmpeg hits
-    # "moov atom not found" on the half-written file. When subtitles are available
-    # the chunk/score pipeline races ahead of the parallel video download, so this
-    # join is required. trigger_rule='all_done' keeps VAD best-effort: a download
-    # failure must never block persisting the scored chapters.
-    [t8, t3c2] >> t_trim
+    # t_trim waits on BOTH t8 (scoring) and t3c2_integrity (integrity gate):
+    #   - t3c2 → t3c2_integrity: ffprobe integrity probe runs after download completes.
+    #   - [t8, t3c2_integrity] → t_trim: VAD reads the mp4 from disk so it must not
+    #     start while the file is still being written. The integrity gate sits between
+    #     download and trim so a corrupt source is deferred before reaching VAD.
+    # trigger_rule='all_done' keeps VAD best-effort: an integrity failure on the source
+    # must never block persisting the scored chapters.
+    t3c2 >> t3c2_integrity
+    [t8, t3c2_integrity] >> t_trim
 
     # After trimming the silence, save the chapters to the database
     # Note: session_number and session_date come from t5c and t5d tasks
