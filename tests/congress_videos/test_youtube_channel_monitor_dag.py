@@ -154,9 +154,10 @@ class TestFilterFinishedStreamsTopology:
         assert bool(params["guard_enabled"]) is True
         assert int(params["guard_floor_minutes"]) == 10
 
-    def test_min_hours_since_end_param_unchanged(self):
+    def test_min_hours_since_end_param_default_is_12(self):
+        """min_hours_since_end raised from 2 to 12 (fix-video-integrity #24)."""
         from congress_videos.youtube_channel_monitor_dag import dag
-        assert int(dag.params["min_hours_since_end"]) == 2
+        assert int(dag.params["min_hours_since_end"]) == 12
 
     def test_empty_guard_result_routes_to_no_plenary_sessions(self):
         """When the guard drops every candidate (total_matches == 0), the

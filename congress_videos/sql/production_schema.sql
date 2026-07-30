@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS production.youtube_source_videos (
     is_processed BOOLEAN DEFAULT FALSE,
     total_chapters INTEGER DEFAULT 0,
 
+    -- Integrity gate: set to NOW()+12h when ffprobe detects a corrupt/incomplete download.
+    -- filter_unprocessed_videos skips rows where download_retry_after > NOW() so the video
+    -- is retried after the VOD has had time to finalise on YouTube.
+    download_retry_after TIMESTAMP DEFAULT NULL,
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
