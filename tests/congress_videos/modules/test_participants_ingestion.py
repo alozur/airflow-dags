@@ -204,6 +204,8 @@ class TestFetchActiveDeputies:
         assert "403" in message
         assert "congreso.es" in message or CONGRESO_DEPUTIES_PORTLET_URL.split("?")[0] in message
         assert "WAF" in message or "endpoint change" in message
+        # S-ERR-01(c): the response body snippet must be surfaced for diagnosis
+        assert "access denied by security policy" in message
         # Confirm raise_for_status was never the trigger (RuntimeError not HTTPError)
         assert exc_info.type is RuntimeError
 
