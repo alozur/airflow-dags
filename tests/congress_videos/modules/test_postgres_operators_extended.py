@@ -466,7 +466,7 @@ class TestExecuteSaveYoutubeChapters:
 class TestExecuteGetUploadableChapters:
 
     def test_returns_chapters_from_db(self, mock_db, mock_task_instance, make_context):
-        """get_uploadable_chapters called with limit and min_relevance_score from params."""
+        """get_uploadable_chapters always uses hardcoded limit=1 (REQ-LIMIT-01)."""
         from congress_videos.modules.postgres_operators import PostgreSQLOperator
 
         mock_db.get_uploadable_chapters.return_value = [
@@ -476,12 +476,12 @@ class TestExecuteGetUploadableChapters:
         op = PostgreSQLOperator(task_id="t", operation="get_uploadable_chapters")
         result = op.execute(
             make_context(
-                params={"max_chapters": 3, "min_relevance_score": 2},
+                params={"min_relevance_score": 2},
                 ti=mock_task_instance,
             )
         )
 
-        mock_db.get_uploadable_chapters.assert_called_once_with(limit=3, min_relevance_score=2)
+        mock_db.get_uploadable_chapters.assert_called_once_with(limit=1, min_relevance_score=2)
         assert len(result) == 1
 
 

@@ -105,6 +105,11 @@ class TestCheckUploadFailures:
 
 class TestTriggerUploadWithConfig:
 
+    def test_schedule_is_three_times_daily(self):
+        """DAG schedule is '0 11,14,17 * * *' — three runs per day (REQ-SCHED-01)."""
+        from congress_videos.youtube_upload_dag import dag
+        assert dag.schedule_interval == "0 11,14,17 * * *"
+
     def test_no_raise_on_child_failure_and_pushes_fallback(self, mocker):
         from congress_videos.youtube_upload_dag import trigger_upload_with_config
 
@@ -134,3 +139,108 @@ class TestTriggerUploadWithConfig:
         fallback = ti.xcom_store["upload_results"]
         assert len(fallback["upload_details"]) == 2
         assert all(d["success"] is False for d in fallback["upload_details"])
+
+
+# ---------------------------------------------------------------------------
+# THRESHOLD_BY_HOUR constant (REQ-THRESH-01/02/03)
+# ---------------------------------------------------------------------------
+
+class TestThresholdByHour:
+
+    def test_constant_exists(self):
+        """THRESHOLD_BY_HOUR is importable from the DAG module."""
+        from congress_videos.youtube_upload_dag import THRESHOLD_BY_HOUR
+        assert THRESHOLD_BY_HOUR is not None
+
+    def test_threshold_at_11(self):
+        """11:00 threshold is 10 (REQ-THRESH-01)."""
+        from congress_videos.youtube_upload_dag import THRESHOLD_BY_HOUR
+        assert THRESHOLD_BY_HOUR[11] == 10
+
+    def test_threshold_at_14(self):
+        """14:00 threshold is 20 (REQ-THRESH-02)."""
+        from congress_videos.youtube_upload_dag import THRESHOLD_BY_HOUR
+        assert THRESHOLD_BY_HOUR[14] == 20
+
+    def test_threshold_at_17(self):
+        """17:00 threshold is 0 (REQ-THRESH-03)."""
+        from congress_videos.youtube_upload_dag import THRESHOLD_BY_HOUR
+        assert THRESHOLD_BY_HOUR[17] == 0
+
+
+# ---------------------------------------------------------------------------
+# should_upload function (REQ-GATE-01, REQ-THRESH-01/02/03)
+# ---------------------------------------------------------------------------
+
+def _make_context_for_should_upload(queue_size: int, hour: int) -> dict:
+    """Build a minimal Airflow context for should_upload tests."""
+    from datetime import datetime, timezone
+    from unittest.mock import MagicMock
+
+    logical_date = datetime(2026, 7, 31, hour, 0, 0, tzinfo=timezone.utc)
+
+    ti = MagicMock(name="TaskInstance")
+    ti.xcom_pull.return_value = {"queue_size": queue_size, "uploads_today": 0}
+
+    return {"ti": ti, "logical_date": logical_date}
+
+
+class TestShouldUpload:
+
+    # 11:00 — threshold 10
+    def test_11_queue_10_is_false(self):
+        """11:00, queue=10 → False (exactly at threshold, not above) (REQ-THRESH-01)."""
+        from congress_videos.youtube_upload_dag import should_upload
+        ctx = _make_context_for_should_upload(queue_size=10, hour=11)
+        assert should_upload(**ctx) is False
+
+    def test_11_queue_11_is_true(self):
+        """11:00, queue=11 → True (above threshold) (REQ-THRESH-01)."""
+        from congress_videos.youtube_upload_dag import should_upload
+        ctx = _make_context_for_should_upload(queue_size=11, hour=11)
+        assert should_upload(**ctx) is True
+
+    def test_11_queue_5_is_false(self):
+        """11:00, queue=5 → False (below threshold) (REQ-THRESH-01)."""
+        from congress_videos.youtube_upload_dag import should_upload
+        ctx = _make_context_for_should_upload(queue_size=5, hour=11)
+        assert should_upload(**ctx) is False
+
+    # 14:00 — threshold 20
+    def test_14_queue_20_is_false(self):
+        """14:00, queue=20 → False (boundary — exactly at threshold) (REQ-THRESH-02)."""
+        from congress_videos.youtube_upload_dag import should_upload
+        ctx = _make_context_for_should_upload(queue_size=20, hour=14)
+        assert should_upload(**ctx) is False
+
+    def test_14_queue_21_is_true(self):
+        """14:00, queue=21 → True (above threshold) (REQ-THRESH-02)."""
+        from congress_videos.youtube_upload_dag import should_upload
+        ctx = _make_context_for_should_upload(queue_size=21, hour=14)
+        assert should_upload(**ctx) is True
+
+    # 17:00 — threshold 0
+    def test_17_queue_0_is_false(self):
+        """17:00, queue=0 → False (threshold 0, not strictly above) (REQ-THRESH-03)."""
+        from congress_videos.youtube_upload_dag import should_upload
+        ctx = _make_context_for_should_upload(queue_size=0, hour=17)
+        assert should_upload(**ctx) is False
+
+    def test_17_queue_1_is_true(self):
+        """17:00, queue=1 → True (above threshold 0) (REQ-THRESH-03)."""
+        from congress_videos.youtube_upload_dag import should_upload
+        ctx = _make_context_for_should_upload(queue_size=1, hour=17)
+        assert should_upload(**ctx) is True
+
+    # Unknown hour — defaults to threshold 0
+    def test_unknown_hour_queue_0_is_false(self):
+        """Unknown hour (e.g. 8), queue=0 → False (defaults to threshold 0)."""
+        from congress_videos.youtube_upload_dag import should_upload
+        ctx = _make_context_for_should_upload(queue_size=0, hour=8)
+        assert should_upload(**ctx) is False
+
+    def test_unknown_hour_queue_1_is_true(self):
+        """Unknown hour (e.g. 8), queue=1 → True (above default threshold 0)."""
+        from congress_videos.youtube_upload_dag import should_upload
+        ctx = _make_context_for_should_upload(queue_size=1, hour=8)
+        assert should_upload(**ctx) is True

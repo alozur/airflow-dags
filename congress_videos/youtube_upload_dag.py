@@ -37,6 +37,26 @@ load_env_if_local()
 POSTGRES_SCHEMA = os.getenv('POSTGRES_SCHEMA', 'development')
 IS_DEVELOPMENT = POSTGRES_SCHEMA == 'development'
 
+# Upload thresholds by hour — skip upload unless queue_size strictly exceeds the threshold.
+# 11:00: skip if queue_size <= 10 (REQ-THRESH-01)
+# 14:00: skip if queue_size <= 20 (REQ-THRESH-02)
+# 17:00: skip if queue_size < 1  (REQ-THRESH-03)
+THRESHOLD_BY_HOUR = {11: 10, 14: 20, 17: 0}
+
+
+def should_upload(**context):
+    """Return True when queue_size strictly exceeds the threshold for this run's hour.
+
+    Used as the python_callable for t1_skip (ShortCircuitOperator).
+    Receives full Airflow context via **context (REQ-GATE-01).
+    """
+    ti = context['ti']
+    upload_quota = ti.xcom_pull(key='upload_quota') or {}
+    queue_size = upload_quota.get('queue_size', 0)
+    hour = context['logical_date'].hour
+    threshold = THRESHOLD_BY_HOUR.get(hour, 0)
+    return queue_size > threshold
+
 
 default_args = {
     'owner': 'airflow',
@@ -51,7 +71,7 @@ with DAG(
     'congress_youtube_chapter_uploader',
     default_args=default_args,
     description='Upload top congressional video chapters to YouTube based on relevance score',
-    schedule='0 17 * * *',  # Run at 17:00 UTC daily
+    schedule='0 11,14,17 * * *',  # Run at 11:00, 14:00, and 17:00 UTC daily
     start_date=datetime(2025, 11, 14),
     catchup=False,
     tags=['congress', 'youtube', 'chapters'],
@@ -81,10 +101,10 @@ with DAG(
         output_xcom_key='upload_quota',
     )
 
-    # Step 1b: Short-circuit if daily quota already reached
+    # Step 1b: Short-circuit based on queue_size vs time-of-day threshold
     t1_skip = ShortCircuitOperator(
         task_id='skip_if_quota_reached',
-        python_callable=lambda ti: (ti.xcom_pull(key='upload_quota') or {}).get('remaining_quota', 0) > 0,
+        python_callable=should_upload,
     )
 
     # Step 2: Get uploadable chapters — limit comes from remaining_quota via XCom
