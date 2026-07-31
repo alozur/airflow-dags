@@ -2,7 +2,7 @@
 
 ## Technical Approach
 
-A triggered, `schedule=None` DAG `generic_thumbnail_generator` mirroring `utils/youtube_uploader_dag.py`: `dag_run.conf` carries per-video input, per-domain style/persona/prompt config lives in a code module keyed by domain. Tasks are `PythonOperator`s wired with `xcom_task` (`utils/airflow_helpers.py`). Pikzels v2 client is ported/trimmed into `congress_videos/modules/pikzels_client.py`. Titles come EXCLUSIVELY from OpenAI via `utils/ai_helpers.generate_json_completion`. Results persist to a new `video_thumbnails` child table (migration `017`), FK to `video_chapters(chapter_id)`.
+A triggered, `schedule=None` DAG `generic_thumbnail_generator` mirroring `utils/youtube_uploader_dag.py`: `dag_run.conf` carries per-video input, per-domain style/persona/prompt config lives in a code module keyed by domain. Tasks are `PythonOperator`s wired with `xcom_task` (`utils/airflow_helpers.py`). Pikzels v2 client is ported/trimmed into `congress_videos/modules/pikzels_client.py`. Titles come EXCLUSIVELY from OpenAI via `utils/ai_helpers.generate_json_completion`. Results persist to a new `video_thumbnails` child table (migration `019`), FK to `video_chapters(chapter_id)`.
 
 ## Architecture Decisions
 
@@ -39,7 +39,7 @@ A triggered, `schedule=None` DAG `generic_thumbnail_generator` mirroring `utils/
 | `congress_videos/config/thumbnail_config.py` | Create | Per-domain styles/personas, participants source, prompt template, party-logo map |
 | `congress_videos/config/ai_prompts.py` | Modify | Add `THUMBNAIL_TITLE_SYSTEM_PROMPT` + `_USER_PROMPT_TEMPLATE` |
 | `congress_videos/config/paths.py` | Modify | Add `get_thumbnail_dir(youtube_video_id)` |
-| `congress_videos/sql/migrations/017_create_video_thumbnails.sql` | Create | Table + indexes (unqualified names — runner sets `search_path`) |
+| `congress_videos/sql/migrations/019_create_video_thumbnails.sql` | Create | Table + indexes (unqualified names — runner sets `search_path`) |
 | `.env` / `docker-compose*.yml` / `conftest.py` (`_TEST_ENV`) | Modify | Add `PIKZELS_API_KEY` (test stub `pkz_test-...`) |
 | `tests/congress_videos/modules/test_pikzels_client.py`, `test_thumbnail_generation.py`, `test_generic_thumbnail_dag.py` | Create | Client, logic, DAG-import tests |
 
@@ -63,7 +63,7 @@ def persist_results(chapter_id: int, youtube_video_id: str, title: str, options:
 
 **`dag_run.conf`**: `{domain, youtube_video_id, chapter_id, participant_name, summary}`.
 
-**`017_create_video_thumbnails.sql`** (unqualified; `IF NOT EXISTS`):
+**`019_create_video_thumbnails.sql`** (unqualified; `IF NOT EXISTS`):
 ```sql
 CREATE TABLE IF NOT EXISTS video_thumbnails (
     thumbnail_id      SERIAL PRIMARY KEY,
@@ -113,7 +113,9 @@ N/A — no routing, shell, subprocess, VCS/PR automation, executable-file classi
 
 ## Migration / Rollout
 
-Additive. Apply `017` via existing `run_migrations` DAG (idempotent `IF NOT EXISTS`). Rollback: remove new files + drop `video_thumbnails`; `video_chapters` untouched. Legacy Pillow render and `pikzels_report.json` remain.
+Additive. Apply `019` via existing `run_migrations` DAG (idempotent `IF NOT EXISTS`). Rollback: remove new files + drop `video_thumbnails`; `video_chapters` untouched. Legacy Pillow render and `pikzels_report.json` remain.
+
+> **Renumber note (2026-07-31):** originally authored as `017` when dev ended at `016`. Concurrent work landed `017_create_speaker_normalization_cache.sql` and `018_add_participant_slug.sql` on dev, so this migration was renumbered to `019` to keep migration numbers unique and sequential. The `run_migrations` runner keys applied migrations by filename, so both `017` files would have applied, but the duplicate number violated the repo convention.
 
 ## Open Questions
 
