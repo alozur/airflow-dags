@@ -51,6 +51,7 @@ class ParticipantRecord(TypedDict):
     """JSON-serializable participant record (XCom-safe)."""
 
     normalized_name: str
+    slug: str  # normalized_name with spaces → hyphens
     display_name: str
     party: str | None
     parliamentary_group: str | None
@@ -197,6 +198,7 @@ def parse_deputies(raw: list[dict[str, Any]]) -> list[ParticipantRecord]:
         records.append(
             ParticipantRecord(
                 normalized_name=normalized_name,
+                slug=normalized_name.replace(" ", "-"),
                 display_name=display_name,
                 party=entry.get("Formacion"),
                 parliamentary_group=entry.get("GrupoParlamentario"),

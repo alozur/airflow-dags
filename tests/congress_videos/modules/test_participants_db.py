@@ -37,6 +37,7 @@ def _make_record(**overrides):
     """Build a minimal ParticipantRecord for testing."""
     base = {
         "normalized_name": "garcia ana",
+        "slug": "garcia-ana",
         "display_name": "García, Ana",
         "party": "PartyA",
         "parliamentary_group": "GroupA",
@@ -118,19 +119,34 @@ class TestUpsertBatch:
         assert "updated_at" in sql
         assert "NOW()" in sql
 
-    def test_all_ten_columns_present_in_insert(self, db_fixture):
-        """INSERT column list matches the design spec (10 columns)."""
+    def test_all_eleven_columns_present_in_insert(self, db_fixture):
+        """INSERT column list matches the design spec (11 columns)."""
         instance, mock_conn, mock_cursor = db_fixture
 
         instance.upsert_batch([_make_record()])
 
         sql = mock_cursor.execute.call_args[0][0]
         for col in (
-            "normalized_name", "display_name", "party", "parliamentary_group",
+            "normalized_name", "slug", "display_name", "party", "parliamentary_group",
             "constituency", "biography", "full_membership_date", "start_date",
             "group_entry_date", "photo_url",
         ):
             assert col in sql, f"Column {col!r} missing from INSERT SQL"
+
+    def test_sql_updates_slug_from_excluded_on_conflict(self, db_fixture):
+        """ON CONFLICT DO UPDATE includes slug = EXCLUDED.slug."""
+        instance, _c, mock_cursor = db_fixture
+        instance.upsert_batch([_make_record()])
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "slug" in sql
+        assert "EXCLUDED.slug" in sql
+
+    def test_slug_param_forwarded(self, db_fixture):
+        """slug value is passed as a query parameter."""
+        instance, _c, mock_cursor = db_fixture
+        instance.upsert_batch([_make_record(slug="smith-john")])
+        _sql, params = mock_cursor.execute.call_args[0]
+        assert "smith-john" in params
 
     def test_params_forwarded_correctly(self, db_fixture):
         """Execute called with a tuple containing the record's field values."""

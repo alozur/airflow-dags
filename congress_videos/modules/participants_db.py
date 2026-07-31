@@ -58,10 +58,11 @@ class CongressParticipantsDB:
         upserted = 0
         sql = f"""
             INSERT INTO {self.participants_table}
-                (normalized_name, display_name, party, parliamentary_group, constituency,
+                (normalized_name, slug, display_name, party, parliamentary_group, constituency,
                  biography, full_membership_date, start_date, group_entry_date, photo_url)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (normalized_name) DO UPDATE SET
+                slug                 = EXCLUDED.slug,
                 display_name         = EXCLUDED.display_name,
                 party                = EXCLUDED.party,
                 parliamentary_group  = EXCLUDED.parliamentary_group,
@@ -79,6 +80,7 @@ class CongressParticipantsDB:
                 for record in records:
                     params = (
                         record["normalized_name"],
+                        record["slug"],
                         record["display_name"],
                         record.get("party"),
                         record.get("parliamentary_group"),

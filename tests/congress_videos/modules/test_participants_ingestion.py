@@ -280,3 +280,23 @@ class TestParseDeputies:
     def test_raises_when_all_entries_missing_nombre(self):
         with pytest.raises(ValueError):
             parse_deputies([{"Formacion": "Grupo sin nombre"}])
+
+    def test_slug_is_normalized_name_hyphenated(self):
+        """slug == normalized_name.replace(' ', '-') for the first record."""
+        records = parse_deputies(_load_sample_deputies())
+        first = records[0]
+        assert first["slug"] == first["normalized_name"].replace(" ", "-")
+
+    def test_every_record_has_slug(self):
+        """Every returned record has a non-empty slug with no spaces."""
+        records = parse_deputies(_load_sample_deputies())
+        assert all("slug" in r and " " not in r["slug"] for r in records)
+
+    def test_slug_key_present_in_participant_record(self):
+        """ParticipantRecord TypedDict has a 'slug' key (non-optional str)."""
+        import typing
+        from congress_videos.modules.participants_ingestion import ParticipantRecord
+
+        hints = typing.get_type_hints(ParticipantRecord)
+        assert "slug" in hints
+        assert hints["slug"] is str
