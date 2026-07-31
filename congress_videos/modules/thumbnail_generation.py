@@ -28,6 +28,7 @@ from congress_videos.config.ai_prompts import (
     THUMBNAIL_TITLE_SYSTEM_PROMPT,
     THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE,
 )
+from congress_videos.config.constants import CONGRESO_BROWSER_USER_AGENT
 from utils.ai_helpers import generate_json_completion
 from utils.postgres_helpers import PostgresConnection
 
@@ -195,7 +196,11 @@ def resolve_participant_photo(slug: str | None, cfg: dict) -> dict:
 
     if photo_url:
         try:
-            response = requests.get(photo_url, timeout=30)
+            response = requests.get(
+                photo_url,
+                timeout=30,
+                headers={"User-Agent": CONGRESO_BROWSER_USER_AGENT},
+            )
             if response.status_code == 200:
                 image_bytes = response.content
                 return {

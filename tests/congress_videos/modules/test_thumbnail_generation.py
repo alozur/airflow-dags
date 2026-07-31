@@ -88,7 +88,13 @@ class TestResolveParticipantPhoto:
         with patch("requests.get", return_value=mock_resp) as mock_get:
             result = resolve_participant_photo("garcia_maria", cfg)
 
-        mock_get.assert_called_once_with("https://example.com/garcia.jpg", timeout=30)
+        from congress_videos.config.constants import CONGRESO_BROWSER_USER_AGENT
+
+        mock_get.assert_called_once_with(
+            "https://example.com/garcia.jpg",
+            timeout=30,
+            headers={"User-Agent": CONGRESO_BROWSER_USER_AGENT},
+        )
         assert result["source"] == "photo"
         assert result["support_image_b64"] == base64.b64encode(fake_bytes).decode()
 
