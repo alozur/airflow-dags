@@ -1,4 +1,4 @@
--- Migration 017: Create video_thumbnails table
+-- Migration 019: Create video_thumbnails table
 --
 -- Stores Pikzels-generated thumbnail options for each chapter, including
 -- the chosen option's OpenAI-generated title.  One run produces exactly

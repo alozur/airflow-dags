@@ -273,3 +273,11 @@ No real bug found: `score_thumbnail(image_base64=...)` is called correctly; `thu
 - Depends on: Slice 1 + 2 merged
 - Rollback: delete `generic_thumbnail_generator_dag.py` + `test_generic_thumbnail_dag.py`; revert `conftest.py` + 3 docker-compose files + docs
 - Next: cross-slice final verification (parent task) then `sdd-verify`
+
+### Post-merge fix — migration renumber 017 → 019 (2026-07-31)
+- After merge, dev already contained `017_create_speaker_normalization_cache.sql` and
+  `018_add_participant_slug.sql` from concurrent work → this migration's `017` number collided.
+- Renamed `017_create_video_thumbnails.sql` → `019_create_video_thumbnails.sql` (git mv) and
+  updated its header comment + `design.md` references. The `run_migrations` runner keys applied
+  migrations by filename, so both `017` files would still apply — this is a convention fix
+  (unique/sequential numbers), not a functional break. Delivered via `fix/thumbnail-migration-renumber`.
