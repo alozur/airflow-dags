@@ -23,13 +23,14 @@ import os
 from datetime import datetime, timedelta
 
 from airflow import DAG
-from airflow.operators.python import BranchPythonOperator, PythonOperator
+from airflow.operators.python import BranchPythonOperator, PythonOperator, ShortCircuitOperator
 
 from congress_videos.config.constants import (
     YOUTUBE_CHANNEL_ID,
     TARGET_VIDEO_TITLE,
     VAD_ENABLED,
 )
+from congress_videos.config import speaker_normalization_config as snc
 from congress_videos.modules import youtube as yt_channel
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from congress_videos.modules.vad_helpers import trim_chapter_silence_with_vad
@@ -546,6 +547,80 @@ with DAG(
         python_callable=lambda: logging.info("No plenary sessions found. DAG execution stopped."),
     )
 
+    # Step 10: Normalize speaker names for saved chapters
+    # Resolves dirty speaker strings from the LLM into canonical congress_participants
+    # entries via dual-field fuzzy matching + AI verification. Writes audit rows to
+    # speaker_normalization_cache and rewrites confirmed chapter fields in video_chapters.
+    #
+    # trigger_rule='all_done': runs regardless of t9_db outcome so a partial DB save
+    # never blocks normalization of the chapters that did succeed.
+    # ShortCircuitOperator: if snc.ENABLED=False the task is skipped cleanly.
+
+    def _normalize_speakers(**context):
+        """Load chapters from t9_db XCom and normalize each chapter's speakers."""
+        import json as _json
+        from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
+        from congress_videos.modules.database import CongressionalVideoDB
+        from utils.postgres_helpers import PostgresConnection
+
+        ti = context["ti"]
+        db_save_results = ti.xcom_pull(key="db_save_results")
+
+        if not db_save_results:
+            logging.info("_normalize_speakers: no db_save_results XCom — skipping")
+            return True
+
+        pg = PostgresConnection()
+        chapters_table = pg.get_qualified_table("video_chapters")
+        db = CongressionalVideoDB()
+
+        with pg.get_connection() as conn:
+            with conn.cursor() as cur:
+                for video_result in db_save_results.get("videos", []):
+                    video_id = video_result.get("video_id")
+                    if video_result.get("error"):
+                        continue
+                    # Fetch saved chapters for this video
+                    cur.execute(
+                        f"SELECT chapter_id, speakers, key_speakers, timeline "
+                        f"FROM {chapters_table} WHERE video_id = %s",
+                        (video_id,),
+                    )
+                    rows = cur.fetchall()
+                    for row in rows:
+                        chapter_id = row["chapter_id"]
+                        speakers_raw = row.get("speakers") or []
+                        key_speakers_raw = row.get("key_speakers") or []
+                        timeline_raw = row.get("timeline") or []
+                        if isinstance(timeline_raw, str):
+                            timeline_raw = _json.loads(timeline_raw)
+                        try:
+                            result = normalize_chapter_speakers(
+                                chapter_id,
+                                speakers_raw,
+                                key_speakers_raw,
+                                timeline_raw,
+                                conn,
+                                snc,
+                            )
+                            if result.updated:
+                                logging.info(
+                                    "_normalize_speakers: chapter %d updated with %d correction(s)",
+                                    chapter_id, len(result.corrections),
+                                )
+                        except Exception as exc:  # noqa: BLE001
+                            logging.warning(
+                                "_normalize_speakers: error normalizing chapter %d: %s",
+                                chapter_id, exc,
+                            )
+        return True
+
+    t_normalize_speakers = ShortCircuitOperator(
+        task_id="normalize_speakers",
+        python_callable=lambda **ctx: snc.ENABLED and _normalize_speakers(**ctx),
+        trigger_rule="all_done",
+    )
+
     # Task dependencies
 
     # Start: Branch based on test mode
@@ -622,3 +697,7 @@ with DAG(
     # Note: session_number and session_date come from t5c and t5d tasks
     # We need both the VAD-trimmed scoring (t_trim) and session info (t5c)
     [t_trim, t5c] >> t9_db
+
+    # After saving chapters, normalize speaker names (best-effort; all_done so a
+    # partial save never blocks normalization)
+    t9_db >> t_normalize_speakers

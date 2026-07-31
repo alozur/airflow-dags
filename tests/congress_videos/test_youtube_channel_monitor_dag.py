@@ -174,3 +174,39 @@ class TestFilterFinishedStreamsTopology:
         }
 
         assert branch.python_callable(ti) == "no_plenary_sessions"
+
+
+# ---------------------------------------------------------------------------
+# TASK 8 (RED) — t_normalize_speakers topology
+# ---------------------------------------------------------------------------
+
+class TestNormalizeSpeakersTask:
+    """TASK 8 — t_normalize_speakers exists, is wired after save_chapters_to_db,
+    and has trigger_rule='all_done'."""
+
+    def test_normalize_speakers_task_exists(self):
+        from congress_videos.youtube_channel_monitor_dag import dag
+        task_ids = {t.task_id for t in dag.tasks}
+        assert "normalize_speakers" in task_ids, (
+            "Expected task_id 'normalize_speakers' in DAG tasks"
+        )
+
+    def test_normalize_speakers_trigger_rule_is_all_done(self):
+        from congress_videos.youtube_channel_monitor_dag import dag
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        t = tasks_by_id["normalize_speakers"]
+        assert str(t.trigger_rule) == "all_done", (
+            f"Expected trigger_rule='all_done', got {t.trigger_rule!r}"
+        )
+
+    def test_normalize_speakers_is_downstream_of_save_chapters_to_db(self):
+        from congress_videos.youtube_channel_monitor_dag import dag
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+
+        t9_db = tasks_by_id["save_chapters_to_db"]
+        normalize = tasks_by_id["normalize_speakers"]
+
+        downstream_ids = {t.task_id for t in t9_db.downstream_list}
+        assert normalize.task_id in downstream_ids, (
+            "'normalize_speakers' must be a direct downstream of 'save_chapters_to_db'"
+        )

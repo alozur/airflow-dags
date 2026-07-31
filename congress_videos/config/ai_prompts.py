@@ -399,6 +399,26 @@ ESCALA FINAL (suma automática de puntos):
 
 IMPORTANTE: Sé objetivo y evalúa la relevancia real para el público español general, no solo para expertos en política."""
 
+# Speaker Normalization — match a dirty speaker string to a congress_participants candidate
+SPEAKER_MATCH_SYSTEM_PROMPT = (
+    "You are a speaker-name disambiguation assistant for the Spanish Congress of Deputies. "
+    "Given a dirty speaker name extracted from a transcript and a candidate participant from the "
+    "congress_participants database, decide whether they refer to the same person. "
+    "Always respond with a strict JSON object and NOTHING else. "
+    "JSON schema: {\"decision\": \"match\" | \"no_match\" | \"needs_manual\", "
+    "\"confidence\": <float 0-1>, \"reason\": \"<one sentence>\"}"
+)
+
+SPEAKER_MATCH_USER_PROMPT_TEMPLATE = """Dirty speaker name (from transcript): {dirty_name}
+
+Candidate participant:
+  - display_name: {display_name}
+  - normalized_name: {normalized_name}
+{context_block}
+Decide if the dirty name and the candidate refer to the same person.
+Return ONLY valid JSON: {{\"decision\": \"match\" | \"no_match\" | \"needs_manual\", \"confidence\": <0-1>, \"reason\": \"<one sentence>\"}}"""
+
+
 CHAPTER_RELEVANCE_SCORING_USER_PROMPT_TEMPLATE = """Evalúa la relevancia de este capítulo de sesión parlamentaria para contenido de YouTube.
 
 === INFORMACIÓN DEL CAPÍTULO ===
