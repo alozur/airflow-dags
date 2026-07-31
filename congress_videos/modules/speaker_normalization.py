@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 
 from congress_videos.config.ai_prompts import (
@@ -171,7 +172,10 @@ def normalize_chapter_speakers(
     if not dirty_names:
         return result
 
+    _schema = os.getenv("POSTGRES_SCHEMA", "public")
+
     with db_conn.cursor() as cursor:
+        cursor.execute(f"SET search_path TO {_schema}, public")
         for dirty in dirty_names:
             # Step 1: fuzzy lookup
             candidate = lookup_participant_fuzzy(dirty, threshold=config.FUZZY_THRESHOLD)
