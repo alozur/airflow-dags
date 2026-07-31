@@ -1,0 +1,299 @@
+"""Generic Thumbnail Generator DAG.
+
+On-demand, config-driven DAG that generates and scores 2 thumbnail options
+for a YouTube video using the Pikzels API, selects the best option, generates
+a title via OpenAI, and persists results to the ``video_thumbnails`` table.
+
+Triggered exclusively via the Airflow trigger API. All domain-specific values
+come from per-domain config (``thumbnail_config.py``) and per-run ``conf``.
+
+Usage::
+
+    airflow dags trigger generic_thumbnail_generator --conf '{
+        "youtube_video_id": "abc123",
+        "chapter_id": 7,
+        "debate_summary": "El debate ...",
+        "session": "Pleno 2026-06-10",
+        "domain": "<domain_key>",
+        "normalized_name": "<normalized_speaker_name>"
+    }'
+"""
+
+from __future__ import annotations
+
+import pathlib
+from datetime import datetime, timedelta, timezone
+
+from airflow import DAG
+from airflow.models.taskinstance import TaskInstance
+from airflow.operators.python import PythonOperator
+
+from congress_videos.config.paths import get_thumbnail_dir
+from congress_videos.config.thumbnail_config import ConfigError, get_domain_config
+from congress_videos.modules import pikzels_client as _pkz
+from congress_videos.modules.thumbnail_generation import (
+    choose_best_option,
+    generate_title,
+    persist_results,
+    resolve_participant_photo,
+)
+
+# ---------------------------------------------------------------------------
+# Required conf keys for every DAG run.
+# ---------------------------------------------------------------------------
+
+_REQUIRED_CONF_KEYS = (
+    "youtube_video_id",
+    "chapter_id",
+    "debate_summary",
+    "session",
+    "domain",
+    "normalized_name",
+)
+
+# ---------------------------------------------------------------------------
+# Public helper: validate_input
+# Exposed at module level so tests can call it directly without Airflow.
+# ---------------------------------------------------------------------------
+
+
+def validate_input(conf: dict) -> dict:
+    """Validate the per-run conf dict and load domain config.
+
+    Args:
+        conf: DAG run configuration dict.
+
+    Returns:
+        The validated conf dict (unchanged) for downstream use.
+
+    Raises:
+        ValueError: When any required key is absent or empty.
+        ConfigError: When ``conf["domain"]`` is not registered.
+    """
+    for key in _REQUIRED_CONF_KEYS:
+        if key not in conf:
+            raise ValueError(f"Missing required conf key: '{key}'")
+        if not str(conf[key]).strip():
+            raise ValueError(f"Required conf key '{key}' must not be empty")
+
+    # Eagerly validate the domain — raises ConfigError for unknown domains.
+    get_domain_config(conf["domain"])
+
+    return conf
+
+
+# ---------------------------------------------------------------------------
+# Task callables
+# ---------------------------------------------------------------------------
+
+
+def _task_validate_input(**context: object) -> dict:
+    """Airflow task wrapper for validate_input."""
+    conf: dict = context["dag_run"].conf or {}
+    return validate_input(conf)
+
+
+def _task_resolve_photo(ti: TaskInstance, **context: object) -> dict:
+    """Resolve participant photo to base64 support image."""
+    conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
+    domain_cfg = get_domain_config(conf["domain"])
+    return resolve_participant_photo(conf["normalized_name"], domain_cfg)
+
+
+def _task_generate_thumbnail(label: str, ti: TaskInstance, **context: object) -> dict:
+    """Generate one thumbnail option via Pikzels and return the raw response."""
+    conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
+    photo_data: dict = ti.xcom_pull(task_ids="resolve_participant_photo") or {}
+    domain_cfg = get_domain_config(conf["domain"])
+
+    styles = domain_cfg["styles"]
+    style_cfg = next(s for s in styles if s["label"] == label)
+
+    support_b64 = photo_data.get("support_image_b64", "")
+    data_url = f"data:image/jpeg;base64,{support_b64}" if support_b64 else None
+
+    result = _pkz.thumbnail_from_text(
+        conf["debate_summary"],
+        persona=style_cfg.get("persona"),
+        style=style_cfg.get("style"),
+        support_image_base64=data_url,
+    )
+    # Attach label and style context for downstream tasks.
+    result["label"] = label
+    result["style"] = style_cfg.get("style", "")
+    result["persona"] = style_cfg.get("persona", "")
+    result["prompt"] = conf["debate_summary"]
+    return result
+
+
+def _task_download_option(label: str, ti: TaskInstance, **context: object) -> dict:
+    """Download the generated thumbnail for one option and return local path info."""
+    conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
+    gen_result: dict = ti.xcom_pull(task_ids=f"generate_thumbnail_{label}") or {}
+
+    output_url: str = gen_result.get("output") or gen_result.get("output_url", "")
+    thumb_dir = get_thumbnail_dir(conf["youtube_video_id"])
+    local_path = thumb_dir / f"{label}.png"
+
+    _pkz.download(output_url, str(local_path))
+
+    return {
+        "label": label,
+        "local_path": str(local_path),
+        "output_url": output_url,
+        "style": gen_result.get("style", ""),
+        "persona": gen_result.get("persona", ""),
+        "prompt": gen_result.get("prompt", ""),
+    }
+
+
+def _task_score_option(label: str, ti: TaskInstance, **context: object) -> dict:
+    """Score a downloaded thumbnail option and return a scored option dict."""
+    download_info: dict = ti.xcom_pull(task_ids=f"download_{label}") or {}
+    local_path: str = download_info.get("local_path", "")
+
+    # Read the local file and encode as base64 data-URI for scoring.
+    image_bytes = pathlib.Path(local_path).read_bytes()
+    image_b64 = _pkz.to_base64_data_url(image_bytes, "image/png")
+
+    score_result = _pkz.score_thumbnail(image_base64=image_b64)
+    main_score: float = score_result.get("main_score", 0.0)
+
+    return {
+        **download_info,
+        "main_score": main_score,
+    }
+
+
+def _task_choose_best(ti: TaskInstance, **context: object) -> dict:
+    """Select the best option from the two scored options."""
+    option_a: dict = ti.xcom_pull(task_ids="score_option_a") or {}
+    option_b: dict = ti.xcom_pull(task_ids="score_option_b") or {}
+    return choose_best_option([option_a, option_b])
+
+
+def _task_generate_title(ti: TaskInstance, **context: object) -> str:
+    """Generate a YouTube title for the chosen thumbnail option."""
+    conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
+    best: dict = ti.xcom_pull(task_ids="choose_best_option") or {}
+    domain_cfg = get_domain_config(conf["domain"])
+    return generate_title(conf["debate_summary"], best, domain_cfg)
+
+
+def _task_persist_results(ti: TaskInstance, **context: object) -> None:
+    """Persist both thumbnail options to the video_thumbnails table."""
+    conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
+    option_a: dict = ti.xcom_pull(task_ids="score_option_a") or {}
+    option_b: dict = ti.xcom_pull(task_ids="score_option_b") or {}
+    best: dict = ti.xcom_pull(task_ids="choose_best_option") or {}
+    title: str = ti.xcom_pull(task_ids="generate_title") or ""
+
+    persist_results(
+        chapter_id=int(conf["chapter_id"]),
+        youtube_video_id=str(conf["youtube_video_id"]),
+        title=title,
+        options=[option_a, option_b],
+        best_label=best.get("label", ""),
+    )
+
+
+# ---------------------------------------------------------------------------
+# DAG definition
+# ---------------------------------------------------------------------------
+
+default_args = {
+    "owner": "airflow",
+    "depends_on_past": False,
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 2,
+    "retry_delay": timedelta(minutes=5),
+}
+
+_GENERATION_TIMEOUT = timedelta(minutes=10)
+
+with DAG(
+    dag_id="generic_thumbnail_generator",
+    default_args=default_args,
+    description=(
+        "On-demand DAG: generates 2 thumbnail options via Pikzels, "
+        "scores them, picks the best, generates a title, and persists results."
+    ),
+    schedule=None,
+    start_date=datetime.now(timezone.utc) - timedelta(days=1),
+    catchup=False,
+    tags=["thumbnail", "pikzels", "generic", "on-demand"],
+    max_active_runs=3,
+) as dag:
+
+    t_validate = PythonOperator(
+        task_id="validate_input",
+        python_callable=_task_validate_input,
+    )
+
+    t_resolve_photo = PythonOperator(
+        task_id="resolve_participant_photo",
+        python_callable=_task_resolve_photo,
+    )
+
+    t_gen_a = PythonOperator(
+        task_id="generate_thumbnail_option_a",
+        python_callable=lambda ti, **ctx: _task_generate_thumbnail("option_a", ti=ti, **ctx),
+        execution_timeout=_GENERATION_TIMEOUT,
+    )
+
+    t_gen_b = PythonOperator(
+        task_id="generate_thumbnail_option_b",
+        python_callable=lambda ti, **ctx: _task_generate_thumbnail("option_b", ti=ti, **ctx),
+        execution_timeout=_GENERATION_TIMEOUT,
+    )
+
+    t_dl_a = PythonOperator(
+        task_id="download_option_a",
+        python_callable=lambda ti, **ctx: _task_download_option("option_a", ti=ti, **ctx),
+    )
+
+    t_dl_b = PythonOperator(
+        task_id="download_option_b",
+        python_callable=lambda ti, **ctx: _task_download_option("option_b", ti=ti, **ctx),
+    )
+
+    t_score_a = PythonOperator(
+        task_id="score_option_a",
+        python_callable=lambda ti, **ctx: _task_score_option("option_a", ti=ti, **ctx),
+        execution_timeout=_GENERATION_TIMEOUT,
+    )
+
+    t_score_b = PythonOperator(
+        task_id="score_option_b",
+        python_callable=lambda ti, **ctx: _task_score_option("option_b", ti=ti, **ctx),
+        execution_timeout=_GENERATION_TIMEOUT,
+    )
+
+    t_choose = PythonOperator(
+        task_id="choose_best_option",
+        python_callable=_task_choose_best,
+    )
+
+    t_title = PythonOperator(
+        task_id="generate_title",
+        python_callable=_task_generate_title,
+    )
+
+    t_persist = PythonOperator(
+        task_id="persist_results",
+        python_callable=_task_persist_results,
+    )
+
+    # Task dependency graph:
+    #   validate_input
+    #     → resolve_participant_photo
+    #       → generate_thumbnail_option_a → download_option_a → score_option_a
+    #       → generate_thumbnail_option_b → download_option_b → score_option_b
+    #                                                           → choose_best_option
+    #                                                             → generate_title
+    #                                                               → persist_results
+    t_validate >> t_resolve_photo
+    t_resolve_photo >> t_gen_a >> t_dl_a >> t_score_a
+    t_resolve_photo >> t_gen_b >> t_dl_b >> t_score_b
+    [t_score_a, t_score_b] >> t_choose >> t_title >> t_persist

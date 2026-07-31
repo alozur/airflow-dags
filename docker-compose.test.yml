@@ -28,6 +28,7 @@ x-airflow-common: &airflow-common
     OPENAI_API_KEY: "test-openai-key-not-real"
     YOUTUBE_API_KEY: "test-youtube-api-key"
     REAP_API_KEY: "test-reap-api-key"
+    PIKZELS_API_KEY: "pkz_test-not-real"
     POSTGRES_HOST: "postgres"
     POSTGRES_PORT: "5432"
     POSTGRES_DB: "airflow"
