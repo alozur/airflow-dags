@@ -48,16 +48,8 @@ def _make_cfg(
             return None
 
     styles = [
-        {
-            "label": "option_a",
-            "style": "dramatic style A",
-            "persona": "persona A",
-        },
-        {
-            "label": "option_b",
-            "style": "editorial style B",
-            "persona": "persona B",
-        },
+        {"label": "option_a", "layout": "A"},
+        {"label": "option_b", "layout": "B"},
     ]
     return {
         "styles": styles,
@@ -116,28 +108,20 @@ class TestResolveParticipantPhoto:
         assert result["source"] == "party_logo"
         assert result["support_image_b64"] == base64.b64encode(logo_bytes).decode()
 
-    def test_photo_url_none_no_logo_raises_value_error(self):
+    def test_photo_url_none_no_logo_returns_empty_result(self):
         """When photo_url is NULL and no party logo, EMPTY_RESULT returned + WARNING logged."""
-        import logging
         from congress_videos.modules.thumbnail_generation import resolve_participant_photo, EMPTY_RESULT
 
         participant = {"normalized_name": "garcia_maria", "photo_url": None}
         cfg = _make_cfg(lookup_return=participant, party_logo_map=None)
 
-        import logging as _logging
-        with pytest.warns(None):
-            pass  # just to clear any pending warnings
-        import io
-        import logging
-
-        # Use caplog-style: capture via root logger
         with patch("congress_videos.modules.thumbnail_generation.logger") as mock_log:
             result = resolve_participant_photo("garcia_maria", cfg)
 
         assert result == EMPTY_RESULT
         mock_log.warning.assert_called()
 
-    def test_participant_not_found_raises_lookup_error(self):
+    def test_participant_not_found_returns_empty_result(self):
         """When lookup returns None (unknown slug), EMPTY_RESULT returned + WARNING logged."""
         from congress_videos.modules.thumbnail_generation import resolve_participant_photo, EMPTY_RESULT
 
