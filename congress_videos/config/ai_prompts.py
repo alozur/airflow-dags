@@ -135,6 +135,41 @@ IMPORTANTE: Si la frase supera {max_length} caracteres, acórtala eliminando pal
 
 Devuelve SOLO la frase, sin explicaciones."""
 
+# Thumbnail Title Generation (Pikzels + OpenAI pipeline)
+THUMBNAIL_TITLE_SYSTEM_PROMPT = (
+    "Eres un redactor político experto en titulares de alto impacto para YouTube. "
+    "Creas títulos dramáticos, directos y en español que capturan la esencia del debate parlamentario. "
+    "Los títulos deben generar urgencia y curiosidad sin perder rigor informativo. "
+    "RESTRICCIONES ABSOLUTAS: máximo 90 caracteres; sin emojis; sin comillas; "
+    "sin símbolos de canal; sin hashtags; sin los caracteres: # @ | ~ ^."
+)
+
+THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE = """Genera un título para miniatura de YouTube basado en el siguiente debate parlamentario.
+
+RESUMEN DEL DEBATE:
+{summary}
+
+ESTILO VISUAL DE LA MINIATURA:
+{style}
+
+CONTEXTO DE LA IMAGEN (prompt utilizado):
+{prompt}
+
+FORMATO DE RESPUESTA (JSON):
+{{
+  "title": "<título en español, máximo 90 caracteres, sin emojis, sin comillas, sin # @ | ~ ^>"
+}}
+
+REQUISITOS:
+- Máximo 90 caracteres (CRÍTICO)
+- Español, tono dramático político
+- Sin emojis, sin comillas, sin símbolos de canal
+- Sin los caracteres: # @ | ~ ^
+- Refleja el contenido visual de la miniatura descrito en el estilo y el prompt
+
+Devuelve SOLO el JSON, sin markdown."""
+
+
 # Chunk Summarization - For silence-based chunks before chapter analysis
 CHUNK_SUMMARY_SYSTEM_PROMPT = """Eres un experto en analizar transcripciones de sesiones parlamentarias españolas.
 

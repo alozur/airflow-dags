@@ -64,6 +64,21 @@ BACKGROUND_IMAGE = f"{ASSETS_DIR}/congress_chamber_background.png"
 CHANNEL_LOGO = f"{ASSETS_DIR}/congress_channel_logo.png"
 
 
+def get_thumbnail_dir(youtube_video_id: str) -> Path:
+    """Return the local directory where thumbnail PNGs for a video are stored.
+
+    The directory is not created by this function; callers are responsible
+    for creating it (e.g. via ``Path.mkdir(parents=True, exist_ok=True)``).
+
+    Args:
+        youtube_video_id: YouTube video identifier (e.g. ``"dQw4w9WgXcQ"``).
+
+    Returns:
+        ``Path`` to ``/opt/airflow/data/congress_videos/thumbnails/{youtube_video_id}/``.
+    """
+    return Path(f"{PROJECT_DATA_DIR}/thumbnails/{youtube_video_id}")
+
+
 def get_session_path(session_number: str) -> str:
     """
     Get the full path for a specific session's videos directory.

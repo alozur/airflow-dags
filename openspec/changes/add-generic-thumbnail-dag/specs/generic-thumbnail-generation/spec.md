@@ -280,7 +280,7 @@ The returned title MUST conform to all of the following constraints:
 
 | Constraint | Value |
 |------------|-------|
-| Maximum length | 100 characters |
+| Maximum length | 90 characters (safe margin under YouTube's 100-char limit) |
 | Language | Spanish |
 | Tone | Dramatic political (e.g. headlines, not neutral descriptions) |
 | Forbidden characters | Emojis (any Unicode emoji), `#`, `@`, `|`, `~`, `^` |
@@ -298,12 +298,12 @@ the nearest valid form rather than failing the run.
 - WHEN `generate_title` validates the response
 - THEN the title is accepted without re-prompting
 
-#### Scenario: Title exceeding 100 characters triggers re-prompt
+#### Scenario: Title exceeding 90 characters triggers re-prompt
 
 - GIVEN the OpenAI response returns a title of 120 characters
 - WHEN `generate_title` validates the response
 - THEN a second OpenAI call is made with an instruction to shorten the title
-- AND if the second response is within 100 characters, it is accepted
+- AND if the second response is within 90 characters, it is accepted
 
 #### Scenario: Title containing emojis triggers re-prompt
 
@@ -315,9 +315,9 @@ the nearest valid form rather than failing the run.
 #### Scenario: Both attempts return invalid title — strip and warn
 
 - GIVEN both OpenAI attempts return a title containing emojis or exceeding
-  100 characters
+  90 characters
 - WHEN `generate_title` processes the second response
-- THEN the emojis are stripped and the string is truncated to 100 characters
+- THEN the emojis are stripped and the string is truncated to 90 characters
 - AND a WARNING is logged indicating the fallback was applied
 - AND the task succeeds (no exception raised)
 
