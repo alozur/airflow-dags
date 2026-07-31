@@ -167,6 +167,12 @@ def lookup_participant_fuzzy(
     """
     Look up a participant using rapidfuzz token_sort_ratio fuzzy matching.
 
+    Scores each candidate against BOTH ``normalized_name`` AND the normalized
+    form of ``display_name`` and returns the candidate with the highest score
+    across both fields.  This allows matching dirty speaker strings like
+    "Pedro Sanchez" that may not closely match the full official normalized name
+    but score well against the shorter display_name form (e.g. "Sánchez, Pedro").
+
     Returns the single best match whose score is >= threshold, or None.
 
     Args:
@@ -174,7 +180,8 @@ def lookup_participant_fuzzy(
         threshold: Minimum similarity ratio in [0, 1] (default: WIKIDATA_FUZZY_THRESHOLD = 0.90).
 
     Returns:
-        Best-matching row dict if score >= threshold, None otherwise.
+        Best-matching row dict (includes ``display_name``) if score >= threshold,
+        None otherwise.
     """
     from rapidfuzz.fuzz import token_sort_ratio  # lazy import — Slice 2 dependency
 
@@ -183,7 +190,9 @@ def lookup_participant_fuzzy(
     best: dict | None = None
     best_score = 0.0
     for row in rows:
-        score = token_sort_ratio(key, row["normalized_name"]) / 100.0
+        score_normalized = token_sort_ratio(key, row["normalized_name"]) / 100.0
+        score_display = token_sort_ratio(key, normalize_member_name(row["display_name"])) / 100.0
+        score = max(score_normalized, score_display)
         if score > best_score:
             best, best_score = row, score
     return best if best_score >= threshold else None

@@ -232,6 +232,24 @@ class TestLookupParticipantFuzzy:
         monkeypatch.setitem(sys.modules, "rapidfuzz", stub_rapidfuzz)
         monkeypatch.setitem(sys.modules, "rapidfuzz.fuzz", stub_fuzz)
 
+    @staticmethod
+    def _stub_rapidfuzz_per_pair(monkeypatch, score_map: dict) -> None:
+        """Install a stub token_sort_ratio that returns different scores per (a,b) pair.
+
+        score_map keys are (a, b) tuples; any unrecognised pair returns 0.
+        """
+        import types
+        import sys
+
+        def _token_sort_ratio(a: str, b: str) -> float:
+            return score_map.get((a, b), 0.0) * 100
+
+        stub_fuzz = types.SimpleNamespace(token_sort_ratio=_token_sort_ratio)
+        stub_rapidfuzz = types.ModuleType("rapidfuzz")
+        stub_rapidfuzz.fuzz = stub_fuzz
+        monkeypatch.setitem(sys.modules, "rapidfuzz", stub_rapidfuzz)
+        monkeypatch.setitem(sys.modules, "rapidfuzz.fuzz", stub_fuzz)
+
     def test_above_threshold_returns_dict(self, monkeypatch):
         """Fuzzy match at or above 0.90 → returns best matching dict."""
         rows = [
@@ -266,6 +284,136 @@ class TestLookupParticipantFuzzy:
         result = lookup_participant_fuzzy("zzzunknownzzz", threshold=0.90)
 
         assert result is None
+
+    # -----------------------------------------------------------------------
+    # TASK 3 (RED): dual-field scoring tests
+    # -----------------------------------------------------------------------
+
+    def test_match_via_display_name_only(self, monkeypatch):
+        """A name that only matches display_name (not normalized_name) is found.
+
+        Simulates: dirty name 'Pedro Sanchez' whose normalized form scores
+        LOW against normalized_name 'sanchez pedro jose luis' but HIGH against
+        normalize_member_name(display_name) = 'sanchez pedro'.
+        """
+        from congress_videos.modules.participants_ingestion import normalize_member_name
+
+        rows = [
+            {
+                "normalized_name": "sanchez pedro jose luis",  # full official name — low similarity
+                "display_name": "Sánchez, Pedro",             # short display name — high similarity
+                "party": "PSOE",
+                "photo_url": None,
+                "biography": "Bio.",
+            }
+        ]
+
+        # normalized key for 'Pedro Sanchez' via normalize_member_name
+        key = normalize_member_name("Pedro Sanchez")
+        display_key = normalize_member_name("Sánchez, Pedro")
+
+        # normalized_name score: LOW (below threshold)
+        # display_name score: HIGH (above threshold)
+        score_map = {
+            (key, "sanchez pedro jose luis"): 0.60,  # below 0.90
+            (key, display_key): 0.95,                # above 0.90
+        }
+        self._stub_rapidfuzz_per_pair(monkeypatch, score_map)
+
+        from congress_videos.modules import participants_db as _mod
+        monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
+
+        from congress_videos.modules.participants_db import lookup_participant_fuzzy
+        result = lookup_participant_fuzzy("Pedro Sanchez", threshold=0.90)
+
+        assert result is not None, (
+            "Expected a match via display_name scoring, got None"
+        )
+        assert result["normalized_name"] == "sanchez pedro jose luis"
+
+    def test_match_via_display_name_includes_display_name_in_result(self, monkeypatch):
+        """Result dict must contain 'display_name' key."""
+        from congress_videos.modules.participants_ingestion import normalize_member_name
+
+        rows = [
+            {
+                "normalized_name": "sanchez pedro jose luis",
+                "display_name": "Sánchez, Pedro",
+                "party": "PSOE",
+                "photo_url": None,
+                "biography": "Bio.",
+            }
+        ]
+
+        key = normalize_member_name("Pedro Sanchez")
+        display_key = normalize_member_name("Sánchez, Pedro")
+        score_map = {
+            (key, "sanchez pedro jose luis"): 0.60,
+            (key, display_key): 0.95,
+        }
+        self._stub_rapidfuzz_per_pair(monkeypatch, score_map)
+
+        from congress_videos.modules import participants_db as _mod
+        monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
+
+        from congress_videos.modules.participants_db import lookup_participant_fuzzy
+        result = lookup_participant_fuzzy("Pedro Sanchez", threshold=0.90)
+
+        assert result is not None
+        assert "display_name" in result, "Result dict must include display_name"
+        assert result["display_name"] == "Sánchez, Pedro"
+
+    def test_no_match_when_both_fields_below_threshold(self, monkeypatch):
+        """Returns None when both normalized_name and display_name score below threshold."""
+        from congress_videos.modules.participants_ingestion import normalize_member_name
+
+        rows = [
+            {
+                "normalized_name": "garcia ana",
+                "display_name": "García, Ana",
+                "party": "PP",
+                "photo_url": None,
+                "biography": "Bio.",
+            }
+        ]
+
+        # All scores are below threshold
+        key = normalize_member_name("zzzunknownzzz")
+        score_map: dict = {}  # all pairs return 0 (default)
+
+        self._stub_rapidfuzz_per_pair(monkeypatch, score_map)
+
+        from congress_videos.modules import participants_db as _mod
+        monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
+
+        from congress_videos.modules.participants_db import lookup_participant_fuzzy
+        result = lookup_participant_fuzzy("zzzunknownzzz", threshold=0.90)
+
+        assert result is None, "Expected None when both scoring fields are below threshold"
+
+    def test_normalized_name_match_still_works(self, monkeypatch):
+        """Existing normalized_name match is preserved after dual-field extension."""
+        rows = [
+            {
+                "normalized_name": "garcia ana",
+                "display_name": "García, Ana",
+                "party": "P",
+                "photo_url": None,
+                "biography": "Bio.",
+            }
+        ]
+
+        # All calls return 0.95 (above threshold)
+        self._stub_rapidfuzz(monkeypatch, score=0.95)
+
+        from congress_videos.modules import participants_db as _mod
+        monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
+
+        from congress_videos.modules.participants_db import lookup_participant_fuzzy
+        result = lookup_participant_fuzzy("garcia ana", threshold=0.90)
+
+        assert result is not None
+        assert result["normalized_name"] == "garcia ana"
 
 
 # ===========================================================================
