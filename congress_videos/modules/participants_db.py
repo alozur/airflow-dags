@@ -183,15 +183,18 @@ def lookup_participant_fuzzy(
         Best-matching row dict (includes ``display_name``) if score >= threshold,
         None otherwise.
     """
-    from rapidfuzz.fuzz import token_sort_ratio  # lazy import — Slice 2 dependency
+    from rapidfuzz.fuzz import token_sort_ratio, token_set_ratio  # lazy import — Slice 2 dependency
 
     key = normalize_member_name(name)
     rows = _get_participants_for_lookup()
     best: dict | None = None
     best_score = 0.0
     for row in rows:
-        score_normalized = token_sort_ratio(key, row["normalized_name"]) / 100.0
-        score_display = token_sort_ratio(key, normalize_member_name(row["display_name"])) / 100.0
+        norm = row["normalized_name"]
+        disp = normalize_member_name(row["display_name"])
+        # token_sort_ratio for full-name matches; token_set_ratio for partial/subset matches
+        score_normalized = max(token_sort_ratio(key, norm), token_set_ratio(key, norm)) / 100.0
+        score_display = max(token_sort_ratio(key, disp), token_set_ratio(key, disp)) / 100.0
         score = max(score_normalized, score_display)
         if score > best_score:
             best, best_score = row, score
