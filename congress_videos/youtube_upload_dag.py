@@ -76,9 +76,10 @@ with DAG(
     catchup=False,
     tags=['congress', 'youtube', 'chapters'],
     params={
-        "max_chapters": 1,  # Default max chapters per day (overridden by quota logic)
-        "min_relevance_score": 2,  # Minimum relevance score (0-5)
-        "isTesting": False  # Hardcoded to False so uploads are always public
+        "max_chapters": 1,
+        "min_relevance_score": 2,
+        "isTesting": False,
+        "dry_run": False,  # Set to True to run the full pipeline without triggering the YouTube upload
     }
 ) as dag:
 
@@ -94,7 +95,7 @@ with DAG(
 
     # Step 1: Check daily upload quota
     # Queries DB for uploads today and pending queue size.
-    # Returns remaining_quota = 1 (queue ≤ 15) or 2 (queue > 15) minus today's uploads.
+    # Returns {queue_size, uploads_today}.
     t1_quota = PostgreSQLOperator(
         task_id='check_upload_quota',
         operation='check_upload_quota',
@@ -107,7 +108,7 @@ with DAG(
         python_callable=should_upload,
     )
 
-    # Step 2: Get uploadable chapters — limit comes from remaining_quota via XCom
+    # Step 2: Get uploadable chapters (limit=1 per run)
     # Ordered by: session_date DESC, relevance_score DESC, created_at DESC
     t1_db = PostgreSQLOperator(
         task_id='get_uploadable_chapters',
@@ -208,6 +209,11 @@ with DAG(
         """Trigger the generic YouTube uploader DAG with config from XCom."""
         import time
         from airflow.models import XCom
+
+        if context.get("params", {}).get("dry_run", False):
+            logging.info("dry_run=True — skipping YouTube upload")
+            ti.xcom_push(key='upload_results', value={'upload_details': []})
+            return None
 
         # Get config from XCom
         config = ti.xcom_pull(key='upload_config')

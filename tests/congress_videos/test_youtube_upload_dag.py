@@ -244,3 +244,40 @@ class TestShouldUpload:
         from congress_videos.youtube_upload_dag import should_upload
         ctx = _make_context_for_should_upload(queue_size=1, hour=8)
         assert should_upload(**ctx) is True
+
+
+# ---------------------------------------------------------------------------
+# dry_run param
+# ---------------------------------------------------------------------------
+
+class TestDryRun:
+
+    def test_dry_run_skips_upload_and_pushes_empty_results(self):
+        """dry_run=True must return early without calling trigger_dag_api."""
+        from congress_videos.youtube_upload_dag import trigger_upload_with_config
+
+        ti = _make_ti({"upload_config": {"videos": [{"chapter_id": "c-1"}]}})
+        result = trigger_upload_with_config(ti, params={"dry_run": True}, run_id="test_dry")
+
+        assert result is None
+        assert ti.xcom_store.get("upload_results") == {"upload_details": []}
+
+    def test_dry_run_false_does_not_skip(self, mocker):
+        """dry_run=False must proceed to trigger_dag_api as normal."""
+        from congress_videos.youtube_upload_dag import trigger_upload_with_config
+
+        mock_run = MagicMock()
+        mock_run.run_id = "real_run_001"
+        mock_run.state = "success"
+        mock_run.execution_date = "2026-07-31T17:00:00+00:00"
+        mock_run.refresh_from_db = MagicMock()
+
+        trigger_mock = mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=mock_run)
+        mocker.patch("time.sleep")
+        mock_xcom = mocker.patch("airflow.models.XCom")
+        mock_xcom.get_many.return_value = []
+
+        ti = _make_ti({"upload_config": {"videos": [{"chapter_id": "c-1"}]}})
+        trigger_upload_with_config(ti, params={"dry_run": False}, run_id="test_real")
+
+        trigger_mock.assert_called_once()
