@@ -22,12 +22,6 @@ from typing import Optional
 
 import requests
 
-from congress_videos.config.paths import get_thumbnail_dir
-from congress_videos.modules.pikzels_client import (
-    download,
-    score_thumbnail,
-    thumbnail_from_text,
-)
 from congress_videos.config.ai_prompts import (
     THUMBNAIL_TITLE_SYSTEM_PROMPT,
     THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE,
@@ -126,70 +120,6 @@ def resolve_participant_photo(name: str, cfg: dict) -> dict:
         f"no photo source available for participant {name!r}: "
         "photo_url is absent/undownloadable and no party_logo_map configured"
     )
-
-
-def generate_and_score_options(
-    prompt: str,
-    photo_b64: str,
-    cfg: dict,
-    youtube_video_id: str,
-) -> list[dict]:
-    """Generate exactly 2 thumbnail options, download each immediately, and score.
-
-    Each Pikzels URL expires after 24h, so the PNG is downloaded to local
-    storage immediately after generation before any other step proceeds.
-
-    Local path pattern::
-
-        {get_thumbnail_dir(youtube_video_id)}/{label}.png
-
-    Args:
-        prompt: Debate summary / text prompt for Pikzels.
-        photo_b64: Base64-encoded support image (participant photo or party logo).
-        cfg: Per-domain config dict with ``styles`` list (2 entries).
-        youtube_video_id: YouTube video ID used to build the local storage path.
-
-    Returns:
-        List of 2 dicts: ``{label, output_url, local_path, main_score, style}``.
-    """
-    styles = cfg["styles"]  # exactly 2 entries
-    thumb_dir = get_thumbnail_dir(youtube_video_id)
-
-    results = []
-    for style_cfg in styles:
-        label = style_cfg["label"]
-        style_text = style_cfg["style"]
-        persona_text = style_cfg.get("persona", "")
-
-        # Generate via Pikzels
-        tft_result = thumbnail_from_text(
-            prompt,
-            support_image=photo_b64,
-            style=style_text,
-            persona=persona_text,
-        )
-        output_url = tft_result.get("output") or tft_result.get("output_url", "")
-
-        # Download immediately — Pikzels URLs expire in 24h
-        local_path = thumb_dir / f"{label}.png"
-        download(output_url, str(local_path))
-
-        # Score using the locally downloaded image
-        main_score = score_thumbnail(str(local_path))
-
-        results.append(
-            {
-                "label": label,
-                "output_url": output_url,
-                "local_path": str(local_path),
-                "main_score": main_score,
-                "style": style_text,
-                "prompt": prompt,
-                "persona": persona_text,
-            }
-        )
-
-    return results
 
 
 def choose_best_option(options: list[dict]) -> dict:
@@ -317,7 +247,7 @@ def persist_results(
         chapter_id: FK to ``video_chapters.chapter_id``.
         youtube_video_id: YouTube video identifier.
         title: OpenAI-generated title for the chosen option.
-        options: List of option dicts from ``generate_and_score_options``.
+        options: List of option dicts from the DAG's score task callables.
         best_label: Label of the chosen option.
     """
     pg = PostgresConnection()

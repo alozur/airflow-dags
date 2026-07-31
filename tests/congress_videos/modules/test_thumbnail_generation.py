@@ -5,19 +5,23 @@ exists.  First run must produce ImportError / AttributeError failures.
 
 Test groups:
     T-01  resolve_participant_photo
-    T-02  generate_and_score_options (happy path + path-creation)
-    T-03  choose_best_option
-    T-04  generate_title
-    T-05  persist_results
-    T-06  TRIANGULATE edge cases
+    T-02  choose_best_option
+    T-03  generate_title
+    T-04  persist_results
+    T-05  TRIANGULATE edge cases
+
+Note: generate_and_score_options was removed (dead code — never called by the
+DAG). The DAG implements generate/download/score as three separate task
+callables (_task_generate_thumbnail, _task_download_option, _task_score_option)
+for per-task retry granularity. Those callables are tested in
+test_generic_thumbnail_dag.py.
 """
 
 from __future__ import annotations
 
 import base64
 import logging
-from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -127,153 +131,7 @@ class TestResolveParticipantPhoto:
 
 
 # ---------------------------------------------------------------------------
-# T-02: generate_and_score_options
-# ---------------------------------------------------------------------------
-
-class TestGenerateAndScoreOptions:
-    """generate_and_score_options(prompt, photo_b64, cfg) contracts."""
-
-    def _make_pikzels_mocks(self, mocker, tmp_path):
-        """Patch pikzels_client functions used inside generate_and_score_options."""
-        mock_tft = mocker.patch(
-            "congress_videos.modules.thumbnail_generation.thumbnail_from_text",
-            side_effect=[
-                {"output": "https://pikzels.com/a.png", "label": "option_a"},
-                {"output": "https://pikzels.com/b.png", "label": "option_b"},
-            ],
-        )
-        mock_dl = mocker.patch(
-            "congress_videos.modules.thumbnail_generation.download",
-        )
-        mock_score = mocker.patch(
-            "congress_videos.modules.thumbnail_generation.score_thumbnail",
-            side_effect=[72.0, 85.0],
-        )
-        mock_dir = tmp_path / "vid123"
-        mocker.patch(
-            "congress_videos.modules.thumbnail_generation.get_thumbnail_dir",
-            return_value=mock_dir,
-        )
-        return mock_tft, mock_dl, mock_score, mock_dir
-
-    def test_exactly_two_thumbnail_calls(self, mocker, tmp_path):
-        """Exactly 2 thumbnail_from_text calls are made."""
-        from congress_videos.modules.thumbnail_generation import generate_and_score_options
-
-        mock_tft, mock_dl, mock_score, mock_dir = self._make_pikzels_mocks(mocker, tmp_path)
-        cfg = _make_cfg()
-        cfg["youtube_video_id"] = "vid123"
-
-        generate_and_score_options("a debate summary", "b64photo==", cfg, "vid123")
-
-        assert mock_tft.call_count == 2
-
-    def test_download_called_immediately_after_each_generation(self, mocker, tmp_path):
-        """Each generated thumbnail is downloaded immediately to the local path."""
-        from congress_videos.modules.thumbnail_generation import generate_and_score_options
-
-        mock_tft, mock_dl, mock_score, mock_dir = self._make_pikzels_mocks(mocker, tmp_path)
-        cfg = _make_cfg()
-
-        generate_and_score_options("a debate summary", "b64photo==", cfg, "vid123")
-
-        assert mock_dl.call_count == 2
-        # Each download uses the generated output URL
-        first_call_url = mock_dl.call_args_list[0][0][0]
-        second_call_url = mock_dl.call_args_list[1][0][0]
-        assert "pikzels.com" in first_call_url
-        assert "pikzels.com" in second_call_url
-
-    def test_each_option_is_scored(self, mocker, tmp_path):
-        """score_thumbnail is called once per option."""
-        from congress_videos.modules.thumbnail_generation import generate_and_score_options
-
-        mock_tft, mock_dl, mock_score, mock_dir = self._make_pikzels_mocks(mocker, tmp_path)
-        cfg = _make_cfg()
-
-        generate_and_score_options("a debate summary", "b64photo==", cfg, "vid123")
-
-        assert mock_score.call_count == 2
-
-    def test_returns_list_with_correct_keys(self, mocker, tmp_path):
-        """Return value is a list of 2 dicts containing {label, output_url, local_path, main_score, style}."""
-        from congress_videos.modules.thumbnail_generation import generate_and_score_options
-
-        mock_tft, mock_dl, mock_score, mock_dir = self._make_pikzels_mocks(mocker, tmp_path)
-        cfg = _make_cfg()
-
-        result = generate_and_score_options("a debate summary", "b64photo==", cfg, "vid123")
-
-        assert len(result) == 2
-        for opt in result:
-            assert "label" in opt
-            assert "output_url" in opt
-            assert "local_path" in opt
-            assert "main_score" in opt
-            assert "style" in opt
-
-    def test_scores_stored_correctly(self, mocker, tmp_path):
-        """main_score values match the side_effect order."""
-        from congress_videos.modules.thumbnail_generation import generate_and_score_options
-
-        mock_tft, mock_dl, mock_score, mock_dir = self._make_pikzels_mocks(mocker, tmp_path)
-        cfg = _make_cfg()
-
-        result = generate_and_score_options("a debate summary", "b64photo==", cfg, "vid123")
-
-        assert result[0]["main_score"] == 72.0
-        assert result[1]["main_score"] == 85.0
-
-    def test_local_path_uses_thumbnail_dir(self, mocker, tmp_path):
-        """local_path for each option is under the thumbnail dir with label.png suffix."""
-        from congress_videos.modules.thumbnail_generation import generate_and_score_options
-
-        mock_tft, mock_dl, mock_score, mock_dir = self._make_pikzels_mocks(mocker, tmp_path)
-        cfg = _make_cfg()
-
-        result = generate_and_score_options("a debate summary", "b64photo==", cfg, "vid123")
-
-        for opt in result:
-            lp = Path(opt["local_path"])
-            assert lp.suffix == ".png"
-            assert lp.parent == mock_dir
-
-
-class TestGenerateAndScoreOptionsPathCreation:
-    """generate_and_score_options does not propagate FileNotFoundError for missing dir."""
-
-    def test_no_file_not_found_error_when_dir_missing(self, mocker, tmp_path):
-        """download is called even if local dir does not yet exist (it creates it)."""
-        from congress_videos.modules.thumbnail_generation import generate_and_score_options
-
-        # dir does NOT exist; download mock simulates success
-        missing_dir = tmp_path / "does_not_exist" / "vid999"
-
-        mocker.patch(
-            "congress_videos.modules.thumbnail_generation.thumbnail_from_text",
-            side_effect=[
-                {"output": "https://pikzels.com/a.png"},
-                {"output": "https://pikzels.com/b.png"},
-            ],
-        )
-        mocker.patch("congress_videos.modules.thumbnail_generation.download")
-        mocker.patch(
-            "congress_videos.modules.thumbnail_generation.score_thumbnail",
-            return_value=50.0,
-        )
-        mocker.patch(
-            "congress_videos.modules.thumbnail_generation.get_thumbnail_dir",
-            return_value=missing_dir,
-        )
-
-        cfg = _make_cfg()
-        # Should not raise
-        result = generate_and_score_options("summary", "b64==", cfg, "vid999")
-        assert len(result) == 2
-
-
-# ---------------------------------------------------------------------------
-# T-03: choose_best_option
+# T-02: choose_best_option
 # ---------------------------------------------------------------------------
 
 class TestChooseBestOption:
@@ -314,7 +172,7 @@ class TestChooseBestOption:
 
 
 # ---------------------------------------------------------------------------
-# T-04: generate_title
+# T-03: generate_title
 # ---------------------------------------------------------------------------
 
 class TestGenerateTitle:
@@ -432,7 +290,7 @@ class TestGenerateTitle:
 
 
 # ---------------------------------------------------------------------------
-# T-05: persist_results
+# T-04: persist_results
 # ---------------------------------------------------------------------------
 
 class TestPersistResults:
@@ -529,27 +387,11 @@ class TestPersistResults:
 
 
 # ---------------------------------------------------------------------------
-# T-06: TRIANGULATE edge cases
+# T-05: TRIANGULATE edge cases
 # ---------------------------------------------------------------------------
 
 class TestTriangulateEdgeCases:
-    """Edge-case triangulation for generate_and_score_options and choose_best_option."""
-
-    def test_pikzels_exception_propagates(self, mocker, tmp_path):
-        """When thumbnail_from_text raises, the exception propagates to caller."""
-        from congress_videos.modules.thumbnail_generation import generate_and_score_options
-
-        mocker.patch(
-            "congress_videos.modules.thumbnail_generation.thumbnail_from_text",
-            side_effect=RuntimeError("Pikzels API error"),
-        )
-        mocker.patch(
-            "congress_videos.modules.thumbnail_generation.get_thumbnail_dir",
-            return_value=tmp_path / "v",
-        )
-        cfg = _make_cfg()
-        with pytest.raises(RuntimeError, match="Pikzels API error"):
-            generate_and_score_options("summary", "b64==", cfg, "vid1")
+    """Edge-case triangulation for resolve_participant_photo and choose_best_option."""
 
     def test_resolve_photo_http_non_200_falls_back_to_logo(self, tmp_path):
         """When HTTP GET for photo returns non-200, fallback to party logo."""

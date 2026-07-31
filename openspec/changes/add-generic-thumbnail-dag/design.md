@@ -50,7 +50,12 @@ A triggered, `schedule=None` DAG `generic_thumbnail_generator` mirroring `utils/
 **`thumbnail_generation.py`**
 ```python
 def resolve_participant_photo(name: str, cfg: dict) -> dict          # {support_image_b64, source: "photo"|"party_logo"}; photo_url first, party_logo fallback, raises only if neither available
-def generate_and_score_options(prompt: str, photo_b64: str, cfg: dict) -> list[dict]  # [{label, output_url, local_path, main_score, style}]
+# NOTE: generate/download/score are NOT a bundled function here.
+# Per the spec's per-task graph for retry granularity, they are implemented as
+# three separate DAG task callables in generic_thumbnail_generator_dag.py:
+#   _task_generate_thumbnail(label, ti, **context) → calls _pkz.thumbnail_from_text(..., support_image_base64=...)
+#   _task_download_option(label, ti, **context)    → calls _pkz.download(output_url, local_path)
+#   _task_score_option(label, ti, **context)       → calls _pkz.score_thumbnail(image_base64=...), reads main_score
 def choose_best_option(options: list[dict]) -> dict                  # max main_score, tie=first
 def generate_title(summary: str, best: dict, cfg: dict) -> str       # OpenAI only, cleaned
 def persist_results(chapter_id: int, youtube_video_id: str, title: str, options: list[dict], best_label: str) -> None

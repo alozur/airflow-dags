@@ -110,6 +110,32 @@
 
 ---
 
+## W-01 Remediation (2026-07-31)
+
+| Action | Status |
+|--------|--------|
+| Delete `generate_and_score_options` from `thumbnail_generation.py` | [x] |
+| Remove now-unused imports (`get_thumbnail_dir`, `download`, `score_thumbnail`, `thumbnail_from_text`) from `thumbnail_generation.py` | [x] |
+| Delete `TestGenerateAndScoreOptions`, `TestGenerateAndScoreOptionsPathCreation`, and `test_pikzels_exception_propagates` from `test_thumbnail_generation.py` | [x] |
+| Add T-08: `_task_generate_thumbnail` unit tests (3 tests) to `test_generic_thumbnail_dag.py` | [x] |
+| Add T-09: `_task_download_option` unit tests (2 tests) to `test_generic_thumbnail_dag.py` | [x] |
+| Add T-10: `_task_score_option` unit tests (3 tests) to `test_generic_thumbnail_dag.py` | [x] |
+| Update `design.md`: remove `generate_and_score_options` from Interfaces/Contracts, add note on per-task callables | [x] |
+| Verified: `rg generate_and_score_options` returns zero matches in production/test code | [x] |
+| Verified: 58 tests pass in targeted run; 1443 passed, 1 skipped in full suite | [x] |
+| Verified: `thumbnail_generation.py` coverage 98.26%, `generic_thumbnail_generator_dag.py` coverage 81.25% | [x] |
+| No backfilled test revealed a real bug — the three new task-callable tests all pass GREEN against current correct implementation | [x] |
+
+### W-01 Backfill Test Evidence
+
+| Task | Test Class | RED note | GREEN |
+|------|------------|----------|-------|
+| `_task_generate_thumbnail` | `TestTaskGenerateThumbnail` (3 tests) | New tests written (GREEN expected from the start — backfill, not pre-existing bug) | All 3 PASS |
+| `_task_download_option` | `TestTaskDownloadOption` (2 tests) | Same | All 2 PASS |
+| `_task_score_option` | `TestTaskScoreOption` (3 tests) | Same | All 3 PASS |
+
+No real bug found: `score_thumbnail(image_base64=...)` is called correctly; `thumbnail_from_text(..., support_image_base64=...)` is called correctly; `main_score` is extracted from dict correctly.
+
 ## Remaining Tasks
 
 - [ ] Start or reuse bounded review for Slice 2 (parent task)

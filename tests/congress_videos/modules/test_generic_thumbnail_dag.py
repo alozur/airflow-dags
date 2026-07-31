@@ -1,4 +1,4 @@
-"""Tests for congress_videos.generic_thumbnail_generator_dag (Slice 3).
+"""Tests for congress_videos.generic_thumbnail_generator_dag (Slice 3 + W-01 remediation).
 
 Strict TDD: all tests below are written BEFORE the production DAG file exists.
 First run must produce ImportError failures.
@@ -11,6 +11,9 @@ Test groups:
     T-05  no Congreso-specific string literals in source
     T-06  validate_input callable behaviour
     T-07  TRIANGULATE — PIKZELS_API_KEY absent, ConfigError on unknown domain
+    T-08  _task_generate_thumbnail callable (W-01 backfill)
+    T-09  _task_download_option callable (W-01 backfill)
+    T-10  _task_score_option callable (W-01 backfill)
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ import importlib
 import os
 import re
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -260,3 +263,322 @@ class TestTriangulate:
         # The DAG's validate_input must call get_domain_config and propagate ConfigError.
         with pytest.raises(ConfigError):
             mod.validate_input(conf)
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by T-08 / T-09 / T-10
+# ---------------------------------------------------------------------------
+
+_FAKE_CONF = {
+    "youtube_video_id": "vid_test_001",
+    "chapter_id": 42,
+    "debate_summary": "El Congreso debate el presupuesto general.",
+    "session": "Pleno 2026-07-31",
+    "domain": "congreso",
+    "normalized_name": "garcia_lopez_maria",
+}
+
+_FAKE_STYLES = [
+    {
+        "label": "option_a",
+        "style": "Dramatic political documentary style.",
+        "persona": "Senior political journalist.",
+    },
+    {
+        "label": "option_b",
+        "style": "Modern editorial news style.",
+        "persona": "Digital-native correspondent.",
+    },
+]
+
+_FAKE_DOMAIN_CFG = {
+    "styles": _FAKE_STYLES,
+    "participants_lookup": lambda name: None,
+    "party_logo_map": None,
+}
+
+
+def _make_fake_ti(xcom_map: dict) -> MagicMock:
+    """Return a TaskInstance double whose xcom_pull dispatches by task_ids kwarg."""
+    ti = MagicMock(name="TaskInstance")
+
+    def _pull(task_ids=None, key="return_value", **_kw):  # noqa: ANN001
+        return xcom_map.get(task_ids)
+
+    ti.xcom_pull.side_effect = _pull
+    return ti
+
+
+# ---------------------------------------------------------------------------
+# T-08: _task_generate_thumbnail callable (W-01 backfill)
+# ---------------------------------------------------------------------------
+
+
+class TestTaskGenerateThumbnail:
+    """T-08: _task_generate_thumbnail must call _pkz.thumbnail_from_text with
+    support_image_base64= (data URI), never support_image=, and return a dict
+    with label, style, persona, and prompt attached.
+    """
+
+    def test_calls_thumbnail_from_text_with_support_image_base64(self, mocker) -> None:
+        """thumbnail_from_text must receive support_image_base64= as a data URI."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        photo_b64 = "abc123base64=="
+        fake_photo_data = {"support_image_b64": photo_b64, "source": "photo"}
+
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "resolve_participant_photo": fake_photo_data,
+            }
+        )
+
+        mock_pkz = mocker.patch.object(dag_mod, "_pkz")
+        mock_pkz.thumbnail_from_text.return_value = {"output": "https://pikzels.com/out.png"}
+
+        mocker.patch(
+            "congress_videos.generic_thumbnail_generator_dag.get_domain_config",
+            return_value=_FAKE_DOMAIN_CFG,
+        )
+
+        dag_mod._task_generate_thumbnail("option_a", ti=ti)
+
+        mock_pkz.thumbnail_from_text.assert_called_once()
+        call_kwargs = mock_pkz.thumbnail_from_text.call_args[1]
+
+        # Must use support_image_base64=, not support_image=
+        assert "support_image_base64" in call_kwargs, (
+            "thumbnail_from_text must be called with support_image_base64= kwarg"
+        )
+        assert "support_image" not in call_kwargs or "support_image_base64" in call_kwargs
+
+        data_url: str = call_kwargs["support_image_base64"]
+        assert data_url.startswith("data:image/jpeg;base64,"), (
+            f"support_image_base64 must be a data URI, got: {data_url[:60]!r}"
+        )
+        assert photo_b64 in data_url
+
+    def test_returns_dict_with_label_style_persona_prompt(self, mocker) -> None:
+        """Return dict must carry label, style, persona, and prompt."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "resolve_participant_photo": {"support_image_b64": "b64data", "source": "photo"},
+            }
+        )
+
+        mock_pkz = mocker.patch.object(dag_mod, "_pkz")
+        mock_pkz.thumbnail_from_text.return_value = {"output": "https://pikzels.com/out.png"}
+
+        mocker.patch(
+            "congress_videos.generic_thumbnail_generator_dag.get_domain_config",
+            return_value=_FAKE_DOMAIN_CFG,
+        )
+
+        result = dag_mod._task_generate_thumbnail("option_a", ti=ti)
+
+        assert result["label"] == "option_a"
+        assert result["style"] == _FAKE_STYLES[0]["style"]
+        assert result["persona"] == _FAKE_STYLES[0]["persona"]
+        assert result["prompt"] == _FAKE_CONF["debate_summary"]
+
+    def test_no_photo_sends_none_support_image(self, mocker) -> None:
+        """When support_image_b64 is empty, support_image_base64 is None."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "resolve_participant_photo": {"support_image_b64": "", "source": "party_logo"},
+            }
+        )
+
+        mock_pkz = mocker.patch.object(dag_mod, "_pkz")
+        mock_pkz.thumbnail_from_text.return_value = {"output": "https://pikzels.com/out.png"}
+
+        mocker.patch(
+            "congress_videos.generic_thumbnail_generator_dag.get_domain_config",
+            return_value=_FAKE_DOMAIN_CFG,
+        )
+
+        dag_mod._task_generate_thumbnail("option_a", ti=ti)
+
+        call_kwargs = mock_pkz.thumbnail_from_text.call_args[1]
+        assert call_kwargs.get("support_image_base64") is None
+
+
+# ---------------------------------------------------------------------------
+# T-09: _task_download_option callable (W-01 backfill)
+# ---------------------------------------------------------------------------
+
+
+class TestTaskDownloadOption:
+    """T-09: _task_download_option must call _pkz.download with the correct
+    local path ({youtube_video_id}/{label}.png) and return a dict with label,
+    local_path, and output_url.
+    """
+
+    def test_download_called_with_correct_path(self, mocker) -> None:
+        """_pkz.download must be called with output_url and the label.png local path."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        gen_result = {
+            "output": "https://pikzels.com/generated.png",
+            "label": "option_a",
+            "style": _FAKE_STYLES[0]["style"],
+            "persona": _FAKE_STYLES[0]["persona"],
+            "prompt": _FAKE_CONF["debate_summary"],
+        }
+
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "generate_thumbnail_option_a": gen_result,
+            }
+        )
+
+        mock_pkz = mocker.patch.object(dag_mod, "_pkz")
+
+        mocker.patch(
+            "congress_videos.generic_thumbnail_generator_dag.get_thumbnail_dir",
+            side_effect=lambda vid_id: __import__("pathlib").Path(f"/thumbnails/{vid_id}"),
+        )
+
+        result = dag_mod._task_download_option("option_a", ti=ti)
+
+        mock_pkz.download.assert_called_once()
+        call_args = mock_pkz.download.call_args[0]
+        downloaded_url, local_path_str = call_args[0], call_args[1]
+
+        assert downloaded_url == "https://pikzels.com/generated.png"
+        assert "option_a.png" in local_path_str
+        assert _FAKE_CONF["youtube_video_id"] in local_path_str
+
+    def test_returns_dict_with_required_keys(self, mocker) -> None:
+        """Return dict must contain label, local_path, and output_url."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        gen_result = {
+            "output": "https://pikzels.com/generated.png",
+            "style": _FAKE_STYLES[0]["style"],
+            "persona": _FAKE_STYLES[0]["persona"],
+            "prompt": _FAKE_CONF["debate_summary"],
+        }
+
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "generate_thumbnail_option_a": gen_result,
+            }
+        )
+
+        mocker.patch.object(dag_mod, "_pkz")
+        mocker.patch(
+            "congress_videos.generic_thumbnail_generator_dag.get_thumbnail_dir",
+            side_effect=lambda vid_id: __import__("pathlib").Path(f"/thumbnails/{vid_id}"),
+        )
+
+        result = dag_mod._task_download_option("option_a", ti=ti)
+
+        assert "label" in result
+        assert result["label"] == "option_a"
+        assert "local_path" in result
+        assert "output_url" in result
+        assert result["output_url"] == "https://pikzels.com/generated.png"
+
+
+# ---------------------------------------------------------------------------
+# T-10: _task_score_option callable (W-01 backfill)
+# ---------------------------------------------------------------------------
+
+
+class TestTaskScoreOption:
+    """T-10: _task_score_option must read the local file, call
+    _pkz.to_base64_data_url and then _pkz.score_thumbnail(image_base64=...),
+    and return a dict with main_score equal to the value from score_thumbnail.
+    """
+
+    def test_score_thumbnail_called_with_image_base64_kwarg(self, mocker, tmp_path) -> None:
+        """score_thumbnail must be called with image_base64= kwarg, not a file path."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        # Create a real temp file so Path.read_bytes() succeeds.
+        fake_image = tmp_path / "option_a.png"
+        fake_image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+
+        download_info = {
+            "label": "option_a",
+            "local_path": str(fake_image),
+            "output_url": "https://pikzels.com/generated.png",
+            "style": _FAKE_STYLES[0]["style"],
+            "persona": _FAKE_STYLES[0]["persona"],
+            "prompt": _FAKE_CONF["debate_summary"],
+        }
+
+        ti = _make_fake_ti({"download_option_a": download_info})
+
+        mock_pkz = mocker.patch.object(dag_mod, "_pkz")
+        mock_pkz.to_base64_data_url.return_value = "data:image/png;base64,FAKEENCODED=="
+        mock_pkz.score_thumbnail.return_value = {"main_score": 77.0}
+
+        dag_mod._task_score_option("option_a", ti=ti)
+
+        mock_pkz.score_thumbnail.assert_called_once()
+        score_kwargs = mock_pkz.score_thumbnail.call_args[1]
+        assert "image_base64" in score_kwargs, (
+            "score_thumbnail must be called with image_base64= kwarg"
+        )
+        assert score_kwargs["image_base64"] == "data:image/png;base64,FAKEENCODED=="
+
+    def test_main_score_extracted_from_score_result_dict(self, mocker, tmp_path) -> None:
+        """main_score in return dict must come from score_thumbnail dict, not raw numeric."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        fake_image = tmp_path / "option_b.png"
+        fake_image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+
+        download_info = {
+            "label": "option_b",
+            "local_path": str(fake_image),
+            "output_url": "https://pikzels.com/b.png",
+            "style": _FAKE_STYLES[1]["style"],
+            "persona": _FAKE_STYLES[1]["persona"],
+            "prompt": _FAKE_CONF["debate_summary"],
+        }
+
+        ti = _make_fake_ti({"download_option_b": download_info})
+
+        mock_pkz = mocker.patch.object(dag_mod, "_pkz")
+        mock_pkz.to_base64_data_url.return_value = "data:image/png;base64,ENCODED=="
+        mock_pkz.score_thumbnail.return_value = {"main_score": 77.0}
+
+        result = dag_mod._task_score_option("option_b", ti=ti)
+
+        assert result["main_score"] == 77.0
+
+    def test_to_base64_data_url_called_with_file_bytes(self, mocker, tmp_path) -> None:
+        """to_base64_data_url must be called with the raw bytes read from local_path."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        expected_bytes = b"\x89PNG\r\n\x1a\n" + b"\xab" * 20
+        fake_image = tmp_path / "option_a.png"
+        fake_image.write_bytes(expected_bytes)
+
+        download_info = {
+            "label": "option_a",
+            "local_path": str(fake_image),
+            "output_url": "https://pikzels.com/a.png",
+        }
+
+        ti = _make_fake_ti({"download_option_a": download_info})
+
+        mock_pkz = mocker.patch.object(dag_mod, "_pkz")
+        mock_pkz.to_base64_data_url.return_value = "data:image/png;base64,XYZ="
+        mock_pkz.score_thumbnail.return_value = {"main_score": 55.0}
+
+        dag_mod._task_score_option("option_a", ti=ti)
+
+        mock_pkz.to_base64_data_url.assert_called_once_with(expected_bytes, "image/png")
