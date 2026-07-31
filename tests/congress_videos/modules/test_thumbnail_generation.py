@@ -322,11 +322,15 @@ class TestChooseBestOption:
 class TestGenerateTitle:
     """generate_title(summary, best, cfg) contracts."""
 
-    def _best_opt(self, label="option_a", style="dramatic style", persona="persona A", prompt="prompt text"):
+    def _best_opt(
+        self,
+        label="option_a",
+        style="A",
+        prompt="A thick gold (#C9A84C) border frames the entire image edge.\n\nBACKGROUND: calle española.",
+    ):
         return {
             "label": label,
             "style": style,
-            "persona": persona,
             "prompt": prompt,
             "output_url": "u",
             "local_path": "/a.png",
@@ -598,8 +602,12 @@ class TestTriangulateEdgeCases:
         )
         cfg = _make_cfg()
         best = {
-            "label": "option_a", "style": "s", "persona": "p", "prompt": "pr",
-            "output_url": "u", "local_path": "/a.png", "main_score": 80.0,
+            "label": "option_a",
+            "style": "A",
+            "prompt": "A thick gold (#C9A84C) border frames the entire image edge.",
+            "output_url": "u",
+            "local_path": "/a.png",
+            "main_score": 80.0,
         }
         with caplog.at_level(logging.WARNING):
             result = generate_title("summary", best, cfg)
@@ -619,3 +627,188 @@ class TestTriangulateEdgeCases:
         assert best["local_path"] == "/b.png"
         assert best["style"] == "s2"
         assert best["is_chosen"] is True
+
+
+# ---------------------------------------------------------------------------
+# T-06: art_direct
+# ---------------------------------------------------------------------------
+
+
+class TestArtDirect:
+    """art_direct(debate_summary, domain_cfg) contracts."""
+
+    def _make_cfg(self) -> dict:
+        return {
+            "styles": [
+                {"label": "option_a", "layout": "A"},
+                {"label": "option_b", "layout": "B"},
+            ],
+            "participants_lookup": lambda slug: None,
+            "party_logo_map": None,
+        }
+
+    def _valid_brief_response(self) -> dict:
+        return {
+            "data": {
+                "text": "LO QUE NO TE CUENTAN",
+                "background": "una calle española con manifestantes, luz de atardecer",
+                "person": "un ciudadano de mediana edad con expresión seria, ropa casual",
+                "mood": "indignación y urgencia",
+            },
+            "error": None,
+        }
+
+    def test_happy_path_returns_required_keys(self, mocker) -> None:
+        """art_direct returns dict with text, background, person, mood on success."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value=self._valid_brief_response(),
+        )
+        cfg = self._make_cfg()
+        result = art_direct("Debate sobre pensiones", cfg)
+
+        assert "text" in result
+        assert "background" in result
+        assert "person" in result
+        assert "mood" in result
+
+    def test_malformed_response_reprompts_once_then_default(self, mocker) -> None:
+        """Malformed response (missing keys) → reprompt once → _DEFAULT_ART_BRIEF on second failure."""
+        from congress_videos.modules.thumbnail_generation import art_direct, _DEFAULT_ART_BRIEF
+
+        call_count = {"n": 0}
+
+        def _side(system_prompt, user_prompt, **kw):
+            call_count["n"] += 1
+            # Both calls return malformed data (no required keys)
+            return {"data": {"wrong_key": "value"}, "error": None}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side,
+        )
+        cfg = self._make_cfg()
+        result = art_direct("summary", cfg)
+
+        assert call_count["n"] == 2
+        assert result["background"] == _DEFAULT_ART_BRIEF["background"]
+
+    def test_exception_does_not_raise_and_returns_all_keys(self, mocker) -> None:
+        """When generate_json_completion raises, art_direct must not raise."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=RuntimeError("network error"),
+        )
+        cfg = self._make_cfg()
+        result = art_direct("summary", cfg)
+
+        assert "text" in result
+        assert "background" in result
+        assert "person" in result
+        assert "mood" in result
+
+    def test_none_response_does_not_raise(self, mocker) -> None:
+        """When generate_json_completion returns None-data, art_direct must not raise."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value={"data": None, "error": "api error"},
+        )
+        cfg = self._make_cfg()
+        result = art_direct("summary", cfg)
+
+        assert "text" in result
+        assert "background" in result
+        assert "person" in result
+        assert "mood" in result
+
+    def test_http_stripped_from_values(self, mocker) -> None:
+        """Any 'http' substring in returned values must be stripped from the result."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value={
+                "data": {
+                    "text": "CRISIS REAL",
+                    "background": "http://example.com una calle",
+                    "person": "ciudadano serio",
+                    "mood": "indignación",
+                },
+                "error": None,
+            },
+        )
+        cfg = self._make_cfg()
+        result = art_direct("summary", cfg)
+
+        for value in result.values():
+            if isinstance(value, str):
+                assert "http" not in value, f"Found 'http' in result value: {value!r}"
+
+    def test_default_background_has_no_hemiciclo(self) -> None:
+        """The _DEFAULT_ART_BRIEF background must not contain 'hemiciclo'."""
+        from congress_videos.modules.thumbnail_generation import _DEFAULT_ART_BRIEF
+
+        assert "hemiciclo" not in _DEFAULT_ART_BRIEF["background"].lower()
+
+    def test_system_prompt_contains_http_prohibition(self, mocker) -> None:
+        """The system prompt passed to generate_json_completion must mention 'http' as a prohibition."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        captured = {}
+
+        def _capture(system_prompt, user_prompt, **kw):
+            captured["system_prompt"] = system_prompt
+            return self._valid_brief_response()
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_capture,
+        )
+        cfg = self._make_cfg()
+        art_direct("summary", cfg)
+
+        assert "http" in captured.get("system_prompt", ""), (
+            "System prompt must reference 'http' as a prohibition"
+        )
+
+    def test_uses_art_direction_system_prompt(self, mocker) -> None:
+        """art_direct must use ART_DIRECTION_SYSTEM_PROMPT as the system prompt."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        captured = {}
+
+        def _capture(system_prompt, user_prompt, **kw):
+            captured["system_prompt"] = system_prompt
+            return self._valid_brief_response()
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_capture,
+        )
+        cfg = self._make_cfg()
+        art_direct("summary", cfg)
+
+        assert captured["system_prompt"] == ART_DIRECTION_SYSTEM_PROMPT
+
+    def test_warning_logged_on_fallback(self, mocker, caplog) -> None:
+        """A WARNING is logged when falling back to _DEFAULT_ART_BRIEF."""
+        import logging
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value={"data": None, "error": "error"},
+        )
+        cfg = self._make_cfg()
+
+        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
+            art_direct("summary", cfg)
+
+        assert any(r.levelno >= logging.WARNING for r in caplog.records)

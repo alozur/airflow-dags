@@ -20,6 +20,17 @@ Usage::
 
 Note: ``slug`` is optional. When absent or empty, the photo-resolution task
 returns an empty result and the DAG proceeds without a support image.
+
+Pipeline overview::
+
+    validate_input
+      → resolve_participant_photo
+        → art_direction
+          → generate_thumbnail_option_a → download_option_a → score_option_a
+          → generate_thumbnail_option_b → download_option_b → score_option_b
+                                                              → choose_best_option
+                                                                → generate_title
+                                                                  → persist_results
 """
 
 from __future__ import annotations
@@ -35,11 +46,13 @@ from congress_videos.config.paths import get_thumbnail_dir
 from congress_videos.config.thumbnail_config import ConfigError, get_domain_config
 from congress_videos.modules import pikzels_client as _pkz
 from congress_videos.modules.thumbnail_generation import (
+    art_direct,
     choose_best_option,
     generate_title,
     persist_results,
     resolve_participant_photo,
 )
+from congress_videos.modules.thumbnail_prompt import build_pikzels_prompt
 
 # ---------------------------------------------------------------------------
 # Required conf keys for every DAG run.
@@ -102,29 +115,37 @@ def _task_resolve_photo(ti: TaskInstance, **context: object) -> dict:
     return resolve_participant_photo(conf.get("slug"), domain_cfg)
 
 
+def _task_art_direction(ti: TaskInstance, **context: object) -> dict:
+    """Generate an art-direction brief via OpenAI for both thumbnail options."""
+    conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
+    domain_cfg = get_domain_config(conf["domain"])
+    return art_direct(conf["debate_summary"], domain_cfg)
+
+
 def _task_generate_thumbnail(label: str, ti: TaskInstance, **context: object) -> dict:
-    """Generate one thumbnail option via Pikzels and return the raw response."""
+    """Generate one thumbnail option via Pikzels using the art-direction brief."""
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
     photo_data: dict = ti.xcom_pull(task_ids="resolve_participant_photo") or {}
+    art_brief: dict = ti.xcom_pull(task_ids="art_direction") or {}
     domain_cfg = get_domain_config(conf["domain"])
 
     styles = domain_cfg["styles"]
     style_cfg = next(s for s in styles if s["label"] == label)
+    layout = style_cfg["layout"]
 
     support_b64 = photo_data.get("support_image_b64", "")
     data_url = f"data:image/jpeg;base64,{support_b64}" if support_b64 else None
 
+    prompt = build_pikzels_prompt(art_brief, layout)
+
     result = _pkz.thumbnail_from_text(
-        conf["debate_summary"],
-        persona=style_cfg.get("persona"),
-        style=style_cfg.get("style"),
+        prompt,
         support_image_base64=data_url,
     )
-    # Attach label and style context for downstream tasks.
+    # Attach label, layout (as style), and prompt for downstream tasks.
     result["label"] = label
-    result["style"] = style_cfg.get("style", "")
-    result["persona"] = style_cfg.get("persona", "")
-    result["prompt"] = conf["debate_summary"]
+    result["style"] = layout
+    result["prompt"] = prompt
     return result
 
 
@@ -144,7 +165,6 @@ def _task_download_option(label: str, ti: TaskInstance, **context: object) -> di
         "local_path": str(local_path),
         "output_url": output_url,
         "style": gen_result.get("style", ""),
-        "persona": gen_result.get("persona", ""),
         "prompt": gen_result.get("prompt", ""),
     }
 
@@ -238,6 +258,11 @@ with DAG(
         python_callable=_task_resolve_photo,
     )
 
+    t_art_direction = PythonOperator(
+        task_id="art_direction",
+        python_callable=_task_art_direction,
+    )
+
     t_gen_a = PythonOperator(
         task_id="generate_thumbnail_option_a",
         python_callable=lambda ti, **ctx: _task_generate_thumbnail("option_a", ti=ti, **ctx),
@@ -290,12 +315,13 @@ with DAG(
     # Task dependency graph:
     #   validate_input
     #     → resolve_participant_photo
-    #       → generate_thumbnail_option_a → download_option_a → score_option_a
-    #       → generate_thumbnail_option_b → download_option_b → score_option_b
-    #                                                           → choose_best_option
-    #                                                             → generate_title
-    #                                                               → persist_results
-    t_validate >> t_resolve_photo
-    t_resolve_photo >> t_gen_a >> t_dl_a >> t_score_a
-    t_resolve_photo >> t_gen_b >> t_dl_b >> t_score_b
+    #       → art_direction
+    #         → generate_thumbnail_option_a → download_option_a → score_option_a
+    #         → generate_thumbnail_option_b → download_option_b → score_option_b
+    #                                                             → choose_best_option
+    #                                                               → generate_title
+    #                                                                 → persist_results
+    t_validate >> t_resolve_photo >> t_art_direction
+    t_art_direction >> t_gen_a >> t_dl_a >> t_score_a
+    t_art_direction >> t_gen_b >> t_dl_b >> t_score_b
     [t_score_a, t_score_b] >> t_choose >> t_title >> t_persist

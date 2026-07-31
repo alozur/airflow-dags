@@ -23,6 +23,8 @@ from typing import Optional
 import requests
 
 from congress_videos.config.ai_prompts import (
+    ART_DIRECTION_SYSTEM_PROMPT,
+    ART_DIRECTION_USER_PROMPT_TEMPLATE,
     THUMBNAIL_TITLE_SYSTEM_PROMPT,
     THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE,
 )
@@ -52,10 +54,103 @@ TITLE_MAX_CHARS = 90
 # Sentinel returned when no photo source is available (tolerant mode — no raise).
 EMPTY_RESULT: dict = {"support_image_b64": "", "source": "none"}
 
+# Fallback art-direction brief used when both OpenAI attempts fail.
+# Background must never reference hemiciclo or parliamentary chamber.
+_DEFAULT_ART_BRIEF: dict = {
+    "background": (
+        "una calle española con gente caminando, luz de tarde, tono documental"
+    ),
+    "person": (
+        "un ciudadano español de mediana edad, expresión seria y preocupada, ropa casual"
+    ),
+    "text": "LO QUE NO TE CUENTAN",
+    "mood": "tensión y curiosidad",
+    "logo": "",
+}
+
+_ART_BRIEF_REQUIRED_KEYS = ("text", "background", "person", "mood")
+
 
 # ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
+
+
+def art_direct(debate_summary: str, domain_cfg: dict) -> dict:
+    """Generate an art-direction brief for a Pikzels thumbnail via OpenAI.
+
+    Calls ``generate_json_completion`` with the ART_DIRECTION prompts and
+    validates that the result contains all required keys (text, background,
+    person, mood).  Re-prompts once on validation failure.  Falls back to
+    ``_DEFAULT_ART_BRIEF`` if both attempts fail or raise.
+
+    Any ``"http"`` substring found in returned string values is stripped to
+    prevent Pikzels from rejecting the downstream prompt.
+
+    Args:
+        debate_summary: Free-text summary of the debate used as context.
+        domain_cfg: Per-domain config dict (currently unused beyond signature
+                    consistency with generate_title; reserved for future use).
+
+    Returns:
+        Dict with keys ``text``, ``background``, ``person``, ``mood``, and
+        ``logo`` (defaults to ``""``).  Never raises.
+    """
+
+    def _call_api(extra_instruction: str = "") -> Optional[dict]:
+        user_prompt = ART_DIRECTION_USER_PROMPT_TEMPLATE.format(
+            debate_summary=debate_summary
+        )
+        if extra_instruction:
+            user_prompt += f"\n\nINSTRUCCIÓN ADICIONAL: {extra_instruction}"
+        try:
+            result = generate_json_completion(
+                system_prompt=ART_DIRECTION_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                model="gpt-4o-mini",
+                max_tokens=400,
+            )
+        except Exception as exc:
+            logger.warning("art_direct: generate_json_completion raised: %s", exc)
+            return None
+
+        if result.get("error"):
+            logger.warning("art_direct: API error: %s", result["error"])
+            return None
+
+        data = result.get("data") or {}
+        # Validate all required keys are present.
+        if not all(k in data for k in _ART_BRIEF_REQUIRED_KEYS):
+            return None
+        return data
+
+    # First attempt.
+    brief = _call_api()
+
+    if brief is None:
+        # Re-prompt once with a clarifying instruction.
+        brief = _call_api(
+            extra_instruction=(
+                "Asegúrate de devolver un JSON con EXACTAMENTE los campos: "
+                "text, background, person, mood."
+            )
+        )
+
+    if brief is None:
+        logger.warning(
+            "art_direct: both OpenAI attempts failed — using _DEFAULT_ART_BRIEF"
+        )
+        brief = dict(_DEFAULT_ART_BRIEF)
+
+    # Ensure logo key present.
+    brief.setdefault("logo", "")
+
+    # Strip any accidental "http" from string values.
+    cleaned = {
+        k: (v.replace("http", "") if isinstance(v, str) else v)
+        for k, v in brief.items()
+    }
+    return cleaned
 
 
 def resolve_participant_photo(slug: str | None, cfg: dict) -> dict:

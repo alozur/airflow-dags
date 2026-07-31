@@ -100,6 +100,7 @@ class TestDagSchedule:
 EXPECTED_TASK_IDS = {
     "validate_input",
     "resolve_participant_photo",
+    "art_direction",
     "generate_thumbnail_option_a",
     "download_option_a",
     "score_option_a",
@@ -153,11 +154,14 @@ class TestDagDependencies:
     def test_resolve_participant_photo_upstream_is_validate_input(self) -> None:
         assert self._upstream_ids("resolve_participant_photo") == {"validate_input"}
 
-    def test_generate_thumbnail_option_a_upstream_is_resolve_participant_photo(self) -> None:
-        assert self._upstream_ids("generate_thumbnail_option_a") == {"resolve_participant_photo"}
+    def test_art_direction_upstream_is_resolve_participant_photo(self) -> None:
+        assert self._upstream_ids("art_direction") == {"resolve_participant_photo"}
 
-    def test_generate_thumbnail_option_b_upstream_is_resolve_participant_photo(self) -> None:
-        assert self._upstream_ids("generate_thumbnail_option_b") == {"resolve_participant_photo"}
+    def test_generate_thumbnail_option_a_upstream_is_art_direction(self) -> None:
+        assert self._upstream_ids("generate_thumbnail_option_a") == {"art_direction"}
+
+    def test_generate_thumbnail_option_b_upstream_is_art_direction(self) -> None:
+        assert self._upstream_ids("generate_thumbnail_option_b") == {"art_direction"}
 
     def test_download_option_a_upstream_is_generate_thumbnail_option_a(self) -> None:
         assert self._upstream_ids("download_option_a") == {"generate_thumbnail_option_a"}
@@ -335,13 +339,11 @@ _FAKE_CONF = {
 _FAKE_STYLES = [
     {
         "label": "option_a",
-        "style": "Dramatic political documentary style.",
-        "persona": "Senior political journalist.",
+        "layout": "A",
     },
     {
         "label": "option_b",
-        "style": "Modern editorial news style.",
-        "persona": "Digital-native correspondent.",
+        "layout": "B",
     },
 ]
 
@@ -349,6 +351,15 @@ _FAKE_DOMAIN_CFG = {
     "styles": _FAKE_STYLES,
     "participants_lookup": lambda name: None,
     "party_logo_map": None,
+}
+
+# Art-direction brief returned by the art_direction task xcom.
+_FAKE_ART_BRIEF = {
+    "text": "LO QUE NO TE CUENTAN",
+    "background": "una calle española con gente, luz de tarde",
+    "person": "ciudadano de mediana edad, expresión preocupada, ropa casual",
+    "mood": "tensión y curiosidad",
+    "logo": "",
 }
 
 
@@ -370,8 +381,9 @@ def _make_fake_ti(xcom_map: dict) -> MagicMock:
 
 class TestTaskGenerateThumbnail:
     """T-08: _task_generate_thumbnail must call _pkz.thumbnail_from_text with
-    support_image_base64= (data URI), never support_image=, and return a dict
-    with label, style, persona, and prompt attached.
+    support_image_base64= (data URI), pull from art_direction xcom, return a dict
+    with label, style (layout letter A/B/C), prompt (rendered Pikzels template
+    containing #C9A84C), and NO persona key.
     """
 
     def test_calls_thumbnail_from_text_with_support_image_base64(self, mocker) -> None:
@@ -385,6 +397,7 @@ class TestTaskGenerateThumbnail:
             {
                 "validate_input": _FAKE_CONF,
                 "resolve_participant_photo": fake_photo_data,
+                "art_direction": _FAKE_ART_BRIEF,
             }
         )
 
@@ -413,14 +426,15 @@ class TestTaskGenerateThumbnail:
         )
         assert photo_b64 in data_url
 
-    def test_returns_dict_with_label_style_persona_prompt(self, mocker) -> None:
-        """Return dict must carry label, style, persona, and prompt."""
+    def test_returns_dict_with_label_and_style_as_layout_letter(self, mocker) -> None:
+        """Return dict must carry label and style (layout letter A/B/C), no 'persona' key."""
         import congress_videos.generic_thumbnail_generator_dag as dag_mod
 
         ti = _make_fake_ti(
             {
                 "validate_input": _FAKE_CONF,
                 "resolve_participant_photo": {"support_image_b64": "b64data", "source": "photo"},
+                "art_direction": _FAKE_ART_BRIEF,
             }
         )
 
@@ -435,9 +449,18 @@ class TestTaskGenerateThumbnail:
         result = dag_mod._task_generate_thumbnail("option_a", ti=ti)
 
         assert result["label"] == "option_a"
-        assert result["style"] == _FAKE_STYLES[0]["style"]
-        assert result["persona"] == _FAKE_STYLES[0]["persona"]
-        assert result["prompt"] == _FAKE_CONF["debate_summary"]
+        # style must be the layout letter, not the old style prose
+        assert result["style"] in {"A", "B", "C"}, (
+            f"style must be a layout letter (A/B/C), got: {result['style']!r}"
+        )
+        # prompt must be a rendered Pikzels template containing the gold border spec
+        assert "#C9A84C" in result["prompt"], (
+            "prompt must be the rendered Pikzels template containing '#C9A84C'"
+        )
+        # No persona key expected
+        assert "persona" not in result, (
+            "result must not contain 'persona' key — removed in this change"
+        )
 
     def test_no_photo_sends_none_support_image(self, mocker) -> None:
         """When support_image_b64 is empty, support_image_base64 is None."""
@@ -447,6 +470,7 @@ class TestTaskGenerateThumbnail:
             {
                 "validate_input": _FAKE_CONF,
                 "resolve_participant_photo": {"support_image_b64": "", "source": "party_logo"},
+                "art_direction": _FAKE_ART_BRIEF,
             }
         )
 
@@ -482,9 +506,8 @@ class TestTaskDownloadOption:
         gen_result = {
             "output": "https://pikzels.com/generated.png",
             "label": "option_a",
-            "style": _FAKE_STYLES[0]["style"],
-            "persona": _FAKE_STYLES[0]["persona"],
-            "prompt": _FAKE_CONF["debate_summary"],
+            "style": "A",
+            "prompt": "A thick gold (#C9A84C) border...",
         }
 
         ti = _make_fake_ti(
@@ -517,9 +540,8 @@ class TestTaskDownloadOption:
 
         gen_result = {
             "output": "https://pikzels.com/generated.png",
-            "style": _FAKE_STYLES[0]["style"],
-            "persona": _FAKE_STYLES[0]["persona"],
-            "prompt": _FAKE_CONF["debate_summary"],
+            "style": "A",
+            "prompt": "A thick gold (#C9A84C) border...",
         }
 
         ti = _make_fake_ti(
@@ -567,9 +589,8 @@ class TestTaskScoreOption:
             "label": "option_a",
             "local_path": str(fake_image),
             "output_url": "https://pikzels.com/generated.png",
-            "style": _FAKE_STYLES[0]["style"],
-            "persona": _FAKE_STYLES[0]["persona"],
-            "prompt": _FAKE_CONF["debate_summary"],
+            "style": "A",
+            "prompt": "A thick gold (#C9A84C) border...",
         }
 
         ti = _make_fake_ti({"download_option_a": download_info})
@@ -598,9 +619,8 @@ class TestTaskScoreOption:
             "label": "option_b",
             "local_path": str(fake_image),
             "output_url": "https://pikzels.com/b.png",
-            "style": _FAKE_STYLES[1]["style"],
-            "persona": _FAKE_STYLES[1]["persona"],
-            "prompt": _FAKE_CONF["debate_summary"],
+            "style": "B",
+            "prompt": "A thick gold (#C9A84C) border...",
         }
 
         ti = _make_fake_ti({"download_option_b": download_info})
