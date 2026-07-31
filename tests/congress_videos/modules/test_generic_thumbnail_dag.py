@@ -28,6 +28,33 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
+# ThumbnailConfigWiring tests (GROUP 2 — REQ-A2)
+# ---------------------------------------------------------------------------
+
+
+class TestThumbnailConfigWiring:
+    """Verify congreso config wires lookup_participant_by_slug, not fuzzy."""
+
+    def test_congreso_participants_lookup_is_lookup_participant_by_slug(self) -> None:
+        """congreso config 'participants_lookup' must be lookup_participant_by_slug."""
+        from congress_videos.config.thumbnail_config import get_domain_config
+        from congress_videos.modules.participants_db import lookup_participant_by_slug
+
+        cfg = get_domain_config("congreso")
+        assert cfg["participants_lookup"] is lookup_participant_by_slug or \
+               cfg["participants_lookup"].__name__ == "lookup_participant_by_slug"
+
+    def test_lookup_participant_fuzzy_string_absent_from_thumbnail_config_source(self) -> None:
+        """'lookup_participant_fuzzy' must NOT appear in thumbnail_config.py source."""
+        import congress_videos.config.thumbnail_config as _tcfg
+        import inspect
+        source = inspect.getsource(_tcfg)
+        assert "lookup_participant_fuzzy" not in source, (
+            "thumbnail_config.py must not reference lookup_participant_fuzzy"
+        )
+
+
+# ---------------------------------------------------------------------------
 # T-01  DAG imports cleanly
 # ---------------------------------------------------------------------------
 
@@ -188,13 +215,21 @@ class TestNoCongresoBranding:
 # ---------------------------------------------------------------------------
 
 
+_REQUIRED_KEYS = [
+    "youtube_video_id",
+    "chapter_id",
+    "debate_summary",
+    "session",
+    "domain",
+]
+
 VALID_CONF = {
     "youtube_video_id": "abc123",
     "chapter_id": 7,
     "debate_summary": "El debate sobre pensiones fue intenso.",
     "session": "Pleno 2026-06-10",
     "domain": "congreso",
-    "normalized_name": "garcia_lopez_maria",
+    "slug": "garcia-lopez-maria",
 }
 
 
@@ -208,23 +243,42 @@ class TestValidateInput:
         self.mod = importlib.import_module("congress_videos.generic_thumbnail_generator_dag")
 
     def test_valid_conf_does_not_raise(self) -> None:
-        """All 6 required keys present → no exception."""
+        """5 required keys present → no exception."""
         # Call the underlying function directly (not via Airflow trigger).
         self.mod.validate_input(VALID_CONF)
 
-    @pytest.mark.parametrize("missing_key", list(VALID_CONF.keys()))
+    @pytest.mark.parametrize("missing_key", _REQUIRED_KEYS)
     def test_missing_key_raises_value_error(self, missing_key: str) -> None:
         """Omitting any required key must raise ValueError."""
         conf = {k: v for k, v in VALID_CONF.items() if k != missing_key}
         with pytest.raises(ValueError, match=missing_key):
             self.mod.validate_input(conf)
 
-    @pytest.mark.parametrize("empty_key", list(VALID_CONF.keys()))
+    @pytest.mark.parametrize("empty_key", _REQUIRED_KEYS)
     def test_empty_string_raises_value_error(self, empty_key: str) -> None:
         """Empty string for any required key must raise ValueError."""
         conf = {**VALID_CONF, empty_key: ""}
         with pytest.raises(ValueError, match=empty_key):
             self.mod.validate_input(conf)
+
+    def test_conf_without_slug_is_accepted(self) -> None:
+        """slug is optional — conf without it must not raise."""
+        conf = {k: v for k, v in VALID_CONF.items() if k != "slug"}
+        self.mod.validate_input(conf)  # must not raise
+
+    def test_conf_with_slug_is_accepted(self) -> None:
+        """conf that includes slug= is accepted normally."""
+        conf = {**VALID_CONF, "slug": "garcia-lopez-maria"}
+        self.mod.validate_input(conf)  # must not raise
+
+    def test_conf_with_empty_slug_is_accepted(self) -> None:
+        """conf with slug='' is accepted (slug is optional, tolerant lookup handles it)."""
+        conf = {**VALID_CONF, "slug": ""}
+        self.mod.validate_input(conf)  # must not raise
+
+    def test_no_normalized_name_key_in_required_keys(self) -> None:
+        """'normalized_name' must NOT appear in _REQUIRED_CONF_KEYS."""
+        assert "normalized_name" not in self.mod._REQUIRED_CONF_KEYS
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +329,7 @@ _FAKE_CONF = {
     "debate_summary": "El Congreso debate el presupuesto general.",
     "session": "Pleno 2026-07-31",
     "domain": "congreso",
-    "normalized_name": "garcia_lopez_maria",
+    "slug": "garcia-lopez-maria",
 }
 
 _FAKE_STYLES = [

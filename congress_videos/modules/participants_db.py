@@ -163,6 +163,12 @@ def lookup_participant(name: str) -> dict | None:
     return next((r for r in rows if r["normalized_name"] == key), None)
 
 
+def lookup_participant_by_slug(slug: str) -> dict | None:
+    """Look up a participant by slug: exact, case-sensitive match on the UNIQUE slug column."""
+    rows = _get_participants_for_lookup()
+    return next((r for r in rows if r["slug"] == slug), None)
+
+
 def lookup_participant_fuzzy(
     name: str, threshold: float = WIKIDATA_FUZZY_THRESHOLD
 ) -> dict | None:

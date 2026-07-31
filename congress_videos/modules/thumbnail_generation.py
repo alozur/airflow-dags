@@ -49,39 +49,52 @@ _EMOJI_RE = re.compile(
 
 TITLE_MAX_CHARS = 90
 
+# Sentinel returned when no photo source is available (tolerant mode — no raise).
+EMPTY_RESULT: dict = {"support_image_b64": "", "source": "none"}
+
 
 # ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
 
 
-def resolve_participant_photo(name: str, cfg: dict) -> dict:
+def resolve_participant_photo(slug: str | None, cfg: dict) -> dict:
     """Resolve the support image for a participant using DB lookup then HTTP download.
 
     Resolution order:
-    1. Look up participant via ``cfg["participants_lookup"]``.
+    0. If ``slug`` is absent, empty, or whitespace, return EMPTY_RESULT (WARNING logged).
+    1. Look up participant via ``cfg["participants_lookup"]`` by slug.
+       If not found, return EMPTY_RESULT (WARNING logged).
     2. If ``photo_url`` is non-null, perform HTTP GET and return raw bytes.
-       If the GET returns non-200, treat as undownloadable and fall through.
+       If the GET returns non-200 or raises, return EMPTY_RESULT (WARNING logged).
     3. If photo unavailable and ``cfg["party_logo_map"]`` is set, read logo file.
-    4. If neither source is available, raise ``ValueError``.
+    4. If neither source is available, return EMPTY_RESULT (WARNING logged).
 
     Args:
-        name: Normalized participant name to look up.
+        slug: Participant slug to look up (exact, case-sensitive).
         cfg: Per-domain config dict from ``THUMBNAIL_CONFIG``.
 
     Returns:
-        Dict with keys ``support_image_b64`` (base64-encoded image bytes as str)
-        and ``source`` (``"photo"`` or ``"party_logo"``).
-
-    Raises:
-        LookupError: If the participant is not found in the database.
-        ValueError: If the participant has no photo URL and no party logo is configured.
+        Dict with keys ``support_image_b64`` (base64-encoded image bytes as str,
+        empty string when no source found) and ``source``
+        (``"photo"``, ``"party_logo"``, or ``"none"``).
     """
+    # Guard: absent / blank slug — skip lookup entirely.
+    if not slug or not str(slug).strip():
+        logger.warning(
+            "resolve_participant_photo: slug is absent or blank — returning empty result"
+        )
+        return EMPTY_RESULT
+
     lookup_fn = cfg["participants_lookup"]
-    participant = lookup_fn(name)
+    participant = lookup_fn(slug)
 
     if participant is None:
-        raise LookupError(f"Participant not found: {name!r}")
+        logger.warning(
+            "resolve_participant_photo: participant not found for slug %r — returning empty result",
+            slug,
+        )
+        return EMPTY_RESULT
 
     photo_url = participant.get("photo_url")
 
@@ -116,10 +129,12 @@ def resolve_participant_photo(name: str, cfg: dict) -> dict:
             "source": "party_logo",
         }
 
-    raise ValueError(
-        f"no photo source available for participant {name!r}: "
-        "photo_url is absent/undownloadable and no party_logo_map configured"
+    logger.warning(
+        "resolve_participant_photo: no photo source available for slug %r "
+        "(photo_url absent/undownloadable, no party_logo_map) — returning empty result",
+        slug,
     )
+    return EMPTY_RESULT
 
 
 def choose_best_option(options: list[dict]) -> dict:
