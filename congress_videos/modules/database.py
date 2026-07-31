@@ -1284,6 +1284,45 @@ class CongressionalVideoDB:
                         (video_id, video_url, str(retry_after_hours)),
                     )
 
+    def update_chapter_speakers(
+        self,
+        chapter_id: int,
+        speakers: list,
+        key_speakers: list,
+        timeline: list,
+    ) -> None:
+        """Overwrite the speakers, key_speakers and timeline JSONB for a chapter.
+
+        Called by normalize_chapter_speakers after confirmed AI matches have been
+        applied to all three fields.
+
+        Args:
+            chapter_id: PK of the video_chapters row to update.
+            speakers: Updated list of speaker display names.
+            key_speakers: Updated list of key speaker display names.
+            timeline: Updated list of timeline dicts (each has 'speaker' field).
+        """
+        chapters_table = self.pg_conn.get_qualified_table("video_chapters")
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {chapters_table}
+                    SET speakers = %s,
+                        key_speakers = %s,
+                        timeline = %s::jsonb,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE chapter_id = %s
+                    """,
+                    (speakers, key_speakers, json.dumps(timeline), chapter_id),
+                )
+                logger.info(
+                    "update_chapter_speakers: updated chapter %d "
+                    "(%d speakers, %d key_speakers, %d timeline entries)",
+                    chapter_id, len(speakers), len(key_speakers), len(timeline),
+                )
+
     def get_processed_video_ids(self, video_ids: list[str]) -> set[str]:
         """Return the subset of video_ids that should be skipped for download.
 
