@@ -226,7 +226,10 @@ class TestLookupParticipantFuzzy:
         import types
         import sys
 
-        stub_fuzz = types.SimpleNamespace(token_sort_ratio=lambda a, b: score * 100)
+        stub_fuzz = types.SimpleNamespace(
+            token_sort_ratio=lambda a, b: score * 100,
+            token_set_ratio=lambda a, b: score * 100,
+        )
         stub_rapidfuzz = types.ModuleType("rapidfuzz")
         stub_rapidfuzz.fuzz = stub_fuzz
         monkeypatch.setitem(sys.modules, "rapidfuzz", stub_rapidfuzz)
@@ -234,17 +237,17 @@ class TestLookupParticipantFuzzy:
 
     @staticmethod
     def _stub_rapidfuzz_per_pair(monkeypatch, score_map: dict) -> None:
-        """Install a stub token_sort_ratio that returns different scores per (a,b) pair.
+        """Install a stub that returns different scores per (a,b) pair.
 
         score_map keys are (a, b) tuples; any unrecognised pair returns 0.
         """
         import types
         import sys
 
-        def _token_sort_ratio(a: str, b: str) -> float:
+        def _ratio(a: str, b: str) -> float:
             return score_map.get((a, b), 0.0) * 100
 
-        stub_fuzz = types.SimpleNamespace(token_sort_ratio=_token_sort_ratio)
+        stub_fuzz = types.SimpleNamespace(token_sort_ratio=_ratio, token_set_ratio=_ratio)
         stub_rapidfuzz = types.ModuleType("rapidfuzz")
         stub_rapidfuzz.fuzz = stub_fuzz
         monkeypatch.setitem(sys.modules, "rapidfuzz", stub_rapidfuzz)
