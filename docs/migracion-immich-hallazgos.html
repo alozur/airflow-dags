@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Migración Synology Photos → Immich — Hallazgos</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: #161822;
+    --border: #242636;
+    --text: #cdd6f4;
+    --muted: #6c7086;
+    --accent: #89b4fa;
+    --green: #a6e3a1;
+    --yellow: #f9e2af;
+    --red: #f38ba8;
+    --purple: #cba6f7;
+    --orange: #fab387;
+    --code-bg: #1e1e2e;
+    --table-head: #1a1c2a;
+    --table-row: #161822;
+    --table-alt: #1c1e2e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.7; padding: 2rem;
+    max-width: 1100px; margin: 0 auto;
+  }
+  h1 { font-size: 2rem; margin-bottom: 0.25rem; color: var(--accent); }
+  h2 { font-size: 1.4rem; margin: 2rem 0 0.75rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--border); color: var(--purple); }
+  h3 { font-size: 1.1rem; margin: 1.3rem 0 0.5rem; color: var(--green); }
+  p { margin-bottom: 0.7rem; }
+  .subtitle { color: var(--muted); margin-bottom: 1.5rem; font-size: 0.95rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1.2rem 1.5rem; margin: 1rem 0;
+  }
+  .card.warn { border-left: 3px solid var(--yellow); }
+  .card.info { border-left: 3px solid var(--accent); }
+  .card.ok { border-left: 3px solid var(--green); }
+  table {
+    width: 100%; border-collapse: collapse; margin: 0.75rem 0;
+    font-size: 0.9rem;
+  }
+  th, td {
+    padding: 0.5rem 0.75rem; text-align: left;
+    border: 1px solid var(--border);
+  }
+  th { background: var(--table-head); color: var(--accent); font-weight: 600; }
+  td { background: var(--table-row); }
+  tr:nth-child(even) td { background: var(--table-alt); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  code {
+    background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px;
+    font-size: 0.88em; color: var(--orange);
+  }
+  pre {
+    background: var(--code-bg); padding: 1rem 1.2rem; border-radius: 6px;
+    overflow-x: auto; border: 1px solid var(--border); margin: 0.5rem 0 1rem;
+    font-size: 0.82rem; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: var(--text); }
+  .badge {
+    display: inline-block; padding: 0.15em 0.5em; border-radius: 4px;
+    font-size: 0.8rem; font-weight: 600;
+  }
+  .badge.green { background: #1b4332; color: var(--green); }
+  .badge.yellow { background: #3e3520; color: var(--yellow); }
+  .badge.red { background: #3a1c24; color: var(--red); }
+  .badge.blue { background: #1e2a4a; color: var(--accent); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; }
+  ul, ol { margin-left: 1.3rem; margin-bottom: 0.7rem; }
+  li { margin-bottom: 0.3rem; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 1.5rem 0; }
+  .filepath { color: var(--green); font-family: monospace; }
+  .stats { font-size: 1.6rem; font-weight: 700; color: var(--accent); }
+  .stats-label { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .flag { color: var(--red); font-weight: 700; }
+</style>
+</head>
+<body>
+
+<h1>🖼️ Migración Synology Photos → Immich</h1>
+<p class="subtitle">Hallazgos de la exploración SSH — Julio 2026</p>
+
+<!-- ===== NAS OVERVIEW ===== -->
+<h2>📡 NAS — Visión General</h2>
+<div class="grid2">
+  <div class="card">
+    <table>
+      <tr><th colspan="2">Identificación</th></tr>
+      <tr><td>Modelo</td><td><strong>Synology DS923+</strong></td></tr>
+      <tr><td>Hostname</td><td><code>DS923</code></td></tr>
+      <tr><td>IP</td><td><code>192.168.1.143</code></td></tr>
+      <tr><td>SO</td><td>Linux 4.4.302+ (Synology r1000_923+)</td></tr>
+      <tr><td>PostgreSQL</td><td>v11.11 (pg_dump 11.11)</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <table>
+      <tr><th colspan="2">Almacenamiento</th></tr>
+      <tr><td>Volumen</td><td><code>/volume1</code></td></tr>
+      <tr><td>Capacidad total</td><td class="num"><strong>18 TB</strong></td></tr>
+      <tr><td>Usado</td><td class="num">2.1 TB (13%)</td></tr>
+      <tr><td>Disponible</td><td class="num"><span class="green">16 TB</span></td></tr>
+    </table>
+  </div>
+</div>
+<div class="card info" style="margin-top:0">
+  <strong>Usuario SSH:</strong> <code>alozur</code> (grupo <code>administrators</code>) — acceso total a <code>/volume1/homes/</code><br>
+  <strong>Usuarios con Photos:</strong> <code>admin</code>, <code>alonso</code>, <code>alozur</code>, <code>ines</code>, <code>lucia</code>
+</div>
+
+<!-- ===== ALONSO PHOTOS ===== -->
+<h2>👤 Usuario «alonso» — Synology Photos</h2>
+<div class="card">
+  <p><span class="filepath">/volume1/homes/alonso/Photos/</span></p>
+</div>
+
+<div class="grid3">
+  <div class="card" style="text-align:center">
+    <div class="stats">73 GB</div>
+    <div class="stats-label">Tamaño total</div>
+  </div>
+  <div class="card" style="text-align:center">
+    <div class="stats">61,929</div>
+    <div class="stats-label">Archivos totales</div>
+  </div>
+  <div class="card" style="text-align:center">
+    <div class="stats">37K / 2.6K</div>
+    <div class="stats-label">Fotos / Vídeos</div>
+  </div>
+</div>
+
+<h3>Secciones (top-level)</h3>
+<table>
+  <tr>
+    <th>Sección</th>
+    <th class="num">Tamaño</th>
+    <th class="num">Archivos</th>
+    <th>Contenido</th>
+  </tr>
+  <tr>
+    <td><strong>MobileBackup/</strong></td>
+    <td class="num">53 GB</td>
+    <td class="num">46,186</td>
+    <td>Backups de dispositivos móviles</td>
+  </tr>
+  <tr>
+    <td><strong>PhotoLibrary/</strong></td>
+    <td class="num">12 GB</td>
+    <td class="num">13,242</td>
+    <td>Organizado por Año/Mes (estructura automática Synology)</td>
+  </tr>
+  <tr>
+    <td><strong>PhotoRequest/</strong></td>
+    <td class="num">8.5 GB</td>
+    <td class="num">2,501</td>
+    <td>Colecciones de solicitudes de fotos compartidas</td>
+  </tr>
+</table>
+
+<h3>MobileBackup — Árbol</h3>
+<pre><code>MobileBackup/
+├── realme 7 Pro/
+│   └── DCIM/ ... (carpetas timestamp + Camera, Screenshots, Collage, gym, etc.)
+├── iPhone/
+│   ├── 2024/03-12/
+│   └── 2025/01-12/
+└── Alonso's Phone/
+    └── WhatsApp Images/
+        ├── 2025/
+        └── 2026/
+</code></pre>
+
+<h3>PhotoLibrary — Árbol</h3>
+<pre><code>PhotoLibrary/
+├── 2021/  (9 meses: 01-12)
+├── 2022/  (12 meses)
+├── 2023/  (12 meses)
+├── 2024/  (1 mes: 01)
+├── 2025/  (1 mes: 12)
+└── 2026/  (2 meses)
+</code></pre>
+<p class="flag">⚠️ Sin nombres de álbum — solo año/mes. Los álbumes existen solo en la BD.</p>
+
+<h3>PhotoRequest — Árbol</h3>
+<pre><code>PhotoRequest/
+├── Islandia/        (fotos + .mov de Alonso y Lucia)
+├── Photo Request on 23 Sep 2025/
+├── Photo Request on 27 May 2026/
+└── Photo Request on 01 Jul 2026/
+</code></pre>
+
+<!-- ===== DATABASE ===== -->
+<h2>🗄️ Base de Datos Synology Photos</h2>
+
+<div class="card ok">
+  <strong>Conexión (PgBouncer):</strong>
+  <code>synofoto</code> @ <code>/var/run/postgresql:5432</code> · Usuario <code>SynologyPhotos</code> · PostgreSQL 11.11
+</div>
+
+<div class="card warn" style="margin-top:1rem">
+  <strong class="flag">⚠️ No se pudo conectar</strong> — Autenticación <code>peer</code> falló para el usuario <code>SynologyPhotos</code>. Se requiere acceso como <code>root</code> o ajustar <code>pg_hba.conf</code> para permitir conexión local con <code>trust</code> o <code>md5</code>.
+</div>
+
+<h3>Esquema — Tablas Relevantes</h3>
+<table>
+  <tr><th>Tabla</th><th>Descripción</th><th>Columnas clave</th></tr>
+  <tr>
+    <td><code>album</code></td>
+    <td>Tabla base de álbumes</td>
+    <td><code>id</code>, <code>id_user</code>, <code>name</code>, <code>type</code>, <code>create_time</code>, <code>shared</code>, <code>item_count</code></td>
+  </tr>
+  <tr>
+    <td><code>normal_album</code></td>
+    <td>Álbumes normales (hereda de <code>album</code>)</td>
+    <td><code>status</code>, <code>start_time</code>, <code>end_time</code>, <code>condition</code></td>
+  </tr>
+  <tr>
+    <td><code>item</code></td>
+    <td>Items lógicos (agrupan versiones)</td>
+    <td><code>id</code>, <code>id_user</code>, <code>type</code></td>
+  </tr>
+  <tr>
+    <td><code>unit</code></td>
+    <td>Archivos físicos (1 item → N units)</td>
+    <td><code>id</code>, <code>id_item</code>, <code>id_folder</code>, <code>filename</code>, <code>filesize</code>, <code>takentime</code></td>
+  </tr>
+  <tr>
+    <td><code>folder</code></td>
+    <td>Carpetas</td>
+    <td><code>id</code>, <code>id_user</code>, <code>name</code>, <code>parent</code></td>
+  </tr>
+  <tr>
+    <td><code>many_item_has_many_normal_album</code></td>
+    <td>Relación N:M items ↔ álbumes</td>
+    <td><code>id_item</code>, <code>id_normal_album</code>, <code>sequence</code></td>
+  </tr>
+</table>
+
+<p><strong>Número total de tablas:</strong> ~85 tablas en el esquema público.</p>
+
+<h3>Definiciones SQL Completas</h3>
+<details>
+  <summary style="cursor:pointer;color:var(--accent);font-weight:600;margin:0.5rem 0">album (tabla base)</summary>
+  <pre><code>CREATE TABLE public.album (
+    id integer NOT NULL,
+    id_user integer NOT NULL,
+    name text NOT NULL,
+    type smallint NOT NULL,
+    shared boolean DEFAULT false NOT NULL,
+    create_time bigint NOT NULL,
+    cover integer DEFAULT 0 NOT NULL,
+    sort_by smallint DEFAULT 0 NOT NULL,
+    sort_direction smallint DEFAULT 0 NOT NULL,
+    normalized_name text DEFAULT ''::text NOT NULL,
+    version bigint NOT NULL,
+    passphrase_share text,
+    item_count integer,
+    start_time bigint,
+    end_time bigint,
+    name_for_sort text DEFAULT ''::text NOT NULL
+);</code></pre>
+</details>
+
+<details>
+  <summary style="cursor:pointer;color:var(--accent);font-weight:600;margin:0.5rem 0">normal_album (hereda de album)</summary>
+  <pre><code>CREATE TABLE public.normal_album (
+    cant_migrate_condition json,
+    condition json,
+    status smallint DEFAULT 0 NOT NULL,
+    start_time bigint,
+    end_time bigint
+) INHERITS (public.album);</code></pre>
+</details>
+
+<details>
+  <summary style="cursor:pointer;color:var(--accent);font-weight:600;margin:0.5rem 0">unit (archivos físicos)</summary>
+  <pre><code>CREATE TABLE public.unit (
+    id integer NOT NULL,
+    id_user integer NOT NULL,
+    type smallint DEFAULT 0 NOT NULL,
+    item_type smallint DEFAULT 0 NOT NULL,
+    filename text NOT NULL,
+    filesize bigint DEFAULT 0 NOT NULL,
+    createtime bigint DEFAULT 0 NOT NULL,
+    mtime bigint DEFAULT 0 NOT NULL,
+    takentime bigint DEFAULT 0 NOT NULL,
+    duplicate_hash text NOT NULL,
+    cache_key text NOT NULL,
+    resolution json NOT NULL,
+    index_stage smallint NOT NULL,
+    version bigint NOT NULL,
+    id_geocoding integer,
+    id_item integer NOT NULL,
+    mobile_cache_mtime bigint DEFAULT 0 NOT NULL,
+    reindex_flag smallint DEFAULT 0 NOT NULL,
+    normalized_filename text DEFAULT ''::text NOT NULL,
+    is_major boolean NOT NULL,
+    id_folder integer NOT NULL,
+    name_for_sort text DEFAULT ''::text NOT NULL,
+    index_version integer DEFAULT 1 NOT NULL
+);</code></pre>
+</details>
+
+<details>
+  <summary style="cursor:pointer;color:var(--accent);font-weight:600;margin:0.5rem 0">folder (carpetas)</summary>
+  <pre><code>CREATE TABLE public.folder (
+    id integer NOT NULL,
+    id_user integer NOT NULL,
+    name text NOT NULL,
+    parent integer NOT NULL,
+    name_for_sort text DEFAULT ''::text NOT NULL,
+    permission text,
+    mtime bigint DEFAULT 0 NOT NULL,
+    passphrase_share text,
+    shared boolean NOT NULL,
+    sort_by smallint DEFAULT 0 NOT NULL,
+    sort_direction smallint DEFAULT 0 NOT NULL,
+    permission_parent integer DEFAULT 0 NOT NULL,
+    name_for_search text DEFAULT ''::text NOT NULL,
+    normalized_name text DEFAULT ''::text NOT NULL
+);</code></pre>
+</details>
+
+<details>
+  <summary style="cursor:pointer;color:var(--accent);font-weight:600;margin:0.5rem 0">item (ítems lógicos)</summary>
+  <pre><code>CREATE TABLE public.item (
+    id integer NOT NULL,
+    id_user integer NOT NULL,
+    type smallint NOT NULL,
+    id_similar_group integer,
+    is_similar_top_pick boolean
+);</code></pre>
+</details>
+
+<details>
+  <summary style="cursor:pointer;color:var(--accent);font-weight:600;margin:0.5rem 0">many_item_has_many_normal_album (relación álbumes)</summary>
+  <pre><code>CREATE TABLE public.many_item_has_many_normal_album (
+    sequence double precision DEFAULT 0 NOT NULL,
+    item_provider_id_user integer,
+    id_item integer NOT NULL,
+    id_normal_album integer NOT NULL,
+    album_id_user integer NOT NULL
+);</code></pre>
+</details>
+
+<!-- ===== QUERY TO EXTRACT ALBUMS ===== -->
+<h2>🔍 Query para Extraer Álbumes</h2>
+<div class="card ok">
+  <p>Una vez se obtenga acceso a la BD, esta query devuelve todos los álbumes con sus archivos, lista para migrar a Immich:</p>
+</div>
+<pre><code>-- Álbumes + archivos del usuario alonso
+SELECT
+    a.id         AS album_id,
+    a.name       AS album_name,
+    a.create_time,
+    a.item_count,
+    u.id         AS unit_id,
+    u.filename,
+    u.filesize,
+    f.name       AS folder_name,
+    -- Reconstruir ruta completa
+    '/volume1/homes/alonso/Photos/' || f.name || '/' || u.filename AS full_path
+FROM normal_album a
+JOIN many_item_has_many_normal_album m ON m.id_normal_album = a.id
+JOIN item i ON i.id = m.id_item
+JOIN unit u ON u.id_item = i.id
+JOIN folder f ON f.id = u.id_folder
+WHERE a.id_user = (SELECT id FROM dsm_user WHERE name = 'alonso')
+ORDER BY a.name, m.sequence;</code></pre>
+
+<hr>
+
+<!-- ===== PLAN DE MIGRACION ===== -->
+<h2>🗺️ Plan de Migración Recomendado</h2>
+
+<div class="card warn">
+  <h3 style="margin-top:0">Paso 1 — Desbloquear la BD de Synology Photos</h3>
+  <p>Conectarse como <code>root</code> a la NAS y ejecutar:</p>
+  <pre><code>psql -U SynologyPhotos -d synofoto \
+  -c "SELECT a.id, a.name, a.item_count
+      FROM normal_album a
+      JOIN dsm_user u ON u.id = a.id_user
+      WHERE u.name = 'alonso'
+      ORDER BY a.name;"</code></pre>
+  <p>Si falla autenticación <code>peer</code>, editar <code>pg_hba.conf</code> para permitir <code>trust</code> local temporalmente.</p>
+</div>
+
+<div class="card info">
+  <h3 style="margin-top:0">Paso 2 — Extraer datos y generar mapeo</h3>
+  <p>Ejecutar la query completa de álbumes → archivos y exportar a CSV/JSON:</p>
+  <pre><code>psql -U SynologyPhotos -d synofoto -c "\copy (
+  SELECT a.name AS album, f.name AS folder, u.filename
+  FROM normal_album a
+  JOIN many_item_has_many_normal_album m ON m.id_normal_album = a.id
+  JOIN item i ON i.id = m.id_item
+  JOIN unit u ON u.id_item = i.id
+  JOIN folder f ON f.id = u.id_folder
+  WHERE a.id_user = (SELECT id FROM dsm_user WHERE name = 'alonso')
+  ORDER BY a.name, m.sequence
+) TO '/tmp/albums_alonso.csv' CSV HEADER;"</code></pre>
+</div>
+
+<div class="card ok">
+  <h3 style="margin-top:0">Paso 3 — Migrar a Immich con <code>immich-go</code></h3>
+  <p>Dos enfoques viables:</p>
+  <ol>
+    <li><strong>External Library:</strong> Montar <code>/volume1/homes/alonso/Photos/</code> en Immich como <code>:ro</code>. Luego usar <code>immich-folder-album-creator</code> para convertir carpetas en álbumes.</li>
+    <li><strong>Upload con álbumes preservados:</strong> Crear un script que lea el CSV de álbumes y llame a <code>immich-go from-folder</code> por cada álbum con <code>--album "Nombre"</code>.</li>
+  </ol>
+  <p>Para MobileBackup y PhotoRequest, usar <code>immich-go from-folder --folder-as-album</code> ya que tienen nombres descriptivos.</p>
+</div>
+
+<div class="card warn">
+  <h3 style="margin-top:0">Paso 4 — Post-migración</h3>
+  <ul>
+    <li>Ejecutar jobs de <strong>Generate Thumbnails</strong> y <strong>Storage Template Migration</strong> en el panel de Admin de Immich</li>
+    <li>Ejecutar <strong>Face Detection</strong> y <strong>Facial Recognition</strong></li>
+    <li>Desplegar <code>immich-folder-album-creator</code> si se necesita sincronización continua de carpetas → álbumes</li>
+  </ul>
+</div>
+
+<hr>
+
+<!-- ===== RESOURCES ===== -->
+<h2>📚 Recursos</h2>
+<table>
+  <tr><th>Recurso</th><th>URL / Ubicación</th></tr>
+  <tr><td>immich-go (migración)</td><td><code>https://github.com/simulot/immich-go</code></td></tr>
+  <tr><td>immich-folder-album-creator</td><td><code>https://github.com/Salvoxia/immich-folder-album-creator</code></td></tr>
+  <tr><td>Dump SQL schema</td><td><code class="filepath">/volume1/@appstore/SynologyPhotos/etc/db/dump.sql</code></td></tr>
+  <tr><td>Config PgBouncer</td><td><code class="filepath">/volume1/@appstore/SynologyPhotos/etc/pgbouncer.ini</code></td></tr>
+</table>
+
+<hr>
+<p style="color:var(--muted);text-align:center;font-size:0.85rem;margin-top:2rem;">
+  Generado el 31 de julio de 2026 · NAS DS923+ · PostgreSQL 11.11 · Synology Photos
+</p>
+
+</body>
+</html>

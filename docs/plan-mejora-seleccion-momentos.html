@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plan de mejora — Selección de momentos en vídeos largos del Congreso</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: #161822;
+    --border: #242636;
+    --text: #cdd6f4;
+    --muted: #6c7086;
+    --accent: #89b4fa;
+    --green: #a6e3a1;
+    --yellow: #f9e2af;
+    --red: #f38ba8;
+    --purple: #cba6f7;
+    --orange: #fab387;
+    --teal: #94e2d5;
+    --code-bg: #1e1e2e;
+    --table-head: #1a1c2a;
+    --table-row: #161822;
+    --table-alt: #1c1e2e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.7; padding: 2rem;
+    max-width: 1100px; margin: 0 auto;
+  }
+  h1 { font-size: 2rem; margin-bottom: 0.25rem; color: var(--accent); }
+  h2 { font-size: 1.4rem; margin: 2rem 0 0.75rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--border); color: var(--purple); }
+  h3 { font-size: 1.1rem; margin: 1.3rem 0 0.5rem; color: var(--green); }
+  p { margin-bottom: 0.7rem; }
+  .subtitle { color: var(--muted); margin-bottom: 1.5rem; font-size: 0.95rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1.2rem 1.5rem; margin: 1rem 0;
+  }
+  .card.warn { border-left: 3px solid var(--yellow); }
+  .card.info { border-left: 3px solid var(--accent); }
+  .card.ok { border-left: 3px solid var(--green); }
+  .card.danger { border-left: 3px solid var(--red); }
+  table {
+    width: 100%; border-collapse: collapse; margin: 0.75rem 0;
+    font-size: 0.9rem;
+  }
+  th, td {
+    padding: 0.5rem 0.75rem; text-align: left;
+    border: 1px solid var(--border);
+  }
+  th { background: var(--table-head); color: var(--accent); font-weight: 600; }
+  td { background: var(--table-row); }
+  tr:nth-child(even) td { background: var(--table-alt); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  code {
+    background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 4px;
+    font-size: 0.88em; color: var(--orange);
+  }
+  pre {
+    background: var(--code-bg); padding: 1rem 1.2rem; border-radius: 6px;
+    overflow-x: auto; font-size: 0.85rem; line-height: 1.5; color: var(--teal);
+    margin: 0.75rem 0;
+  }
+  ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+  li { margin-bottom: 0.3rem; }
+  .badge {
+    display: inline-block; padding: 0.1em 0.55em; border-radius: 10px;
+    font-size: 0.75rem; font-weight: 600; vertical-align: middle;
+  }
+  .b-green { background: #1e3a2a; color: var(--green); }
+  .b-yellow { background: #3a331e; color: var(--yellow); }
+  .b-red { background: #3a1e28; color: var(--red); }
+  .b-blue { background: #1e2a3a; color: var(--accent); }
+  .b-purple { background: #2a1e3a; color: var(--purple); }
+  .b-gray { background: #2a2e3a; color: var(--muted); }
+  .check { color: var(--green); }
+  .cross { color: var(--red); }
+  .muted { color: var(--muted); }
+  .small { font-size: 0.85rem; }
+  .toc { columns: 2; column-gap: 2rem; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .impact { font-weight: 600; }
+  .footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.85rem; }
+</style>
+</head>
+<body>
+
+<h1>📋 Plan de mejora — Selección de momentos en vídeos largos del Congreso</h1>
+<p class="subtitle">
+  Repositorio: <code>airflow-dags</code> · Fecha: 2026-08-03 · Estado: propuesta
+  (no implementada) · Ámbito: flujo de <strong>vídeos largos</strong> ("untrim"), no shorts de Reap
+</p>
+
+<div class="card info">
+  <strong>Objetivo.</strong> Cambiar la <em>unidad de subida</em>: en lugar de "capítulos" segmentados
+  por tema (15–45 min), subir <strong>un vídeo por intervención</strong> (turno de orador) de una sesión
+  plenaria de 7–10 h. Regla de producto: <strong>intervención larga (≥ 5 min) → se corta por la
+  intervención</strong> (un vídeo por intervención); <strong>intervención corta → si es pregunta/respuesta</strong>
+  (el caso más común) se <strong>juntan ambos bloques</strong> (preguntas + respuestas contiguos) en un solo
+  vídeo. Sumado a: umbral de relevancia coherente y bucle de realimentación desde lo que funciona en el canal.
+</div>
+
+<div class="card ok">
+  <strong>Enfoque decidido (sesión 2026-08-03).</strong> La primitiva de segmentación pasa de
+  <em>tema</em> a <strong>turno de orador</strong>. Cómo se obtienen los turnos, con el NAS sin GPU:
+  <ul>
+    <li><strong>Límites de turno — texto primero:</strong> silencios largos + frases-bisagra del
+      presidente en el SRT (<code>"Tiene la palabra"</code>, <code>"Gracias, señoría"</code>,
+      <code>"Silencio, por favor"</code>). Cero GPU, casi gratis. Cubre el ~90 % del pleno.</li>
+    <li><strong>Refuerzo acústico solo en Q&amp;A rápido:</strong> en el ida y vuelta corto el presidente
+      no re-anuncia, así que ahí los marcadores de texto se quedan cortos. Se añade
+      <strong>detección de cambio de turno</strong> con <code>whisper.cpp tinydiarize (-tdrz)</code> —
+      detecta "cambió el orador", <em>no</em> clusteriza ni pide GPU.</li>
+    <li><strong>Nombre por turno = parseo del anuncio:</strong> el nombre sale del propio ASR mirando los
+      ~15–30 s previos al corte (el presidente presenta al orador). <strong>No hace falta</strong> voiceprint
+      ni alinear al Diario de Sesiones para nombrar. Fallback: <code>orador_desconocido</code>.</li>
+    <li><strong>Unidad de vídeo:</strong> intervención larga (≥ 5 min) → un vídeo por intervención;
+      intervención corta con patrón pregunta/respuesta → se juntan el bloque de preguntas y el bloque de
+      respuestas <em>contiguo</em> en un solo vídeo. Al ser contiguos es un corte continuo — <strong>sin
+      concatenación</strong>, lo hace <code>split_video_chapter</code> tal cual.</li>
+  </ul>
+  <p class="small muted">Descartado para esta iteración: diarización acústica <em>completa</em> con
+    clustering A/B/C (pyannote/DiariZen) sobre la sesión entera — inviable en un R1600 sin GPU y ya en
+    load 14. Se reserva como opción futura si aparece GPU.</p>
+</div>
+
+<h2>Tabla de contenidos</h2>
+<div class="card toc small">
+  <ol>
+    <li><a href="#contexto">Contexto y alcance</a></li>
+    <li><a href="#hardware">Hardware donde se procesa (NAS)</a></li>
+    <li><a href="#hoy">Cómo funciona hoy</a></li>
+    <li><a href="#resuelto">Qué ya está resuelto</a></li>
+    <li><a href="#problemas">Problemas restantes</a></li>
+    <li><a href="#plan">Plan propuesto (fases)</a></li>
+    <li><a href="#arquitectura">Arquitectura objetivo</a></li>
+    <li><a href="#metricas">Métricas de éxito</a></li>
+    <li><a href="#decisiones">Decisiones abiertas y riesgos</a></li>
+  </ol>
+</div>
+
+<h2 id="contexto">1. Contexto y alcance</h2>
+<p>
+  El sistema descarga sesiones plenarias del Congreso (7–10 h), las transcribe a SRT, las parte en
+  trozos lógicos y sube los <em>momentos</em> más relevantes como vídeos largos independientes
+  (capítulos de 15–45 min, 1 por ejecución del DAG de subida). El flujo de <strong>shorts</strong>
+  (Reap) es un pipeline hermano y <strong>queda fuera</strong> de este plan.
+</p>
+<p>
+  La pieza central es la cadena: <code>split_srt_by_silence → summarize → identify_interesting_chapters → merge → score_chapters_relevance → VAD trim → save → uploadable_chapters → youtube_upload_dag</code>.
+</p>
+
+<h2 id="hardware">2. Hardware donde se procesa (NAS)</h2>
+<div class="card">
+  <table>
+    <tr><th>Recurso</th><th>Valor detectado</th><th>Implicación para el plan</th></tr>
+    <tr><td>Modelo</td><td>Synology DS923+ (x86_64)</td><td>Puede correr Docker/Airflow y ffmpeg</td></tr>
+    <tr><td>CPU</td><td>AMD Ryzen Embedded R1600 — 2 núcleos / 4 hilos</td><td><span class="badge b-red">CRÍTICO</span> CPU limitada: re-encode ffmpeg caro; evitar trabajo pesado local</td></tr>
+    <tr><td>RAM</td><td>31 GiB total · ~19 GiB disponible</td><td>Holgada para Airflow + Postgres + app ligera</td></tr>
+    <tr><td>Disco</td><td>18 TB en <code>/volume1</code> (2,3 T usados)</td><td>Espacio sobrado para vídeo/SRT/thumbnails</td></tr>
+    <tr><td>GPU</td><td><span class="cross">✗ No hay</span> (sin <code>/dev/dri</code>, sin NVIDIA)</td><td><strong>Nada de diarización/WhisperX local en ruta crítica a escala de sesión entera.</strong> Una diarización acústica <em>por trozos cortos</em> (1–3 min, solo donde hay multi-voz) sí es viable en CPU — ver Fase 5. El LLM es API externa, no consume GPU local.</td></tr>
+    <tr><td>Carga actual</td><td>load avg 14,4 (2 schedulers Airflow + GitHub Actions runner + dockerd + app uvicorn :8000)</td><td>Ya está sobrecargado: paralelizar de forma acotada, no saturar con ffmpeg simultáneos</td></tr>
+  </table>
+</div>
+<p class="small muted">
+  Fuente: <code>ssh nas</code> → <code>lscpu / free -h / df -h / ps aux / ss</code> (2026-08-03).
+  La carga alta sugiere acotar el <em>concurrency</em> de las fases de corte y revisar el runner de GH Actions
+  si interfiere con el scheduler.
+</p>
+
+<h2 id="hoy">3. Cómo funciona hoy</h2>
+<p>Cadena real en producción (con rutas):</p>
+<table>
+  <tr><th>#</th><th>Paso</th><th>Qué hace</th><th>Ruta</th></tr>
+  <tr><td>1</td><td>Descarga audio por trozos</td><td>Baja el audio en bloques fijos para no saturar memoria</td><td><code>utils/youtube_downloader.py</code> (<code>download_audio_in_chunks</code>)</td></tr>
+  <tr><td>2</td><td>Pre-troceo por silencios</td><td>Parte el SRT por huecos ≥15 s (adaptativo), chunks de 10–20 min</td><td><code>download.py</code> (<code>split_srt_by_silence</code>) · orquestado en <code>youtube_channel_monitor_dag.py</code> (t5e)</td></tr>
+  <tr><td>3</td><td>Resumen de cada trozo</td><td>LLM extrae oradores, temas y timeline; <strong>paralelo</strong> por dynamic task mapping</td><td><code>download.py</code> (<code>summarize_one_chunk</code>, <code>regroup_summarized_chunks</code>) · t5f_map</td></tr>
+  <tr><td>4</td><td>Identificación semántica de capítulos</td><td>LLM agrupa por coherencia temática; ventanas de 15–45 min; map-reduce si SRT &gt;100k chars</td><td><code>download.py:1297</code> (<code>identify_interesting_chapters</code>) · <code>map_reduce_chapters.py</code> · t6</td></tr>
+  <tr><td>5</td><td>Merge + dedup</td><td>Une capítulos de todos los trozos y elimina solapes &gt;50 %</td><td><code>download.py:1601</code> (<code>merge_interesting_chapters</code>, <code>_dedup_overlapping_chapters</code>) · t7</td></tr>
+  <tr><td>6</td><td>Scoring de relevancia</td><td>LLM puntúa 0–5 (orador 0-2 + tema 0-2 + interés 0-1), con cache idempotente</td><td><code>youtube_ai.py:430</code> (<code>score_chapters_relevance</code>) · <code>utils/llm_cache.py</code> · t8</td></tr>
+  <tr><td>7</td><td>VAD trim</td><td>Recorta silencio en ambos bordes del capítulo con VAD (best-effort)</td><td><code>trim_chapter_silence_with_vad</code> · t_trim</td></tr>
+  <tr><td>8</td><td>Persistencia + normalización</td><td>Guarda capítulos en <code>video_chapters</code> y normaliza oradores</td><td>t9_db · <code>postgres_operators.py</code> · <code>speaker_normalization.py</code></td></tr>
+  <tr><td>9</td><td>Selección para subida</td><td>Vista <code>uploadable_chapters</code>: <code>relevance_score ≥ 2</code> (dev) / ≥ 4 (prod), no subidos, sin abandonar</td><td><code>sql/youtube_chapters_schema.sql:111</code> · <code>production_schema.sql:127</code> · <code>database.py:723</code></td></tr>
+  <tr><td>10</td><td>Subida larga</td><td>Sube <strong>1 capítulo por run</strong> (orden: sesión reciente → score desc)</td><td><code>youtube_upload_dag.py</code> (<code>congress_youtube_chapter_uploader</code>)</td></tr>
+</table>
+
+<h2 id="resuelto">4. Qué ya está resuelto (estado del código, 2026-08)</h2>
+<div class="card ok">
+  <p>El documento <code>CHUNKING_AUDIT_AND_IMPROVEMENTS.md</code> apunta varios problemas cuya causa raíz
+  <strong>ya está implementada</strong> en la rama actual. No re-abrirlos:</p>
+  <ul>
+    <li><span class="check">✔</span> <strong>Ceguera por truncado a 20k</strong> → eliminada: map-reduce por ventanas de 80k chars con solape 12 % cuando el SRT supera <code>LARGE_SRT_THRESHOLD=100_000</code> (<code>map_reduce_chapters.py</code>).</li>
+    <li><span class="check">✔</span> <strong>Idempotencia OpenAI</strong> → cache por hash en <code>utils/llm_cache.py</code> (<code>cached_json_completion</code>) en scoring e identificación.</li>
+    <li><span class="check">✔</span> <strong>Explosión de XCom</strong> → chunks por ruta de archivo (<code>srt_file_path</code>), payloads pequeños.</li>
+    <li><span class="check">✔</span> <strong>Fallback determinista</strong> → si el LLM devuelve vacío, capítulo de trozo completo (<code>_build_fallback_chunk_entry</code>).</li>
+    <li><span class="check">✔</span> <strong>Rangos start≥end</strong> → validación con <code>_validate_chapter_ranges</code> y descarte.</li>
+    <li><span class="check">✔</span> <strong>Dedup de solapes</strong> → <code>_dedup_overlapping_chapters</code> + resolución de costuras en el reduce.</li>
+    <li><span class="check">✔</span> <strong>Resumen en serie</strong> → paralelizado con dynamic task mapping.</li>
+    <li><span class="check">✔</span> <strong>Codec AV1</strong> → detección previa y re-encode cuando toca (<code>utils/codec_detection.py</code>).</li>
+    <li><span class="check">✔</span> <strong>Silencio de arranque/cierre</strong> → VAD trim en ambos bordes.</li>
+  </ul>
+</div>
+
+<h2 id="problemas">5. Problemas restantes</h2>
+
+<h3>CRÍTICOS (impactan directamente la calidad del "momento" elegido)</h3>
+<div class="card danger">
+  <ul>
+    <li><span class="cross">✗</span> <strong>No hay selección fina del momento dentro del capítulo para largos.</strong>
+      El pre-trim IA (<code>select_pretrim_window</code>, <code>srt_helpers.py:208</code>) solo se usa en el flujo de
+      shorts (Reap). Un capítulo de 30 min se sube <em>entero</em>; el "momento" que el LLM marcó como interesante
+      (a menudo 60–120 s) no se recorta ni se prioriza dentro del vídeo. <em>Este es el gap principal.</em></li>
+    <li><span class="cross">✗</span> <strong>Umbral de relevancia incoherente entre esquemas:</strong> dev ≥ 2,
+      prod ≥ 4, y el default de <code>get_uploadable_chapters</code> es 4. La misma cola se comporta distinto
+      según el entorno; no hay configuración central del umbral por DAG.</li>
+    <li><span class="cross">✗</span> <strong>Sin feedback loop:</strong> el score 0–5 se calcula una vez y nunca se
+      corrige con datos reales de YouTube (CTR, retención, vistas). Un capítulo con score 4 que fracasa sigue
+      "calificando" igual en la siguiente sesión; los criterios de orador/tema/interés no se calibran.</li>
+    <li><span class="cross">✗</span> <strong>Sin diversidad de momentos:</strong> la subida es 1 por run y la vista
+      ordena por sesión reciente + score. Tres capítulos del mismo debate (mismo orador, mismo tema) se suben en
+      días consecutivos; no hay penalización por similitud ni por proximidad temporal.</li>
+  </ul>
+</div>
+
+<h3>IMPORTANTES</h3>
+<div class="card warn">
+  <ul>
+    <li><span class="cross">✗</span> <strong>Scoring por capítulo, no por ventana:</strong> la puntuación evalúa
+      título+descripción+oradores+temas del capítulo completo, no la intensidad del pico concreto (frase, tensión,
+      confrontación) que el timeline ya captura.</li>
+    <li><span class="cross">✗</span> <strong>Sin capa de curación humana / override:</strong> no hay forma de
+      aprobar, rechazar o ajustar la ventana de un momento antes de subirlo; si el LLM elige mal, se publica igual.</li>
+    <li><span class="cross">✗</span> <strong>1 por run sin cola priorizada visible:</strong> no hay cola/dashboard de
+      "próximos momentos a subir" ni manera de saltar uno.</li>
+    <li><span class="cross">✗</span> <strong>Fallback del scoring a 2/5 en error</strong> (score por defecto cuando
+      falla el LLM): un fallo puntual de la API degrada silenciosamente la prioridad del capítulo.</li>
+  </ul>
+</div>
+
+<h3>MENORES</h3>
+<div class="card">
+  <ul>
+    <li><span class="cross">✗</span> Nombres/temas hardcodeados en prompts (<code>ai_prompts.py</code>).</li>
+    <li><span class="cross">✗</span> Duplicidad de lógica de filtrado de duración entre <code>get_chapters_for_shorts</code> y la vista de capítulos largos.</li>
+    <li><span class="cross">✗</span> El NAS está sobrecargado (load 14,4): falta acotar concurrencia ffmpeg y revisar el runner de GH Actions.</li>
+  </ul>
+</div>
+
+<h2 id="plan">6. Plan propuesto (fases)</h2>
+
+<h3>Fase 0 — Quick wins <span class="badge b-green">ESFUERZO BAJO</span></h3>
+<div class="card">
+  <table>
+    <tr><th>#</th><th>Acción</th><th>Impacto</th><th>Dónde</th></tr>
+    <tr><td>0.1</td><td>Unificar umbral de relevancia en una constante de configuración por DAG (default único, ejemplo <code>min_relevance_score</code> ya presente en params) y alinear dev/prod a la misma política</td><td class="impact">Alto</td><td><code>youtube_upload_dag.py</code> params · vistas SQL · <code>database.py:723</code></td></tr>
+    <tr><td>0.2</td><td>Registrar el fallback de scoring como degradación explícita (no puntuar 2/5 en silencio) y excluir capítulos con <code>scoring_error</code> de la cola</td><td class="impact">Alto</td><td><code>youtube_ai.py:430</code> · vista uploadable</td></tr>
+    <tr><td>0.3</td><td>Columna <code>source_session</code> + distancia temporal entre capítulos del mismo vídeo en la vista, para que la subida no elija capítulos adyacentes en runs seguidos</td><td class="impact">Medio</td><td>SQL de la vista</td></tr>
+    <tr><td>0.4</td><td>Acotar concurrencia ffmpeg en el NAS (max_parallel=1–2) y medir si el runner de GH Actions interfiere con el scheduler</td><td class="impact">Medio</td><td>Config del monitor / docker-compose</td></tr>
+  </table>
+</div>
+
+<h3>Fase 1 — Selección fina del momento dentro del capítulo <span class="badge b-yellow">ESFUERZO MEDIO · MAYOR ROI</span></h3>
+<div class="card">
+  <p><strong>Idea.</strong> Reutilizar el patrón ya probado en shorts (<code>select_pretrim_window</code> con
+  resolución de timestamps desde el SRT) para que cada capítulo largo lleve una <em>ventana recomendada</em> de
+  inicio/fin (p. ej. 2–5 min) en el instante más intenso, sin re-encodear el vídeo fuente.</p>
+  <ol>
+    <li><strong>Extender <code>select_pretrim_window</code></strong> a capítulos largos con target configurable
+      (p. ej. 120–300 s) y guardarlo en columnas nuevas de <code>video_chapters</code>
+      (<code>moment_start_secs</code>, <code>moment_end_secs</code>, <code>moment_reasoning</code>).</li>
+    <li><strong>Corte de precisión en bordes</strong> (re-encode solo en los límites, <code>-ss</code> antes de <code>-i</code>
+      con recodificación localizada) para no cortar frases a media palabra — el resto con <code>-c copy</code>.</li>
+    <li><strong>Guardas:</strong> si la ventana no se resuelve (frase no encontrada, &lt;60 s), subir el capítulo
+      completo como hoy; nunca bloquear la cola.</li>
+    <li><strong>Marcar en el vídeo:</strong> usar el <code>timeline</code> ya existente para construir los capítulos
+      de YouTube internos del vídeo largo, de forma que el "momento" sea navegable.</li>
+  </ol>
+  <p class="small muted"><span class="badge b-blue">NOTA DE PRODUCTO</span> Aquí hay una decisión de producto clave:
+    ¿el canal quiere <em>capítulos completos</em> (15–45 min) o <em>momentos finos</em> (2–5 min)? La Fase 1 asume
+    capítulos largos con un marcado fino interno; si el objetivo es recortar a momentos cortos, cambia el target
+    de duración pero no el mecanismo.</p>
+</div>
+
+<h3>Fase 2 — Feedback loop con datos reales de YouTube <span class="badge b-yellow">ESFUERZO MEDIO</span></h3>
+<div class="card">
+  <ol>
+    <li><strong>Tabla de rendimiento</strong> por capítulo subido: vistas, CTR medio, retención a 30 s/60 s,
+      likes, watch-time; alimentada con la YouTube Analytics API en un DAG diario.</li>
+    <li><strong>Re-score ponderado:</strong> al generar el score de una sesión nueva, el prompt recibe una tabla de
+      "qué funcionó antes" (tipo de momento, orador, tema) para priorizar patrones con CTR alto.</li>
+    <li><strong>Historial de ventanas:</strong> guardar la ventana fina elegida y su rendimiento para refinar el
+      prompt de <code>select_pretrim_window</code> (longitud óptima empírica, no fija).</li>
+  </ol>
+</div>
+
+<h3>Fase 3 — Capa de curación / dashboard HTML <span class="badge b-purple">ESFUERZO MEDIO-ALTO</span></h3>
+<div class="card">
+  <p><strong>Idea.</strong> Un panel HTML (el "sistema de selección de momentos en HTML"): ver los momentos
+  candidatos de una sesión, reproducir el vídeo en el instante exacto, ajustar inicio/fin, aprobar/rechazar y
+  dejar que la subida espere a la decisión humana (gate opcional configurable).</p>
+  <ol>
+    <li><strong>Página de sesión:</strong> lista de capítulos con score, ventana fina recomendada, preview de
+      timeline y enlace al instante en el vídeo fuente (range-slider sobre <code>&lt;video&gt;</code>).</li>
+    <li><strong>Acciones:</strong> aprobar tal cual, ajustar ventana (persiste el cambio), rechazar
+      (marca <code>is_rejected</code>, excluye de la cola), posponer.</li>
+    <li><strong>Backend ligero:</strong> FastAPI/Flask en el NAS (ya hay una app uvicorn en :8000) que lea
+      Postgres y sirva el HTML; o un HTML estático + API de solo lectura con acciones vía DAG manual.</li>
+    <li><strong>Integración Airflow:</strong> el DAG de subida puede operar en modo
+      <code>auto</code> (sin gate) o <code>review</code> (espera a que el panel marque "aprobado").</li>
+  </ol>
+  <p class="small muted"><span class="badge b-blue">DECISIÓN</span> La Fase 3 es opcional si la confianza en el
+  scoring automático es alta; es imprescindible si querés control humano antes de publicar. También puede hacerse
+  como <em>reporte HTML</em> read-only primero (sin acciones) y evolucionar después.</p>
+</div>
+
+<h3>Fase 4 — Diversidad y ranking multi-criterio (v2) <span class="badge b-gray">ESFUERZO ALTO</span></h3>
+<div class="card">
+  <ul>
+    <li><strong>Penalización por similitud:</strong> deduplicar momentos del mismo orador/tema dentro de una
+      ventana temporal (MMR — Maximal Marginal Relevance sobre el timeline).</li>
+    <li><strong>Virality scorer específico para momentos:</strong> LLM-as-judge con rúbrica (confrontación, frase
+      memorable, tensión, alcance político) aplicado a la <em>ventana fina</em>, no al capítulo completo.</li>
+    <li><strong>Planificación de cola:</strong> en lugar de 1 por run ciego, priorizar por
+      score × diversidad × antigüedad y permitir "saltar al siguiente" desde el panel.</li>
+  </ul>
+</div>
+
+<h3>Fase 5 — Segmentación por turno de orador (híbrido texto + acústica, CPU, sin GPU) <span class="badge b-yellow">ESFUERZO MEDIO · NÚCLEO DE LA NUEVA UNIDAD</span></h3>
+<div class="card">
+  <p><strong>Objetivo.</strong> Partir la sesión en <em>intervenciones</em> (turnos de orador) para que cada
+  vídeo sea una intervención, no un capítulo por tema. Todo en CPU. <strong>Decisión de la sesión:</strong>
+  detección de turnos por texto para el grueso del pleno, con refuerzo acústico <em>solo</em> en el Q&amp;A
+  rápido, y nombres por parseo del anuncio del presidente — sin diarización con clustering ni GPU.</p>
+  <ol>
+    <li><strong>Marcadores de turno por texto (barato, ~90 % del pleno).</strong> Sobre el SRT: silencios
+      largos (reusa <code>split_srt_by_silence</code>) + frases-bisagra del presidente
+      (<code>"Tiene la palabra"</code>, <code>"Gracias, señoría"</code>, <code>"Silencio, por favor"</code>).
+      Cada bisagra marca un límite de turno candidato. Cero GPU.</li>
+    <li><strong>Refuerzo acústico solo en Q&amp;A rápido.</strong> En el ida y vuelta corto el presidente no
+      re-anuncia, así que se activa <code>whisper.cpp tinydiarize (-tdrz)</code> <em>solo</em> en esos tramos:
+      detecta <em>cambio de turno</em> ("cambió el orador"), sin clusterizar A/B/C ni pedir GPU. Se procesa en
+      cola para no disparar el load del NAS.</li>
+    <li><strong>Nombre por turno = parseo del anuncio.</strong> Para cada límite, mirar los ~15–30 s previos y
+      extraer el nombre que anuncia el presidente ("Tiene la palabra el/la señor/a diputado/a X"). El nombre
+      sale gratis del propio ASR — no hace falta voiceprint ni Diario de Sesiones. Fallback:
+      <code>orador_desconocido</code>.</li>
+    <li><strong>Unidad de vídeo (larga vs corta).</strong> Intervención <strong>larga (≥ 5 min)</strong> →
+      se corta por la intervención, un vídeo por intervención. Intervención <strong>corta</strong> → detectar
+      el patrón pregunta/respuesta (lo más común: bloque de preguntas de un diputado, seguido <em>contiguo</em>
+      del bloque de respuestas del ministro) y <strong>juntar ambos bloques</strong> en un vídeo. Al ser
+      contiguos es un rango <code>[start, end]</code> continuo → lo corta <code>split_video_chapter</code> tal
+      cual, <strong>sin concatenación</strong>. Los cambios de voz internos (diputado → ministro) <em>no</em>
+      cortan; corta solo el traspaso del presidente al siguiente interlocutor. Umbral configurable por DAG.</li>
+    <li><strong>Guardas:</strong> si no hay bisagra ni señal acústica clara, se degrada al comportamiento actual
+      (trozo por silencio = un turno); nunca bloquea el pipeline.</li>
+    <li><strong>Salida:</strong> columnas de turno (<code>speaker_label</code>, <code>speaker_name</code>,
+      <code>turn_start_secs</code>, <code>turn_end_secs</code>, <code>merged_topic_id</code>) consumibles por el
+      scoring, el corte fino (Fase 1) y el panel HTML (Fase 3).</li>
+  </ol>
+  <p class="small muted"><span class="badge b-red">DESCARTADO ESTA ITERACIÓN</span> Diarización acústica
+    <em>completa</em> con clustering A/B/C sobre la sesión entera (pyannote/DiariZen): inviable en el R1600 sin
+    GPU y ya en load 14. Se reserva como mejora futura si aparece GPU. El coste real se concentra en el paso 2, y
+    está acotado a los tramos de Q&amp;A.</p>
+</div>
+
+<h2 id="arquitectura">7. Arquitectura objetivo</h2>
+<pre>
+[YouTube] → descarga por trozos (igual que hoy)
+     │
+     ▼
+[SRT completo] ──► disco; XCom solo con ruta (ya así)
+     │
+     ▼
+┌──────────────────────────────────────────────────────────────┐
+│  SEGMENTACIÓN SEMÁNTICA (ya implementada)                    │
+│  · map-reduce si SRT > 100k chars (80k chars / solape 12%)   │
+│  · cache idempotente · fallback determinista · dedup         │
+└──────────────────────────────────────────────────────────────┘
+     │
+     ▼
+[Merge] → [Scoring 0-5 (F0: sin fallback silencioso)] → [VAD trim]
+     │
+     ▼
+[TURNOS DE ORADOR (Fase 5)]  ← híbrido texto + acústica, CPU
+     │   · texto: silencio + frases del presidente (~90%)
+     │   · acústica: tinydiarize turn-change SOLO en Q&A rápido
+     │   · nombre: parseo del anuncio del presidente (sin GPU)
+     │   · unidad: larga(≥5min)→1 vídeo; corta Q&A→junta preguntas+respuestas (contiguo, sin concat)
+     ▼
+[VENTANA FINA DEL MOMENTO (Fase 1)]  ← select_pretrim_window largo
+     │  moment_start/end + reasoning (columnas nuevas)
+     ▼
+[video_chapters + turnos] → [uploadable (umbral único, F0)]
+     │
+     ├──► [Fase 3: Panel HTML — ver / ajustar / aprobar / rechazar]
+     │        (gate opcional en el DAG de subida)
+     ▼
+[Subida larga 1 por run] → [YouTube Analytics (Fase 2) → re-score]
+</pre>
+
+<h2 id="metricas">8. Métricas de éxito</h2>
+<div class="card">
+  <table>
+    <tr><th>Métrica</th><th>Hoy (estimado)</th><th>Objetivo</th><th>Fase</th></tr>
+    <tr><td>% de vídeos subidos que superan retención a 30 s &gt; 60 %</td><td class="num">desconocido</td><td class="num">≥ 70 %</td><td>1 + 2</td></tr>
+    <tr><td>CTR medio del canal</td><td class="num">desconocido</td><td class="num">+15 % relativo</td><td>2</td></tr>
+    <tr><td>Tiempo medio de watch-time por capítulo</td><td class="num">desconocido</td><td class="num">+20 %</td><td>1 + 2</td></tr>
+    <tr><td>Momentos rechazados en el panel antes de publicar</td><td class="num">0 (sin panel)</td><td class="num">—</td><td>3</td></tr>
+    <tr><td>Capítulos con <code>scoring_error</code> en cola</td><td class="num">posiblemente varios</td><td class="num">0</td><td>0</td></tr>
+    <tr><td>% sesiones con cobertura de turnos de orador (diarización)</td><td class="num">0 %</td><td class="num">≥ 80 % de los trozos multi-voz</td><td>5</td></tr>
+  </table>
+  <p class="small muted">Nota: no hay datos de referencia hoy; la Fase 2 (analytics) es la que permite medir todo lo demás.</p>
+</div>
+
+<h2 id="decisiones">9. Decisiones abiertas y riesgos</h2>
+<div class="card warn">
+  <h3>Decisiones de producto</h3>
+  <ol>
+    <li><strong><s>¿Capítulos completos o momentos finos?</s> DECIDIDO (2026-08-03):</strong> la unidad es la
+      <em>intervención</em>. Larga (≥ 5 min) → un vídeo por intervención; corta con patrón pregunta/respuesta →
+      se juntan ambos bloques (contiguos) en un vídeo. Ver "Enfoque decidido" y Fase 5.</li>
+    <li><strong>¿Gate humano obligatorio?</strong> La Fase 3 puede ser reporte read-only o panel con aprobación; si no querés revisar nada, se reduce a Fases 0–2.</li>
+    <li><strong>¿Analytics API de YouTube disponible?</strong> Requiere OAuth del canal y permiso de la cuenta; si no hay acceso, la Fase 2 se acota a datos del propio YouTube Data API (vistas/likes).</li>
+  </ol>
+  <h3>Riesgos</h3>
+  <ol>
+    <li><strong>Coste LLM:</strong> map-reduce ya multiplica llamadas (~2×); añadir ventana fina + re-score añade ~1 llamada por capítulo. Acotar con cache (ya existe) y umbral de score antes de llamar.</li>
+    <li><strong>CPU del NAS:</strong> re-encode localizado en bordes puede ser lento en el R1600; limitar a 1–2 procesos y hacer el corte fino solo en la ventana, no en todo el capítulo.</li>
+    <li><strong>Deriva de keyframe:</strong> el corte fino debe re-encode solo los bordes; dejar documentado el trade-off.</li>
+    <li><strong>Cambio de comportamiento de la cola:</strong> cualquier cambio en umbral/diversidad altera qué se sube y cuándo; hacerlo configurable por DAG y reversible.</li>
+  </ol>
+</div>
+
+<div class="footer">
+  Generado como propuesta a partir de exploración del repo (<code>airflow-dags</code>, rama
+  <code>feat/chapter-uploader-generic-thumbnail</code>) y del NAS (DS923+) — 2026-08-03.
+  Documento hermano: <code>congress_videos/CHUNKING_AUDIT_AND_IMPROVEMENTS.md</code> (causa raíz de troceado,
+  ya en su mayoría implementada).
+</div>
+
+</body>
+</html>
