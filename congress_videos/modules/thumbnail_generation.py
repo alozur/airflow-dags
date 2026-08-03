@@ -77,6 +77,62 @@ _ART_BRIEF_REQUIRED_KEYS = ("text", "background", "person", "mood")
 # ---------------------------------------------------------------------------
 
 
+def art_direct(debate_summary: str, domain_cfg: dict) -> dict:
+    """Generate an art-direction brief for a Pikzels thumbnail via OpenAI.
+
+    Re-prompts once when the response is incomplete, then returns a safe
+    fallback brief. This callable must never prevent the thumbnail DAG from
+    continuing.
+    """
+
+    def _call_api(extra_instruction: str = "") -> Optional[dict]:
+        user_prompt = ART_DIRECTION_USER_PROMPT_TEMPLATE.format(
+            debate_summary=debate_summary
+        )
+        if extra_instruction:
+            user_prompt += f"\n\nINSTRUCCIÓN ADICIONAL: {extra_instruction}"
+        try:
+            result = generate_json_completion(
+                system_prompt=ART_DIRECTION_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                model="gpt-4o-mini",
+                max_tokens=400,
+            )
+        except Exception as exc:
+            logger.warning("art_direct: generate_json_completion raised: %s", exc)
+            return None
+
+        if result.get("error"):
+            logger.warning("art_direct: API error: %s", result["error"])
+            return None
+
+        data = result.get("data") or {}
+        if not all(key in data for key in _ART_BRIEF_REQUIRED_KEYS):
+            return None
+        return data
+
+    brief = _call_api()
+    if brief is None:
+        brief = _call_api(
+            extra_instruction=(
+                "Asegúrate de devolver un JSON con EXACTAMENTE los campos: "
+                "text, background, person, mood."
+            )
+        )
+
+    if brief is None:
+        logger.warning(
+            "art_direct: both OpenAI attempts failed — using _DEFAULT_ART_BRIEF"
+        )
+        brief = dict(_DEFAULT_ART_BRIEF)
+
+    brief.setdefault("logo", "")
+    return {
+        key: value.replace("http", "") if isinstance(value, str) else value
+        for key, value in brief.items()
+    }
+
+
 def resolve_participant_photo(slug: str, cfg: dict) -> dict:
     """Resolve the support image for a participant using DB lookup then HTTP download.
 

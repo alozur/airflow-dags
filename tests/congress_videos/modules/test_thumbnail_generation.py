@@ -306,7 +306,19 @@ class TestChooseBestOption:
 
 
 # ---------------------------------------------------------------------------
-# T-03: generate_title
+# T-03: art_direct export
+# ---------------------------------------------------------------------------
+
+
+def test_art_direct_is_publicly_importable():
+    """The generic thumbnail DAG must be able to import its art-direction callable."""
+    from congress_videos.modules.thumbnail_generation import art_direct
+
+    assert callable(art_direct)
+
+
+# ---------------------------------------------------------------------------
+# T-04: generate_title
 # ---------------------------------------------------------------------------
 
 class TestGenerateTitle:

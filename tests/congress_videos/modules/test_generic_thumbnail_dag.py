@@ -113,6 +113,19 @@ EXPECTED_TASK_IDS = {
 }
 
 
+def test_art_direction_task_delegates_to_art_direct(mocker) -> None:
+    """The DAG task wrapper supplies its run context to art_direct."""
+    dag_mod = importlib.import_module("congress_videos.generic_thumbnail_generator_dag")
+    ti = _make_fake_ti({"validate_input": _FAKE_CONF})
+    domain_cfg = {"styles": []}
+
+    mocker.patch.object(dag_mod, "get_domain_config", return_value=domain_cfg)
+    art_direct = mocker.patch.object(dag_mod, "art_direct", return_value={"text": "BRIEF"})
+
+    assert dag_mod._task_art_direction(ti) == {"text": "BRIEF"}
+    art_direct.assert_called_once_with(_FAKE_CONF["debate_summary"], domain_cfg)
+
+
 class TestDagTaskIds:
     """T-03: DAG must contain exactly the expected task IDs — no more, no fewer."""
 
