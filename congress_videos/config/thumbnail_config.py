@@ -31,30 +31,17 @@ def _get_thumbnail_config() -> dict:
 
     return {
         "congreso": {
-            # Visual styles / personas for Pikzels thumbnail generation.
-            # Exactly 2 entries — one per generated option.
+            # Visual styles for Pikzels thumbnail generation.
+            # Each entry maps a label to a Pikzels Template layout (A, B, or C).
+            # Exactly 2 entries — one per generated option for A/B testing.
             "styles": [
                 {
                     "label": "option_a",
-                    "style": (
-                        "Dramatic political documentary style. High-contrast lighting. "
-                        "Spanish parliament chamber background. Bold typography overlay."
-                    ),
-                    "persona": (
-                        "Senior political journalist covering the Spanish Congress. "
-                        "Authoritative, serious, newsroom aesthetic."
-                    ),
+                    "layout": "A",
                 },
                 {
                     "label": "option_b",
-                    "style": (
-                        "Modern editorial news style. Clean, professional composition. "
-                        "Gradient overlay with official Spanish flag colours."
-                    ),
-                    "persona": (
-                        "Digital-native political correspondent. "
-                        "Dynamic, impactful, social-media-ready framing."
-                    ),
+                    "layout": "B",
                 },
             ],
             # Callable that resolves a participant by exact stable slug.

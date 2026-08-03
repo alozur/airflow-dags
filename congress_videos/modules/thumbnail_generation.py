@@ -23,9 +23,12 @@ from typing import Optional
 import requests
 
 from congress_videos.config.ai_prompts import (
+    ART_DIRECTION_SYSTEM_PROMPT,
+    ART_DIRECTION_USER_PROMPT_TEMPLATE,
     THUMBNAIL_TITLE_SYSTEM_PROMPT,
     THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE,
 )
+from congress_videos.config.constants import CONGRESO_BROWSER_USER_AGENT
 from utils.ai_helpers import generate_json_completion
 from utils.postgres_helpers import PostgresConnection
 
@@ -49,6 +52,25 @@ _EMOJI_RE = re.compile(
 
 TITLE_MAX_CHARS = 90
 
+# Sentinel returned when no photo source is available (tolerant mode — no raise).
+EMPTY_RESULT: dict = {"support_image_b64": "", "source": "none"}
+
+# Fallback art-direction brief used when both OpenAI attempts fail.
+# Background must never reference hemiciclo or parliamentary chamber.
+_DEFAULT_ART_BRIEF: dict = {
+    "background": (
+        "una calle española con gente caminando, luz de tarde, tono documental"
+    ),
+    "person": (
+        "un ciudadano español de mediana edad, expresión seria y preocupada, ropa casual"
+    ),
+    "text": "LO QUE NO TE CUENTAN",
+    "mood": "tensión y curiosidad",
+    "logo": "",
+}
+
+_ART_BRIEF_REQUIRED_KEYS = ("text", "background", "person", "mood")
+
 
 # ---------------------------------------------------------------------------
 # Public interface
@@ -59,24 +81,30 @@ def resolve_participant_photo(slug: str, cfg: dict) -> dict:
     """Resolve the support image for a participant using DB lookup then HTTP download.
 
     Resolution order:
-    1. Look up participant via ``cfg["participants_lookup"]``.
+    0. If ``slug`` is absent, empty, or whitespace, return EMPTY_RESULT (WARNING logged).
+    1. Look up participant via ``cfg["participants_lookup"]`` by slug.
+       If not found, return EMPTY_RESULT (WARNING logged).
     2. If ``photo_url`` is non-null, perform HTTP GET and return raw bytes.
-       If the GET returns non-200, treat as undownloadable and fall through.
+       If the GET returns non-200 or raises, return EMPTY_RESULT (WARNING logged).
     3. If photo unavailable and ``cfg["party_logo_map"]`` is set, read logo file.
-    4. If neither source is available, raise ``ValueError``.
+    4. If neither source is available, return EMPTY_RESULT (WARNING logged).
 
     Args:
         slug: Stable participant slug to look up.
         cfg: Per-domain config dict from ``THUMBNAIL_CONFIG``.
 
     Returns:
-        Dict with keys ``support_image_b64`` (base64-encoded image bytes as str)
-        and ``source`` (``"photo"`` or ``"party_logo"``).
-
-    Raises:
-        LookupError: If the participant is not found in the database.
-        ValueError: If the participant has no photo URL and no party logo is configured.
+        Dict with keys ``support_image_b64`` (base64-encoded image bytes as str,
+        empty string when no source found) and ``source``
+        (``"photo"``, ``"party_logo"``, or ``"none"``).
     """
+    # Guard: absent / blank slug — skip lookup entirely.
+    if not slug or not str(slug).strip():
+        logger.warning(
+            "resolve_participant_photo: slug is absent or blank — returning empty result"
+        )
+        return EMPTY_RESULT
+
     lookup_fn = cfg["participants_lookup"]
     participant = lookup_fn(slug)
 
@@ -87,7 +115,11 @@ def resolve_participant_photo(slug: str, cfg: dict) -> dict:
 
     if photo_url:
         try:
-            response = requests.get(photo_url, timeout=30)
+            response = requests.get(
+                photo_url,
+                timeout=30,
+                headers={"User-Agent": CONGRESO_BROWSER_USER_AGENT},
+            )
             if response.status_code == 200:
                 image_bytes = response.content
                 return {
@@ -120,6 +152,7 @@ def resolve_participant_photo(slug: str, cfg: dict) -> dict:
         f"no photo source available for participant {slug!r}: "
         "photo_url is absent/undownloadable and no party_logo_map configured"
     )
+    return EMPTY_RESULT
 
 
 def choose_best_option(options: list[dict]) -> dict:
