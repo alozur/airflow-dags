@@ -110,6 +110,7 @@ EXPECTED_TASK_IDS = {
     "choose_best_option",
     "generate_title",
     "persist_results",
+    "thumbnail_result",
 }
 
 
@@ -197,6 +198,9 @@ class TestDagDependencies:
     def test_persist_results_upstream_is_generate_title(self) -> None:
         assert self._upstream_ids("persist_results") == {"generate_title"}
 
+    def test_thumbnail_result_upstream_is_persist_results(self) -> None:
+        assert self._upstream_ids("thumbnail_result") == {"persist_results"}
+
 
 # ---------------------------------------------------------------------------
 # T-05  No Congreso-specific string literals in DAG source
@@ -278,20 +282,22 @@ class TestValidateInput:
         with pytest.raises(ValueError, match=empty_key):
             self.mod.validate_input(conf)
 
-    def test_conf_without_slug_is_accepted(self) -> None:
-        """slug is optional — conf without it must not raise."""
+    def test_conf_without_slug_raises_value_error(self) -> None:
+        """slug is required by the cross-DAG generation contract."""
         conf = {k: v for k, v in VALID_CONF.items() if k != "slug"}
-        self.mod.validate_input(conf)  # must not raise
+        with pytest.raises(ValueError, match="slug"):
+            self.mod.validate_input(conf)
 
     def test_conf_with_slug_is_accepted(self) -> None:
         """conf that includes slug= is accepted normally."""
         conf = {**VALID_CONF, "slug": "garcia-lopez-maria"}
         self.mod.validate_input(conf)  # must not raise
 
-    def test_conf_with_empty_slug_is_accepted(self) -> None:
-        """conf with slug='' is accepted (slug is optional, tolerant lookup handles it)."""
+    def test_conf_with_empty_slug_raises_value_error(self) -> None:
+        """An empty participant slug is invalid for a triggered generation."""
         conf = {**VALID_CONF, "slug": ""}
-        self.mod.validate_input(conf)  # must not raise
+        with pytest.raises(ValueError, match="slug"):
+            self.mod.validate_input(conf)
 
     def test_no_normalized_name_key_in_required_keys(self) -> None:
         """'normalized_name' must NOT appear in _REQUIRED_CONF_KEYS."""
@@ -385,6 +391,31 @@ def _make_fake_ti(xcom_map: dict) -> MagicMock:
 
     ti.xcom_pull.side_effect = _pull
     return ti
+
+
+# ---------------------------------------------------------------------------
+# Cross-DAG result contract
+# ---------------------------------------------------------------------------
+
+
+class TestTaskThumbnailResult:
+    def test_returns_uploadable_result_after_persistence(self) -> None:
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "choose_best_option": {"local_path": "/thumbnails/42/option_a.png"},
+                "generate_title": "A title for upload",
+            }
+        )
+
+        assert dag_mod._task_thumbnail_result(ti) == {
+            "chapter_id": 42,
+            "success": True,
+            "output_path": "/thumbnails/42/option_a.png",
+            "title": "A title for upload",
+        }
 
 
 # ---------------------------------------------------------------------------

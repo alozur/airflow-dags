@@ -439,129 +439,116 @@ class TestPrepareThumbnailConfig:
 
 
 # ---------------------------------------------------------------------------
-# _generate_thumbnail
+# trigger_thumbnail_generation
 # ---------------------------------------------------------------------------
 
-class TestGenerateThumbnail:
+class TestTriggerThumbnailGeneration:
+    THUMBNAIL_CONFIG = {
+        "chapter_id": 42,
+        "slug": "garcia-ana",
+        "domain": "congreso",
+        "debate_summary": "Un debate importante sobre el presupuesto",
+        "session": "Sesión 80",
+    }
 
-    def _make_thumbnail_config(self, slug="garcia-ana", chapter_id=42):
-        return {
-            "chapter_id": chapter_id,
-            "slug": slug,
-            "domain": "congreso",
-            "debate_summary": "Un debate importante sobre el presupuesto",
-            "session": "Sesión 80",
+    def _successful_child_run(self) -> MagicMock:
+        child_run = MagicMock()
+        child_run.run_id = "chapter_thumbnail_test_run"
+        child_run.state = "success"
+        return child_run
+
+    def test_passes_complete_chapter_contract_to_generic_dag(self, mocker) -> None:
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        child_run = self._successful_child_run()
+        trigger = mocker.patch(
+            "congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.XCom.get_one",
+            return_value={
+                "chapter_id": 42,
+                "success": True,
+                "output_path": "/thumbnails/42/option_a.png",
+                "title": "Generated title",
+            },
+        )
+
+        trigger_thumbnail_generation(_make_ti({"thumbnail_config": self.THUMBNAIL_CONFIG}), run_id="test_run")
+
+        trigger.assert_called_once_with(
+            dag_id="generic_thumbnail_generator",
+            conf={"youtube_video_id": "42", **self.THUMBNAIL_CONFIG},
+            run_id="chapter_thumbnail_test_run",
+        )
+
+    def test_retrieves_result_by_child_dag_and_exact_triggered_run_id(self, mocker) -> None:
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        child_run = self._successful_child_run()
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run)
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        get_one = mocker.patch(
+            "congress_videos.youtube_upload_dag.XCom.get_one",
+            return_value={
+                "chapter_id": 42,
+                "success": True,
+                "output_path": "/thumbnails/42/option_a.png",
+                "title": "Generated title",
+            },
+        )
+        ti = _make_ti({"thumbnail_config": self.THUMBNAIL_CONFIG})
+
+        result = trigger_thumbnail_generation(ti, run_id="test_run")
+
+        assert result == child_run.run_id
+        assert ti.xcom_store["thumbnail_dag_run_id"] == child_run.run_id
+        assert ti.xcom_store["thumbnail_result"]["title"] == "Generated title"
+        get_one.assert_called_once_with(
+            dag_id="generic_thumbnail_generator",
+            task_id="thumbnail_result",
+            key="return_value",
+            run_id=child_run.run_id,
+        )
+
+    def test_child_failure_uses_no_custom_thumbnail_fallback(self, mocker) -> None:
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        child_run = self._successful_child_run()
+        child_run.state = "failed"
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run)
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        get_one = mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one")
+        ti = _make_ti({"thumbnail_config": self.THUMBNAIL_CONFIG})
+
+        trigger_thumbnail_generation(ti, run_id="test_run")
+
+        assert ti.xcom_store["thumbnail_result"] == {
+            "chapter_id": 42,
+            "success": False,
+            "output_path": None,
+            "title": None,
         }
+        get_one.assert_not_called()
 
-    def test_happy_path_returns_success_with_path_and_title(self, mocker):
-        """Happy path: pikzels + thumbnail_generation mocked → success result."""
-        from congress_videos.youtube_upload_dag import _generate_thumbnail
+    def test_missing_result_uses_no_custom_thumbnail_fallback(self, mocker) -> None:
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
 
-        thumb_cfg = self._make_thumbnail_config()
+        child_run = self._successful_child_run()
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run)
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=None)
+        ti = _make_ti({"thumbnail_config": self.THUMBNAIL_CONFIG})
 
-        mock_domain_cfg = {"styles": [
-            {"label": "option_a", "style": "s1", "persona": "p1"},
-            {"label": "option_b", "style": "s2", "persona": "p2"},
-        ], "participants_lookup": MagicMock(return_value={"photo_url": None}), "party_logo_map": None}
+        trigger_thumbnail_generation(ti, run_id="test_run")
 
-        mocker.patch(
-            "congress_videos.youtube_upload_dag.get_domain_config",
-            return_value=mock_domain_cfg,
-        )
-        photo_resolver = mocker.patch(
-            "congress_videos.youtube_upload_dag.resolve_participant_photo",
-            return_value={"support_image_b64": "base64data", "source": "photo"},
-        )
-        mock_gen = mocker.patch(
-            "congress_videos.youtube_upload_dag.thumbnail_from_text",
-            side_effect=[
-                {"output": "http://pikzels.com/a.png", "label": "option_a", "style": "s1",
-                 "persona": "p1", "prompt": "prompt"},
-                {"output": "http://pikzels.com/b.png", "label": "option_b", "style": "s2",
-                 "persona": "p2", "prompt": "prompt"},
-            ],
-        )
-        mock_download = mocker.patch(
-            "congress_videos.youtube_upload_dag.pkz_download",
-            return_value=None,
-        )
-        mocker.patch(
-            "congress_videos.youtube_upload_dag.to_base64_data_url",
-            return_value="data:image/png;base64,abc",
-        )
-        mocker.patch(
-            "congress_videos.youtube_upload_dag.score_thumbnail",
-            side_effect=[
-                {"main_score": 0.8},
-                {"main_score": 0.6},
-            ],
-        )
-        mocker.patch(
-            "congress_videos.youtube_upload_dag.generate_title",
-            return_value="AI Generated Title",
-        )
-        mocker.patch("congress_videos.youtube_upload_dag.persist_results", return_value=None)
-        mocker.patch("pathlib.Path.read_bytes", return_value=b"imgbytes")
-        mocker.patch("pathlib.Path.mkdir", return_value=None)
-
-        result = _generate_thumbnail(thumb_cfg, chapter_id=42)
-
-        assert result["success"] is True
-        assert result["output_path"] is not None
-        assert result["title"] == "AI Generated Title"
-        photo_resolver.assert_called_once_with("garcia-ana", mock_domain_cfg)
-
-    def test_missing_slug_returns_failure_without_api_calls(self, mocker):
-        """When slug is None, skip Pikzels/OpenAI and return failure struct."""
-        from congress_videos.youtube_upload_dag import _generate_thumbnail
-
-        thumb_cfg = self._make_thumbnail_config(slug=None)
-
-        mock_pikzels = mocker.patch(
-            "congress_videos.youtube_upload_dag.thumbnail_from_text",
-        )
-        mock_resolve = mocker.patch(
-            "congress_videos.youtube_upload_dag.resolve_participant_photo",
-        )
-
-        result = _generate_thumbnail(thumb_cfg, chapter_id=42)
-
-        assert result["success"] is False
-        assert result["output_path"] is None
-        assert result["title"] is None
-        mock_pikzels.assert_not_called()
-        mock_resolve.assert_not_called()
-
-    def test_pikzels_error_returns_failure_without_raising(self, mocker):
-        """Non-retryable Pikzels error → failure struct, no exception propagates."""
-        from congress_videos.youtube_upload_dag import _generate_thumbnail
-
-        thumb_cfg = self._make_thumbnail_config(slug="garcia-ana")
-
-        mock_domain_cfg = {"styles": [
-            {"label": "option_a", "style": "s1", "persona": "p1"},
-            {"label": "option_b", "style": "s2", "persona": "p2"},
-        ], "participants_lookup": MagicMock(), "party_logo_map": None}
-
-        mocker.patch(
-            "congress_videos.youtube_upload_dag.get_domain_config",
-            return_value=mock_domain_cfg,
-        )
-        mocker.patch(
-            "congress_videos.youtube_upload_dag.resolve_participant_photo",
-            return_value={"support_image_b64": "b64", "source": "photo"},
-        )
-        mocker.patch(
-            "congress_videos.youtube_upload_dag.thumbnail_from_text",
-            side_effect=ValueError("Pikzels API error"),
-        )
-        mocker.patch("pathlib.Path.mkdir", return_value=None)
-
-        result = _generate_thumbnail(thumb_cfg, chapter_id=42)
-
-        assert result["success"] is False
-        assert result["output_path"] is None
-        assert result["title"] is None
+        assert ti.xcom_store["thumbnail_result"] == {
+            "chapter_id": 42,
+            "success": False,
+            "output_path": None,
+            "title": None,
+        }
 
 
 # ---------------------------------------------------------------------------

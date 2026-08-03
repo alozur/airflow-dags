@@ -20,28 +20,16 @@ as standalone YouTube videos.
 
 import logging
 import os
-import pathlib
+import time
 from datetime import datetime, timedelta
 
 from airflow import DAG
+from airflow.models import XCom
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
-from congress_videos.config.thumbnail_config import get_domain_config
-from congress_videos.modules.thumbnail_generation import (
-    resolve_participant_photo,
-    generate_title,
-    persist_results,
-)
 from congress_videos.modules.participants_db import lookup_participant_fuzzy
-from congress_videos.modules.pikzels_client import (
-    thumbnail_from_text,
-    score_thumbnail,
-    download as pkz_download,
-    to_base64_data_url,
-)
-from congress_videos.config.paths import get_thumbnail_dir
 from utils.airflow_helpers import ensure_project_data_directory, xcom_task
 from utils.env_loader import load_env_if_local
 
@@ -57,6 +45,8 @@ IS_DEVELOPMENT = POSTGRES_SCHEMA == 'development'
 # 14:00: skip if queue_size <= 20 (REQ-THRESH-02)
 # 17:00: skip if queue_size < 1  (REQ-THRESH-03)
 THRESHOLD_BY_HOUR = {11: 10, 14: 20, 17: 0}
+_THUMBNAIL_DAG_ID = "generic_thumbnail_generator"
+_THUMBNAIL_RESULT_TASK_ID = "thumbnail_result"
 
 
 def should_upload(**context):
@@ -160,140 +150,74 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
     }
 
 
-def _generate_thumbnail(thumbnail_config: dict, chapter_id: int) -> dict:
-    """Run the full Pikzels + OpenAI thumbnail pipeline for a single chapter.
+def _thumbnail_failure(chapter_id: int | None) -> dict:
+    return {"chapter_id": chapter_id, "success": False, "output_path": None, "title": None}
 
-    Sequentially generates options A and B, downloads them, scores each,
-    chooses the best, generates an AI title, and persists both rows to
-    ``video_thumbnails`` with ``youtube_video_id=NULL`` (back-filled post-upload).
 
-    Returns ``{success: False, output_path: None, title: None}`` on any error
-    or when ``slug`` is ``None`` — the DAG run continues unaffected.
-
-    Args:
-        thumbnail_config: Dict from ``_prepare_thumbnail_config``.
-        chapter_id: Chapter DB identifier.
-
-    Returns:
-        Dict with keys: chapter_id, success, output_path, title.
-    """
-    _FAILURE = {"chapter_id": chapter_id, "success": False, "output_path": None, "title": None}
-
-    slug = thumbnail_config.get("slug")
-    if slug is None:
+def trigger_thumbnail_generation(ti, **context) -> str | None:
+    """Run the generic thumbnail DAG and retain its result for upload configuration."""
+    thumbnail_config = ti.xcom_pull(key="thumbnail_config") or {}
+    chapter_id = thumbnail_config.get("chapter_id")
+    required_values = ("chapter_id", "debate_summary", "session", "domain", "slug")
+    if not all(thumbnail_config.get(key) for key in required_values):
         logging.info(
-            "_generate_thumbnail: slug is None for chapter_id=%s — skipping",
+            "Thumbnail input incomplete for chapter_id=%s; uploading without custom thumbnail",
             chapter_id,
         )
-        return _FAILURE
+        ti.xcom_push(key="thumbnail_result", value=_thumbnail_failure(chapter_id))
+        return None
 
-    domain = thumbnail_config.get("domain", "congreso")
-    debate_summary = thumbnail_config.get("debate_summary", "")
-
+    child_conf = {
+        "youtube_video_id": str(chapter_id),
+        **{key: thumbnail_config[key] for key in required_values},
+    }
     try:
-        domain_cfg = get_domain_config(domain)
-        styles = domain_cfg["styles"]
-
-        # Resolve participant photo (base64)
-        photo_data = resolve_participant_photo(slug, domain_cfg)
-        support_b64 = photo_data.get("support_image_b64", "")
-        support_data_url = (
-            f"data:image/jpeg;base64,{support_b64}" if support_b64 else None
+        dag_run = trigger_dag_api(
+            dag_id=_THUMBNAIL_DAG_ID,
+            conf=child_conf,
+            run_id=f"chapter_thumbnail_{context['run_id']}",
         )
-
-        # Prepare thumbnail output directory (use chapter_id as stable pre-upload key)
-        thumb_dir = get_thumbnail_dir(str(chapter_id))
-        pathlib.Path(str(thumb_dir)).mkdir(parents=True, exist_ok=True)
-
-        options = []
-        for style_cfg in styles:
-            label = style_cfg["label"]
-            try:
-                gen_result = thumbnail_from_text(
-                    debate_summary,
-                    persona=style_cfg.get("persona"),
-                    style=style_cfg.get("style"),
-                    support_image_base64=support_data_url,
-                )
-                gen_result["label"] = label
-                gen_result["style"] = style_cfg.get("style", "")
-                gen_result["persona"] = style_cfg.get("persona", "")
-                gen_result["prompt"] = debate_summary
-
-                output_url = gen_result.get("output") or gen_result.get("output_url", "")
-                local_path = pathlib.Path(str(thumb_dir)) / f"{label}.png"
-
-                try:
-                    pkz_download(output_url, str(local_path))
-                except Exception as dl_exc:
-                    logging.warning(
-                        "_generate_thumbnail: download failed for %s/%s: %s — skipping option",
-                        chapter_id, label, dl_exc,
-                    )
-                    continue
-
-                image_bytes = local_path.read_bytes()
-                image_b64 = to_base64_data_url(image_bytes, "image/png")
-                score_result = score_thumbnail(image_base64=image_b64)
-                main_score = score_result.get("main_score", 0.0)
-
-                options.append({
-                    "label": label,
-                    "local_path": str(local_path),
-                    "output_url": output_url,
-                    "style": gen_result.get("style", ""),
-                    "persona": gen_result.get("persona", ""),
-                    "prompt": debate_summary,
-                    "main_score": main_score,
-                })
-            except Exception as opt_exc:
-                logging.warning(
-                    "_generate_thumbnail: option %s failed for chapter_id=%s: %s",
-                    label, chapter_id, opt_exc,
-                )
-                raise  # Re-raise so outer try catches and returns failure
-
-        if not options:
-            logging.warning(
-                "_generate_thumbnail: no valid options for chapter_id=%s", chapter_id
-            )
-            return _FAILURE
-
-        # Choose best option (highest score)
-        best = max(options, key=lambda o: o.get("main_score", 0.0))
-        best_label = best["label"]
-
-        # Generate AI title
-        title = generate_title(debate_summary, best, domain_cfg)
-
-        # Persist both rows with youtube_video_id=NULL (back-filled after upload)
-        persist_results(
-            chapter_id=chapter_id,
-            youtube_video_id="",
-            title=title,
-            options=options,
-            best_label=best_label,
-        )
-
-        logging.info(
-            "_generate_thumbnail: chapter_id=%s → best=%s score=%.3f title=%r",
-            chapter_id, best_label, best.get("main_score", 0.0), title,
-        )
-
-        return {
-            "chapter_id": chapter_id,
-            "success": True,
-            "output_path": best["local_path"],
-            "title": title,
-        }
-
     except Exception as exc:
-        logging.warning(
-            "_generate_thumbnail: pipeline failed for chapter_id=%s: %s — "
-            "returning failure result; upload will proceed without thumbnail",
-            chapter_id, exc,
+        logging.warning("Could not trigger thumbnail DAG for chapter_id=%s: %s", chapter_id, exc)
+        ti.xcom_push(key="thumbnail_result", value=_thumbnail_failure(chapter_id))
+        return None
+
+    child_run_id = dag_run.run_id
+    ti.xcom_push(key="thumbnail_dag_run_id", value=child_run_id)
+    logging.info("Triggered thumbnail DAG run: %s", child_run_id)
+
+    while True:
+        time.sleep(10)
+        dag_run.refresh_from_db()
+        if dag_run.state not in ["success", "failed"]:
+            continue
+
+        if dag_run.state != "success":
+            logging.warning("Thumbnail DAG run %s failed", child_run_id)
+            ti.xcom_push(key="thumbnail_result", value=_thumbnail_failure(chapter_id))
+            return child_run_id
+
+        result = XCom.get_one(
+            dag_id=_THUMBNAIL_DAG_ID,
+            task_id=_THUMBNAIL_RESULT_TASK_ID,
+            key="return_value",
+            run_id=child_run_id,
         )
-        return _FAILURE
+        if not (
+            isinstance(result, dict)
+            and result.get("success") is True
+            and result.get("chapter_id") == chapter_id
+            and isinstance(result.get("output_path"), str)
+            and result["output_path"]
+            and isinstance(result.get("title"), str)
+            and result["title"]
+        ):
+            logging.warning("Thumbnail DAG run %s returned no valid result", child_run_id)
+            ti.xcom_push(key="thumbnail_result", value=_thumbnail_failure(chapter_id))
+            return child_run_id
+
+        ti.xcom_push(key="thumbnail_result", value=result)
+        return child_run_id
 
 
 def _backfill_thumbnail_video_id(ti, db=None) -> None:
@@ -428,11 +352,8 @@ with DAG(
         ti.xcom_push(key='thumbnail_config', value=result)
 
     def _run_generate_thumbnail(ti):
-        """Execute the full Pikzels + OpenAI thumbnail pipeline for the chapter."""
-        thumb_cfg = ti.xcom_pull(key='thumbnail_config') or {}
-        chapter_id = thumb_cfg.get('chapter_id')
-        result = _generate_thumbnail(thumb_cfg, chapter_id=chapter_id)
-        ti.xcom_push(key='thumbnail_result', value=result)
+        """Trigger the generic thumbnail DAG and retain its completed result."""
+        return trigger_thumbnail_generation(ti, run_id=ti.run_id)
 
     def _extract_chapter_videos(ti):
         from congress_videos.modules import video_splitter
@@ -474,7 +395,7 @@ with DAG(
         python_callable=_run_prepare_thumbnail_config,
     )
 
-    # Step 4 (new): Generate thumbnail via Pikzels + score + title + persist
+    # Step 4 (new): Generate thumbnail via the generic thumbnail DAG
     t4_generate = PythonOperator(
         task_id='generate_thumbnail',
         python_callable=_run_generate_thumbnail,

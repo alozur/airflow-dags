@@ -18,8 +18,8 @@ Usage::
         "slug": "<participant_slug>"
     }'
 
-Note: ``slug`` is optional. When absent or empty, the photo-resolution task
-returns an empty result and the DAG proceeds without a support image.
+The participant ``slug`` is required so every triggered run has a complete,
+validated chapter contract.
 
 Pipeline overview::
 
@@ -30,7 +30,8 @@ Pipeline overview::
           → generate_thumbnail_option_b → download_option_b → score_option_b
                                                               → choose_best_option
                                                                 → generate_title
-                                                                  → persist_results
+                                                                 → persist_results
+                                                                   → thumbnail_result
 """
 
 from __future__ import annotations
@@ -220,6 +221,19 @@ def _task_persist_results(ti: TaskInstance, **context: object) -> None:
     )
 
 
+def _task_thumbnail_result(ti: TaskInstance, **context: object) -> dict:
+    """Expose the persisted generation result to the DAG that triggered this run."""
+    conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
+    best: dict = ti.xcom_pull(task_ids="choose_best_option") or {}
+    title: str = ti.xcom_pull(task_ids="generate_title") or ""
+    return {
+        "chapter_id": int(conf["chapter_id"]),
+        "success": True,
+        "output_path": best.get("local_path"),
+        "title": title,
+    }
+
+
 # ---------------------------------------------------------------------------
 # DAG definition
 # ---------------------------------------------------------------------------
@@ -313,6 +327,11 @@ with DAG(
         python_callable=_task_persist_results,
     )
 
+    t_result = PythonOperator(
+        task_id="thumbnail_result",
+        python_callable=_task_thumbnail_result,
+    )
+
     # Task dependency graph:
     #   validate_input
     #     → resolve_participant_photo
@@ -321,8 +340,8 @@ with DAG(
     #         → generate_thumbnail_option_b → download_option_b → score_option_b
     #                                                             → choose_best_option
     #                                                               → generate_title
-    #                                                                 → persist_results
+    #                                                                 → persist_results → thumbnail_result
     t_validate >> t_resolve_photo >> t_art_direction
     t_art_direction >> t_gen_a >> t_dl_a >> t_score_a
     t_art_direction >> t_gen_b >> t_dl_b >> t_score_b
-    [t_score_a, t_score_b] >> t_choose >> t_title >> t_persist
+    [t_score_a, t_score_b] >> t_choose >> t_title >> t_persist >> t_result
