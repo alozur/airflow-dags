@@ -44,7 +44,7 @@ def _get_thumbnail_config() -> dict:
                     "layout": "B",
                 },
             ],
-            # Callable that resolves a participant by slug: exact, case-sensitive match.
+            # Callable that resolves a participant by exact stable slug.
             # Signature: (slug: str) -> dict | None
             "participants_lookup": lookup_participant_by_slug,
             # Optional absolute path to a fallback party logo image.

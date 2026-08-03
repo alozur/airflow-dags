@@ -367,7 +367,7 @@ def _make_chapter(
 class TestPrepareThumbnailConfig:
 
     def test_resolved_speaker_returns_full_config(self):
-        """Happy path: chapter with key_speakers produces full config dict."""
+        """Raw speaker is resolved once at the boundary and stored as a slug."""
         from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
 
         chapter = _make_chapter(
@@ -379,16 +379,21 @@ class TestPrepareThumbnailConfig:
         )
         mock_db = MagicMock()
 
-        result = _prepare_thumbnail_config(chapter, mock_db)
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "garcia-ana"},
+        ) as lookup:
+            result = _prepare_thumbnail_config(chapter, mock_db)
 
-        assert result["normalized_name"] == "Ana García"
+        assert result["slug"] == "garcia-ana"
+        lookup.assert_called_once_with("Ana García")
         assert result["domain"] == "congreso"
         assert result["debate_summary"] != ""
         assert result["session"] is not None
         assert result["chapter_id"] == 42
 
-    def test_lookup_error_sets_normalized_name_to_none(self):
-        """LookupError from speaker lookup yields normalized_name=None without raise."""
+    def test_lookup_error_sets_slug_to_none(self):
+        """A speaker lookup failure yields slug=None without raising."""
         from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
 
         chapter = _make_chapter(
@@ -398,23 +403,39 @@ class TestPrepareThumbnailConfig:
         # The function catches LookupError from the name resolution path.
         # We patch the internal lookup call.
         with patch(
-            "congress_videos.youtube_upload_dag._resolve_speaker_name",
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
             side_effect=LookupError("not found"),
         ):
             result = _prepare_thumbnail_config(chapter, MagicMock())
 
-        assert result["normalized_name"] is None
+        assert result["slug"] is None
         assert result["domain"] == "congreso"
 
-    def test_empty_speakers_sets_normalized_name_to_none(self):
-        """Chapter with empty key_speakers and speakers produces normalized_name=None."""
+    def test_unmatched_speaker_sets_slug_to_none(self):
+        """An unmatched raw speaker is nonfatal and leaves the slug unset."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_chapter(key_speakers=[{"name": "Unknown Speaker"}])
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value=None,
+        ) as lookup:
+            result = _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert result["slug"] is None
+        lookup.assert_called_once_with("Unknown Speaker")
+
+    def test_empty_speakers_sets_slug_to_none(self):
+        """Chapter with no speaker produces slug=None without fuzzy lookup."""
         from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
 
         chapter = _make_chapter(key_speakers=[], speakers=[])
 
-        result = _prepare_thumbnail_config(chapter, MagicMock())
+        with patch("congress_videos.youtube_upload_dag.lookup_participant_fuzzy") as lookup:
+            result = _prepare_thumbnail_config(chapter, MagicMock())
 
-        assert result["normalized_name"] is None
+        assert result["slug"] is None
+        lookup.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -423,10 +444,10 @@ class TestPrepareThumbnailConfig:
 
 class TestGenerateThumbnail:
 
-    def _make_thumbnail_config(self, normalized_name="Ana García", chapter_id=42):
+    def _make_thumbnail_config(self, slug="garcia-ana", chapter_id=42):
         return {
             "chapter_id": chapter_id,
-            "normalized_name": normalized_name,
+            "slug": slug,
             "domain": "congreso",
             "debate_summary": "Un debate importante sobre el presupuesto",
             "session": "Sesión 80",
@@ -447,7 +468,7 @@ class TestGenerateThumbnail:
             "congress_videos.youtube_upload_dag.get_domain_config",
             return_value=mock_domain_cfg,
         )
-        mocker.patch(
+        photo_resolver = mocker.patch(
             "congress_videos.youtube_upload_dag.resolve_participant_photo",
             return_value={"support_image_b64": "base64data", "source": "photo"},
         )
@@ -488,12 +509,13 @@ class TestGenerateThumbnail:
         assert result["success"] is True
         assert result["output_path"] is not None
         assert result["title"] == "AI Generated Title"
+        photo_resolver.assert_called_once_with("garcia-ana", mock_domain_cfg)
 
-    def test_normalized_name_none_returns_failure_without_api_calls(self, mocker):
-        """When normalized_name is None, skip Pikzels/OpenAI and return failure struct."""
+    def test_missing_slug_returns_failure_without_api_calls(self, mocker):
+        """When slug is None, skip Pikzels/OpenAI and return failure struct."""
         from congress_videos.youtube_upload_dag import _generate_thumbnail
 
-        thumb_cfg = self._make_thumbnail_config(normalized_name=None)
+        thumb_cfg = self._make_thumbnail_config(slug=None)
 
         mock_pikzels = mocker.patch(
             "congress_videos.youtube_upload_dag.thumbnail_from_text",
@@ -514,7 +536,7 @@ class TestGenerateThumbnail:
         """Non-retryable Pikzels error → failure struct, no exception propagates."""
         from congress_videos.youtube_upload_dag import _generate_thumbnail
 
-        thumb_cfg = self._make_thumbnail_config(normalized_name="Ana García")
+        thumb_cfg = self._make_thumbnail_config(slug="garcia-ana")
 
         mock_domain_cfg = {"styles": [
             {"label": "option_a", "style": "s1", "persona": "p1"},

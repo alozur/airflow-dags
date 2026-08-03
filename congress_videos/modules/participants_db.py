@@ -164,9 +164,18 @@ def lookup_participant(name: str) -> dict | None:
 
 
 def lookup_participant_by_slug(slug: str) -> dict | None:
-    """Look up a participant by slug: exact, case-sensitive match on the UNIQUE slug column."""
+    """Look up a participant by its exact stable slug.
+
+    This lookup deliberately does not normalize or fuzz-match the identifier.
+
+    Args:
+        slug: Participant's stable slug.
+
+    Returns:
+        Row dict if an exact slug match is found, None otherwise.
+    """
     rows = _get_participants_for_lookup()
-    return next((r for r in rows if r["slug"] == slug), None)
+    return next((row for row in rows if row.get("slug") == slug), None)
 
 
 def lookup_participant_fuzzy(

@@ -34,6 +34,7 @@ from congress_videos.modules.thumbnail_generation import (
     generate_title,
     persist_results,
 )
+from congress_videos.modules.participants_db import lookup_participant_fuzzy
 from congress_videos.modules.pikzels_client import (
     thumbnail_from_text,
     score_thumbnail,
@@ -106,17 +107,17 @@ def _resolve_speaker_name(chapter: dict) -> str | None:
 def _prepare_thumbnail_config(chapter: dict, db) -> dict:
     """Build the thumbnail-generation config dict for a single chapter.
 
-    Resolves the normalized speaker name and assembles the six fields
+    Resolves the raw speaker at the boundary and stores the participant slug
+    before assembling the fields
     expected by the generic thumbnail pipeline.
 
     Args:
         chapter: Chapter row from the uploadable_chapters view.
-        db: CongressionalVideoDB instance (unused for name resolution
-            but kept in signature for future participant-lookup extension).
+        db: CongressionalVideoDB instance (kept for task-call compatibility).
 
     Returns:
         Dict with keys: chapter_id, debate_summary, domain, session,
-        normalized_name (may be None on fallback).
+        slug (may be None on fallback).
     """
     chapter_id = chapter.get("chapter_id")
     title = chapter.get("chapter_title", "")
@@ -135,24 +136,27 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
     else:
         session = str(session_date) if session_date else None
 
-    # Resolve normalized_name; fall back gracefully on any error
+    # Fuzzy matching is confined to this raw-speaker boundary. Downstream
+    # thumbnail code receives only the stable participant slug.
     try:
-        normalized_name = _resolve_speaker_name(chapter)
-    except (LookupError, ValueError) as exc:
+        raw_speaker = _resolve_speaker_name(chapter)
+        participant = lookup_participant_fuzzy(raw_speaker) if raw_speaker else None
+        slug = participant.get("slug") if participant else None
+    except Exception as exc:
         logging.warning(
             "_prepare_thumbnail_config: speaker resolution failed for "
-            "chapter_id=%s: %s — setting normalized_name=None",
+            "chapter_id=%s: %s — setting slug=None",
             chapter_id,
             exc,
         )
-        normalized_name = None
+        slug = None
 
     return {
         "chapter_id": chapter_id,
         "debate_summary": debate_summary,
         "domain": "congreso",
         "session": session,
-        "normalized_name": normalized_name,
+        "slug": slug,
     }
 
 
@@ -164,7 +168,7 @@ def _generate_thumbnail(thumbnail_config: dict, chapter_id: int) -> dict:
     ``video_thumbnails`` with ``youtube_video_id=NULL`` (back-filled post-upload).
 
     Returns ``{success: False, output_path: None, title: None}`` on any error
-    or when ``normalized_name`` is ``None`` — the DAG run continues unaffected.
+    or when ``slug`` is ``None`` — the DAG run continues unaffected.
 
     Args:
         thumbnail_config: Dict from ``_prepare_thumbnail_config``.
@@ -175,10 +179,10 @@ def _generate_thumbnail(thumbnail_config: dict, chapter_id: int) -> dict:
     """
     _FAILURE = {"chapter_id": chapter_id, "success": False, "output_path": None, "title": None}
 
-    normalized_name = thumbnail_config.get("normalized_name")
-    if normalized_name is None:
+    slug = thumbnail_config.get("slug")
+    if slug is None:
         logging.info(
-            "_generate_thumbnail: normalized_name is None for chapter_id=%s — skipping",
+            "_generate_thumbnail: slug is None for chapter_id=%s — skipping",
             chapter_id,
         )
         return _FAILURE
@@ -191,7 +195,7 @@ def _generate_thumbnail(thumbnail_config: dict, chapter_id: int) -> dict:
         styles = domain_cfg["styles"]
 
         # Resolve participant photo (base64)
-        photo_data = resolve_participant_photo(normalized_name, domain_cfg)
+        photo_data = resolve_participant_photo(slug, domain_cfg)
         support_b64 = photo_data.get("support_image_b64", "")
         support_data_url = (
             f"data:image/jpeg;base64,{support_b64}" if support_b64 else None

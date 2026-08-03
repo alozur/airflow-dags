@@ -64,6 +64,7 @@ _REQUIRED_CONF_KEYS = (
     "debate_summary",
     "session",
     "domain",
+    "slug",
 )
 
 # ---------------------------------------------------------------------------
@@ -112,14 +113,7 @@ def _task_resolve_photo(ti: TaskInstance, **context: object) -> dict:
     """Resolve participant photo to base64 support image."""
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
     domain_cfg = get_domain_config(conf["domain"])
-    return resolve_participant_photo(conf.get("slug"), domain_cfg)
-
-
-def _task_art_direction(ti: TaskInstance, **context: object) -> dict:
-    """Generate an art-direction brief via OpenAI for both thumbnail options."""
-    conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
-    domain_cfg = get_domain_config(conf["domain"])
-    return art_direct(conf["debate_summary"], domain_cfg)
+    return resolve_participant_photo(conf["slug"], domain_cfg)
 
 
 def _task_generate_thumbnail(label: str, ti: TaskInstance, **context: object) -> dict:

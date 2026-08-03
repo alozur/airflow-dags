@@ -247,7 +247,7 @@ class TestValidateInput:
         self.mod = importlib.import_module("congress_videos.generic_thumbnail_generator_dag")
 
     def test_valid_conf_does_not_raise(self) -> None:
-        """5 required keys present → no exception."""
+        """All required keys, including the participant slug, are accepted."""
         # Call the underlying function directly (not via Airflow trigger).
         self.mod.validate_input(VALID_CONF)
 
@@ -349,7 +349,7 @@ _FAKE_STYLES = [
 
 _FAKE_DOMAIN_CFG = {
     "styles": _FAKE_STYLES,
-    "participants_lookup": lambda name: None,
+    "participants_lookup": lambda slug: None,
     "party_logo_map": None,
 }
 
