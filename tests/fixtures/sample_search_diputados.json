@@ -1,0 +1,29 @@
+{
+  "data": [
+    {
+      "codParlamentario": 160,
+      "apellidosNombre": "Abades Martínez, Cristina",
+      "nombre": "Cristina",
+      "apellidos": "Abades Martínez",
+      "formacion": "PSOE",
+      "nombreCircunscripcion": "Madrid"
+    },
+    {
+      "codParlamentario": 317,
+      "apellidosNombre": "Abascal Conde, Santiago",
+      "nombre": "Santiago",
+      "apellidos": "Abascal Conde",
+      "formacion": "VOX",
+      "nombreCircunscripcion": "Madrid"
+    },
+    {
+      "apellidosNombre": "Sin Código, Diputado",
+      "nombre": "Diputado",
+      "formacion": "MixtoTest"
+    },
+    {
+      "codParlamentario": 69,
+      "formacion": "SinNombreTest"
+    }
+  ]
+}

@@ -12,6 +12,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 CHAPTER_UPLOAD_ABANDON_THRESHOLD = 3  # 3rd recorded failure excludes the chapter
+SHORTS_UPLOAD_ABANDON_THRESHOLD = 3   # 3rd recorded failure excludes the short
 
 class CongressionalVideoDB:
     """Database operations for congressional video management"""
@@ -286,6 +287,35 @@ class CongressionalVideoDB:
                     WHERE entry_id = %s
                 """, (thumbnail_text, thumbnail_path, video_topic_entry_id))
                 logger.info(f"Updated thumbnail info for video topic {video_topic_entry_id}")
+
+    def update_thumbnail_youtube_video_id(
+        self, chapter_id: int, youtube_video_id: str
+    ) -> None:
+        """Back-fill the youtube_video_id for a chapter's thumbnail row after upload.
+
+        Called after the YouTube upload completes to associate the real video ID
+        with the pre-generated thumbnail persisted in ``video_thumbnails``.
+
+        Args:
+            chapter_id: FK to ``video_chapters.chapter_id``.
+            youtube_video_id: The YouTube video ID returned by the upload task.
+        """
+        thumbnails_table = self.pg_conn.get_qualified_table("video_thumbnails")
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {thumbnails_table}
+                    SET youtube_video_id = %s
+                    WHERE chapter_id = %s
+                    """,
+                    (youtube_video_id, chapter_id),
+                )
+        logger.info(
+            "update_thumbnail_youtube_video_id: chapter_id=%d -> youtube_video_id=%r",
+            chapter_id,
+            youtube_video_id,
+        )
 
     def get_interventions_by_main_topic(self, main_topic_entry_id: str) -> List[Dict]:
         """Get all interventions for a specific main topic"""
@@ -1094,6 +1124,7 @@ class CongressionalVideoDB:
                 cur.execute(f"""
                     SELECT vs.* FROM {shorts_table} vs
                     WHERE vs.is_uploaded = FALSE
+                      AND vs.is_upload_abandoned = FALSE
                       AND vs.local_file_path IS NOT NULL
                       AND vs.reap_status = 'downloaded'
                       AND (vs.reap_virality_score >= %s OR vs.reap_virality_score IS NULL)
@@ -1140,6 +1171,43 @@ class CongressionalVideoDB:
                 logger.info(
                     f"Marked short clip {reap_clip_id} as uploaded to YouTube: {youtube_video_id}"
                 )
+
+    def record_short_upload_failure(self, reap_clip_id: str, error_message: str | None = None) -> None:
+        """
+        Record a failed per-short YouTube upload attempt.
+
+        Increments the cumulative failure counter and, once it reaches
+        SHORTS_UPLOAD_ABANDON_THRESHOLD (3), marks the short abandoned so it is
+        excluded from get_pending_shorts. The row is never deleted; the counter is
+        cumulative for the life of the row and never resets or un-abandons.
+
+        Args:
+            reap_clip_id: Unique Reap clip identifier (used as the row lookup key).
+            error_message: Optional last error text from the upload result payload.
+        """
+        shorts_table = self.pg_conn.get_qualified_table('video_shorts')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    UPDATE {shorts_table} SET
+                        upload_attempts = upload_attempts + 1,
+                        last_upload_error = %s,
+                        is_upload_abandoned = (upload_attempts + 1 >= {SHORTS_UPLOAD_ABANDON_THRESHOLD}),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE reap_clip_id = %s
+                    RETURNING upload_attempts, is_upload_abandoned
+                """, (error_message, reap_clip_id))
+                result = cur.fetchone()
+                logger.info(
+                    f"Recorded upload failure for short clip {reap_clip_id} "
+                    f"(threshold={SHORTS_UPLOAD_ABANDON_THRESHOLD})"
+                )
+                if result and result.get('upload_attempts') == SHORTS_UPLOAD_ABANDON_THRESHOLD:
+                    logger.warning(
+                        f"Short clip {reap_clip_id} abandoned after "
+                        f"{SHORTS_UPLOAD_ABANDON_THRESHOLD} failed uploads"
+                    )
 
     def _count_records(self, table_or_view: str, where_clause: str = "", params: tuple = ()) -> int:
         table = self.pg_conn.get_qualified_table(table_or_view)
@@ -1204,10 +1272,92 @@ class CongressionalVideoDB:
                 row = cur.fetchone()
                 return dict(row) if row else None
 
-    def get_processed_video_ids(self, video_ids: list[str]) -> set[str]:
+    def record_source_integrity_failure(
+        self, video_id: str, retry_after_hours: int = 12
+    ) -> None:
+        """Early-upsert an integrity failure for a source video.
+
+        Sets ``download_retry_after = NOW() + retry_after_hours`` so the video is
+        excluded from ``filter_unprocessed_videos`` until the VOD has had time to
+        finalise on YouTube.
+
+        Rules:
+        - ``is_processed`` is intentionally NOT in the DO UPDATE SET clause so a
+          row that was already marked ``is_processed = TRUE`` never regresses to FALSE.
+        - ``GREATEST(...)`` ensures ``download_retry_after`` only ever advances forward;
+          a second call with a *smaller* window does not decrease an existing future
+          timestamp.
+        - On INSERT the row starts with ``is_processed = FALSE`` and the computed
+          retry timestamp.
+
+        Args:
+            video_id: YouTube video ID.
+            retry_after_hours: Hours to defer re-download (default 12).
         """
-        Return the subset of video_ids already fully processed
-        (is_processed = TRUE) in youtube_source_videos.
+        tbl = self.pg_conn.get_qualified_table('youtube_source_videos')
+        video_url = f'https://www.youtube.com/watch?v={video_id}'
+
+        with closing(self.pg_conn.get_connection()) as conn:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        INSERT INTO {tbl} (video_id, video_url, is_processed, download_retry_after)
+                        VALUES (%s, %s, FALSE, NOW() + (%s || ' hours')::interval)
+                        ON CONFLICT (video_id) DO UPDATE SET
+                            download_retry_after = GREATEST(
+                                {tbl}.download_retry_after,
+                                EXCLUDED.download_retry_after),
+                            updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (video_id, video_url, str(retry_after_hours)),
+                    )
+
+    def update_chapter_speakers(
+        self,
+        chapter_id: int,
+        speakers: list,
+        key_speakers: list,
+        timeline: list,
+    ) -> None:
+        """Overwrite the speakers, key_speakers and timeline JSONB for a chapter.
+
+        Called by normalize_chapter_speakers after confirmed AI matches have been
+        applied to all three fields.
+
+        Args:
+            chapter_id: PK of the video_chapters row to update.
+            speakers: Updated list of speaker display names.
+            key_speakers: Updated list of key speaker display names.
+            timeline: Updated list of timeline dicts (each has 'speaker' field).
+        """
+        chapters_table = self.pg_conn.get_qualified_table("video_chapters")
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {chapters_table}
+                    SET speakers = %s,
+                        key_speakers = %s,
+                        timeline = %s::jsonb,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE chapter_id = %s
+                    """,
+                    (speakers, key_speakers, json.dumps(timeline), chapter_id),
+                )
+                logger.info(
+                    "update_chapter_speakers: updated chapter %d "
+                    "(%d speakers, %d key_speakers, %d timeline entries)",
+                    chapter_id, len(speakers), len(key_speakers), len(timeline),
+                )
+
+    def get_processed_video_ids(self, video_ids: list[str]) -> set[str]:
+        """Return the subset of video_ids that should be skipped for download.
+
+        A video is skipped when EITHER:
+        - ``is_processed = TRUE`` (already fully processed), OR
+        - ``download_retry_after > NOW()`` (deferred within the integrity retry window).
 
         Cheap pre-download idempotency check. Empty input -> empty set
         (no query executed). Read-only; raises on DB error (fail-closed).
@@ -1223,7 +1373,8 @@ class CongressionalVideoDB:
                     f"""
                     SELECT video_id
                     FROM {youtube_videos_table}
-                    WHERE video_id = ANY(%s) AND is_processed = TRUE
+                    WHERE video_id = ANY(%s)
+                      AND (is_processed = TRUE OR download_retry_after > NOW())
                     """,
                     (video_ids,),
                 )

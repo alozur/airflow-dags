@@ -196,6 +196,11 @@ OPENAI_API_KEY=sk-...
 YOUTUBE_API_KEY=AIza...
 
 # ─────────────────────────────────────────
+# PIKZELS — Thumbnail generation API
+# ─────────────────────────────────────────
+PIKZELS_API_KEY=pkz_...
+
+# ─────────────────────────────────────────
 # POSTGRESQL — Base de datos de proyecto
 # ─────────────────────────────────────────
 POSTGRES_HOST=postgres_shared

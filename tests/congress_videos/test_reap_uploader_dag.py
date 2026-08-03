@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 
@@ -18,12 +20,13 @@ class TestReapShortsUploaderDAGLoads:
 
     def test_dag_has_correct_task_count(self):
         from congress_videos.reap_shorts_uploader_dag import dag
-        # Tasks: get_pending_shorts, generate_metadata, trigger_youtube_upload, mark_shorts_uploaded
-        assert len(dag.tasks) == 4
+        # Tasks: get_pending_shorts, generate_metadata, trigger_youtube_upload,
+        # mark_shorts_uploaded, check_short_upload_failures
+        assert len(dag.tasks) == 5
 
     def test_dag_schedule(self):
         from congress_videos.reap_shorts_uploader_dag import dag
-        assert dag.schedule == '0 8,10,13,15,18,20,22 * * *'
+        assert dag.schedule_interval == '0 8,10,13,15,18,20,22 * * *'
 
     def test_dag_correct_task_ids(self):
         from congress_videos.reap_shorts_uploader_dag import dag
@@ -32,6 +35,7 @@ class TestReapShortsUploaderDAGLoads:
         assert "generate_metadata" in task_ids
         assert "trigger_youtube_upload" in task_ids
         assert "mark_shorts_uploaded" in task_ids
+        assert "check_short_upload_failures" in task_ids
 
     def test_dag_correct_dependency_chain(self):
         from congress_videos.reap_shorts_uploader_dag import dag
@@ -40,10 +44,12 @@ class TestReapShortsUploaderDAGLoads:
         t2 = tasks_by_id["generate_metadata"]
         t3 = tasks_by_id["trigger_youtube_upload"]
         t4 = tasks_by_id["mark_shorts_uploaded"]
+        t5 = tasks_by_id["check_short_upload_failures"]
 
         assert t2.task_id in {t.task_id for t in t1.downstream_list}
         assert t3.task_id in {t.task_id for t in t2.downstream_list}
         assert t4.task_id in {t.task_id for t in t3.downstream_list}
+        assert t5.task_id in {t.task_id for t in t4.downstream_list}
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +226,55 @@ class TestMarkShortsUploaded:
 
         ti = _make_ti({})
         _mark_shorts_uploaded(ti, params={})
+
+    def test_failed_upload_calls_record_short_upload_failure(self, mocker):
+        from congress_videos.reap_shorts_uploader_dag import _mark_shorts_uploaded
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+
+        upload_results = {
+            "upload_details": [
+                {
+                    "reap_clip_id": "c-fail",
+                    "youtube_video_id": None,
+                    "success": False,
+                    "error": "Upload failed",
+                }
+            ]
+        }
+
+        ti = _make_ti({"upload_results": upload_results})
+        _mark_shorts_uploaded(ti, params={})
+
+        mock_db.record_short_upload_failure.assert_called_once_with("c-fail", "Upload failed")
+        mock_db.mark_short_uploaded.assert_not_called()
+
+    def test_failed_upload_missing_reap_clip_id_warns_and_skips(self, mocker, caplog):
+        from congress_videos.reap_shorts_uploader_dag import _mark_shorts_uploaded
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+
+        upload_results = {
+            "upload_details": [
+                {
+                    "reap_clip_id": None,
+                    "youtube_video_id": None,
+                    "success": False,
+                    "error": "Upload failed",
+                }
+            ]
+        }
+
+        with caplog.at_level(logging.WARNING):
+            ti = _make_ti({"upload_results": upload_results})
+            _mark_shorts_uploaded(ti, params={})
+
+        mock_db.record_short_upload_failure.assert_not_called()
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "reap_clip_id" in warnings[0].message
 
 
 # ---------------------------------------------------------------------------
@@ -590,3 +645,61 @@ class TestGenerateMetadataSessionLine:
         metadata = ti.xcom_store["shorts_metadata"]
         description = metadata[0]["description"]
         assert "🏛️ Sesión" not in description, f"Unexpected session suffix in: {description!r}"
+
+
+# ---------------------------------------------------------------------------
+# _check_short_upload_failures (t5) — post-DB monitoring task
+# ---------------------------------------------------------------------------
+
+
+class TestCheckShortUploadFailures:
+
+    def test_raises_on_failed_details(self):
+        from congress_videos.reap_shorts_uploader_dag import _check_short_upload_failures
+
+        upload_results = {
+            "upload_details": [
+                {"reap_clip_id": "c-ok", "youtube_video_id": "yt-ok", "success": True},
+                {"reap_clip_id": "c-fail", "youtube_video_id": None, "success": False, "error": "Upload failed"},
+            ]
+        }
+        ti = _make_ti({"upload_results": upload_results})
+        with pytest.raises(Exception, match=r"short\(s\) failed to upload"):
+            _check_short_upload_failures(ti, params={})
+
+    def test_raises_on_success_with_missing_youtube_id(self):
+        from congress_videos.reap_shorts_uploader_dag import _check_short_upload_failures
+
+        upload_results = {
+            "upload_details": [
+                {"reap_clip_id": "c-ok", "youtube_video_id": None, "success": True},
+            ]
+        }
+        ti = _make_ti({"upload_results": upload_results})
+        with pytest.raises(Exception, match=r"short\(s\) failed to upload"):
+            _check_short_upload_failures(ti, params={})
+
+    def test_all_success_does_not_raise(self):
+        from congress_videos.reap_shorts_uploader_dag import _check_short_upload_failures
+
+        upload_results = {
+            "upload_details": [
+                {"reap_clip_id": "c-1", "youtube_video_id": "yt-a", "success": True},
+                {"reap_clip_id": "c-2", "youtube_video_id": "yt-b", "success": True},
+            ]
+        }
+        ti = _make_ti({"upload_results": upload_results})
+        _check_short_upload_failures(ti, params={})
+
+    def test_empty_details_noop(self):
+        from congress_videos.reap_shorts_uploader_dag import _check_short_upload_failures
+
+        ti = _make_ti({"upload_results": {"upload_details": []}})
+        _check_short_upload_failures(ti, params={})
+
+    def test_missing_xcom_raises(self):
+        from congress_videos.reap_shorts_uploader_dag import _check_short_upload_failures
+
+        ti = _make_ti({})
+        with pytest.raises(Exception, match="Upload results XCom missing"):
+            _check_short_upload_failures(ti, params={})

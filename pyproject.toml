@@ -7,6 +7,60 @@ name = "airflow-dags"
 version = "0.1.0"
 description = "Airflow DAGs for congress video processing and YouTube automation"
 requires-python = ">=3.12"
+dependencies = [
+    # Runtime dependencies actually imported by utils/** and congress_videos/**
+    # at module scope, required for both collection under pytest and the Docker
+    # runtime. Union of congress_videos/requirements.txt and the
+    # _PIP_ADDITIONAL_REQUIREMENTS list in docker-compose.yml's x-airflow-common
+    # block, plus a few transitive gaps (psycopg2, numpy) that were previously
+    # only present in the conda env with no manifest capturing them.
+    # Pinned to match the production Docker runtime (Dockerfile: apache/airflow:2.10.2)
+    # so local `uv run pytest` exercises the same DAG/Operator API surface as prod,
+    # instead of whatever latest-2.x resolves to.
+    "apache-airflow==2.10.2",
+    "apache-airflow-providers-postgres",
+    "psycopg2-binary",
+    "numpy",
+    "python-dotenv",
+    "openai",
+    "beautifulsoup4>=4.12.2",
+    "requests>=2.31.0",
+    "urllib3>=2.0.4",
+    "lxml>=4.9.3",
+    "google-auth",
+    "google-auth-oauthlib",
+    "google-auth-httplib2",
+    "google-api-python-client",
+    "Pillow",
+    "PyPDF2",
+    "yt-dlp",
+    "pytubefix",
+    "webrtcvad-wheels>=2.0.10",
+    # NOTE: openai-whisper is intentionally NOT included here. It is only
+    # lazy-imported inside utils/whisper_helpers.py (never at module scope),
+    # so it is not required for test collection. Its dependency chain (numba
+    # -> llvmlite 0.36.0) does not build on this dev machine's Python 3.14
+    # (llvmlite 0.36.0 requires Python <3.10), and it also pulls in torch +
+    # ~1.5GB of CUDA wheels. It remains installed in the Docker runtime via
+    # docker-compose.yml's _PIP_ADDITIONAL_REQUIREMENTS (unchanged, separate
+    # mechanism, likely an older Python there). If local whisper-model
+    # execution is ever needed outside Docker, add it as an optional
+    # dependency group instead of the default runtime group.
+    "rapidfuzz>=3.14.5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.4,<8.0",
+    "pytest-cov>=4.1,<5.0",
+    "pytest-mock>=3.12,<4.0",
+    "pytest-xdist>=3.5,<4.0",
+    "freezegun>=1.4,<2.0",
+    "coverage[toml]>=7.4,<8.0",
+]
+
+[tool.uv]
+package = false
 
 [tool.pytest.ini_options]
 minversion = "7.4"

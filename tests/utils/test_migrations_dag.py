@@ -75,7 +75,7 @@ class TestRunMigrationsDAGLoads:
 
     def test_dag_schedule_is_none(self):
         from utils.migrations_dag import dag
-        assert dag.schedule is None
+        assert dag.schedule_interval is None
 
     def test_ensure_runs_before_apply(self):
         from utils.migrations_dag import dag
@@ -304,6 +304,16 @@ class TestMigrationIdempotency:
         assert "ADD COLUMN IF NOT EXISTS last_upload_error" in sql
         assert "DROP VIEW IF EXISTS uploadable_chapters" in sql
         assert "is_upload_abandoned = FALSE" in sql
+
+    def test_012_short_upload_failure_tracking_exists_with_columns(self):
+        """Migration 012 must exist and add failure-tracking columns to video_shorts."""
+        path = MIGRATIONS_DIR / "012_add_short_upload_failure_tracking.sql"
+        assert path.exists(), f"Missing migration: {path}"
+        sql = path.read_text()
+        assert "ADD COLUMN IF NOT EXISTS upload_attempts" in sql
+        assert "ADD COLUMN IF NOT EXISTS is_upload_abandoned" in sql
+        assert "ADD COLUMN IF NOT EXISTS last_upload_error" in sql
+        assert "COMMENT ON COLUMN video_shorts." in sql
 
     @pytest.mark.parametrize("path", _MIGRATION_FILES, ids=lambda p: p.name)
     def test_no_bare_create_table(self, path: Path):

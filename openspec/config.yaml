@@ -17,27 +17,42 @@ rules:
   tasks:
     protect_review_workload: true
   apply:
-    test_command: "pytest"
+    test_command: "uv run pytest"
   verify:
-    test_command: "pytest"
+    test_command: "uv run pytest"
 testing:
   detected: "2026-07-23"
   runner:
-    command: "pytest"
+    command: "uv run pytest"
     framework: "pytest"
   layers:
-    unit: "pytest"
+    unit: "uv run pytest"
     integration: ""
-    e2e: ""
+    e2e: "bash scripts/test-airflow-e2e.sh"
   commands:
     unit:
       - scope: "."
-        command: "pytest"
+        command: "uv run pytest"
         framework: "pytest"
     integration:
       []
     e2e:
-      []
+      - scope: "."
+        command: "bash scripts/test-airflow-e2e.sh"
+        framework: "docker-compose"
+        gate_command: "bash scripts/dag-paths-changed.sh"
+        trigger_globs:
+          - "congress_videos/**"
+          - "examples/**"
+          - "utils/**"
+          - "docker-compose*.yml"
+          - "Dockerfile"
+        unavailable_exit_code: 4
+        notes: >
+          Runs during sdd-verify only when the change diff touches one of trigger_globs
+          (decided by gate_command: exit 0 = run, exit 1 = skip). Unit tests run every verify
+          regardless. Docker unavailable => exit code 4 => status `unavailable` (not failed);
+          any other non-zero => failed; 0 => pass. uv missing => exit 3 hard-fail.
   coverage:
     command: ""
     commands:

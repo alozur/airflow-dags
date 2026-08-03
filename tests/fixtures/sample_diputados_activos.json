@@ -1,0 +1,38 @@
+[
+  {
+    "Nombre": "Pérez García, María",
+    "Formacion": "Partido Socialista Obrero Español",
+    "GrupoParlamentario": "Grupo Parlamentario Socialista",
+    "Circunscripcion": "Madrid",
+    "Biografia": "Licenciada en Derecho por la Universidad Complutense de Madrid.",
+    "FechaCondicionPlena": "17/12/2023",
+    "FechaAlta": "10/12/2023"
+  },
+  {
+    "Nombre": "Ruiz-Gallardón Jiménez, Alberto",
+    "Formacion": "Partido Popular",
+    "GrupoParlamentario": "Grupo Parlamentario Popular en el Congreso",
+    "Circunscripcion": "Barcelona",
+    "Biografia": "Diputado por Barcelona desde la XV legislatura.",
+    "FechaCondicionPlena": "17/12/2023",
+    "FechaAlta": "10/12/2023"
+  },
+  {
+    "Nombre": "Núñez Fernández, José",
+    "Formacion": "VOX",
+    "GrupoParlamentario": "Grupo Parlamentario VOX",
+    "Circunscripcion": "Valencia",
+    "Biografia": "Diputado por Valencia.",
+    "FechaCondicionPlena": "17/12/2023",
+    "FechaAlta": "10/12/2023"
+  },
+  {
+    "Nombre": "López Sánchez, Ana",
+    "Formacion": "Sumar",
+    "GrupoParlamentario": "Grupo Parlamentario Plurinacional Sumar",
+    "Circunscripcion": "Sevilla",
+    "Biografia": "Diputada por Sevilla desde 2023.",
+    "FechaCondicionPlena": "17/12/2023",
+    "FechaAlta": "10/12/2023"
+  }
+]

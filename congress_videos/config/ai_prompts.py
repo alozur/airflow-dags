@@ -135,6 +135,65 @@ IMPORTANTE: Si la frase supera {max_length} caracteres, acórtala eliminando pal
 
 Devuelve SOLO la frase, sin explicaciones."""
 
+# Art Direction — produces a JSON brief ({text, background, person, mood}) used by
+# build_pikzels_prompt to fill Template A/B/C from the congress-thumbnail skill.
+ART_DIRECTION_SYSTEM_PROMPT = (
+    "Eres un director de arte experto en miniaturas de YouTube de alto CTR para canales políticos españoles. "
+    "Tu tarea es crear un brief visual en JSON para una miniatura siguiendo estas reglas estrictas:\n\n"
+    "- text: frase de 3-6 palabras, TODO EN MAYÚSCULAS, máximo 40 caracteres. Provocadora, no descriptiva.\n"
+    "- background: fondo contextual al tema (protesta callejera, fábrica cerrada, hospital, etc.). "
+    "NUNCA hemiciclo, cámara parlamentaria ni sala de gobierno.\n"
+    "- person: persona relatable, edad/expresión/ropa concreta. Ocupa el 35-40%% del frame. "
+    "Expresión emocional (indignación, miedo, sorpresa). Que cualquier ciudadano español se vea reflejado.\n"
+    "- mood: tono emocional dominante (indignación, amenaza, curiosidad, identidad, pérdida).\n\n"
+    "PROHIBICIÓN ABSOLUTA: no incluyas nunca URLs ni la palabra 'http' en ningún campo. "
+    "Pikzels rechaza cualquier prompt que contenga 'http'.\n\n"
+    "Responde SOLO con JSON válido, sin markdown:\n"
+    '{"text": "...", "background": "...", "person": "...", "mood": "..."}'
+)
+
+ART_DIRECTION_USER_PROMPT_TEMPLATE = (
+    "Crea el brief visual JSON para la miniatura de YouTube de este debate parlamentario.\n\n"
+    "RESUMEN DEL DEBATE:\n{debate_summary}\n\n"
+    "Devuelve SOLO el JSON con los campos text, background, person y mood. Sin markdown."
+)
+
+
+# Thumbnail Title Generation (Pikzels + OpenAI pipeline)
+THUMBNAIL_TITLE_SYSTEM_PROMPT = (
+    "Eres un redactor político experto en titulares de alto impacto para YouTube. "
+    "Creas títulos dramáticos, directos y en español que capturan la esencia del debate parlamentario. "
+    "Los títulos deben generar urgencia y curiosidad sin perder rigor informativo. "
+    "RESTRICCIONES ABSOLUTAS: máximo 90 caracteres; sin emojis; sin comillas; "
+    "sin símbolos de canal; sin hashtags; sin los caracteres: # @ | ~ ^."
+)
+
+THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE = """Genera un título para miniatura de YouTube basado en el siguiente debate parlamentario.
+
+RESUMEN DEL DEBATE:
+{summary}
+
+ESTILO VISUAL DE LA MINIATURA:
+{style}
+
+CONTEXTO DE LA IMAGEN (prompt utilizado):
+{prompt}
+
+FORMATO DE RESPUESTA (JSON):
+{{
+  "title": "<título en español, máximo 90 caracteres, sin emojis, sin comillas, sin # @ | ~ ^>"
+}}
+
+REQUISITOS:
+- Máximo 90 caracteres (CRÍTICO)
+- Español, tono dramático político
+- Sin emojis, sin comillas, sin símbolos de canal
+- Sin los caracteres: # @ | ~ ^
+- Refleja el contenido visual de la miniatura descrito en el estilo y el prompt
+
+Devuelve SOLO el JSON, sin markdown."""
+
+
 # Chunk Summarization - For silence-based chunks before chapter analysis
 CHUNK_SUMMARY_SYSTEM_PROMPT = """Eres un experto en analizar transcripciones de sesiones parlamentarias españolas.
 
@@ -398,6 +457,26 @@ ESCALA FINAL (suma automática de puntos):
 - 0 puntos (0+0+0): Sin relevancia → Definitivamente no subir
 
 IMPORTANTE: Sé objetivo y evalúa la relevancia real para el público español general, no solo para expertos en política."""
+
+# Speaker Normalization — match a dirty speaker string to a congress_participants candidate
+SPEAKER_MATCH_SYSTEM_PROMPT = (
+    "You are a speaker-name disambiguation assistant for the Spanish Congress of Deputies. "
+    "Given a dirty speaker name extracted from a transcript and a candidate participant from the "
+    "congress_participants database, decide whether they refer to the same person. "
+    "Always respond with a strict JSON object and NOTHING else. "
+    "JSON schema: {\"decision\": \"match\" | \"no_match\" | \"needs_manual\", "
+    "\"confidence\": <float 0-1>, \"reason\": \"<one sentence>\"}"
+)
+
+SPEAKER_MATCH_USER_PROMPT_TEMPLATE = """Dirty speaker name (from transcript): {dirty_name}
+
+Candidate participant:
+  - display_name: {display_name}
+  - normalized_name: {normalized_name}
+{context_block}
+Decide if the dirty name and the candidate refer to the same person.
+Return ONLY valid JSON: {{\"decision\": \"match\" | \"no_match\" | \"needs_manual\", \"confidence\": <0-1>, \"reason\": \"<one sentence>\"}}"""
+
 
 CHAPTER_RELEVANCE_SCORING_USER_PROMPT_TEMPLATE = """Evalúa la relevancia de este capítulo de sesión parlamentaria para contenido de YouTube.
 

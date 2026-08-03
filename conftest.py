@@ -43,6 +43,8 @@ _TEST_ENV: dict[str, str] = {
     "YOUTUBE_API_KEY": "test-youtube-api-key",
     "ANTHROPIC_API_KEY": "test-anthropic-key",
     "REAP_API_KEY": "test-reap-api-key",
+    # Pikzels API key stub — must start with "pkz_" (PikzelsClient prefix check)
+    "PIKZELS_API_KEY": "pkz_test-not-real",
     "ENV": "testing",
 }
 for _key, _value in _TEST_ENV.items():

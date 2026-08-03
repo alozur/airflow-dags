@@ -23,13 +23,14 @@ import os
 from datetime import datetime, timedelta
 
 from airflow import DAG
-from airflow.operators.python import BranchPythonOperator, PythonOperator
+from airflow.operators.python import BranchPythonOperator, PythonOperator, ShortCircuitOperator
 
 from congress_videos.config.constants import (
     YOUTUBE_CHANNEL_ID,
     TARGET_VIDEO_TITLE,
     VAD_ENABLED,
 )
+from congress_videos.config import speaker_normalization_config as snc
 from congress_videos.modules import youtube as yt_channel
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from congress_videos.modules.vad_helpers import trim_chapter_silence_with_vad
@@ -67,7 +68,7 @@ with DAG(
     params={  # Default to today; lookback range covers yesterday too
         "target_date": today_str,
         "lookback_days": 1,  # Inclusive lookback window: target_date - lookback_days .. target_date
-        "min_hours_since_end": 2,  # Skip videos whose live broadcast ended less than this many hours ago
+        "min_hours_since_end": 12,  # Skip videos whose live broadcast ended less than this many hours ago
         "guard_enabled": True,  # Finished-stream guard: drop not-ready VODs before the branch (+ downloader guard)
         "guard_floor_minutes": 10,  # Cheap pre-probe skip: drop candidates that ended less than this ago
         "max_videos": 20,  # Maximum number of videos to check
@@ -191,7 +192,7 @@ with DAG(
             ti,
             lambda: yt_channel.get_video_details(
                 ti.xcom_pull(key='plenary_videos'),
-                min_hours_since_end=context["params"].get("min_hours_since_end", 2)
+                min_hours_since_end=context["params"].get("min_hours_since_end", 12)
             ),
             'video_details'
         ),
@@ -258,6 +259,38 @@ with DAG(
             'downloaded_videos'
         ),
         trigger_rule='none_failed_min_one_success'  # Run regardless of which branch
+    )
+
+    # Step 3c2b: Post-download container-level integrity gate (ffprobe)
+    # Runs after t3c2 (download_video_from_youtube). Probes each downloaded source
+    # file with ffprobe -v error -i <path>. Clean probe → video proceeds to t_trim.
+    # Failed probe → record_source_integrity_failure() defers the video 12h and the
+    # video is excluded from trim/split until it re-enters filter_unprocessed_videos.
+    # trigger_rule matches t3c2 (none_failed_min_one_success) so it runs regardless
+    # of which subtitle branch was taken.
+    def _check_source_integrity(ti, **context):
+        from congress_videos.modules.database import CongressionalVideoDB
+        downloaded = ti.xcom_pull(key='downloaded_videos')
+        if not downloaded:
+            logging.warning("No downloaded_videos XCom available for integrity check — passthrough.")
+            return {'total_downloaded': 0, 'videos': [], 'failed_video_ids': []}
+        enriched = yt_channel.check_source_video_integrity(downloaded)
+        failed_ids = enriched.get('failed_video_ids', [])
+        if failed_ids:
+            db = CongressionalVideoDB()
+            for video_id in failed_ids:
+                logging.warning("Integrity probe FAILED for %s — deferring 12h.", video_id)
+                db.record_source_integrity_failure(video_id, retry_after_hours=12)
+        return enriched
+
+    t3c2_integrity = PythonOperator(
+        task_id='check_source_integrity',
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: _check_source_integrity(ti, **context),
+            'downloaded_videos'  # re-push enriched dict under the same key
+        ),
+        trigger_rule='none_failed_min_one_success',
     )
 
     # Step 3d: Extract audio from YouTube (only if subtitles not available)
@@ -514,6 +547,80 @@ with DAG(
         python_callable=lambda: logging.info("No plenary sessions found. DAG execution stopped."),
     )
 
+    # Step 10: Normalize speaker names for saved chapters
+    # Resolves dirty speaker strings from the LLM into canonical congress_participants
+    # entries via dual-field fuzzy matching + AI verification. Writes audit rows to
+    # speaker_normalization_cache and rewrites confirmed chapter fields in video_chapters.
+    #
+    # trigger_rule='all_done': runs regardless of t9_db outcome so a partial DB save
+    # never blocks normalization of the chapters that did succeed.
+    # ShortCircuitOperator: if snc.ENABLED=False the task is skipped cleanly.
+
+    def _normalize_speakers(**context):
+        """Load chapters from t9_db XCom and normalize each chapter's speakers."""
+        import json as _json
+        from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
+        from congress_videos.modules.database import CongressionalVideoDB
+        from utils.postgres_helpers import PostgresConnection
+
+        ti = context["ti"]
+        db_save_results = ti.xcom_pull(key="db_save_results")
+
+        if not db_save_results:
+            logging.info("_normalize_speakers: no db_save_results XCom — skipping")
+            return True
+
+        pg = PostgresConnection()
+        chapters_table = pg.get_qualified_table("video_chapters")
+        db = CongressionalVideoDB()
+
+        with pg.get_connection() as conn:
+            with conn.cursor() as cur:
+                for video_result in db_save_results.get("videos", []):
+                    video_id = video_result.get("video_id")
+                    if video_result.get("error"):
+                        continue
+                    # Fetch saved chapters for this video
+                    cur.execute(
+                        f"SELECT chapter_id, speakers, key_speakers, timeline "
+                        f"FROM {chapters_table} WHERE video_id = %s",
+                        (video_id,),
+                    )
+                    rows = cur.fetchall()
+                    for row in rows:
+                        chapter_id = row["chapter_id"]
+                        speakers_raw = row.get("speakers") or []
+                        key_speakers_raw = row.get("key_speakers") or []
+                        timeline_raw = row.get("timeline") or []
+                        if isinstance(timeline_raw, str):
+                            timeline_raw = _json.loads(timeline_raw)
+                        try:
+                            result = normalize_chapter_speakers(
+                                chapter_id,
+                                speakers_raw,
+                                key_speakers_raw,
+                                timeline_raw,
+                                conn,
+                                snc,
+                            )
+                            if result.updated:
+                                logging.info(
+                                    "_normalize_speakers: chapter %d updated with %d correction(s)",
+                                    chapter_id, len(result.corrections),
+                                )
+                        except Exception as exc:  # noqa: BLE001
+                            logging.warning(
+                                "_normalize_speakers: error normalizing chapter %d: %s",
+                                chapter_id, exc,
+                            )
+        return True
+
+    t_normalize_speakers = ShortCircuitOperator(
+        task_id="normalize_speakers",
+        python_callable=lambda **ctx: snc.ENABLED and _normalize_speakers(**ctx),
+        trigger_rule="all_done",
+    )
+
     # Task dependencies
 
     # Start: Branch based on test mode
@@ -576,16 +683,21 @@ with DAG(
     t7 >> t8
 
     # After scoring, run VAD chapter silence-trim (both edges) before persisting.
-    # t_trim ALSO waits on t3c2 (download_video_from_youtube): VAD reads the
-    # downloaded mp4 from disk via _find_source_video, so it must NOT start while
-    # the (multi-hour) video is still being written — otherwise ffmpeg hits
-    # "moov atom not found" on the half-written file. When subtitles are available
-    # the chunk/score pipeline races ahead of the parallel video download, so this
-    # join is required. trigger_rule='all_done' keeps VAD best-effort: a download
-    # failure must never block persisting the scored chapters.
-    [t8, t3c2] >> t_trim
+    # t_trim waits on BOTH t8 (scoring) and t3c2_integrity (integrity gate):
+    #   - t3c2 → t3c2_integrity: ffprobe integrity probe runs after download completes.
+    #   - [t8, t3c2_integrity] → t_trim: VAD reads the mp4 from disk so it must not
+    #     start while the file is still being written. The integrity gate sits between
+    #     download and trim so a corrupt source is deferred before reaching VAD.
+    # trigger_rule='all_done' keeps VAD best-effort: an integrity failure on the source
+    # must never block persisting the scored chapters.
+    t3c2 >> t3c2_integrity
+    [t8, t3c2_integrity] >> t_trim
 
     # After trimming the silence, save the chapters to the database
     # Note: session_number and session_date come from t5c and t5d tasks
     # We need both the VAD-trimmed scoring (t_trim) and session info (t5c)
     [t_trim, t5c] >> t9_db
+
+    # After saving chapters, normalize speaker names (best-effort; all_done so a
+    # partial save never blocks normalization)
+    t9_db >> t_normalize_speakers

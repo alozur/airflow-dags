@@ -59,11 +59,22 @@ The `utils/` folder contains common functionality shared across all DAG projects
 - Validate DAGs: `python <dag_file.py>`
 
 ## Development Environment
-- **Conda Environment**: Use the `airflow` conda environment for all testing and development
-- **Run Python scripts**: `conda run -n airflow python <script.py>`
-- **Install dependencies**: `conda run -n airflow pip install <package>`
-- **Required packages**: beautifulsoup4, requests, urllib3, apache-airflow, openai (when needed)
-- Always use the conda environment to ensure consistent dependencies and avoid module conflicts
+- **Package manager**: uv (no conda; no manual venv activation required)
+- **Install / sync dependencies**: `uv sync`  (creates .venv and installs the dev/test group)
+- **Run a script**: `uv run python <script.py>`
+- **Add a runtime dependency**: `uv add <package>`
+- **Add a dev/test dependency**: `uv add --dev <package>`
+- If `uv` is not installed, install it (https://docs.astral.sh/uv/) — commands hard-fail with an
+  actionable message rather than silently falling back.
+
+## Testing
+- **Unit tests**: `uv run pytest`  (runs on every `sdd-verify`)
+- **Parallel**: `uv run pytest -n auto`
+- **Docker e2e smoke test**: `bash scripts/test-airflow-e2e.sh` — boots an ephemeral Airflow stack and
+  asserts `airflow dags list-import-errors` is empty. Runs automatically during `sdd-verify` only when
+  the change touches `congress_videos/**`, `examples/**`, `utils/**`, `docker-compose*.yml`, or
+  `Dockerfile`. If Docker is unavailable it reports `unavailable` (not a failure); run it manually
+  before merge in that case.
 
 ## Agent skills
 

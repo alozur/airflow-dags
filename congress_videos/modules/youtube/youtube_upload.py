@@ -14,6 +14,7 @@ def prepare_chapter_upload_config(
     chapter_extraction_results,
     youtube_metadata_results,
     thumbnail_results=None,
+    thumbnail_result=None,
     is_testing=False
 ):
     """
@@ -53,7 +54,8 @@ def prepare_chapter_upload_config(
                     }
                 ]
             }
-        thumbnail_results: (optional) Results from thumbnail_generator.generate_video_thumbnails
+        thumbnail_results: (optional) Legacy batch results from
+            thumbnail_generator.generate_video_thumbnails.
             Expected structure:
             {
                 'results': [
@@ -63,6 +65,17 @@ def prepare_chapter_upload_config(
                         'output_path': str
                     }
                 ]
+            }
+        thumbnail_result: (optional) Single-chapter result from the generic
+            Pikzels pipeline (_generate_thumbnail). When provided and
+            ``success`` is True, ``output_path`` is used as the thumbnail
+            file and ``title`` overrides the upload metadata title.
+            Expected structure:
+            {
+                'chapter_id': int,
+                'success': bool,
+                'output_path': str | None,
+                'title': str | None,
             }
         is_testing: If True, uploads as private; if False, uploads as public
 
@@ -84,13 +97,22 @@ def prepare_chapter_upload_config(
             if chapter_id:
                 metadata_lookup[chapter_id] = metadata
 
-    # Create thumbnail lookup by chapter_id
+    # Create thumbnail lookup by chapter_id (legacy batch path)
     thumbnail_lookup = {}
     if thumbnail_results and thumbnail_results.get('results'):
         for thumbnail in thumbnail_results['results']:
             chapter_id = thumbnail.get('chapter_id')
             if chapter_id and thumbnail.get('success'):
                 thumbnail_lookup[chapter_id] = thumbnail.get('output_path')
+
+    # Parse single-chapter Pikzels thumbnail result
+    pikzels_chapter_id = None
+    pikzels_thumbnail_path = None
+    pikzels_title = None
+    if thumbnail_result and thumbnail_result.get('success'):
+        pikzels_chapter_id = thumbnail_result.get('chapter_id')
+        pikzels_thumbnail_path = thumbnail_result.get('output_path')
+        pikzels_title = thumbnail_result.get('title')
 
     # Build videos list for generic uploader
     videos = []
@@ -121,6 +143,12 @@ def prepare_chapter_upload_config(
             if isinstance(description_data, dict)
             else str(description_data)
         )
+
+        # Apply Pikzels thumbnail result override when it matches this chapter
+        if chapter_id == pikzels_chapter_id and pikzels_thumbnail_path:
+            thumbnail_file = pikzels_thumbnail_path
+        if chapter_id == pikzels_chapter_id and pikzels_title:
+            title = pikzels_title
 
         logging.info(
             f"Chapter {chapter_id} (video {video_id}): "
