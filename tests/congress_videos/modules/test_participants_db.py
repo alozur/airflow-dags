@@ -482,6 +482,92 @@ class TestUpdatePhotoUrl:
 
 
 # ===========================================================================
+# T-04 RED: lookup_participant_by_slug
+# ===========================================================================
+
+
+class TestLookupParticipantBySlug:
+    """Tests for lookup_participant_by_slug — exact, case-sensitive slug match."""
+
+    def test_slug_hit_returns_row_dict(self, monkeypatch):
+        """Exact slug match → returns the row dict."""
+        rows = [
+            {"normalized_name": "garcia ana", "slug": "garcia-ana", "display_name": "García, Ana",
+             "photo_url": "https://example.com/garcia.jpg"},
+        ]
+        from congress_videos.modules import participants_db as _mod
+        monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
+
+        from congress_videos.modules.participants_db import lookup_participant_by_slug
+        result = lookup_participant_by_slug("garcia-ana")
+
+        assert result is not None
+        assert result["slug"] == "garcia-ana"
+
+    def test_slug_miss_returns_none(self, monkeypatch):
+        """Unknown slug → None."""
+        rows = [
+            {"normalized_name": "garcia ana", "slug": "garcia-ana", "display_name": "García, Ana",
+             "photo_url": None},
+        ]
+        from congress_videos.modules import participants_db as _mod
+        monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
+
+        from congress_videos.modules.participants_db import lookup_participant_by_slug
+        result = lookup_participant_by_slug("unknown-slug-xyz")
+
+        assert result is None
+
+    def test_exact_case_sensitive_mismatch_returns_none(self, monkeypatch):
+        """Case mismatch: row has 'Garcia-Ana', calling 'garcia-ana' → None."""
+        rows = [
+            {"normalized_name": "garcia ana", "slug": "Garcia-Ana", "display_name": "García, Ana",
+             "photo_url": None},
+        ]
+        from congress_videos.modules import participants_db as _mod
+        monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
+
+        from congress_videos.modules.participants_db import lookup_participant_by_slug
+        result = lookup_participant_by_slug("garcia-ana")
+
+        assert result is None
+
+    def test_exact_case_sensitive_match_works(self, monkeypatch):
+        """Exact case match: row and call both use 'Garcia-Ana' → returns row."""
+        rows = [
+            {"normalized_name": "garcia ana", "slug": "Garcia-Ana", "display_name": "García, Ana",
+             "photo_url": None},
+        ]
+        from congress_videos.modules import participants_db as _mod
+        monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
+
+        from congress_videos.modules.participants_db import lookup_participant_by_slug
+        result = lookup_participant_by_slug("Garcia-Ana")
+
+        assert result is not None
+        assert result["slug"] == "Garcia-Ana"
+
+    def test_never_calls_normalize_member_name(self, monkeypatch):
+        """normalize_member_name must never be invoked by lookup_participant_by_slug."""
+        rows = [
+            {"normalized_name": "garcia ana", "slug": "garcia-ana", "display_name": "García, Ana",
+             "photo_url": None},
+        ]
+        from congress_videos.modules import participants_db as _mod
+        monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
+
+        def _raise(*args, **kwargs):
+            raise AssertionError("normalize_member_name must not be called by lookup_participant_by_slug")
+
+        monkeypatch.setattr(_mod, "normalize_member_name", _raise)
+
+        from congress_videos.modules.participants_db import lookup_participant_by_slug
+        # Must not call normalize_member_name — no AssertionError should propagate
+        result = lookup_participant_by_slug("garcia-ana")
+        assert result is not None
+
+
+# ===========================================================================
 # T-07 RED: migration file tests
 # ===========================================================================
 

@@ -135,6 +135,30 @@ IMPORTANTE: Si la frase supera {max_length} caracteres, acórtala eliminando pal
 
 Devuelve SOLO la frase, sin explicaciones."""
 
+# Art Direction — produces a JSON brief ({text, background, person, mood}) used by
+# build_pikzels_prompt to fill Template A/B/C from the congress-thumbnail skill.
+ART_DIRECTION_SYSTEM_PROMPT = (
+    "Eres un director de arte experto en miniaturas de YouTube de alto CTR para canales políticos españoles. "
+    "Tu tarea es crear un brief visual en JSON para una miniatura siguiendo estas reglas estrictas:\n\n"
+    "- text: frase de 3-6 palabras, TODO EN MAYÚSCULAS, máximo 40 caracteres. Provocadora, no descriptiva.\n"
+    "- background: fondo contextual al tema (protesta callejera, fábrica cerrada, hospital, etc.). "
+    "NUNCA hemiciclo, cámara parlamentaria ni sala de gobierno.\n"
+    "- person: persona relatable, edad/expresión/ropa concreta. Ocupa el 35-40%% del frame. "
+    "Expresión emocional (indignación, miedo, sorpresa). Que cualquier ciudadano español se vea reflejado.\n"
+    "- mood: tono emocional dominante (indignación, amenaza, curiosidad, identidad, pérdida).\n\n"
+    "PROHIBICIÓN ABSOLUTA: no incluyas nunca URLs ni la palabra 'http' en ningún campo. "
+    "Pikzels rechaza cualquier prompt que contenga 'http'.\n\n"
+    "Responde SOLO con JSON válido, sin markdown:\n"
+    '{"text": "...", "background": "...", "person": "...", "mood": "..."}'
+)
+
+ART_DIRECTION_USER_PROMPT_TEMPLATE = (
+    "Crea el brief visual JSON para la miniatura de YouTube de este debate parlamentario.\n\n"
+    "RESUMEN DEL DEBATE:\n{debate_summary}\n\n"
+    "Devuelve SOLO el JSON con los campos text, background, person y mood. Sin markdown."
+)
+
+
 # Thumbnail Title Generation (Pikzels + OpenAI pipeline)
 THUMBNAIL_TITLE_SYSTEM_PROMPT = (
     "Eres un redactor político experto en titulares de alto impacto para YouTube. "

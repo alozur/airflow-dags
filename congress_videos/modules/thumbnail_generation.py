@@ -23,9 +23,12 @@ from typing import Optional
 import requests
 
 from congress_videos.config.ai_prompts import (
+    ART_DIRECTION_SYSTEM_PROMPT,
+    ART_DIRECTION_USER_PROMPT_TEMPLATE,
     THUMBNAIL_TITLE_SYSTEM_PROMPT,
     THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE,
 )
+from congress_videos.config.constants import CONGRESO_BROWSER_USER_AGENT
 from utils.ai_helpers import generate_json_completion
 from utils.postgres_helpers import PostgresConnection
 
@@ -49,45 +52,155 @@ _EMOJI_RE = re.compile(
 
 TITLE_MAX_CHARS = 90
 
+# Sentinel returned when no photo source is available (tolerant mode — no raise).
+EMPTY_RESULT: dict = {"support_image_b64": "", "source": "none"}
+
+# Fallback art-direction brief used when both OpenAI attempts fail.
+# Background must never reference hemiciclo or parliamentary chamber.
+_DEFAULT_ART_BRIEF: dict = {
+    "background": (
+        "una calle española con gente caminando, luz de tarde, tono documental"
+    ),
+    "person": (
+        "un ciudadano español de mediana edad, expresión seria y preocupada, ropa casual"
+    ),
+    "text": "LO QUE NO TE CUENTAN",
+    "mood": "tensión y curiosidad",
+    "logo": "",
+}
+
+_ART_BRIEF_REQUIRED_KEYS = ("text", "background", "person", "mood")
+
 
 # ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
 
 
-def resolve_participant_photo(name: str, cfg: dict) -> dict:
+def art_direct(debate_summary: str, domain_cfg: dict) -> dict:
+    """Generate an art-direction brief for a Pikzels thumbnail via OpenAI.
+
+    Calls ``generate_json_completion`` with the ART_DIRECTION prompts and
+    validates that the result contains all required keys (text, background,
+    person, mood).  Re-prompts once on validation failure.  Falls back to
+    ``_DEFAULT_ART_BRIEF`` if both attempts fail or raise.
+
+    Any ``"http"`` substring found in returned string values is stripped to
+    prevent Pikzels from rejecting the downstream prompt.
+
+    Args:
+        debate_summary: Free-text summary of the debate used as context.
+        domain_cfg: Per-domain config dict (currently unused beyond signature
+                    consistency with generate_title; reserved for future use).
+
+    Returns:
+        Dict with keys ``text``, ``background``, ``person``, ``mood``, and
+        ``logo`` (defaults to ``""``).  Never raises.
+    """
+
+    def _call_api(extra_instruction: str = "") -> Optional[dict]:
+        user_prompt = ART_DIRECTION_USER_PROMPT_TEMPLATE.format(
+            debate_summary=debate_summary
+        )
+        if extra_instruction:
+            user_prompt += f"\n\nINSTRUCCIÓN ADICIONAL: {extra_instruction}"
+        try:
+            result = generate_json_completion(
+                system_prompt=ART_DIRECTION_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                model="gpt-4o-mini",
+                max_tokens=400,
+            )
+        except Exception as exc:
+            logger.warning("art_direct: generate_json_completion raised: %s", exc)
+            return None
+
+        if result.get("error"):
+            logger.warning("art_direct: API error: %s", result["error"])
+            return None
+
+        data = result.get("data") or {}
+        # Validate all required keys are present.
+        if not all(k in data for k in _ART_BRIEF_REQUIRED_KEYS):
+            return None
+        return data
+
+    # First attempt.
+    brief = _call_api()
+
+    if brief is None:
+        # Re-prompt once with a clarifying instruction.
+        brief = _call_api(
+            extra_instruction=(
+                "Asegúrate de devolver un JSON con EXACTAMENTE los campos: "
+                "text, background, person, mood."
+            )
+        )
+
+    if brief is None:
+        logger.warning(
+            "art_direct: both OpenAI attempts failed — using _DEFAULT_ART_BRIEF"
+        )
+        brief = dict(_DEFAULT_ART_BRIEF)
+
+    # Ensure logo key present.
+    brief.setdefault("logo", "")
+
+    # Strip any accidental "http" from string values.
+    cleaned = {
+        k: (v.replace("http", "") if isinstance(v, str) else v)
+        for k, v in brief.items()
+    }
+    return cleaned
+
+
+def resolve_participant_photo(slug: str | None, cfg: dict) -> dict:
     """Resolve the support image for a participant using DB lookup then HTTP download.
 
     Resolution order:
-    1. Look up participant via ``cfg["participants_lookup"]``.
+    0. If ``slug`` is absent, empty, or whitespace, return EMPTY_RESULT (WARNING logged).
+    1. Look up participant via ``cfg["participants_lookup"]`` by slug.
+       If not found, return EMPTY_RESULT (WARNING logged).
     2. If ``photo_url`` is non-null, perform HTTP GET and return raw bytes.
-       If the GET returns non-200, treat as undownloadable and fall through.
+       If the GET returns non-200 or raises, return EMPTY_RESULT (WARNING logged).
     3. If photo unavailable and ``cfg["party_logo_map"]`` is set, read logo file.
-    4. If neither source is available, raise ``ValueError``.
+    4. If neither source is available, return EMPTY_RESULT (WARNING logged).
 
     Args:
-        name: Normalized participant name to look up.
+        slug: Participant slug to look up (exact, case-sensitive).
         cfg: Per-domain config dict from ``THUMBNAIL_CONFIG``.
 
     Returns:
-        Dict with keys ``support_image_b64`` (base64-encoded image bytes as str)
-        and ``source`` (``"photo"`` or ``"party_logo"``).
-
-    Raises:
-        LookupError: If the participant is not found in the database.
-        ValueError: If the participant has no photo URL and no party logo is configured.
+        Dict with keys ``support_image_b64`` (base64-encoded image bytes as str,
+        empty string when no source found) and ``source``
+        (``"photo"``, ``"party_logo"``, or ``"none"``).
     """
+    # Guard: absent / blank slug — skip lookup entirely.
+    if not slug or not str(slug).strip():
+        logger.warning(
+            "resolve_participant_photo: slug is absent or blank — returning empty result"
+        )
+        return EMPTY_RESULT
+
     lookup_fn = cfg["participants_lookup"]
-    participant = lookup_fn(name)
+    participant = lookup_fn(slug)
 
     if participant is None:
-        raise LookupError(f"Participant not found: {name!r}")
+        logger.warning(
+            "resolve_participant_photo: participant not found for slug %r — returning empty result",
+            slug,
+        )
+        return EMPTY_RESULT
 
     photo_url = participant.get("photo_url")
 
     if photo_url:
         try:
-            response = requests.get(photo_url, timeout=30)
+            response = requests.get(
+                photo_url,
+                timeout=30,
+                headers={"User-Agent": CONGRESO_BROWSER_USER_AGENT},
+            )
             if response.status_code == 200:
                 image_bytes = response.content
                 return {
@@ -116,10 +229,12 @@ def resolve_participant_photo(name: str, cfg: dict) -> dict:
             "source": "party_logo",
         }
 
-    raise ValueError(
-        f"no photo source available for participant {name!r}: "
-        "photo_url is absent/undownloadable and no party_logo_map configured"
+    logger.warning(
+        "resolve_participant_photo: no photo source available for slug %r "
+        "(photo_url absent/undownloadable, no party_logo_map) — returning empty result",
+        slug,
     )
+    return EMPTY_RESULT
 
 
 def choose_best_option(options: list[dict]) -> dict:

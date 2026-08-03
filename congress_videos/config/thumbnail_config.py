@@ -21,45 +21,32 @@ class ConfigError(Exception):
 def _get_thumbnail_config() -> dict:
     """Build and return the full per-domain thumbnail configuration dict.
 
-    Defined as a function to defer import of ``lookup_participant_fuzzy``
+    Defined as a function to defer import of ``lookup_participant_by_slug``
     until call time (avoids circular imports at module load).
 
     Returns:
         Mapping from domain key to per-domain config dict.
     """
-    from congress_videos.modules.participants_db import lookup_participant_fuzzy
+    from congress_videos.modules.participants_db import lookup_participant_by_slug
 
     return {
         "congreso": {
-            # Visual styles / personas for Pikzels thumbnail generation.
-            # Exactly 2 entries — one per generated option.
+            # Visual styles for Pikzels thumbnail generation.
+            # Each entry maps a label to a Pikzels Template layout (A, B, or C).
+            # Exactly 2 entries — one per generated option for A/B testing.
             "styles": [
                 {
                     "label": "option_a",
-                    "style": (
-                        "Dramatic political documentary style. High-contrast lighting. "
-                        "Spanish parliament chamber background. Bold typography overlay."
-                    ),
-                    "persona": (
-                        "Senior political journalist covering the Spanish Congress. "
-                        "Authoritative, serious, newsroom aesthetic."
-                    ),
+                    "layout": "A",
                 },
                 {
                     "label": "option_b",
-                    "style": (
-                        "Modern editorial news style. Clean, professional composition. "
-                        "Gradient overlay with official Spanish flag colours."
-                    ),
-                    "persona": (
-                        "Digital-native political correspondent. "
-                        "Dynamic, impactful, social-media-ready framing."
-                    ),
+                    "layout": "B",
                 },
             ],
-            # Callable that resolves a participant by normalized name.
-            # Signature: (name: str) -> dict | None
-            "participants_lookup": lookup_participant_fuzzy,
+            # Callable that resolves a participant by slug: exact, case-sensitive match.
+            # Signature: (slug: str) -> dict | None
+            "participants_lookup": lookup_participant_by_slug,
             # Optional absolute path to a fallback party logo image.
             # Set to None when no logo file is available.
             "party_logo_map": None,
