@@ -264,7 +264,7 @@ class TestValidateInput:
         self.mod = importlib.import_module("congress_videos.generic_thumbnail_generator_dag")
 
     def test_valid_conf_does_not_raise(self) -> None:
-        """All required keys, including the participant slug, are accepted."""
+        """All required keys and an optional participant slug are accepted."""
         # Call the underlying function directly (not via Airflow trigger).
         self.mod.validate_input(VALID_CONF)
 
@@ -282,22 +282,20 @@ class TestValidateInput:
         with pytest.raises(ValueError, match=empty_key):
             self.mod.validate_input(conf)
 
-    def test_conf_without_slug_raises_value_error(self) -> None:
-        """slug is required by the cross-DAG generation contract."""
+    def test_conf_without_slug_is_accepted(self) -> None:
+        """A generic thumbnail can be generated without a participant photo."""
         conf = {k: v for k, v in VALID_CONF.items() if k != "slug"}
-        with pytest.raises(ValueError, match="slug"):
-            self.mod.validate_input(conf)
+        self.mod.validate_input(conf)
 
     def test_conf_with_slug_is_accepted(self) -> None:
         """conf that includes slug= is accepted normally."""
         conf = {**VALID_CONF, "slug": "garcia-lopez-maria"}
         self.mod.validate_input(conf)  # must not raise
 
-    def test_conf_with_empty_slug_raises_value_error(self) -> None:
-        """An empty participant slug is invalid for a triggered generation."""
-        conf = {**VALID_CONF, "slug": ""}
-        with pytest.raises(ValueError, match="slug"):
-            self.mod.validate_input(conf)
+    def test_conf_with_none_slug_is_accepted(self) -> None:
+        """An unresolved participant slug does not block generic generation."""
+        conf = {**VALID_CONF, "slug": None}
+        self.mod.validate_input(conf)
 
     def test_no_normalized_name_key_in_required_keys(self) -> None:
         """'normalized_name' must NOT appear in _REQUIRED_CONF_KEYS."""

@@ -14,12 +14,11 @@ Usage::
         "chapter_id": 7,
         "debate_summary": "El debate ...",
         "session": "Pleno 2026-06-10",
-        "domain": "<domain_key>",
-        "slug": "<participant_slug>"
+        "domain": "<domain_key>"
     }'
 
-The participant ``slug`` is required so every triggered run has a complete,
-validated chapter contract.
+The participant ``slug`` is optional. When it is absent, the pipeline generates
+a generic thumbnail without a participant support photo.
 
 Pipeline overview::
 
@@ -65,7 +64,6 @@ _REQUIRED_CONF_KEYS = (
     "debate_summary",
     "session",
     "domain",
-    "slug",
 )
 
 # ---------------------------------------------------------------------------
@@ -114,7 +112,7 @@ def _task_resolve_photo(ti: TaskInstance, **context: object) -> dict:
     """Resolve participant photo to base64 support image."""
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
     domain_cfg = get_domain_config(conf["domain"])
-    return resolve_participant_photo(conf["slug"], domain_cfg)
+    return resolve_participant_photo(conf.get("slug"), domain_cfg)
 
 
 def _task_art_direction(ti: TaskInstance, **context: object) -> dict:

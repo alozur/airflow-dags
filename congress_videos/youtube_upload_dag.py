@@ -158,7 +158,7 @@ def trigger_thumbnail_generation(ti, **context) -> str | None:
     """Run the generic thumbnail DAG and retain its result for upload configuration."""
     thumbnail_config = ti.xcom_pull(key="thumbnail_config") or {}
     chapter_id = thumbnail_config.get("chapter_id")
-    required_values = ("chapter_id", "debate_summary", "session", "domain", "slug")
+    required_values = ("chapter_id", "debate_summary", "session", "domain")
     if not all(thumbnail_config.get(key) for key in required_values):
         logging.info(
             "Thumbnail input incomplete for chapter_id=%s; uploading without custom thumbnail",
@@ -170,6 +170,7 @@ def trigger_thumbnail_generation(ti, **context) -> str | None:
     child_conf = {
         "youtube_video_id": str(chapter_id),
         **{key: thumbnail_config[key] for key in required_values},
+        "slug": thumbnail_config.get("slug"),
     }
     try:
         dag_run = trigger_dag_api(

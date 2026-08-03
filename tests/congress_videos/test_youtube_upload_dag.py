@@ -483,6 +483,36 @@ class TestTriggerThumbnailGeneration:
             run_id="chapter_thumbnail_test_run",
         )
 
+    def test_triggers_generic_dag_without_participant_slug(self, mocker) -> None:
+        """A chapter without a resolved speaker still receives a generic thumbnail."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        child_run = self._successful_child_run()
+        trigger = mocker.patch(
+            "congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.XCom.get_one",
+            return_value={
+                "chapter_id": 42,
+                "success": True,
+                "output_path": "/thumbnails/42/option_a.png",
+                "title": "Generated title",
+            },
+        )
+        config_without_speaker = {**self.THUMBNAIL_CONFIG, "slug": None}
+
+        trigger_thumbnail_generation(
+            _make_ti({"thumbnail_config": config_without_speaker}), run_id="test_run"
+        )
+
+        trigger.assert_called_once_with(
+            dag_id="generic_thumbnail_generator",
+            conf={"youtube_video_id": "42", **config_without_speaker},
+            run_id="chapter_thumbnail_test_run",
+        )
+
     def test_retrieves_result_by_child_dag_and_exact_triggered_run_id(self, mocker) -> None:
         from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
 
