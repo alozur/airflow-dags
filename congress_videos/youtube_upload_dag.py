@@ -20,6 +20,7 @@ as standalone YouTube videos.
 
 import logging
 import os
+import pathlib
 from datetime import datetime, timedelta
 
 from airflow import DAG
@@ -27,6 +28,19 @@ from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
+from congress_videos.config.thumbnail_config import get_domain_config
+from congress_videos.modules.thumbnail_generation import (
+    resolve_participant_photo,
+    generate_title,
+    persist_results,
+)
+from congress_videos.modules.pikzels_client import (
+    thumbnail_from_text,
+    score_thumbnail,
+    download as pkz_download,
+    to_base64_data_url,
+)
+from congress_videos.config.paths import get_thumbnail_dir
 from utils.airflow_helpers import ensure_project_data_directory, xcom_task
 from utils.env_loader import load_env_if_local
 
@@ -56,6 +70,279 @@ def should_upload(**context):
     hour = context['logical_date'].hour
     threshold = THRESHOLD_BY_HOUR.get(hour, 0)
     return queue_size > threshold
+
+
+# ---------------------------------------------------------------------------
+# Thumbnail pipeline helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_speaker_name(chapter: dict) -> str | None:
+    """Extract the first speaker name from key_speakers or speakers.
+
+    Args:
+        chapter: Chapter dict from the uploadable_chapters view.
+
+    Returns:
+        Speaker name string, or None when no speakers are present.
+
+    Raises:
+        LookupError: Re-raised from downstream participant lookup callers.
+        ValueError: Re-raised from downstream participant lookup callers.
+    """
+    key_speakers = chapter.get("key_speakers") or []
+    speakers = chapter.get("speakers") or []
+
+    # Prefer key_speakers; fall back to speakers
+    if key_speakers:
+        first = key_speakers[0]
+        # key_speakers entries may be dicts {"name": "..."} or plain strings
+        return first["name"] if isinstance(first, dict) else first
+    if speakers:
+        first = speakers[0]
+        return first["name"] if isinstance(first, dict) else first
+    return None
+
+
+def _prepare_thumbnail_config(chapter: dict, db) -> dict:
+    """Build the thumbnail-generation config dict for a single chapter.
+
+    Resolves the normalized speaker name and assembles the six fields
+    expected by the generic thumbnail pipeline.
+
+    Args:
+        chapter: Chapter row from the uploadable_chapters view.
+        db: CongressionalVideoDB instance (unused for name resolution
+            but kept in signature for future participant-lookup extension).
+
+    Returns:
+        Dict with keys: chapter_id, debate_summary, domain, session,
+        normalized_name (may be None on fallback).
+    """
+    chapter_id = chapter.get("chapter_id")
+    title = chapter.get("chapter_title", "")
+    description = chapter.get("description", "")
+    session_number = chapter.get("session_number")
+    session_date = chapter.get("session_date")
+
+    # debate_summary: title + description (D6)
+    debate_summary = (
+        f"{title}\n{description}" if description else title
+    )
+
+    # session label (D6)
+    if session_number is not None:
+        session = f"Sesión {session_number}"
+    else:
+        session = str(session_date) if session_date else None
+
+    # Resolve normalized_name; fall back gracefully on any error
+    try:
+        normalized_name = _resolve_speaker_name(chapter)
+    except (LookupError, ValueError) as exc:
+        logging.warning(
+            "_prepare_thumbnail_config: speaker resolution failed for "
+            "chapter_id=%s: %s — setting normalized_name=None",
+            chapter_id,
+            exc,
+        )
+        normalized_name = None
+
+    return {
+        "chapter_id": chapter_id,
+        "debate_summary": debate_summary,
+        "domain": "congreso",
+        "session": session,
+        "normalized_name": normalized_name,
+    }
+
+
+def _generate_thumbnail(thumbnail_config: dict, chapter_id: int) -> dict:
+    """Run the full Pikzels + OpenAI thumbnail pipeline for a single chapter.
+
+    Sequentially generates options A and B, downloads them, scores each,
+    chooses the best, generates an AI title, and persists both rows to
+    ``video_thumbnails`` with ``youtube_video_id=NULL`` (back-filled post-upload).
+
+    Returns ``{success: False, output_path: None, title: None}`` on any error
+    or when ``normalized_name`` is ``None`` — the DAG run continues unaffected.
+
+    Args:
+        thumbnail_config: Dict from ``_prepare_thumbnail_config``.
+        chapter_id: Chapter DB identifier.
+
+    Returns:
+        Dict with keys: chapter_id, success, output_path, title.
+    """
+    _FAILURE = {"chapter_id": chapter_id, "success": False, "output_path": None, "title": None}
+
+    normalized_name = thumbnail_config.get("normalized_name")
+    if normalized_name is None:
+        logging.info(
+            "_generate_thumbnail: normalized_name is None for chapter_id=%s — skipping",
+            chapter_id,
+        )
+        return _FAILURE
+
+    domain = thumbnail_config.get("domain", "congreso")
+    debate_summary = thumbnail_config.get("debate_summary", "")
+
+    try:
+        domain_cfg = get_domain_config(domain)
+        styles = domain_cfg["styles"]
+
+        # Resolve participant photo (base64)
+        photo_data = resolve_participant_photo(normalized_name, domain_cfg)
+        support_b64 = photo_data.get("support_image_b64", "")
+        support_data_url = (
+            f"data:image/jpeg;base64,{support_b64}" if support_b64 else None
+        )
+
+        # Prepare thumbnail output directory (use chapter_id as stable pre-upload key)
+        thumb_dir = get_thumbnail_dir(str(chapter_id))
+        pathlib.Path(str(thumb_dir)).mkdir(parents=True, exist_ok=True)
+
+        options = []
+        for style_cfg in styles:
+            label = style_cfg["label"]
+            try:
+                gen_result = thumbnail_from_text(
+                    debate_summary,
+                    persona=style_cfg.get("persona"),
+                    style=style_cfg.get("style"),
+                    support_image_base64=support_data_url,
+                )
+                gen_result["label"] = label
+                gen_result["style"] = style_cfg.get("style", "")
+                gen_result["persona"] = style_cfg.get("persona", "")
+                gen_result["prompt"] = debate_summary
+
+                output_url = gen_result.get("output") or gen_result.get("output_url", "")
+                local_path = pathlib.Path(str(thumb_dir)) / f"{label}.png"
+
+                try:
+                    pkz_download(output_url, str(local_path))
+                except Exception as dl_exc:
+                    logging.warning(
+                        "_generate_thumbnail: download failed for %s/%s: %s — skipping option",
+                        chapter_id, label, dl_exc,
+                    )
+                    continue
+
+                image_bytes = local_path.read_bytes()
+                image_b64 = to_base64_data_url(image_bytes, "image/png")
+                score_result = score_thumbnail(image_base64=image_b64)
+                main_score = score_result.get("main_score", 0.0)
+
+                options.append({
+                    "label": label,
+                    "local_path": str(local_path),
+                    "output_url": output_url,
+                    "style": gen_result.get("style", ""),
+                    "persona": gen_result.get("persona", ""),
+                    "prompt": debate_summary,
+                    "main_score": main_score,
+                })
+            except Exception as opt_exc:
+                logging.warning(
+                    "_generate_thumbnail: option %s failed for chapter_id=%s: %s",
+                    label, chapter_id, opt_exc,
+                )
+                raise  # Re-raise so outer try catches and returns failure
+
+        if not options:
+            logging.warning(
+                "_generate_thumbnail: no valid options for chapter_id=%s", chapter_id
+            )
+            return _FAILURE
+
+        # Choose best option (highest score)
+        best = max(options, key=lambda o: o.get("main_score", 0.0))
+        best_label = best["label"]
+
+        # Generate AI title
+        title = generate_title(debate_summary, best, domain_cfg)
+
+        # Persist both rows with youtube_video_id=NULL (back-filled after upload)
+        persist_results(
+            chapter_id=chapter_id,
+            youtube_video_id="",
+            title=title,
+            options=options,
+            best_label=best_label,
+        )
+
+        logging.info(
+            "_generate_thumbnail: chapter_id=%s → best=%s score=%.3f title=%r",
+            chapter_id, best_label, best.get("main_score", 0.0), title,
+        )
+
+        return {
+            "chapter_id": chapter_id,
+            "success": True,
+            "output_path": best["local_path"],
+            "title": title,
+        }
+
+    except Exception as exc:
+        logging.warning(
+            "_generate_thumbnail: pipeline failed for chapter_id=%s: %s — "
+            "returning failure result; upload will proceed without thumbnail",
+            chapter_id, exc,
+        )
+        return _FAILURE
+
+
+def _backfill_thumbnail_video_id(ti, db=None) -> None:
+    """Back-fill the real YouTube video ID in video_thumbnails after upload.
+
+    Reads thumbnail_result and upload_results XComs. Calls
+    ``db.update_thumbnail_youtube_video_id`` only when the thumbnail
+    generation succeeded (``success is True``).
+
+    Args:
+        ti: Airflow TaskInstance.
+        db: CongressionalVideoDB instance (injected for testability; created
+            internally when None).
+    """
+    thumbnail_result = ti.xcom_pull(key="thumbnail_result") or {}
+    if not thumbnail_result.get("success"):
+        logging.info(
+            "_backfill_thumbnail_video_id: thumbnail_result.success is False — "
+            "skipping back-fill"
+        )
+        return
+
+    upload_results = ti.xcom_pull(key="upload_results") or {}
+    upload_details = upload_results.get("upload_details", [])
+
+    chapter_id = thumbnail_result.get("chapter_id")
+
+    # Find the matching upload detail for this chapter
+    youtube_video_id = None
+    for detail in upload_details:
+        if detail.get("chapter_id") == chapter_id:
+            youtube_video_id = detail.get("youtube_video_id")
+            break
+
+    if youtube_video_id is None:
+        logging.warning(
+            "_backfill_thumbnail_video_id: no youtube_video_id found for "
+            "chapter_id=%s in upload_details",
+            chapter_id,
+        )
+        return
+
+    if db is None:
+        from congress_videos.modules.database import CongressionalVideoDB
+        db = CongressionalVideoDB()
+
+    db.update_thumbnail_youtube_video_id(
+        chapter_id=chapter_id, youtube_video_id=youtube_video_id
+    )
+    logging.info(
+        "_backfill_thumbnail_video_id: chapter_id=%s → %r",
+        chapter_id, youtube_video_id,
+    )
 
 
 default_args = {
@@ -126,29 +413,22 @@ with DAG(
             'youtube_metadata_results'
         )
 
-    def _generate_thumbnail_text(ti):
-        from congress_videos.modules import thumbnail_generator as thumb_gen
-        return xcom_task(
-            ti,
-            lambda: thumb_gen.generate_thumbnail_text_for_videos(
-                ti.xcom_pull(key='uploadable_chapters'),
-                ti.xcom_pull(key='youtube_metadata_results')
-            ),
-            'thumbnail_text_results'
-        )
+    def _run_prepare_thumbnail_config(ti):
+        """Resolve speaker name and build thumbnail config struct for the chapter."""
+        from congress_videos.modules.database import CongressionalVideoDB
+        chapters = ti.xcom_pull(key='uploadable_chapters') or []
+        # Uploader processes exactly 1 chapter per run
+        chapter = chapters[0] if chapters else {}
+        db = CongressionalVideoDB()
+        result = _prepare_thumbnail_config(chapter, db)
+        ti.xcom_push(key='thumbnail_config', value=result)
 
-    def _generate_thumbnails(ti):
-        from congress_videos.modules import thumbnail_generator as thumb_gen
-        return xcom_task(
-            ti,
-            lambda: thumb_gen.generate_video_thumbnails(
-                ti.xcom_pull(key='uploadable_chapters'),
-                ti.xcom_pull(key='thumbnail_text_results'),
-                None,
-                ti.xcom_pull(key='data_directory_path')
-            ),
-            'thumbnail_results'
-        )
+    def _run_generate_thumbnail(ti):
+        """Execute the full Pikzels + OpenAI thumbnail pipeline for the chapter."""
+        thumb_cfg = ti.xcom_pull(key='thumbnail_config') or {}
+        chapter_id = thumb_cfg.get('chapter_id')
+        result = _generate_thumbnail(thumb_cfg, chapter_id=chapter_id)
+        ti.xcom_push(key='thumbnail_result', value=result)
 
     def _extract_chapter_videos(ti):
         from congress_videos.modules import video_splitter
@@ -168,11 +448,15 @@ with DAG(
             lambda: prepare_chapter_upload_config(
                 ti.xcom_pull(key='chapter_extraction_results'),
                 ti.xcom_pull(key='youtube_metadata_results'),
-                ti.xcom_pull(key='thumbnail_results'),
+                thumbnail_result=ti.xcom_pull(key='thumbnail_result'),
                 is_testing=context["params"].get("isTesting", False)
             ),
             'upload_config'
         )
+
+    def _run_backfill_thumbnail_video_id(ti):
+        """Back-fill youtube_video_id in video_thumbnails after upload completes."""
+        _backfill_thumbnail_video_id(ti)
 
     # Step 2: Generate YouTube metadata for chapters
     t2 = PythonOperator(
@@ -180,16 +464,16 @@ with DAG(
         python_callable=_generate_youtube_metadata,
     )
 
-    # Step 3: Generate thumbnail text using AI (3-6 words, max 40 chars)
-    t3 = PythonOperator(
-        task_id='generate_thumbnail_text',
-        python_callable=_generate_thumbnail_text,
+    # Step 3 (new): Prepare thumbnail config — resolve speaker, build config struct
+    t3_prepare = PythonOperator(
+        task_id='prepare_thumbnail_config',
+        python_callable=_run_prepare_thumbnail_config,
     )
 
-    # Step 4: Generate thumbnails and save to video_id/chapter_id/ folder
-    t4 = PythonOperator(
-        task_id='generate_thumbnails',
-        python_callable=_generate_thumbnails,
+    # Step 4 (new): Generate thumbnail via Pikzels + score + title + persist
+    t4_generate = PythonOperator(
+        task_id='generate_thumbnail',
+        python_callable=_run_generate_thumbnail,
     )
 
     # Step 5: Extract chapter videos from source YouTube videos using ffmpeg
@@ -307,11 +591,18 @@ with DAG(
         output_xcom_key='chapter_upload_updates'
     )
 
+    # Step 8b: Back-fill youtube_video_id in video_thumbnails
+    t8_backfill = PythonOperator(
+        task_id='backfill_thumbnail_video_id',
+        python_callable=_run_backfill_thumbnail_video_id,
+    )
+
     # Step 9: Alert when chapter upload failures were recorded (after DB write)
     t9 = PythonOperator(
         task_id='check_upload_failures',
         python_callable=_check_upload_failures,
     )
 
-    # Task dependencies
-    t0 >> t1_quota >> t1_skip >> t1_db >> t2 >> t3 >> t4 >> t5 >> t6 >> t7 >> t8_db >> t9
+    # Task dependencies (13 tasks total)
+    # t0 > t1_quota > t1_skip > t1_db > t2 > t3_prepare > t4_generate > t5 > t6 > t7 > t8_db > t8_backfill > t9
+    t0 >> t1_quota >> t1_skip >> t1_db >> t2 >> t3_prepare >> t4_generate >> t5 >> t6 >> t7 >> t8_db >> t8_backfill >> t9

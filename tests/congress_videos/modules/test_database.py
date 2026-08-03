@@ -938,3 +938,44 @@ class TestGetProcessedVideoIds:
         assert "is_processed = TRUE" in sql
         assert "ANY(%s)" in sql
         assert params == (video_ids,)
+
+
+# --------------------------------------------------------------------------- #
+# update_thumbnail_youtube_video_id
+# --------------------------------------------------------------------------- #
+
+class TestUpdateThumbnailYoutubeVideoId:
+
+    def test_executes_update_with_correct_params(self, db):
+        """UPDATE video_thumbnails SET youtube_video_id uses correct param order."""
+        instance, mock_cursor = db
+
+        instance.update_thumbnail_youtube_video_id(
+            chapter_id=42, youtube_video_id="abc123"
+        )
+
+        mock_cursor.execute.assert_called_once()
+        sql, params = mock_cursor.execute.call_args[0]
+        assert "UPDATE" in sql
+        assert "video_thumbnails" in sql
+        assert "youtube_video_id" in sql
+        assert params == ("abc123", 42)
+
+    def test_returns_none(self, db):
+        """Method has no return value (returns None)."""
+        instance, mock_cursor = db
+
+        result = instance.update_thumbnail_youtube_video_id(
+            chapter_id=7, youtube_video_id="xyz789"
+        )
+
+        assert result is None
+
+    def test_accepts_empty_string_video_id(self, db):
+        """Empty-string youtube_video_id is forwarded as a param without error."""
+        instance, mock_cursor = db
+
+        instance.update_thumbnail_youtube_video_id(chapter_id=1, youtube_video_id="")
+
+        _, params = mock_cursor.execute.call_args[0]
+        assert params == ("", 1)

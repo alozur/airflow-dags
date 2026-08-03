@@ -176,3 +176,57 @@ class TestPrepareChapterUploadConfig:
         for field in ["chapter_id", "video_id", "video_file", "title", "description",
                       "category_id", "privacy_status", "tags", "made_for_kids"]:
             assert field in video, f"Missing field: {field}"
+
+
+# ---------------------------------------------------------------------------
+# TestPrepareChapterUploadConfigThumbnailResult
+# Tests for the thumbnail_result integration (output_path + title override)
+# ---------------------------------------------------------------------------
+
+class TestPrepareChapterUploadConfigThumbnailResult:
+
+    def test_success_thumbnail_result_sets_thumbnail_file_and_title(self):
+        """When thumbnail_result={success:True}, thumbnail_file and title are overridden."""
+        chapter_id = 42
+        extraction = _make_extraction_results([_make_chapter(chapter_id)])
+        metadata = _make_metadata_results([
+            _make_topic_metadata(chapter_id, "Original Title", "A description")
+        ])
+        thumbnail_result = {
+            "chapter_id": chapter_id,
+            "success": True,
+            "output_path": "/tmp/ch42/best.png",
+            "title": "AI title",
+        }
+
+        result = prepare_chapter_upload_config(
+            extraction, metadata, thumbnail_result=thumbnail_result
+        )
+
+        assert result is not None
+        video = result["videos"][0]
+        assert video["thumbnail_file"] == "/tmp/ch42/best.png"
+        assert video["title"] == "AI title"
+
+    def test_failure_thumbnail_result_leaves_title_and_thumbnail_unchanged(self):
+        """When thumbnail_result={success:False}, original title used, no thumbnail_file."""
+        chapter_id = 7
+        extraction = _make_extraction_results([_make_chapter(chapter_id)])
+        metadata = _make_metadata_results([
+            _make_topic_metadata(chapter_id, "Original Title", "A description")
+        ])
+        thumbnail_result = {
+            "chapter_id": chapter_id,
+            "success": False,
+            "output_path": None,
+            "title": None,
+        }
+
+        result = prepare_chapter_upload_config(
+            extraction, metadata, thumbnail_result=thumbnail_result
+        )
+
+        assert result is not None
+        video = result["videos"][0]
+        assert "thumbnail_file" not in video or video.get("thumbnail_file") is None
+        assert video["title"] == "Original Title"
