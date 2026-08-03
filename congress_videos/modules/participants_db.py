@@ -163,6 +163,21 @@ def lookup_participant(name: str) -> dict | None:
     return next((r for r in rows if r["normalized_name"] == key), None)
 
 
+def lookup_participant_by_slug(slug: str) -> dict | None:
+    """Look up a participant by its exact stable slug.
+
+    This lookup deliberately does not normalize or fuzz-match the identifier.
+
+    Args:
+        slug: Participant's stable slug.
+
+    Returns:
+        Row dict if an exact slug match is found, None otherwise.
+    """
+    rows = _get_participants_for_lookup()
+    return next((row for row in rows if row.get("slug") == slug), None)
+
+
 def lookup_participant_fuzzy(
     name: str, threshold: float = WIKIDATA_FUZZY_THRESHOLD
 ) -> dict | None:

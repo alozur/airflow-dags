@@ -194,7 +194,7 @@ VALID_CONF = {
     "debate_summary": "El debate sobre pensiones fue intenso.",
     "session": "Pleno 2026-06-10",
     "domain": "congreso",
-    "normalized_name": "garcia_lopez_maria",
+    "slug": "garcia-lopez-maria",
 }
 
 
@@ -208,7 +208,7 @@ class TestValidateInput:
         self.mod = importlib.import_module("congress_videos.generic_thumbnail_generator_dag")
 
     def test_valid_conf_does_not_raise(self) -> None:
-        """All 6 required keys present → no exception."""
+        """All required keys, including the participant slug, are accepted."""
         # Call the underlying function directly (not via Airflow trigger).
         self.mod.validate_input(VALID_CONF)
 
@@ -275,7 +275,7 @@ _FAKE_CONF = {
     "debate_summary": "El Congreso debate el presupuesto general.",
     "session": "Pleno 2026-07-31",
     "domain": "congreso",
-    "normalized_name": "garcia_lopez_maria",
+    "slug": "garcia-lopez-maria",
 }
 
 _FAKE_STYLES = [
@@ -293,7 +293,7 @@ _FAKE_STYLES = [
 
 _FAKE_DOMAIN_CFG = {
     "styles": _FAKE_STYLES,
-    "participants_lookup": lambda name: None,
+    "participants_lookup": lambda slug: None,
     "party_logo_map": None,
 }
 

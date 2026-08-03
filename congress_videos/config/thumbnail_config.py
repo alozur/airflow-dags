@@ -21,13 +21,13 @@ class ConfigError(Exception):
 def _get_thumbnail_config() -> dict:
     """Build and return the full per-domain thumbnail configuration dict.
 
-    Defined as a function to defer import of ``lookup_participant_fuzzy``
+    Defined as a function to defer import of ``lookup_participant_by_slug``
     until call time (avoids circular imports at module load).
 
     Returns:
         Mapping from domain key to per-domain config dict.
     """
-    from congress_videos.modules.participants_db import lookup_participant_fuzzy
+    from congress_videos.modules.participants_db import lookup_participant_by_slug
 
     return {
         "congreso": {
@@ -57,9 +57,9 @@ def _get_thumbnail_config() -> dict:
                     ),
                 },
             ],
-            # Callable that resolves a participant by normalized name.
-            # Signature: (name: str) -> dict | None
-            "participants_lookup": lookup_participant_fuzzy,
+            # Callable that resolves a participant by exact stable slug.
+            # Signature: (slug: str) -> dict | None
+            "participants_lookup": lookup_participant_by_slug,
             # Optional absolute path to a fallback party logo image.
             # Set to None when no logo file is available.
             "party_logo_map": None,

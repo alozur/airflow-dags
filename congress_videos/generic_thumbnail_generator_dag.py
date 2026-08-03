@@ -15,7 +15,7 @@ Usage::
         "debate_summary": "El debate ...",
         "session": "Pleno 2026-06-10",
         "domain": "<domain_key>",
-        "normalized_name": "<normalized_speaker_name>"
+        "slug": "<participant_slug>"
     }'
 """
 
@@ -48,7 +48,7 @@ _REQUIRED_CONF_KEYS = (
     "debate_summary",
     "session",
     "domain",
-    "normalized_name",
+    "slug",
 )
 
 # ---------------------------------------------------------------------------
@@ -97,7 +97,7 @@ def _task_resolve_photo(ti: TaskInstance, **context: object) -> dict:
     """Resolve participant photo to base64 support image."""
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
     domain_cfg = get_domain_config(conf["domain"])
-    return resolve_participant_photo(conf["normalized_name"], domain_cfg)
+    return resolve_participant_photo(conf["slug"], domain_cfg)
 
 
 def _task_generate_thumbnail(label: str, ti: TaskInstance, **context: object) -> dict:

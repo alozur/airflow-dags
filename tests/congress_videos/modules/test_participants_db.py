@@ -228,6 +228,37 @@ class TestLookupParticipant:
         assert result is None
 
 
+class TestLookupParticipantBySlug:
+
+    def test_exact_slug_match_returns_participant_without_fuzzy_matching(self, monkeypatch):
+        """Slug lookup is deterministic and does not delegate to fuzzy matching."""
+        rows = [
+            {"slug": "garcia-ana", "normalized_name": "garcia ana", "display_name": "García, Ana"},
+        ]
+        from congress_videos.modules import participants_db as _mod
+        monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
+        monkeypatch.setattr(
+            _mod,
+            "lookup_participant_fuzzy",
+            lambda *_args, **_kwargs: pytest.fail("slug lookup must not use fuzzy matching"),
+        )
+
+        result = _mod.lookup_participant_by_slug("garcia-ana")
+
+        assert result == rows[0]
+
+    def test_non_exact_slug_returns_none(self, monkeypatch):
+        """A similar but different slug is not treated as a fuzzy match."""
+        from congress_videos.modules import participants_db as _mod
+        monkeypatch.setattr(
+            _mod,
+            "_get_participants_for_lookup",
+            lambda: [{"slug": "garcia-ana", "normalized_name": "garcia ana"}],
+        )
+
+        assert _mod.lookup_participant_by_slug("garcia-anna") is None
+
+
 class TestLookupParticipantFuzzy:
     """Tests for lookup_participant_fuzzy.
 

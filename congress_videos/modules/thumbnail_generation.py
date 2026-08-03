@@ -55,7 +55,7 @@ TITLE_MAX_CHARS = 90
 # ---------------------------------------------------------------------------
 
 
-def resolve_participant_photo(name: str, cfg: dict) -> dict:
+def resolve_participant_photo(slug: str, cfg: dict) -> dict:
     """Resolve the support image for a participant using DB lookup then HTTP download.
 
     Resolution order:
@@ -66,7 +66,7 @@ def resolve_participant_photo(name: str, cfg: dict) -> dict:
     4. If neither source is available, raise ``ValueError``.
 
     Args:
-        name: Normalized participant name to look up.
+        slug: Stable participant slug to look up.
         cfg: Per-domain config dict from ``THUMBNAIL_CONFIG``.
 
     Returns:
@@ -78,10 +78,10 @@ def resolve_participant_photo(name: str, cfg: dict) -> dict:
         ValueError: If the participant has no photo URL and no party logo is configured.
     """
     lookup_fn = cfg["participants_lookup"]
-    participant = lookup_fn(name)
+    participant = lookup_fn(slug)
 
     if participant is None:
-        raise LookupError(f"Participant not found: {name!r}")
+        raise LookupError(f"Participant not found: {slug!r}")
 
     photo_url = participant.get("photo_url")
 
@@ -117,7 +117,7 @@ def resolve_participant_photo(name: str, cfg: dict) -> dict:
         }
 
     raise ValueError(
-        f"no photo source available for participant {name!r}: "
+        f"no photo source available for participant {slug!r}: "
         "photo_url is absent/undownloadable and no party_logo_map configured"
     )
 
