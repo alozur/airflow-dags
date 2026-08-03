@@ -288,6 +288,35 @@ class CongressionalVideoDB:
                 """, (thumbnail_text, thumbnail_path, video_topic_entry_id))
                 logger.info(f"Updated thumbnail info for video topic {video_topic_entry_id}")
 
+    def update_thumbnail_youtube_video_id(
+        self, chapter_id: int, youtube_video_id: str
+    ) -> None:
+        """Back-fill the youtube_video_id for a chapter's thumbnail row after upload.
+
+        Called after the YouTube upload completes to associate the real video ID
+        with the pre-generated thumbnail persisted in ``video_thumbnails``.
+
+        Args:
+            chapter_id: FK to ``video_chapters.chapter_id``.
+            youtube_video_id: The YouTube video ID returned by the upload task.
+        """
+        thumbnails_table = self.pg_conn.get_qualified_table("video_thumbnails")
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {thumbnails_table}
+                    SET youtube_video_id = %s
+                    WHERE chapter_id = %s
+                    """,
+                    (youtube_video_id, chapter_id),
+                )
+        logger.info(
+            "update_thumbnail_youtube_video_id: chapter_id=%d -> youtube_video_id=%r",
+            chapter_id,
+            youtube_video_id,
+        )
+
     def get_interventions_by_main_topic(self, main_topic_entry_id: str) -> List[Dict]:
         """Get all interventions for a specific main topic"""
         with self.pg_conn.get_connection() as conn:

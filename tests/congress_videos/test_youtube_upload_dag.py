@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -37,26 +37,79 @@ class TestYoutubeUploadDagLoads:
         assert dag is not None
         assert dag.dag_id == "congress_youtube_chapter_uploader"
 
-    def test_dag_has_twelve_tasks(self):
+    def test_dag_has_thirteen_tasks(self):
+        """DAG must have 13 tasks after replacing t3/t4 with 3 new tasks (net +1)."""
         from congress_videos.youtube_upload_dag import dag
-        assert len(dag.tasks) == 12
+        assert len(dag.tasks) == 13
 
     def test_expected_task_ids_present(self):
+        """New task IDs present; legacy Pillow task IDs absent."""
         from congress_videos.youtube_upload_dag import dag
         task_ids = {t.task_id for t in dag.tasks}
+        # Core tasks that must still exist
         assert "trigger_youtube_upload" in task_ids
         assert "mark_chapters_uploaded" in task_ids
         assert "check_upload_failures" in task_ids
+        # New Pikzels-based tasks
+        assert "prepare_thumbnail_config" in task_ids
+        assert "generate_thumbnail" in task_ids
+        assert "backfill_thumbnail_video_id" in task_ids
+        # Legacy Pillow tasks must be gone
+        assert "generate_thumbnail_text" not in task_ids
+        assert "generate_thumbnails" not in task_ids
 
-    def test_chain_t7_t8_t9(self):
+    def test_chain_t7_t8_backfill_t9(self):
+        """New chain: trigger -> mark_uploaded -> backfill -> check_failures."""
         from congress_videos.youtube_upload_dag import dag
         tasks_by_id = {t.task_id: t for t in dag.tasks}
         t7 = tasks_by_id["trigger_youtube_upload"]
         t8 = tasks_by_id["mark_chapters_uploaded"]
+        t8_backfill = tasks_by_id["backfill_thumbnail_video_id"]
         t9 = tasks_by_id["check_upload_failures"]
 
         assert t8.task_id in {t.task_id for t in t7.downstream_list}
-        assert t9.task_id in {t.task_id for t in t8.downstream_list}
+        assert t8_backfill.task_id in {t.task_id for t in t8.downstream_list}
+        assert t9.task_id in {t.task_id for t in t8_backfill.downstream_list}
+
+    def test_prepare_precedes_generate(self):
+        """prepare_thumbnail_config must be upstream of generate_thumbnail."""
+        from congress_videos.youtube_upload_dag import dag
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        prepare = tasks_by_id["prepare_thumbnail_config"]
+        generate = tasks_by_id["generate_thumbnail"]
+
+        upstream_ids = {t.task_id for t in generate.upstream_list}
+        assert prepare.task_id in upstream_ids
+
+    def test_generate_precedes_extract(self):
+        """generate_thumbnail must be a direct upstream of extract_chapter_videos."""
+        from congress_videos.youtube_upload_dag import dag
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        generate = tasks_by_id["generate_thumbnail"]
+        extract = tasks_by_id["extract_chapter_videos"]
+
+        upstream_ids = {t.task_id for t in extract.upstream_list}
+        assert generate.task_id in upstream_ids
+
+    def test_extract_precedes_upload_config(self):
+        """extract_chapter_videos must be a direct upstream of prepare_upload_config."""
+        from congress_videos.youtube_upload_dag import dag
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        extract = tasks_by_id["extract_chapter_videos"]
+        upload_config = tasks_by_id["prepare_upload_config"]
+
+        upstream_ids = {t.task_id for t in upload_config.upstream_list}
+        assert extract.task_id in upstream_ids
+
+    def test_backfill_after_mark_uploaded(self):
+        """backfill_thumbnail_video_id must be downstream of mark_chapters_uploaded."""
+        from congress_videos.youtube_upload_dag import dag
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        mark = tasks_by_id["mark_chapters_uploaded"]
+        backfill = tasks_by_id["backfill_thumbnail_video_id"]
+
+        downstream_ids = {t.task_id for t in mark.downstream_list}
+        assert backfill.task_id in downstream_ids
 
 
 # ---------------------------------------------------------------------------
@@ -281,3 +334,246 @@ class TestDryRun:
         trigger_upload_with_config(ti, params={"dry_run": False}, run_id="test_real")
 
         trigger_mock.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Helper: build a minimal chapter dict for thumbnail config tests
+# ---------------------------------------------------------------------------
+
+def _make_chapter(
+    chapter_id: int = 42,
+    title: str = "Debate sobre presupuestos",
+    description: str = "Una discusión importante",
+    session_number: int | None = 80,
+    session_date: str | None = "2025-06-10",
+    key_speakers: list | None = None,
+    speakers: list | None = None,
+) -> dict:
+    return {
+        "chapter_id": chapter_id,
+        "chapter_title": title,
+        "description": description,
+        "session_number": session_number,
+        "session_date": session_date,
+        "key_speakers": key_speakers if key_speakers is not None else [{"name": "Ana García"}],
+        "speakers": speakers if speakers is not None else ["Ana García"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# _prepare_thumbnail_config
+# ---------------------------------------------------------------------------
+
+class TestPrepareThumbnailConfig:
+
+    def test_resolved_speaker_returns_full_config(self):
+        """Happy path: chapter with key_speakers produces full config dict."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_chapter(
+            chapter_id=42,
+            title="Debate sobre presupuestos",
+            description="Una discusión importante",
+            session_number=80,
+            key_speakers=[{"name": "Ana García"}],
+        )
+        mock_db = MagicMock()
+
+        result = _prepare_thumbnail_config(chapter, mock_db)
+
+        assert result["normalized_name"] == "Ana García"
+        assert result["domain"] == "congreso"
+        assert result["debate_summary"] != ""
+        assert result["session"] is not None
+        assert result["chapter_id"] == 42
+
+    def test_lookup_error_sets_normalized_name_to_none(self):
+        """LookupError from speaker lookup yields normalized_name=None without raise."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_chapter(
+            key_speakers=[{"name": "Unknown Speaker"}],
+        )
+        # db is not called here; error path is simulated via absent lookup
+        # The function catches LookupError from the name resolution path.
+        # We patch the internal lookup call.
+        with patch(
+            "congress_videos.youtube_upload_dag._resolve_speaker_name",
+            side_effect=LookupError("not found"),
+        ):
+            result = _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert result["normalized_name"] is None
+        assert result["domain"] == "congreso"
+
+    def test_empty_speakers_sets_normalized_name_to_none(self):
+        """Chapter with empty key_speakers and speakers produces normalized_name=None."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_chapter(key_speakers=[], speakers=[])
+
+        result = _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert result["normalized_name"] is None
+
+
+# ---------------------------------------------------------------------------
+# _generate_thumbnail
+# ---------------------------------------------------------------------------
+
+class TestGenerateThumbnail:
+
+    def _make_thumbnail_config(self, normalized_name="Ana García", chapter_id=42):
+        return {
+            "chapter_id": chapter_id,
+            "normalized_name": normalized_name,
+            "domain": "congreso",
+            "debate_summary": "Un debate importante sobre el presupuesto",
+            "session": "Sesión 80",
+        }
+
+    def test_happy_path_returns_success_with_path_and_title(self, mocker):
+        """Happy path: pikzels + thumbnail_generation mocked → success result."""
+        from congress_videos.youtube_upload_dag import _generate_thumbnail
+
+        thumb_cfg = self._make_thumbnail_config()
+
+        mock_domain_cfg = {"styles": [
+            {"label": "option_a", "style": "s1", "persona": "p1"},
+            {"label": "option_b", "style": "s2", "persona": "p2"},
+        ], "participants_lookup": MagicMock(return_value={"photo_url": None}), "party_logo_map": None}
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.get_domain_config",
+            return_value=mock_domain_cfg,
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.resolve_participant_photo",
+            return_value={"support_image_b64": "base64data", "source": "photo"},
+        )
+        mock_gen = mocker.patch(
+            "congress_videos.youtube_upload_dag.thumbnail_from_text",
+            side_effect=[
+                {"output": "http://pikzels.com/a.png", "label": "option_a", "style": "s1",
+                 "persona": "p1", "prompt": "prompt"},
+                {"output": "http://pikzels.com/b.png", "label": "option_b", "style": "s2",
+                 "persona": "p2", "prompt": "prompt"},
+            ],
+        )
+        mock_download = mocker.patch(
+            "congress_videos.youtube_upload_dag.pkz_download",
+            return_value=None,
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.to_base64_data_url",
+            return_value="data:image/png;base64,abc",
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.score_thumbnail",
+            side_effect=[
+                {"main_score": 0.8},
+                {"main_score": 0.6},
+            ],
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.generate_title",
+            return_value="AI Generated Title",
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.persist_results", return_value=None)
+        mocker.patch("pathlib.Path.read_bytes", return_value=b"imgbytes")
+        mocker.patch("pathlib.Path.mkdir", return_value=None)
+
+        result = _generate_thumbnail(thumb_cfg, chapter_id=42)
+
+        assert result["success"] is True
+        assert result["output_path"] is not None
+        assert result["title"] == "AI Generated Title"
+
+    def test_normalized_name_none_returns_failure_without_api_calls(self, mocker):
+        """When normalized_name is None, skip Pikzels/OpenAI and return failure struct."""
+        from congress_videos.youtube_upload_dag import _generate_thumbnail
+
+        thumb_cfg = self._make_thumbnail_config(normalized_name=None)
+
+        mock_pikzels = mocker.patch(
+            "congress_videos.youtube_upload_dag.thumbnail_from_text",
+        )
+        mock_resolve = mocker.patch(
+            "congress_videos.youtube_upload_dag.resolve_participant_photo",
+        )
+
+        result = _generate_thumbnail(thumb_cfg, chapter_id=42)
+
+        assert result["success"] is False
+        assert result["output_path"] is None
+        assert result["title"] is None
+        mock_pikzels.assert_not_called()
+        mock_resolve.assert_not_called()
+
+    def test_pikzels_error_returns_failure_without_raising(self, mocker):
+        """Non-retryable Pikzels error → failure struct, no exception propagates."""
+        from congress_videos.youtube_upload_dag import _generate_thumbnail
+
+        thumb_cfg = self._make_thumbnail_config(normalized_name="Ana García")
+
+        mock_domain_cfg = {"styles": [
+            {"label": "option_a", "style": "s1", "persona": "p1"},
+            {"label": "option_b", "style": "s2", "persona": "p2"},
+        ], "participants_lookup": MagicMock(), "party_logo_map": None}
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.get_domain_config",
+            return_value=mock_domain_cfg,
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.resolve_participant_photo",
+            return_value={"support_image_b64": "b64", "source": "photo"},
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.thumbnail_from_text",
+            side_effect=ValueError("Pikzels API error"),
+        )
+        mocker.patch("pathlib.Path.mkdir", return_value=None)
+
+        result = _generate_thumbnail(thumb_cfg, chapter_id=42)
+
+        assert result["success"] is False
+        assert result["output_path"] is None
+        assert result["title"] is None
+
+
+# ---------------------------------------------------------------------------
+# _backfill_thumbnail_video_id
+# ---------------------------------------------------------------------------
+
+class TestBackfillThumbnailVideoId:
+
+    def test_calls_update_when_thumbnail_success_true(self):
+        """When thumbnail_result.success=True, update_thumbnail_youtube_video_id is called."""
+        from congress_videos.youtube_upload_dag import _backfill_thumbnail_video_id
+
+        ti = _make_ti({
+            "thumbnail_result": {"success": True, "chapter_id": 42, "output_path": "/tmp/x.png", "title": "T"},
+            "upload_results": {"upload_details": [{"chapter_id": 42, "youtube_video_id": "abc123"}]},
+        })
+        mock_db = MagicMock()
+
+        _backfill_thumbnail_video_id(ti, mock_db)
+
+        mock_db.update_thumbnail_youtube_video_id.assert_called_once_with(
+            chapter_id=42, youtube_video_id="abc123"
+        )
+
+    def test_skips_update_when_thumbnail_success_false(self):
+        """When thumbnail_result.success=False, update is NOT called."""
+        from congress_videos.youtube_upload_dag import _backfill_thumbnail_video_id
+
+        ti = _make_ti({
+            "thumbnail_result": {"success": False, "chapter_id": 42, "output_path": None, "title": None},
+            "upload_results": {"upload_details": [{"chapter_id": 42, "youtube_video_id": "abc123"}]},
+        })
+        mock_db = MagicMock()
+
+        _backfill_thumbnail_video_id(ti, mock_db)
+
+        mock_db.update_thumbnail_youtube_video_id.assert_not_called()

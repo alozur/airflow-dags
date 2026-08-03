@@ -8,6 +8,14 @@ Generates eye-catching YouTube thumbnails with:
 - Session number
 - Gold border
 - Professional styling with shadows and effects
+
+NOTE — Uploader dead code (2026-08):
+``generate_thumbnail_text_for_videos`` and ``generate_video_thumbnails`` are no
+longer called by ``congress_youtube_chapter_uploader``; that DAG now uses the
+shared Pikzels pipeline (``congress_videos.modules.thumbnail_generation``).
+These functions remain here because they are still imported by the standalone
+scripts ``generate_thumbnails_today.py`` and ``generate_thumbnails_last_two.py``.
+Removal is deferred to a follow-up change once those scripts are migrated.
 """
 
 import logging
