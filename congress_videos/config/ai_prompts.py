@@ -158,6 +158,15 @@ ART_DIRECTION_USER_PROMPT_TEMPLATE = (
     "Devuelve SOLO el JSON con los campos text, background, person y mood. Sin markdown."
 )
 
+# Injected into the user prompt when art_direction is retried after a low Pikzels score.
+# Forces OpenAI to produce a DIFFERENT visual approach from the previous brief.
+ART_DIRECTION_RETRY_INSTRUCTION = (
+    "INSTRUCCIÓN DE REINTENTO: La miniatura anterior obtuvo una puntuación baja. "
+    "Debes generar un concepto visual COMPLETAMENTE DIFERENTE al brief anterior. "
+    "Cambia el entorno, el tipo de persona y el texto. "
+    "Brief anterior (NO repitas este enfoque): {previous_brief_json}"
+)
+
 
 # Thumbnail Title Generation (Pikzels + OpenAI pipeline)
 THUMBNAIL_TITLE_SYSTEM_PROMPT = (

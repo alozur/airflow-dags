@@ -26,11 +26,12 @@ Pipeline overview::
       → resolve_participant_photo
         → art_direction
           → generate_thumbnail_option_a → download_option_a → score_option_a
-          → generate_thumbnail_option_b → download_option_b → score_option_b
-                                                              → choose_best_option
-                                                                → generate_title
-                                                                 → persist_results
-                                                                   → thumbnail_result
+            → check_score_threshold [BranchPythonOperator]
+                ├─[score < threshold]→ art_direction_retry
+                │   → generate_thumbnail_option_b → download_option_b → score_option_b ─┐
+                └─[score >= threshold]──────────────────────────────────────────────────┤
+                   → choose_best_option (trigger_rule=none_failed_min_one_success) ◄────┘
+                     → generate_title → persist_results → thumbnail_result
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.models.taskinstance import TaskInstance
-from airflow.operators.python import PythonOperator
+from airflow.operators.python import BranchPythonOperator, PythonOperator
 
 from congress_videos.config.paths import get_thumbnail_dir
 from congress_videos.config.thumbnail_config import ConfigError, get_domain_config
@@ -123,10 +124,18 @@ def _task_art_direction(ti: TaskInstance, **context: object) -> dict:
 
 
 def _task_generate_thumbnail(label: str, ti: TaskInstance, **context: object) -> dict:
-    """Generate one thumbnail option via Pikzels using the art-direction brief."""
+    """Generate one thumbnail option via Pikzels using the art-direction brief.
+
+    option_a pulls from task_ids='art_direction' (primary brief).
+    option_b pulls from task_ids='art_direction_retry' (retry brief with
+    different-approach instruction).
+    """
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
     photo_data: dict = ti.xcom_pull(task_ids="resolve_participant_photo") or {}
-    art_brief: dict = ti.xcom_pull(task_ids="art_direction") or {}
+    # Each option uses the correct art-direction source:
+    # option_a → primary art_direction; option_b → art_direction_retry brief.
+    brief_source = "art_direction" if label == "option_a" else "art_direction_retry"
+    art_brief: dict = ti.xcom_pull(task_ids=brief_source) or {}
     domain_cfg = get_domain_config(conf["domain"])
 
     styles = domain_cfg["styles"]
@@ -188,10 +197,15 @@ def _task_score_option(label: str, ti: TaskInstance, **context: object) -> dict:
 
 
 def _task_choose_best(ti: TaskInstance, **context: object) -> dict:
-    """Select the best option from the two scored options."""
+    """Select the best option from the available scored options.
+
+    On the fast path only option_a is present; option_b XCom is {} and filtered out.
+    On the retry path both options are non-empty.
+    """
     option_a: dict = ti.xcom_pull(task_ids="score_option_a") or {}
     option_b: dict = ti.xcom_pull(task_ids="score_option_b") or {}
-    return choose_best_option([option_a, option_b])
+    options = [x for x in [option_a, option_b] if x]
+    return choose_best_option(options)
 
 
 def _task_generate_title(ti: TaskInstance, **context: object) -> str:
@@ -203,18 +217,23 @@ def _task_generate_title(ti: TaskInstance, **context: object) -> str:
 
 
 def _task_persist_results(ti: TaskInstance, **context: object) -> None:
-    """Persist both thumbnail options to the video_thumbnails table."""
+    """Persist available thumbnail options to the video_thumbnails table.
+
+    On the fast path, option_b XCom is {} and filtered out → exactly 1 row.
+    On the retry path, both options are non-empty → 2 rows.
+    """
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
     option_a: dict = ti.xcom_pull(task_ids="score_option_a") or {}
     option_b: dict = ti.xcom_pull(task_ids="score_option_b") or {}
     best: dict = ti.xcom_pull(task_ids="choose_best_option") or {}
     title: str = ti.xcom_pull(task_ids="generate_title") or ""
 
+    options = [x for x in [option_a, option_b] if x]
     persist_results(
         chapter_id=int(conf["chapter_id"]),
         youtube_video_id=str(conf["youtube_video_id"]),
         title=title,
-        options=[option_a, option_b],
+        options=options,
         best_label=best.get("label", ""),
     )
 
@@ -230,6 +249,33 @@ def _task_thumbnail_result(ti: TaskInstance, **context: object) -> dict:
         "output_path": best.get("local_path"),
         "title": title,
     }
+
+
+def _task_check_score_threshold(ti: TaskInstance, **context: object) -> str:
+    """BranchPythonOperator callable: compare option_a score against domain threshold.
+
+    Returns:
+        'art_direction_retry' when score < threshold (retry path).
+        'choose_best_option' when score >= threshold (fast path).
+    """
+    conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
+    score_result: dict = ti.xcom_pull(task_ids="score_option_a") or {}
+    score: float = score_result.get("main_score", 0.0)
+    domain_cfg = get_domain_config(conf["domain"])
+    threshold: int = domain_cfg.get("score_retry_threshold", 60)
+    return "art_direction_retry" if score < threshold else "choose_best_option"
+
+
+def _task_art_direction_retry(ti: TaskInstance, **context: object) -> dict:
+    """Generate a DIFFERENT art-direction brief for the retry option.
+
+    Pulls the original brief from task_ids='art_direction' and passes it as
+    previous_brief so art_direct injects the retry instruction.
+    """
+    conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
+    previous_brief: dict = ti.xcom_pull(task_ids="art_direction") or {}
+    domain_cfg = get_domain_config(conf["domain"])
+    return art_direct(conf["debate_summary"], domain_cfg, previous_brief=previous_brief)
 
 
 # ---------------------------------------------------------------------------
@@ -251,8 +297,8 @@ with DAG(
     dag_id="generic_thumbnail_generator",
     default_args=default_args,
     description=(
-        "On-demand DAG: generates 2 thumbnail options via Pikzels, "
-        "scores them, picks the best, generates a title, and persists results."
+        "On-demand DAG: generates 1 or 2 thumbnail options via Pikzels with "
+        "score-gated retry, picks the best, generates a title, and persists results."
     ),
     schedule=None,
     start_date=datetime.now(timezone.utc) - timedelta(days=1),
@@ -282,26 +328,36 @@ with DAG(
         execution_timeout=_GENERATION_TIMEOUT,
     )
 
-    t_gen_b = PythonOperator(
-        task_id="generate_thumbnail_option_b",
-        python_callable=lambda ti, **ctx: _task_generate_thumbnail("option_b", ti=ti, **ctx),
-        execution_timeout=_GENERATION_TIMEOUT,
-    )
-
     t_dl_a = PythonOperator(
         task_id="download_option_a",
         python_callable=lambda ti, **ctx: _task_download_option("option_a", ti=ti, **ctx),
-    )
-
-    t_dl_b = PythonOperator(
-        task_id="download_option_b",
-        python_callable=lambda ti, **ctx: _task_download_option("option_b", ti=ti, **ctx),
     )
 
     t_score_a = PythonOperator(
         task_id="score_option_a",
         python_callable=lambda ti, **ctx: _task_score_option("option_a", ti=ti, **ctx),
         execution_timeout=_GENERATION_TIMEOUT,
+    )
+
+    t_check_score = BranchPythonOperator(
+        task_id="check_score_threshold",
+        python_callable=_task_check_score_threshold,
+    )
+
+    t_art_direction_retry = PythonOperator(
+        task_id="art_direction_retry",
+        python_callable=_task_art_direction_retry,
+    )
+
+    t_gen_b = PythonOperator(
+        task_id="generate_thumbnail_option_b",
+        python_callable=lambda ti, **ctx: _task_generate_thumbnail("option_b", ti=ti, **ctx),
+        execution_timeout=_GENERATION_TIMEOUT,
+    )
+
+    t_dl_b = PythonOperator(
+        task_id="download_option_b",
+        python_callable=lambda ti, **ctx: _task_download_option("option_b", ti=ti, **ctx),
     )
 
     t_score_b = PythonOperator(
@@ -313,6 +369,7 @@ with DAG(
     t_choose = PythonOperator(
         task_id="choose_best_option",
         python_callable=_task_choose_best,
+        trigger_rule="none_failed_min_one_success",
     )
 
     t_title = PythonOperator(
@@ -331,15 +388,16 @@ with DAG(
     )
 
     # Task dependency graph:
-    #   validate_input
-    #     → resolve_participant_photo
-    #       → art_direction
-    #         → generate_thumbnail_option_a → download_option_a → score_option_a
-    #         → generate_thumbnail_option_b → download_option_b → score_option_b
-    #                                                             → choose_best_option
-    #                                                               → generate_title
-    #                                                                 → persist_results → thumbnail_result
+    #   validate_input → resolve_participant_photo → art_direction
+    #     → generate_thumbnail_option_a → download_option_a → score_option_a
+    #       → check_score_threshold [BranchPythonOperator]
+    #           ├─[score < threshold]→ art_direction_retry
+    #           │                        → generate_thumbnail_option_b → download_option_b → score_option_b ─┐
+    #           └─[score >= threshold]──────────────────────────────────────────────────────────────────────┤
+    #                                  → choose_best_option (trigger_rule=none_failed_min_one_success) ◄────┘
+    #                                    → generate_title → persist_results → thumbnail_result
     t_validate >> t_resolve_photo >> t_art_direction
-    t_art_direction >> t_gen_a >> t_dl_a >> t_score_a
-    t_art_direction >> t_gen_b >> t_dl_b >> t_score_b
-    [t_score_a, t_score_b] >> t_choose >> t_title >> t_persist >> t_result
+    t_art_direction >> t_gen_a >> t_dl_a >> t_score_a >> t_check_score
+    t_check_score >> t_art_direction_retry >> t_gen_b >> t_dl_b >> t_score_b >> t_choose
+    t_check_score >> t_choose
+    t_choose >> t_title >> t_persist >> t_result
