@@ -104,6 +104,8 @@ EXPECTED_TASK_IDS = {
     "generate_thumbnail_option_a",
     "download_option_a",
     "score_option_a",
+    "check_score_threshold",
+    "art_direction_retry",
     "generate_thumbnail_option_b",
     "download_option_b",
     "score_option_b",
@@ -174,8 +176,8 @@ class TestDagDependencies:
     def test_generate_thumbnail_option_a_upstream_is_art_direction(self) -> None:
         assert self._upstream_ids("generate_thumbnail_option_a") == {"art_direction"}
 
-    def test_generate_thumbnail_option_b_upstream_is_art_direction(self) -> None:
-        assert self._upstream_ids("generate_thumbnail_option_b") == {"art_direction"}
+    def test_generate_thumbnail_option_b_upstream_is_art_direction_retry(self) -> None:
+        assert self._upstream_ids("generate_thumbnail_option_b") == {"art_direction_retry"}
 
     def test_download_option_a_upstream_is_generate_thumbnail_option_a(self) -> None:
         assert self._upstream_ids("download_option_a") == {"generate_thumbnail_option_a"}
@@ -189,8 +191,14 @@ class TestDagDependencies:
     def test_score_option_b_upstream_is_download_option_b(self) -> None:
         assert self._upstream_ids("score_option_b") == {"download_option_b"}
 
-    def test_choose_best_option_upstream_is_both_score_tasks(self) -> None:
-        assert self._upstream_ids("choose_best_option") == {"score_option_a", "score_option_b"}
+    def test_check_score_threshold_upstream_is_score_option_a(self) -> None:
+        assert self._upstream_ids("check_score_threshold") == {"score_option_a"}
+
+    def test_art_direction_retry_upstream_is_check_score_threshold(self) -> None:
+        assert self._upstream_ids("art_direction_retry") == {"check_score_threshold"}
+
+    def test_choose_best_option_upstream_is_check_score_threshold_and_score_option_b(self) -> None:
+        assert self._upstream_ids("choose_best_option") == {"check_score_threshold", "score_option_b"}
 
     def test_generate_title_upstream_is_choose_best_option(self) -> None:
         assert self._upstream_ids("generate_title") == {"choose_best_option"}
@@ -698,3 +706,269 @@ class TestTaskScoreOption:
         dag_mod._task_score_option("option_a", ti=ti)
 
         mock_pkz.to_base64_data_url.assert_called_once_with(expected_bytes, "image/png")
+
+
+# ---------------------------------------------------------------------------
+# D-1 additions: BranchPythonOperator type + trigger_rule assertions
+# ---------------------------------------------------------------------------
+
+
+class TestDagBranchAndTriggerRule:
+    """D-1: check_score_threshold must be a BranchPythonOperator;
+    choose_best_option must have trigger_rule='none_failed_min_one_success'."""
+
+    @pytest.fixture(autouse=True)
+    def _dag_mod(self) -> None:
+        if "congress_videos.generic_thumbnail_generator_dag" in sys.modules:
+            del sys.modules["congress_videos.generic_thumbnail_generator_dag"]
+        self.mod = importlib.import_module("congress_videos.generic_thumbnail_generator_dag")
+        self.dag = self.mod.dag
+
+    def test_check_score_threshold_is_branch_python_operator(self) -> None:
+        """check_score_threshold must be a BranchPythonOperator."""
+        from airflow.operators.python import BranchPythonOperator
+
+        task = self.dag.get_task("check_score_threshold")
+        assert isinstance(task, BranchPythonOperator), (
+            f"check_score_threshold must be BranchPythonOperator, got {type(task).__name__}"
+        )
+
+    def test_choose_best_option_trigger_rule_is_none_failed_min_one_success(self) -> None:
+        """choose_best_option must use trigger_rule='none_failed_min_one_success'."""
+        task = self.dag.get_task("choose_best_option")
+        assert task.trigger_rule == "none_failed_min_one_success", (
+            f"choose_best_option trigger_rule must be 'none_failed_min_one_success', "
+            f"got {task.trigger_rule!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# D-2: TestTaskCheckScoreThreshold — unit tests for branch callable
+# ---------------------------------------------------------------------------
+
+
+class TestTaskCheckScoreThreshold:
+    """D-2: _task_check_score_threshold returns correct branch task_id per score."""
+
+    def _make_ti(self, score: float) -> MagicMock:
+        score_result = {"main_score": score, "label": "option_a", "style": "A"}
+        return _make_fake_ti({"score_option_a": score_result, "validate_input": _FAKE_CONF})
+
+    def test_score_below_threshold_returns_retry(self, mocker) -> None:
+        """Score 40 < 60 → returns 'art_direction_retry'."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        mocker.patch.object(
+            dag_mod, "get_domain_config", return_value={**_FAKE_DOMAIN_CFG, "score_retry_threshold": 60}
+        )
+        ti = self._make_ti(40.0)
+        result = dag_mod._task_check_score_threshold(ti)
+        assert result == "art_direction_retry"
+
+    def test_score_equal_threshold_returns_fast_path(self, mocker) -> None:
+        """Score 60 == 60 → returns 'choose_best_option' (fast path)."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        mocker.patch.object(
+            dag_mod, "get_domain_config", return_value={**_FAKE_DOMAIN_CFG, "score_retry_threshold": 60}
+        )
+        ti = self._make_ti(60.0)
+        result = dag_mod._task_check_score_threshold(ti)
+        assert result == "choose_best_option"
+
+    def test_score_above_threshold_returns_fast_path(self, mocker) -> None:
+        """Score 75 > 60 → returns 'choose_best_option' (fast path)."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        mocker.patch.object(
+            dag_mod, "get_domain_config", return_value={**_FAKE_DOMAIN_CFG, "score_retry_threshold": 60}
+        )
+        ti = self._make_ti(75.0)
+        result = dag_mod._task_check_score_threshold(ti)
+        assert result == "choose_best_option"
+
+    def test_domain_override_threshold_75_score_70_triggers_retry(self, mocker) -> None:
+        """Domain threshold 75, score 70 < 75 → retry."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        mocker.patch.object(
+            dag_mod, "get_domain_config", return_value={**_FAKE_DOMAIN_CFG, "score_retry_threshold": 75}
+        )
+        ti = self._make_ti(70.0)
+        result = dag_mod._task_check_score_threshold(ti)
+        assert result == "art_direction_retry"
+
+    def test_domain_override_threshold_75_score_75_fast_path(self, mocker) -> None:
+        """Domain threshold 75, score 75 == 75 → fast path."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        mocker.patch.object(
+            dag_mod, "get_domain_config", return_value={**_FAKE_DOMAIN_CFG, "score_retry_threshold": 75}
+        )
+        ti = self._make_ti(75.0)
+        result = dag_mod._task_check_score_threshold(ti)
+        assert result == "choose_best_option"
+
+    def test_missing_main_score_defaults_to_zero_triggers_retry(self, mocker) -> None:
+        """When score_option_a has no main_score, defaults to 0.0 → retry."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        mocker.patch.object(
+            dag_mod, "get_domain_config", return_value={**_FAKE_DOMAIN_CFG, "score_retry_threshold": 60}
+        )
+        ti = _make_fake_ti({"score_option_a": {}, "validate_input": _FAKE_CONF})
+        result = dag_mod._task_check_score_threshold(ti)
+        assert result == "art_direction_retry"
+
+
+# ---------------------------------------------------------------------------
+# D-3: TestTaskArtDirectionRetry — unit tests for art_direction_retry callable
+# ---------------------------------------------------------------------------
+
+
+class TestTaskArtDirectionRetry:
+    """D-3: _task_art_direction_retry pulls from task_ids='art_direction' (not self)
+    and calls art_direct with previous_brief set.
+    """
+
+    def test_pulls_from_art_direction_not_self(self, mocker) -> None:
+        """_task_art_direction_retry must pull previous_brief from task_ids='art_direction'."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "art_direction": _FAKE_ART_BRIEF,
+            }
+        )
+
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mock_art_direct = mocker.patch.object(dag_mod, "art_direct", return_value={"text": "NUEVO"})
+
+        dag_mod._task_art_direction_retry(ti)
+
+        # Verify pull was from 'art_direction', not 'art_direction_retry'
+        pull_calls = [str(c) for c in ti.xcom_pull.call_args_list]
+        assert any("art_direction" in c and "art_direction_retry" not in c for c in pull_calls), (
+            "_task_art_direction_retry must pull from task_ids='art_direction', not 'art_direction_retry'"
+        )
+
+    def test_calls_art_direct_with_previous_brief(self, mocker) -> None:
+        """art_direct must be called with previous_brief=<the original brief>."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "art_direction": _FAKE_ART_BRIEF,
+            }
+        )
+
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mock_art_direct = mocker.patch.object(dag_mod, "art_direct", return_value={"text": "NUEVO"})
+
+        dag_mod._task_art_direction_retry(ti)
+
+        mock_art_direct.assert_called_once()
+        _, kwargs = mock_art_direct.call_args
+        assert "previous_brief" in kwargs, "art_direct must be called with previous_brief= kwarg"
+        assert kwargs["previous_brief"] == _FAKE_ART_BRIEF
+
+    def test_returns_art_direct_result(self, mocker) -> None:
+        """_task_art_direction_retry must return the result of art_direct."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        expected = {"text": "REINTENTO", "background": "plaza", "person": "joven", "mood": "urgencia"}
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "art_direction": _FAKE_ART_BRIEF,
+            }
+        )
+
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mocker.patch.object(dag_mod, "art_direct", return_value=expected)
+
+        result = dag_mod._task_art_direction_retry(ti)
+        assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# D-4: TestTaskChooseBestEmptyFilter + TestTaskPersistResultsEmptyFilter
+# ---------------------------------------------------------------------------
+
+
+class TestTaskChooseBestEmptyFilter:
+    """D-4: _task_choose_best filters out empty option_b when it is {} (fast path)."""
+
+    def test_empty_option_b_is_filtered_single_item_list(self, mocker) -> None:
+        """When option_b is {}, choose_best_option is called with [option_a] only."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        option_a = {"label": "option_a", "main_score": 72.0, "output_url": "u", "local_path": "/a.png", "style": "A"}
+        ti = _make_fake_ti(
+            {
+                "score_option_a": option_a,
+                "score_option_b": {},
+            }
+        )
+        mock_choose = mocker.patch.object(dag_mod, "choose_best_option", return_value={**option_a, "is_chosen": True})
+
+        dag_mod._task_choose_best(ti)
+
+        mock_choose.assert_called_once()
+        options_arg = mock_choose.call_args[0][0]
+        assert len(options_arg) == 1, "choose_best_option must be called with 1 item when option_b is {}"
+        assert options_arg[0]["label"] == "option_a"
+
+    def test_both_options_present_passes_two_items(self, mocker) -> None:
+        """When both options are non-empty, choose_best_option gets 2 items."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        option_a = {"label": "option_a", "main_score": 72.0, "output_url": "u", "local_path": "/a.png", "style": "A"}
+        option_b = {"label": "option_b", "main_score": 85.0, "output_url": "u", "local_path": "/b.png", "style": "B"}
+        ti = _make_fake_ti({"score_option_a": option_a, "score_option_b": option_b})
+
+        mock_choose = mocker.patch.object(dag_mod, "choose_best_option", return_value={**option_b, "is_chosen": True})
+        dag_mod._task_choose_best(ti)
+
+        options_arg = mock_choose.call_args[0][0]
+        assert len(options_arg) == 2
+
+
+class TestTaskPersistResultsEmptyFilter:
+    """D-4: _task_persist_results filters out empty option_b when it is {} (fast path)."""
+
+    def test_empty_option_b_persists_one_row(self, mocker) -> None:
+        """When option_b is {}, persist_results is called with options=[option_a] only."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        option_a = {"label": "option_a", "main_score": 72.0, "output_url": "u", "local_path": "/a.png", "style": "A"}
+        best = {**option_a, "is_chosen": True}
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "score_option_a": option_a,
+                "score_option_b": {},
+                "choose_best_option": best,
+                "generate_title": "El debate",
+            }
+        )
+
+        mock_persist = mocker.patch.object(dag_mod, "persist_results")
+        dag_mod._task_persist_results(ti)
+
+        mock_persist.assert_called_once()
+        call_kwargs = mock_persist.call_args[1]
+        options_passed = call_kwargs.get("options", mock_persist.call_args[0][3] if mock_persist.call_args[0] else None)
+        # options could be positional — inspect via call_args
+        all_args = mock_persist.call_args
+        # Find the options list from either positional or keyword args
+        options_list = None
+        if all_args.kwargs.get("options") is not None:
+            options_list = all_args.kwargs["options"]
+        elif len(all_args.args) >= 4:
+            options_list = all_args.args[3]
+        assert options_list is not None, "persist_results must be called with options argument"
+        assert len(options_list) == 1, f"persist_results options must have 1 item, got {len(options_list)}"
+        assert options_list[0]["label"] == "option_a"

@@ -23,6 +23,7 @@ from typing import Optional
 import requests
 
 from congress_videos.config.ai_prompts import (
+    ART_DIRECTION_RETRY_INSTRUCTION,
     ART_DIRECTION_SYSTEM_PROMPT,
     ART_DIRECTION_USER_PROMPT_TEMPLATE,
     THUMBNAIL_TITLE_SYSTEM_PROMPT,
@@ -77,18 +78,35 @@ _ART_BRIEF_REQUIRED_KEYS = ("text", "background", "person", "mood")
 # ---------------------------------------------------------------------------
 
 
-def art_direct(debate_summary: str, domain_cfg: dict) -> dict:
+def art_direct(
+    debate_summary: str,
+    domain_cfg: dict,
+    previous_brief: dict | None = None,
+) -> dict:
     """Generate an art-direction brief for a Pikzels thumbnail via OpenAI.
 
     Re-prompts once when the response is incomplete, then returns a safe
     fallback brief. This callable must never prevent the thumbnail DAG from
     continuing.
+
+    Args:
+        debate_summary: Text summary of the parliamentary debate.
+        domain_cfg: Per-domain configuration dict from THUMBNAIL_CONFIG.
+        previous_brief: When set, injects ART_DIRECTION_RETRY_INSTRUCTION
+            into the prompt to force a DIFFERENT visual approach. Used by
+            the art_direction_retry DAG task. None means first generation.
     """
+    import json
 
     def _call_api(extra_instruction: str = "") -> Optional[dict]:
         user_prompt = ART_DIRECTION_USER_PROMPT_TEMPLATE.format(
             debate_summary=debate_summary
         )
+        if previous_brief is not None:
+            retry_instruction = ART_DIRECTION_RETRY_INSTRUCTION.format(
+                previous_brief_json=json.dumps(previous_brief, ensure_ascii=False)
+            )
+            user_prompt += f"\n\n{retry_instruction}"
         if extra_instruction:
             user_prompt += f"\n\nINSTRUCCIÓN ADICIONAL: {extra_instruction}"
         try:

@@ -33,7 +33,7 @@ def _get_thumbnail_config() -> dict:
         "congreso": {
             # Visual styles for Pikzels thumbnail generation.
             # Each entry maps a label to a Pikzels Template layout (A, B, or C).
-            # Exactly 2 entries — one per generated option for A/B testing.
+            # option_a is always generated; option_b is generated only on retry.
             "styles": [
                 {
                     "label": "option_a",
@@ -50,6 +50,9 @@ def _get_thumbnail_config() -> dict:
             # Optional absolute path to a fallback party logo image.
             # Set to None when no logo file is available.
             "party_logo_map": None,
+            # Pikzels score threshold for conditional retry (0-100).
+            # If option_a scores below this value, option_b is generated.
+            "score_retry_threshold": 60,
         }
     }
 

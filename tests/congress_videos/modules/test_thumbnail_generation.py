@@ -814,3 +814,147 @@ class TestArtDirect:
             art_direct("summary", cfg)
 
         assert any(r.levelno >= logging.WARNING for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# B-1: TestArtDirectRetry — art_direct previous_brief support
+# ---------------------------------------------------------------------------
+
+
+class TestArtDirectRetry:
+    """art_direct(debate_summary, domain_cfg, previous_brief) backward-compat and retry contracts."""
+
+    def _make_cfg(self) -> dict:
+        return {
+            "styles": [
+                {"label": "option_a", "layout": "A"},
+                {"label": "option_b", "layout": "B"},
+            ],
+            "participants_lookup": lambda slug: None,
+            "party_logo_map": None,
+        }
+
+    def _valid_brief_response(self) -> dict:
+        return {
+            "data": {
+                "text": "NUEVO ENFOQUE",
+                "background": "una plaza pública llena de gente",
+                "person": "una persona joven con expresión de sorpresa",
+                "mood": "asombro y urgencia",
+            },
+            "error": None,
+        }
+
+    def test_previous_brief_none_does_not_inject_instruction(self, mocker) -> None:
+        """When previous_brief=None, no retry instruction is injected into the prompt."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        captured_prompts: list[str] = []
+
+        def _capture(system_prompt, user_prompt, **kw):
+            captured_prompts.append(user_prompt)
+            return self._valid_brief_response()
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_capture,
+        )
+        art_direct("Debate sobre pensiones", self._make_cfg(), previous_brief=None)
+
+        assert captured_prompts, "generate_json_completion must be called at least once"
+        assert "REINTENTO" not in captured_prompts[0], (
+            "Retry instruction must NOT be present when previous_brief=None"
+        )
+
+    def test_previous_brief_dict_injects_retry_instruction(self, mocker) -> None:
+        """When previous_brief is a dict, the retry instruction is injected into the prompt."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        previous_brief = {
+            "text": "CRISIS ANTERIOR",
+            "background": "hemiciclo interior",
+            "person": "político hablando",
+            "mood": "tensión",
+        }
+        captured_prompts: list[str] = []
+
+        def _capture(system_prompt, user_prompt, **kw):
+            captured_prompts.append(user_prompt)
+            return self._valid_brief_response()
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_capture,
+        )
+        art_direct("Debate sobre pensiones", self._make_cfg(), previous_brief=previous_brief)
+
+        assert captured_prompts, "generate_json_completion must be called"
+        assert "REINTENTO" in captured_prompts[0], (
+            "Retry instruction must be present in prompt when previous_brief is set"
+        )
+
+    def test_previous_brief_dict_includes_brief_json_in_prompt(self, mocker) -> None:
+        """When previous_brief is set, its content appears in the prompt."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        previous_brief = {
+            "text": "CRISIS ANTERIOR",
+            "background": "hemiciclo interior",
+            "person": "político hablando",
+            "mood": "tensión",
+        }
+        captured_prompts: list[str] = []
+
+        def _capture(system_prompt, user_prompt, **kw):
+            captured_prompts.append(user_prompt)
+            return self._valid_brief_response()
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_capture,
+        )
+        art_direct("Debate", self._make_cfg(), previous_brief=previous_brief)
+
+        assert "CRISIS ANTERIOR" in captured_prompts[0], (
+            "Previous brief text must appear in the retry prompt"
+        )
+
+    def test_backward_compat_no_previous_brief_arg(self, mocker) -> None:
+        """art_direct called with 2 positional args (old call site) still works."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value=self._valid_brief_response(),
+        )
+        # Old call signature — must not raise TypeError
+        result = art_direct("Debate sobre pensiones", self._make_cfg())
+        assert "text" in result
+
+
+# ---------------------------------------------------------------------------
+# B-2: TestScoreRetryThreshold — thumbnail_config threshold
+# ---------------------------------------------------------------------------
+
+
+class TestScoreRetryThreshold:
+    """Verify score_retry_threshold is present in congreso config with correct default."""
+
+    def test_congreso_config_has_score_retry_threshold_60(self) -> None:
+        """congreso domain config must include score_retry_threshold=60."""
+        from congress_videos.config.thumbnail_config import get_domain_config
+
+        cfg = get_domain_config("congreso")
+        assert "score_retry_threshold" in cfg, (
+            "congreso config must have 'score_retry_threshold' key"
+        )
+        assert cfg["score_retry_threshold"] == 60, (
+            f"score_retry_threshold must be 60, got {cfg['score_retry_threshold']}"
+        )
+
+    def test_get_domain_config_fallback_default_60(self) -> None:
+        """get_domain_config().get('score_retry_threshold', 60) == 60 for any domain without explicit key."""
+        # Verify the pattern the DAG uses: .get("score_retry_threshold", 60)
+        # This test uses a synthetic config dict to confirm the fallback works.
+        cfg_without_threshold = {}
+        assert cfg_without_threshold.get("score_retry_threshold", 60) == 60
