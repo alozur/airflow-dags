@@ -21,7 +21,7 @@ as standalone YouTube videos.
 import logging
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.models import XCom
@@ -45,6 +45,9 @@ IS_DEVELOPMENT = POSTGRES_SCHEMA == 'development'
 # 14:00: skip if queue_size <= 20 (REQ-THRESH-02)
 # 17:00: skip if queue_size < 1  (REQ-THRESH-03)
 THRESHOLD_BY_HOUR = {11: 10, 14: 20, 17: 0}
+STALE_RUN_TOLERANCE_MINUTES = int(
+    os.getenv("CHAPTER_UPLOADER_STALE_RUN_TOLERANCE_MINUTES", "30")
+)
 _THUMBNAIL_DAG_ID = "generic_thumbnail_generator"
 _THUMBNAIL_RESULT_TASK_ID = "thumbnail_result"
 
@@ -55,6 +58,17 @@ def should_upload(**context):
     Used as the python_callable for t1_skip (ShortCircuitOperator).
     Receives full Airflow context via **context (REQ-GATE-01).
     """
+    data_interval_end = context.get("data_interval_end")
+    if data_interval_end:
+        now = datetime.now(timezone.utc)
+        staleness = now - data_interval_end
+        if staleness > timedelta(minutes=STALE_RUN_TOLERANCE_MINUTES):
+            logging.info(
+                "Skipping stale re-parse replay: data_interval_end=%s is %s "
+                "behind now=%s (tolerance=%dm)",
+                data_interval_end, staleness, now, STALE_RUN_TOLERANCE_MINUTES,
+            )
+            return False
     ti = context['ti']
     upload_quota = ti.xcom_pull(key='upload_quota') or {}
     queue_size = upload_quota.get('queue_size', 0)
