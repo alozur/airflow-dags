@@ -438,6 +438,45 @@ class TestGenerateTitle:
         assert "\U0001f525" not in result
         assert any("WARNING" in r.levelname or r.levelno >= logging.WARNING for r in caplog.records)
 
+    def test_all_uppercase_title_triggers_reprompt(self, mocker):
+        """First response entirely in UPPERCASE triggers a second OpenAI call."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        upper_title = "PSOE VOTA NO A LOS PRESUPUESTOS"
+        normal_title = "El PSOE vota no a los presupuestos"
+        call_count = {"n": 0}
+
+        def _side_effect(system_prompt, user_prompt, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {"data": {"title": upper_title}, "error": None}
+            return {"data": {"title": normal_title}, "error": None}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side_effect,
+        )
+        cfg = _make_cfg()
+        result = generate_title("summary", self._best_opt(), cfg)
+
+        assert call_count["n"] == 2
+        assert result == normal_title
+
+    def test_title_with_acronym_and_lowercase_accepted_first_attempt(self, mocker):
+        """Title with party acronym but normal casing must NOT trigger a false re-prompt."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        title = "El PSOE vota no a los presupuestos"
+        mock_completion = mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value={"data": {"title": title}, "error": None},
+        )
+        cfg = _make_cfg()
+        result = generate_title("summary", self._best_opt(), cfg)
+
+        assert mock_completion.call_count == 1
+        assert result == title
+
 
 # ---------------------------------------------------------------------------
 # T-04: persist_results

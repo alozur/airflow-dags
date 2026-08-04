@@ -174,7 +174,10 @@ THUMBNAIL_TITLE_SYSTEM_PROMPT = (
     "Creas títulos dramáticos, directos y en español que capturan la esencia del debate parlamentario. "
     "Los títulos deben generar urgencia y curiosidad sin perder rigor informativo. "
     "RESTRICCIONES ABSOLUTAS: máximo 90 caracteres; sin emojis; sin comillas; "
-    "sin símbolos de canal; sin hashtags; sin los caracteres: # @ | ~ ^."
+    "sin símbolos de canal; sin hashtags; sin los caracteres: # @ | ~ ^. "
+    "Usa mayúsculas y minúsculas normales (capitalización estándar en español): "
+    "NUNCA escribas el título entero en mayúsculas, pero respeta las siglas de "
+    "partidos (PSOE, PP, VOX, IVA)."
 )
 
 THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE = """Genera un título para miniatura de YouTube basado en el siguiente debate parlamentario.
@@ -198,6 +201,7 @@ REQUISITOS:
 - Español, tono dramático político
 - Sin emojis, sin comillas, sin símbolos de canal
 - Sin los caracteres: # @ | ~ ^
+- Capitalización estándar en español (mayúsculas y minúsculas normales), NUNCA todo en mayúsculas, respetando las siglas de partidos (PSOE, PP, VOX, IVA)
 - Refleja el contenido visual de la miniatura descrito en el estilo y el prompt
 
 Devuelve SOLO el JSON, sin markdown."""
