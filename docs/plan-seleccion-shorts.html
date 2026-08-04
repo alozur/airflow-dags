@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plan - Selección de Shorts del Congreso</title>
+<style>
+  :root { --bg:#0f1117; --card:#161822; --border:#242636; --text:#cdd6f4; --muted:#6c7086; --accent:#89b4fa; --green:#a6e3a1; --yellow:#f9e2af; --purple:#cba6f7; --orange:#fab387; --code:#1e1e2e; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { max-width:1100px; margin:0 auto; padding:2rem; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; line-height:1.7; }
+  h1 { color:var(--accent); font-size:2rem; margin-bottom:.25rem; }
+  h2 { color:var(--purple); font-size:1.4rem; margin:2rem 0 .75rem; padding-bottom:.3rem; border-bottom:1px solid var(--border); }
+  h3 { color:var(--green); font-size:1.1rem; margin:1.3rem 0 .5rem; }
+  p { margin-bottom:.7rem; }
+  ul,ol { padding-left:1.5rem; margin-bottom:.75rem; }
+  li { margin-bottom:.3rem; }
+  code { padding:.15em .4em; border-radius:4px; background:var(--code); color:var(--orange); font-size:.88em; }
+  pre { margin:.75rem 0; padding:1rem 1.2rem; overflow-x:auto; border-radius:6px; background:var(--code); color:var(--green); font-size:.85rem; line-height:1.5; }
+  table { width:100%; margin:.75rem 0; border-collapse:collapse; font-size:.9rem; }
+  th,td { padding:.5rem .75rem; text-align:left; border:1px solid var(--border); }
+  th { color:var(--accent); background:#1a1c2a; }
+  td { background:var(--card); }
+  tr:nth-child(even) td { background:#1c1e2e; }
+  .subtitle,.muted { color:var(--muted); }
+  .subtitle { margin-bottom:1.5rem; font-size:.95rem; }
+  .card { margin:1rem 0; padding:1.2rem 1.5rem; border:1px solid var(--border); border-radius:8px; background:var(--card); }
+  .info { border-left:3px solid var(--accent); }
+  .ok { border-left:3px solid var(--green); }
+  .warn { border-left:3px solid var(--yellow); }
+  .footer { margin-top:3rem; padding-top:1rem; border-top:1px solid var(--border); color:var(--muted); font-size:.85rem; }
+</style>
+</head>
+<body>
+
+<h1>Plan - Selección de Shorts del Congreso</h1>
+<p class="subtitle">Estado: propuesta · Ámbito: derivar, seleccionar y publicar Shorts a partir de intervenciones largas que ya fueron publicadas.</p>
+
+<div class="card info">
+  <strong>Objetivo.</strong> Convertir intervenciones largas ya publicadas en varios Shorts distintos cuando haya
+  más de un momento con valor editorial. El pipeline de Shorts no segmenta sesiones plenarias: consume las
+  intervenciones que produzca el DAG de largos y que el proceso de relevancia haya publicado.
+</div>
+
+<div class="card ok">
+  <strong>Reglas de producto decididas.</strong>
+  <ul>
+    <li>Los Shorts proceden de intervenciones largas ya publicadas.</li>
+    <li>Una intervención puede generar más de un Short.</li>
+    <li>Los clips de una misma intervención deben ser sustancialmente distintos; no se publican variantes casi idénticas.</li>
+    <li>La selección de Shorts es un plan separado del DAG que divide la sesión por intervención.</li>
+  </ul>
+</div>
+
+<h2>1. Estado actual</h2>
+<div class="card">
+  <p>El flujo existente ya utiliza Reap, pero su entrada es <code>video_chapters</code>. Selecciona capítulos ya
+    publicados, con relevancia suficiente y una duración de 2 a 15 minutos; después aplica
+    <code>select_pretrim_window</code>, envía un clip a Reap y persiste los clips devueltos en
+    <code>video_shorts</code>.</p>
+  <pre>[video_chapters publicados]
+        -> get_chapters_for_shorts
+        -> pretrim de una ventana SRT
+        -> Reap crea varios clips
+        -> video_shorts
+        -> uploader de Shorts</pre>
+  <p><strong>Limitación:</strong> ese flujo no puede consumir la nueva unidad editorial
+    <code>video_interventions</code>; además, no establece reglas de diversidad cuando Reap devuelve varios
+    candidatos de la misma fuente.</p>
+</div>
+
+<h2>2. Arquitectura objetivo</h2>
+<pre>[video_interventions]
+        |
+        | sólo intervenciones con vídeo largo ya publicado
+        v
+[candidate discovery]
+        |
+        v
+[pretrim editorial opcional] -> [Reap]
+        |                         |
+        |                         v
+        |                 [clips candidatos]
+        v                         |
+             [ranking + diversidad + límites]
+                         |
+                         v
+             [intervention_shorts seleccionados]
+                         |
+                         v
+                   [uploader de Shorts]</pre>
+
+<h2>3. Alcance</h2>
+<table>
+  <tr><th>Incluido</th><th>Excluido</th></tr>
+  <tr><td>Descubrir intervenciones largas publicadas que pueden generar Shorts</td><td>Segmentar una sesión completa en intervenciones</td></tr>
+  <tr><td>Elegir una ventana de entrada para Reap</td><td>Decidir la relevancia o el orden de los vídeos largos</td></tr>
+  <tr><td>Recibir varios clips de Reap y seleccionar los distintos</td><td>Modificar el DAG de subida de vídeos largos</td></tr>
+  <tr><td>Persistir el ciclo de vida de cada Short</td><td>Publicar automáticamente variantes duplicadas</td></tr>
+</table>
+
+<h2>4. Candidatos de entrada</h2>
+<div class="card">
+  <p>La consulta de candidatos sustituirá <code>get_chapters_for_shorts</code> por una consulta específica para
+    intervenciones. Una intervención será elegible sólo cuando:</p>
+  <ul>
+    <li>su vídeo largo asociado ya esté publicado;</li>
+    <li>no tenga un trabajo de Reap activo o una ejecución previa válida para la misma versión de la fuente;</li>
+    <li>tenga SRT y archivo de vídeo disponibles;</li>
+    <li>no esté explícitamente excluida por una regla futura de relevancia o moderación.</li>
+  </ul>
+  <p>La duración no será un filtro rígido. Una intervención breve puede contener un Short válido; una larga puede
+    generar varios. La duración sólo orienta la ventana de entrada y el coste de procesamiento.</p>
+</div>
+
+<h2>5. Selección de la ventana</h2>
+<div class="card warn">
+  <p><code>select_pretrim_window</code> ya localiza una ventana mediante frases del SRT y resuelve los timestamps
+    contra el archivo real. Se mantiene como punto de partida, pero cambia su responsabilidad: preparar una buena
+    entrada para Reap, no decidir por sí sola qué Short se publica.</p>
+  <ol>
+    <li>Aplicar pretrim sólo cuando la intervención sea mayor que la ventana configurada.</li>
+    <li>Guardar el rango, la versión del prompt y si la resolución SRT funcionó.</li>
+    <li>Si el LLM o la coincidencia de frases falla, enviar la intervención completa a Reap o descartarla según el
+      límite de duración configurado; nunca inventar timestamps.</li>
+    <li>Eliminar la duración fija de 360 segundos como regla de producto: el objetivo y mínimos serán configuración
+      del DAG y se calibrarán con resultados reales.</li>
+  </ol>
+</div>
+
+<h2>6. Varios Shorts por intervención</h2>
+<div class="card">
+  <p>Reap puede devolver varios clips por un mismo trabajo. El sistema puede seleccionar más de uno, pero cada
+    clip debe superar las tres guardas siguientes:</p>
+  <table>
+    <tr><th>Guarda</th><th>Regla</th></tr>
+    <tr><td>Calidad</td><td>El <code>reap_virality_score</code> supera un umbral configurable.</td></tr>
+    <tr><td>Diversidad</td><td>No comparte de forma sustancial el mismo tramo, argumento o frase de apertura con un clip ya aceptado.</td></tr>
+    <tr><td>Frecuencia</td><td>Respeta un máximo configurable de Shorts aceptados por intervención y por ventana temporal.</td></tr>
+  </table>
+  <p>La diversidad necesita límites temporales de cada clip. La primera fase debe confirmar que Reap los devuelve.
+    Si la API no los expone, habrá que alinearlos contra el SRT o retranscribir el clip antes de permitir múltiples
+    publicaciones automáticas. Publicar más de uno sin conocer el solape sería automatizar duplicados.</p>
+</div>
+
+<h2>7. Persistencia</h2>
+<div class="card">
+  <p>Crear <code>intervention_shorts</code>, una tabla nueva. La actual <code>video_shorts</code> tiene una clave
+    foránea obligatoria a <code>video_chapters</code> y ya registra el pipeline existente; modificarla mezclaría
+    datos y ciclos de vida de dos fuentes distintas.</p>
+  <table>
+    <tr><th>Campo</th><th>Propósito</th></tr>
+    <tr><td><code>id</code>, <code>intervention_id</code></td><td>Identidad del Short y su intervención fuente.</td></tr>
+    <tr><td><code>source_youtube_video_id</code></td><td>Vídeo largo publicado del que deriva.</td></tr>
+    <tr><td><code>pretrim_start_secs</code>, <code>pretrim_end_secs</code></td><td>Rango enviado a Reap.</td></tr>
+    <tr><td><code>reap_project_id</code>, <code>reap_clip_id</code></td><td>Referencias al trabajo y clip de Reap.</td></tr>
+    <tr><td><code>clip_start_secs</code>, <code>clip_end_secs</code></td><td>Ubicación en la intervención, necesaria para deduplicación.</td></tr>
+    <tr><td><code>reap_virality_score</code>, <code>selection_reason</code></td><td>Razón auditable de selección.</td></tr>
+    <tr><td><code>reap_status</code>, <code>local_file_path</code></td><td>Ciclo de vida y artefacto local.</td></tr>
+    <tr><td><code>youtube_video_id</code>, <code>is_uploaded</code></td><td>Resultado de la publicación.</td></tr>
+  </table>
+  <p>La tabla tendrá unicidad en <code>reap_clip_id</code>, índices por <code>intervention_id</code>, estado y
+    proyecto de Reap. La inserción inicial es un placeholder por trabajo; al completarse, se inserta una fila por
+    clip real, igual que el patrón vigente.</p>
+</div>
+
+<h2>8. Fases de entrega</h2>
+<table>
+  <tr><th>Fase</th><th>Resultado</th><th>Validación</th></tr>
+  <tr><td>0. Contrato Reap</td><td>Fixture real de respuesta de Reap con puntuación, duración y límites temporales.</td><td>Confirmar si la API entrega los offsets necesarios para diversidad.</td></tr>
+  <tr><td>1. Datos</td><td>Migración y métodos para <code>intervention_shorts</code>.</td><td>Reintentos sin duplicados y sin afectar <code>video_shorts</code>.</td></tr>
+  <tr><td>2. Preparación</td><td>DAG que descubre intervenciones publicadas, pre-recorta y crea trabajos de Reap.</td><td>Fallback explícito si el SRT no resuelve una ventana.</td></tr>
+  <tr><td>3. Selección</td><td>Sensor que recupera clips, aplica umbral, diversidad y máximo por intervención.</td><td>Se aceptan varios clips distintos; se rechazan solapes.</td></tr>
+  <tr><td>4. Publicación</td><td>Extender el uploader para consumir <code>intervention_shorts</code>.</td><td>Estados de éxito y fallo trazables por clip.</td></tr>
+  <tr><td>5. Feedback</td><td>DAG de Analytics para CTR, retención y vistas de Shorts.</td><td>Calibrar duración, umbral y límite de clips con datos reales.</td></tr>
+</table>
+
+<h2>9. Criterios de aceptación</h2>
+<div class="card ok">
+  <ul>
+    <li>Una intervención larga publicada puede iniciar un trabajo de Reap sin pasar por <code>video_chapters</code>.</li>
+    <li>Una intervención puede generar y conservar varios clips candidatos.</li>
+    <li>El selector acepta varios clips sólo si superan el umbral y son distinguibles.</li>
+    <li>Una reejecución no duplica trabajos ni clips persistidos.</li>
+    <li>El pipeline existente de <code>video_shorts</code> sigue funcionando sin cambios.</li>
+    <li>Un error de Reap, crédito agotado o fallo de pretrim deja un estado visible y recuperable.</li>
+    <li>La publicación guarda la relación entre el Short de YouTube, el clip de Reap y la intervención fuente.</li>
+  </ul>
+</div>
+
+<h2>10. Archivos previstos</h2>
+<div class="card">
+  <ul>
+    <li>Nuevo DAG de preparación y selección de Shorts desde intervenciones, o adaptación controlada de los DAGs Reap existentes.</li>
+    <li>Nuevos métodos de base de datos y migraciones para <code>intervention_shorts</code>.</li>
+    <li>Adaptación de <code>congress_videos/srt_helpers.py</code> para parámetros configurables de pretrim.</li>
+    <li>Adaptación de <code>congress_videos/reap_api.py</code> para conservar límites temporales si Reap los expone.</li>
+    <li>Tests de selección, deduplicación, reintentos y carga de DAG.</li>
+  </ul>
+</div>
+
+<div class="footer">Documento hermano de <code>docs/plan-mejora-seleccion-momentos.html</code>. Ese documento cubre intervenciones largas; este cubre Shorts derivados de ellas.</div>
+
+</body>
+</html>
