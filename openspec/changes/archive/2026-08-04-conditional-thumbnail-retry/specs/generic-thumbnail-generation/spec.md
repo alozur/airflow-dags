@@ -132,7 +132,7 @@ treated as a zero-score competitor.
 
 #### Scenario: Absent option_b is not scored as 0
 
-- GIVEN the fast path ran (retry tasks skipped) so `option_b` XCom is empty or None
+- GIVEN the fast path ran so `option_b` XCom is empty or None
 - WHEN `choose_best_option` builds the candidate list
 - THEN the candidate list contains exactly 1 item (`option_a`)
 - AND no comparison against a zero-score placeholder occurs
@@ -170,14 +170,13 @@ where `{label}` is `"option_a"` or `"option_b"`.
 - GIVEN `option_a` scores at or above threshold
 - WHEN the generation tasks execute
 - THEN exactly 1 call to `pikzels_client.thumbnail_from_text` is made
-- AND only `option_a` is downloaded to disk
 
 #### Scenario: Retry path — option_a and option_b both generated
 
 - GIVEN `option_a` scores below threshold
 - WHEN the retry tasks execute
 - THEN exactly 2 calls to `pikzels_client.thumbnail_from_text` are made
-- AND both options are downloaded to disk at their respective paths
+- AND both options are downloaded to disk
 
 #### Scenario: Local path is created if it does not exist
 
