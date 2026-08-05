@@ -90,7 +90,7 @@
   <ol>
     <li><a href="#scope">Alcance y no alcance</a></li>
     <li><a href="#contract">Contrato del DAG</a></li>
-    <li><a href="#diarization">Diarización y validación</a></li>
+    <li><a href="#segmentation">Diarización y segmentación semántica</a></li>
     <li><a href="#data">Modelo de datos</a></li>
     <li><a href="#flow">Flujo del DAG</a></li>
     <li><a href="#integration">Integración con el monitor</a></li>
@@ -132,30 +132,50 @@
     también valida el audio. El contenido del SRT no circula por XCom: sólo rutas, contadores y resultados pequeños.</p>
 </div>
 
-<h2 id="diarization">3. Diarización y validación</h2>
+<h2 id="segmentation">3. Diarización y segmentación semántica</h2>
 <div class="card warn">
-  <p><strong>Decisión técnica.</strong> La fuente principal de límites será diarización acústica: detectar cuándo
-    cambia la voz, no depender de frases concretas del presidente. Las frases del SRT quedan como señal auxiliar y
-    fallback, no como el mecanismo central.</p>
+  <p><strong>Decisión técnica.</strong> El DAG combina dos capas con responsabilidades distintas. La diarización
+    acústica detecta los cambios de voz y define los límites duros de cada intervención. Chonkie detecta cambios
+    semánticos en el SRT y genera límites blandos: contexto y subtemas dentro de una intervención, pero nunca la
+    divide por sí solo.</p>
   <p><code>whisper.cpp -tdrz</code> es experimental: detecta cambios de orador, pero no identifica a la persona.
     Por ello, el nombre se obtiene del texto alrededor del turno cuando exista un anuncio; el fallback es
     <code>orador_desconocido</code>.</p>
 </div>
 
+<div class="card info">
+  <table>
+    <tr><th>Señal</th><th>Responsabilidad</th><th>Uso en el DAG</th></tr>
+    <tr><td>Diarización</td><td>Cambio de voz</td><td>Límite duro de intervención.</td></tr>
+    <tr><td>Chonkie SemanticChunker</td><td>Cambio de tema</td><td>Subtema, resumen y candidatos posteriores para Shorts.</td></tr>
+    <tr><td>Silencios y frases del presidente</td><td>Señal débil</td><td>Fallback técnico si no hay diarización o Chonkie falla.</td></tr>
+  </table>
+  <p>Chonkie recibirá texto construido a partir de bloques SRT con un mapa de offsets de caracteres a bloques. Sus
+    <code>start_index</code> y <code>end_index</code> se resolverán al inicio y fin del bloque SRT correspondiente,
+    de modo que cada subtema conserve timestamps reproducibles sobre el vídeo.</p>
+  <p class="small muted">Benchmark inicial documentado en <code>docs/CHONKIE_SRT_BENCHMARK.md</code>: la configuración
+    candidata usa embeddings multilingües, <code>chunk_size=512</code>, mínimo de cuatro oraciones y nunca usa
+    saltos de línea SRT como delimitadores semánticos. Después fusiona los subtemas inferiores a 90 s con el vecino
+    cronológico de mayor similitud; 90 s es baseline de prueba, no un valor definitivo.</p>
+</div>
+
 <h3>Validación antes de integrar</h3>
 <ol>
-  <li><strong>Prueba local:</strong> ejecutar diarización sobre 30 minutos reales de una sesión española que incluya
-    una intervención normal, preguntas-respuestas rápidas y transiciones de presidencia.</li>
-  <li><strong>Revisión de calidad:</strong> contrastar manualmente los cambios detectados con el audio y el SRT.
-    Evaluar turnos perdidos, falsos cortes y utilidad editorial de los límites.</li>
+  <li><strong>Prueba local:</strong> ejecutar diarización y Chonkie sobre 30 minutos reales de una sesión española
+    que incluya una intervención normal, preguntas-respuestas rápidas y transiciones de presidencia.</li>
+  <li><strong>Revisión de calidad:</strong> contrastar manualmente los cambios de voz con el audio y los cambios
+    semánticos con el SRT. Evaluar turnos perdidos, falsos cortes y subtemas sin utilidad editorial.</li>
+  <li><strong>Trazabilidad:</strong> comprobar que cada chunk de Chonkie se resuelve a un rango SRT válido sin
+    perder ni inventar timestamps. Usar embeddings multilingües validados para español parlamentario.</li>
   <li><strong>Prueba en NAS:</strong> repetir exactamente la misma muestra con un único proceso, midiendo tiempo,
     CPU, memoria e impacto sobre Airflow.</li>
-  <li><strong>Decisión de producción:</strong> activar diarización sólo si funciona de forma útil en español y no
-    degrada los servicios del NAS. Si no supera la prueba, el DAG permanece operativo con el fallback textual.</li>
+  <li><strong>Decisión de producción:</strong> activar cada capa sólo si funciona de forma útil en español y no
+    degrada los servicios del NAS. Un fallo en una capa no bloquea la otra ni la persistencia de intervenciones.</li>
 </ol>
 <p class="small muted">No se ejecutará diarización completa con clustering sobre sesiones de 7-10 horas en el
 NAS como requisito inicial. El NAS tiene CPU limitada y carga elevada; la diarización se procesará en serie y podrá
-limitarse a tramos ambiguos si la prueba completa resulta demasiado costosa.</p>
+limitarse a tramos ambiguos. Chonkie debe tener además un tamaño máximo de chunk: una sesión entera no se entregará
+como un único bloque aunque conserve el mismo tema.</p>
 
 <h2 id="data">4. Modelo de datos</h2>
 <div class="card">
@@ -171,6 +191,7 @@ limitarse a tramos ambiguos si la prueba completa resulta demasiado costosa.</p>
     <tr><td><code>speaker_name</code>, <code>speaker_label</code></td><td>Nombre resuelto o fallback y etiqueta técnica del turno.</td></tr>
     <tr><td><code>segment_type</code></td><td><code>speech</code>, <code>question_answer</code> o <code>unknown</code>.</td></tr>
     <tr><td><code>boundary_source</code>, <code>boundary_confidence</code></td><td>Procedencia y confianza: acústica, textual o fallback.</td></tr>
+    <tr><td><code>semantic_sections</code></td><td>Subtemas con offsets y timestamps SRT, sin alterar los límites de intervención.</td></tr>
     <tr><td><code>source_srt_path</code></td><td>Trazabilidad del transcript usado.</td></tr>
     <tr><td><code>created_at</code>, <code>updated_at</code></td><td>Auditoría.</td></tr>
   </table>
@@ -189,8 +210,12 @@ limitarse a tramos ambiguos si la prueba completa resulta demasiado costosa.</p>
                          v
                  [parse_srt_blocks]
                          |
-                         v
-        [detect_speaker_turns: diarización o fallback]
+             +-----------+-----------+
+             |                       |
+             v                       v
+ [semantic_chunks: Chonkie, suaves] [detect_speaker_turns: duros]
+             |                       |
+             +-----------+-----------+
                          |
                          v
       [resolve_speaker + group_question_answer]
@@ -206,15 +231,18 @@ limitarse a tramos ambiguos si la prueba completa resulta demasiado costosa.</p>
   <ol>
     <li><strong>Validar entrada:</strong> comprobar parámetros, rutas y contenido mínimo.</li>
     <li><strong>Parsear SRT:</strong> reutilizar el parseador de bloques existente para conservar texto y timestamps.</li>
+    <li><strong>Segmentar semánticamente:</strong> usar Chonkie sobre el SRT completo respetando los offsets de cada
+      bloque. Normalizar índices de cue, no usar saltos de línea como delimitadores y fusionar después los subtemas
+      demasiado cortos con el vecino más similar. Sus límites son metadatos de contexto, no cortes de intervención.</li>
     <li><strong>Detectar turnos:</strong> usar diarización cuando esté activada y haya audio; si falla o está desactivada,
-      usar pausas y expresiones de transición como fallback.</li>
+      usar pausas y expresiones de transición como fallback técnico.</li>
     <li><strong>Resolver orador:</strong> buscar anuncios en el texto que rodea el inicio del turno. Un fallo al extraer
       el nombre no invalida la intervención.</li>
     <li><strong>Agrupar Q&amp;A:</strong> unir sólo rangos contiguos con evidencia suficiente de pregunta y respuesta;
       nunca concatenar archivos ni crear huecos artificiales.</li>
     <li><strong>Validar:</strong> descartar rangos inválidos, ordenar los restantes y garantizar que no se solapan.</li>
-    <li><strong>Persistir:</strong> hacer upsert atómico. Una reejecución actualiza el conjunto del vídeo, no mezcla
-      resultados de ejecuciones distintas.</li>
+    <li><strong>Enriquecer y persistir:</strong> asociar los subtemas que solapen cada intervención y hacer upsert
+      atómico. Una reejecución actualiza el conjunto del vídeo, no mezcla resultados de ejecuciones distintas.</li>
   </ol>
 </div>
 
@@ -241,7 +269,7 @@ limitarse a tramos ambiguos si la prueba completa resulta demasiado costosa.</p>
 <div class="card">
   <table>
     <tr><th>Fase</th><th>Resultado</th><th>Condición para avanzar</th></tr>
-    <tr><td>0. Benchmark local</td><td>Fixture de 30 minutos y evaluación manual de diarización en español.</td><td>Límites útiles, sin fragmentación excesiva.</td></tr>
+    <tr><td>0. Benchmark local</td><td>Fixture de 30 minutos y evaluación manual de diarización y Chonkie en español.</td><td>Turnos útiles, subtemas coherentes y timestamps trazables.</td></tr>
     <tr><td>1. Benchmark NAS</td><td>La misma prueba con un proceso, métricas de recursos y coexistencia con Airflow.</td><td>El NAS permanece estable y el tiempo es aceptable.</td></tr>
     <tr><td>2. Persistencia</td><td>Migraciones y acceso idempotente a <code>video_interventions</code>.</td><td>Reejecuciones sin duplicados.</td></tr>
     <tr><td>3. DAG base</td><td>DAG manual que valida, segmenta y persiste usando diarización habilitable.</td><td>Fallback textual probado.</td></tr>
@@ -256,6 +284,7 @@ limitarse a tramos ambiguos si la prueba completa resulta demasiado costosa.</p>
     <li>Un SRT válido produce intervenciones ordenadas, sin solapes y con <code>start_time &lt; end_time</code>.</li>
     <li>Un orador no resuelto se persiste como <code>orador_desconocido</code>, sin bloquear la sesión.</li>
     <li>Una pregunta y respuesta contiguas se almacenan como una única unidad aunque duren menos de 5 minutos.</li>
+    <li>Cada subtema de Chonkie se puede resolver a timestamps SRT válidos y nunca divide por sí solo una intervención.</li>
     <li>Reejecutar el DAG para el mismo vídeo no duplica intervenciones.</li>
     <li>La diarización puede desactivarse o fallar sin impedir la segmentación textual de fallback.</li>
     <li>El monitor dispara el DAG hijo por cada SRT consolidado y continúa su ejecución sin esperarlo.</li>
@@ -275,7 +304,8 @@ limitarse a tramos ambiguos si la prueba completa resulta demasiado costosa.</p>
 </div>
 
 <div class="footer">
-  Plan de vídeos largos: sólo segmentación y persistencia de intervenciones. El plan de Shorts se documentará por separado.
+  Plan de vídeos largos: sólo segmentación y persistencia de intervenciones. Documento hermano:
+  <code>docs/plan-seleccion-shorts.html</code>.
 </div>
 
 </body>

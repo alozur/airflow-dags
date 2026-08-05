@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Visor de Secciones Semánticas - Sesión Plenaria 25/06/2026</title>
+<style>
+  :root {
+    --paper: #f5f3ec;
+    --ink: #17201c;
+    --muted: #65716b;
+    --line: #d7d8ce;
+    --navy: #163b50;
+    --cyan: #5fd6d3;
+    --gold: #e7a93d;
+    --card: #fffefa;
+    --selected: #e5f3ef;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font-family: Georgia, "Times New Roman", serif; }
+  header { background: var(--navy); color: white; padding: 2.2rem clamp(1.25rem, 4vw, 4rem); }
+  .eyebrow { margin: 0 0 .55rem; color: var(--cyan); font: 700 .75rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; }
+  h1 { max-width: 900px; margin: 0; font-size: clamp(2rem, 4vw, 3.6rem); line-height: .98; letter-spacing: -.04em; }
+  .subhead { max-width: 720px; margin: 1rem 0 0; color: #dce9e6; font-size: 1.05rem; }
+  .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin-top: 2rem; background: #416174; border: 1px solid #416174; }
+  .metric { padding: 1rem; background: #183e53; }
+  .metric b { display: block; color: var(--gold); font: 700 1.55rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .metric span { display: block; margin-top: .45rem; color: #cee2df; font: .72rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .06em; }
+  main { display: grid; grid-template-columns: minmax(310px, .8fr) minmax(0, 1.2fr); gap: 2.5rem; max-width: 1540px; margin: 0 auto; padding: 2rem clamp(1.25rem, 4vw, 4rem) 4rem; }
+  .player-panel { position: sticky; top: 1.5rem; align-self: start; }
+  .player-frame { aspect-ratio: 16 / 9; overflow: hidden; background: #0e171b; box-shadow: 12px 12px 0 var(--cyan); }
+  iframe { width: 100%; height: 100%; border: 0; }
+  .now { margin-top: 1.5rem; padding: 1.25rem; border-top: 4px solid var(--gold); background: var(--card); }
+  .now-label { margin: 0; color: var(--muted); font: 700 .72rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; text-transform: uppercase; }
+  .now-time { margin: .5rem 0; color: var(--navy); font: 700 1.5rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .now-preview { margin: 0; font-size: 1.05rem; line-height: 1.45; }
+  .source-link { display: inline-block; margin-top: 1rem; color: var(--navy); font: 700 .8rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .explorer { min-width: 0; }
+  .controls { display: grid; grid-template-columns: 1fr auto auto; gap: .75rem; padding-bottom: 1.25rem; border-bottom: 1px solid var(--line); }
+  input, select { width: 100%; border: 1px solid var(--line); border-radius: 0; background: var(--card); color: var(--ink); padding: .8rem .9rem; font: .85rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .results { margin: .9rem 0 1.25rem; color: var(--muted); font: .78rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .chunks { display: grid; gap: .65rem; }
+  .chunk { width: 100%; padding: 1rem 1.1rem; text-align: left; border: 1px solid var(--line); border-left: 5px solid transparent; background: var(--card); color: inherit; cursor: pointer; font-family: inherit; transition: background .15s, border-color .15s; }
+  .chunk:hover { border-left-color: var(--cyan); background: #f7fcfa; }
+  .chunk.selected { border-left-color: var(--gold); background: var(--selected); }
+  .chunk-top { display: flex; align-items: baseline; gap: .75rem; }
+  .chunk-number { color: var(--muted); font: .75rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .chunk-time { color: var(--navy); font: 700 .9rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .chunk-duration { margin-left: auto; color: var(--gold); font: 700 .72rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .chunk-preview { display: -webkit-box; margin: .6rem 0 0; overflow: hidden; color: #2e3933; font-size: .98rem; line-height: 1.32; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .empty { padding: 2rem; border: 1px dashed var(--line); color: var(--muted); text-align: center; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; gap: 1.5rem; } .player-panel { position: static; } .metrics { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 560px) { header { padding-top: 1.5rem; } .controls { grid-template-columns: 1fr; } .chunk-top { gap: .45rem; } .chunk-time { font-size: .78rem; } }
+</style>
+</head>
+<body>
+<header>
+  <p class="eyebrow">Chonkie semantic review · experimental</p>
+  <h1>Mapa editorial de granularidad gruesa</h1>
+  <p class="subhead">Secciones semánticas extraídas únicamente del SRT. La granularidad objetivo es de unos 33 minutos; no consume el orden del día ni identifica turnos de orador.</p>
+  <div class="metrics" id="metrics"></div>
+</header>
+<main>
+  <aside class="player-panel">
+    <div class="player-frame"><iframe id="player" title="Sesión Plenaria del Congreso" allowfullscreen></iframe></div>
+    <section class="now" aria-live="polite">
+      <p class="now-label">Sección seleccionada</p>
+      <p class="now-time" id="now-time">Elegí una sección</p>
+      <p class="now-preview" id="now-preview">El reproductor abrirá el instante exacto de inicio. Los rangos son secciones semánticas, no turnos de orador ni apartados oficiales.</p>
+      <a class="source-link" id="source-link" href="https://www.youtube.com/watch?v=QQIRmbU7UJ0" target="_blank" rel="noreferrer">Abrir vídeo completo en YouTube</a>
+    </section>
+  </aside>
+  <section class="explorer">
+    <div class="controls">
+      <input id="query" type="search" placeholder="Buscar en el inicio del texto..." aria-label="Buscar por texto">
+      <select id="duration" aria-label="Filtrar por duración">
+        <option value="0">Cualquier duración</option>
+        <option value="120">2 min o más</option>
+        <option value="180">3 min o más</option>
+        <option value="300">5 min o más</option>
+      </select>
+      <select id="order" aria-label="Ordenar secciones">
+        <option value="chronological">Orden cronológico</option>
+        <option value="longest">Más largas primero</option>
+      </select>
+    </div>
+    <p class="results" id="results"></p>
+    <div class="chunks" id="chunks"></div>
+  </section>
+</main>
+<script>
+const report = {"sample_duration_seconds": 21715.3, "requested_duration_limit_seconds": null, "srt_blocks": 7670, "canonical_characters": 274272, "raw_semantic_chunks": 199, "merged_semantic_sections": 11, "elapsed_seconds": 572.78, "raw_duration_seconds": {"minimum": 30.6, "median": 89.6, "maximum": 740.6}, "merged_duration_seconds": {"minimum": 146.1, "median": 2724.4, "maximum": 3179.7}, "configuration": {"model": "intfloat/multilingual-e5-small", "threshold": 0.55, "chunk_size": 2048, "similarity_window": 8, "filter_window": 11, "min_sentences_per_chunk": 8, "skip_window": 0, "min_section_seconds": 90.0, "target_section_seconds": 2000.0}, "chunks": [{"start": "00:00:26,720", "end": "00:45:51,160", "duration_seconds": 2724.4, "block_count": 814, "preview": "para para Buenos días a todos y a todas y sus señorías van ocupando los escaños. Vamos a reanudar la sesión. Muchísimas gracias. Comenzamos con el punto relativo a los dictámenes de comisiones sobre iniciativas legislativas y en concreto el", "number": 1, "start_seconds": 26, "end_seconds": 2751}, {"start": "00:45:47,000", "end": "01:20:14,880", "duration_seconds": 2067.9, "block_count": 844, "preview": "Egun guzti eta batez ere tribun dauden guztiei. Bienvenidos a todos y a todas. al pleno de hoy, aunque como podéis ver el anterior portador se ha olvidado de hablar de las terapias de conversión para hacer un alegato defendiendo a su grupo ", "number": 2, "start_seconds": 2747, "end_seconds": 4814}, {"start": "01:20:12,280", "end": "02:11:04,520", "duration_seconds": 3052.2, "block_count": 1095, "preview": "Y esa esa ha sido nuestra aportación a la historia. Creo que es un momento histórico. Somos responsables de este momento histórico. Hemos cogido el testigo, pero trasladamos el testigo sobre los avances. Esta ley, evidentemente, no es un pu", "number": 3, "start_seconds": 4812, "end_seconds": 7864}, {"start": "02:10:59,520", "end": "02:58:31,960", "duration_seconds": 2852.4, "block_count": 1051, "preview": "Pola miña parte. Nada máis e moitas gracias. Muchas gracias, señora Otero. Vamos a votar en un minuto. No. Muchas gracias. Pues vamos a empezar las votaciones. Empezamos con eh las enmiendas a la proposición de ley orgánica por la que se mo", "number": 4, "start_seconds": 7859, "end_seconds": 10711}, {"start": "02:58:30,359", "end": "03:09:46,840", "duration_seconds": 676.5, "block_count": 221, "preview": "otra parte, conforman un catálogo para la represión política y para limitar la pluralidad política a su mínima expresión. Quieren eliminar lenguas coeficiales, imponer una única fórmula de acatamiento, disolver a los grupos que no comparten", "number": 5, "start_seconds": 10710, "end_seconds": 11386}, {"start": "03:09:43,200", "end": "04:01:42,359", "duration_seconds": 3119.2, "block_count": 1218, "preview": "Por tanto, no valdrá. Habrá que repetirlas. Pero ha habido algo más grave que cuando ayer se sembraba la duda con el amaño electoral. Y es que hoy aquí el fascismo, literalmente un señor que militaban Fuerza Nueva ha venido a decir abiertam", "number": 6, "start_seconds": 11383, "end_seconds": 14502}, {"start": "04:01:39,159", "end": "04:50:12,840", "duration_seconds": 2913.7, "block_count": 1168, "preview": "paradoxal ministre el facilit el vi per coner europa per encara no resol perqu mtes de les oportunitats que trobar a Europa no les tren a casa seva y no ho dic per men tenir la mesura al contrari es positiu que que el joves uten el transpor", "number": 7, "start_seconds": 14499, "end_seconds": 17412}, {"start": "04:50:09,638", "end": "04:55:54,120", "duration_seconds": 344.5, "block_count": 96, "preview": "Muchas gracias. Muchas gracias, señor ministro. En turno de fijación de posiciones grups por Cataluña. La paraa señor Cruz. Gracias. Gracias presidenta seor ministre ho breu perquad de la segur to dit per que val la pena contextualitzar una", "number": 8, "start_seconds": 17409, "end_seconds": 17754}, {"start": "04:55:48,200", "end": "05:07:04,638", "duration_seconds": 676.4, "block_count": 230, "preview": "A pesar de su relevancia, España dispone de un sector público empresarial raquítico, resultados de décadas de miopía y privatizaciones impulsadas por los gobiernos del bipartidismo y especialmente por los gobiernos del Partido Popular. En l", "number": 9, "start_seconds": 17748, "end_seconds": 18424}, {"start": "05:06:57,718", "end": "05:59:57,440", "duration_seconds": 3179.7, "block_count": 1055, "preview": "Y para conseguirlo, el único camino posible es que ustedes se vayan. Muchas gracias. Muchas gracias, señor Sáez. Por el grupo parlamentario socialista tiene la palabra el señor Antuñano Colina. Muchas gracias. Gracias, señora presidenta. Se", "number": 10, "start_seconds": 18417, "end_seconds": 21597}, {"start": "05:59:55,920", "end": "06:02:22,000", "duration_seconds": 146.1, "block_count": 5, "preview": "Muchísimas gracias a todos ustedes. Gracias. No me gusta, pero me tengo que ir ya salgo desde Sí, está guay. Yeah.", "number": 11, "start_seconds": 21595, "end_seconds": 21742}]};
+const videoId = "QQIRmbU7UJ0";
+const chunksElement = document.querySelector('#chunks');
+const resultsElement = document.querySelector('#results');
+const player = document.querySelector('#player');
+const nowTime = document.querySelector('#now-time');
+const nowPreview = document.querySelector('#now-preview');
+const sourceLink = document.querySelector('#source-link');
+let selected = null;
+
+function formatDuration(seconds) {
+  const total = Math.round(seconds);
+  const minutes = Math.floor(total / 60);
+  const remaining = total % 60;
+  return `${minutes}:${String(remaining).padStart(2, '0')}`;
+}
+
+function renderMetrics() {
+  const median = formatDuration(report.merged_duration_seconds.median);
+  const metrics = [
+    [report.merged_semantic_sections, 'secciones finales'],
+    [formatDuration(report.sample_duration_seconds), 'vídeo analizado'],
+    [median, 'mediana por sección'],
+    [formatDuration(report.elapsed_seconds), 'tiempo de proceso'],
+  ];
+  document.querySelector('#metrics').innerHTML = metrics.map(([value, label]) => `<div class="metric"><b>${value}</b><span>${label}</span></div>`).join('');
+}
+
+function selectChunk(chunk) {
+  selected = chunk.number;
+  player.src = `https://www.youtube-nocookie.com/embed/${videoId}?start=${chunk.start_seconds}&autoplay=1`;
+  nowTime.textContent = `#${chunk.number} · ${chunk.start} — ${chunk.end} · ${formatDuration(chunk.duration_seconds)}`;
+  nowPreview.textContent = chunk.preview;
+  sourceLink.href = `https://www.youtube.com/watch?v=${videoId}&t=${chunk.start_seconds}s`;
+  sourceLink.textContent = 'Abrir este instante en YouTube';
+  renderChunks();
+}
+
+function filteredChunks() {
+  const query = document.querySelector('#query').value.trim().toLocaleLowerCase('es');
+  const minimumDuration = Number(document.querySelector('#duration').value);
+  const order = document.querySelector('#order').value;
+  const filtered = report.chunks.filter(chunk =>
+    chunk.duration_seconds >= minimumDuration &&
+    (!query || chunk.preview.toLocaleLowerCase('es').includes(query))
+  );
+  if (order === 'longest') filtered.sort((a, b) => b.duration_seconds - a.duration_seconds);
+  return filtered;
+}
+
+function renderChunks() {
+  const chunks = filteredChunks();
+  const target = report.configuration.target_section_seconds ? ` · objetivo: ${Math.round(report.configuration.target_section_seconds / 60)} min` : '';
+  resultsElement.textContent = `${chunks.length} de ${report.chunks.length} secciones visibles · mínimo de fusión: ${report.configuration.min_section_seconds} s${target}`;
+  if (!chunks.length) {
+    chunksElement.innerHTML = '<div class="empty">No hay secciones que cumplan este filtro.</div>';
+    return;
+  }
+  chunksElement.innerHTML = '';
+  for (const chunk of chunks) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `chunk${selected === chunk.number ? ' selected' : ''}`;
+    button.innerHTML = `<div class="chunk-top"><span class="chunk-number">#${chunk.number}</span><span class="chunk-time">${chunk.start} — ${chunk.end}</span><span class="chunk-duration">${formatDuration(chunk.duration_seconds)}</span></div><p class="chunk-preview"></p>`;
+    button.querySelector('.chunk-preview').textContent = chunk.preview;
+    button.addEventListener('click', () => selectChunk(chunk));
+    chunksElement.append(button);
+  }
+}
+
+for (const id of ['query', 'duration', 'order']) document.querySelector(`#${id}`).addEventListener('input', renderChunks);
+renderMetrics();
+renderChunks();
+</script>
+</body>
+</html>
