@@ -262,12 +262,25 @@ def generate_title(summary: str, best: dict, cfg: dict) -> str:
         A YouTube title string (≤90 chars, no emojis, no forbidden chars).
     """
 
+    def _is_all_caps(title: str) -> bool:
+        """True when the title has letters but none of them are lowercase.
+
+        Party acronyms alone (e.g. "PSOE") do not false-positive a real
+        title because a normally-cased title always contains lowercase
+        letters, whereas an all-caps title has none.
+        """
+        return any(c.isalpha() for c in title) and not any(
+            c.islower() for c in title
+        )
+
     def _is_valid(title: str) -> bool:
         if len(title) > TITLE_MAX_CHARS:
             return False
         if _EMOJI_RE.search(title):
             return False
         if _FORBIDDEN_CHARS_RE.search(title):
+            return False
+        if _is_all_caps(title):
             return False
         return True
 
@@ -312,6 +325,12 @@ def generate_title(summary: str, best: dict, cfg: dict) -> str:
     # Determine re-prompt instruction
     if title and len(title) > TITLE_MAX_CHARS:
         instruction = f"El título es demasiado largo. Máximo {TITLE_MAX_CHARS} caracteres."
+    elif title and _is_all_caps(title):
+        instruction = (
+            "El título está todo en mayúsculas. Usa capitalización normal en "
+            "español (solo la primera letra y nombres propios en mayúscula), "
+            "respetando las siglas de partidos (PSOE, PP, VOX)."
+        )
     else:
         instruction = (
             "El título contiene caracteres no permitidos (emojis, #, @, |, ~, ^). "

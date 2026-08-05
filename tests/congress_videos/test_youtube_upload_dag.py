@@ -298,6 +298,56 @@ class TestShouldUpload:
         ctx = _make_context_for_should_upload(queue_size=1, hour=8)
         assert should_upload(**ctx) is True
 
+    # ---------------------------------------------------------------------------
+    # Staleness guard tests (REQ-STALE-01/02/03/04)
+    # ---------------------------------------------------------------------------
+
+    def test_stale_run_returns_false(self):
+        """data_interval_end ~2h in the past, queue above threshold → False (stale skip)."""
+        from datetime import datetime, timedelta, timezone
+        from congress_videos.youtube_upload_dag import should_upload
+
+        ctx = _make_context_for_should_upload(queue_size=11, hour=11)
+        ctx["data_interval_end"] = datetime.now(timezone.utc) - timedelta(hours=2)
+        assert should_upload(**ctx) is False
+
+    def test_fresh_run_proceeds_to_threshold(self):
+        """data_interval_end ~1 min in the past, queue above threshold → True (threshold applies)."""
+        from datetime import datetime, timedelta, timezone
+        from congress_videos.youtube_upload_dag import should_upload
+
+        ctx = _make_context_for_should_upload(queue_size=11, hour=11)
+        ctx["data_interval_end"] = datetime.now(timezone.utc) - timedelta(minutes=1)
+        assert should_upload(**ctx) is True
+
+    def test_missing_data_interval_end_falls_through(self):
+        """No data_interval_end key in context, queue above threshold → True (backward compat)."""
+        from congress_videos.youtube_upload_dag import should_upload
+
+        ctx = _make_context_for_should_upload(queue_size=11, hour=11)
+        # Explicitly ensure the key is absent (helper does not set it)
+        assert "data_interval_end" not in ctx
+        assert should_upload(**ctx) is True
+
+    def test_staleness_boundary_strictly_greater(self):
+        """data_interval_end exactly 30 min in the past → True (guard uses strict >, not >=)."""
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import patch
+        from congress_videos.youtube_upload_dag import should_upload, STALE_RUN_TOLERANCE_MINUTES
+
+        frozen_now = datetime(2026, 7, 31, 12, 0, 0, tzinfo=timezone.utc)
+        # exactly at boundary: staleness == tolerance, NOT greater
+        data_interval_end = frozen_now - timedelta(minutes=STALE_RUN_TOLERANCE_MINUTES)
+
+        ctx = _make_context_for_should_upload(queue_size=11, hour=11)
+        ctx["data_interval_end"] = data_interval_end
+
+        with patch("congress_videos.youtube_upload_dag.datetime") as mock_dt:
+            mock_dt.now.return_value = frozen_now
+            result = should_upload(**ctx)
+
+        assert result is True
+
 
 # ---------------------------------------------------------------------------
 # dry_run param
