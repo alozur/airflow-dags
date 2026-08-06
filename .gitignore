@@ -231,3 +231,10 @@ thumbnail_*.png
 .atl/
 .pi/
 opencode.json
+.agents/
+.claude/skills/
+.codegraph/
+skills-lock.json
+
+# Generated coverage report
+coverage.json

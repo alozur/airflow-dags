@@ -141,15 +141,30 @@ ART_DIRECTION_SYSTEM_PROMPT = (
     "Eres un director de arte experto en miniaturas de YouTube de alto CTR para canales políticos españoles. "
     "Tu tarea es crear un brief visual en JSON para una miniatura siguiendo estas reglas estrictas:\n\n"
     "- text: frase de 3-6 palabras, TODO EN MAYÚSCULAS, máximo 40 caracteres. Provocadora, no descriptiva.\n"
-    "- background: fondo contextual al tema (protesta callejera, fábrica cerrada, hospital, etc.). "
+    "- background: fondo contextual al tema (mercado en crisis, hospital desbordado, fábrica cerrada, "
+    "calle vacía al atardecer, etc.). "
     "NUNCA hemiciclo, cámara parlamentaria ni sala de gobierno.\n"
     "- person: persona relatable, edad/expresión/ropa concreta. Ocupa el 35-40%% del frame. "
     "Expresión emocional (indignación, miedo, sorpresa). Que cualquier ciudadano español se vea reflejado.\n"
-    "- mood: tono emocional dominante (indignación, amenaza, curiosidad, identidad, pérdida).\n\n"
+    "- mood: tono emocional dominante (curiosidad, pérdida, amenaza, indignación, identidad).\n\n"
+    "Cada brief debe ser visualmente DISTINTO al anterior: evita repetir fondos, tipos de persona o "
+    "emociones en briefs consecutivos.\n\n"
     "PROHIBICIÓN ABSOLUTA: no incluyas nunca URLs ni la palabra 'http' en ningún campo. "
     "Pikzels rechaza cualquier prompt que contenga 'http'.\n\n"
     "Responde SOLO con JSON válido, sin markdown:\n"
     '{"text": "...", "background": "...", "person": "...", "mood": "..."}'
+)
+
+# Sibling-brief injection block: appended to the art_direct user prompt when
+# recent chosen briefs are available to steer the model away from repetition.
+ART_DIRECTION_SIBLING_INSTRUCTION = (
+    "NO REPITAS estos enfoques recientes (varía fondo, persona, mood y texto):\n{sibling_list}"
+)
+
+# Sibling-titles injection block: appended to the generate_title user prompt when
+# recent chosen titles are available to prevent emotional/tonal repetition.
+THUMBNAIL_TITLE_SIBLING_INSTRUCTION = (
+    "NO REPITAS el enfoque de estos títulos recientes:\n{sibling_list}"
 )
 
 ART_DIRECTION_USER_PROMPT_TEMPLATE = (
@@ -173,6 +188,8 @@ THUMBNAIL_TITLE_SYSTEM_PROMPT = (
     "Eres un redactor político experto en titulares de alto impacto para YouTube. "
     "Creas títulos dramáticos, directos y en español que capturan la esencia del debate parlamentario. "
     "Los títulos deben generar urgencia y curiosidad sin perder rigor informativo. "
+    "Varía el registro emocional entre títulos consecutivos: alterna entre urgencia, pérdida, "
+    "amenaza, curiosidad e identidad para evitar la monotonía tonal. "
     "RESTRICCIONES ABSOLUTAS: máximo 90 caracteres; sin emojis; sin comillas; "
     "sin símbolos de canal; sin hashtags; sin los caracteres: # @ | ~ ^. "
     "Usa mayúsculas y minúsculas normales (capitalización estándar en español): "

@@ -100,6 +100,7 @@ class TestDagSchedule:
 EXPECTED_TASK_IDS = {
     "validate_input",
     "resolve_participant_photo",
+    "fetch_recent_history",
     "art_direction",
     "generate_thumbnail_option_a",
     "download_option_a",
@@ -119,14 +120,18 @@ EXPECTED_TASK_IDS = {
 def test_art_direction_task_delegates_to_art_direct(mocker) -> None:
     """The DAG task wrapper supplies its run context to art_direct."""
     dag_mod = importlib.import_module("congress_videos.generic_thumbnail_generator_dag")
-    ti = _make_fake_ti({"validate_input": _FAKE_CONF})
+    ti = _make_fake_ti({"validate_input": _FAKE_CONF, "fetch_recent_history": None})
     domain_cfg = {"styles": []}
 
     mocker.patch.object(dag_mod, "get_domain_config", return_value=domain_cfg)
     art_direct = mocker.patch.object(dag_mod, "art_direct", return_value={"text": "BRIEF"})
 
     assert dag_mod._task_art_direction(ti) == {"text": "BRIEF"}
-    art_direct.assert_called_once_with(_FAKE_CONF["debate_summary"], domain_cfg)
+    art_direct.assert_called_once_with(
+        _FAKE_CONF["debate_summary"],
+        domain_cfg,
+        sibling_briefs=None,
+    )
 
 
 class TestDagTaskIds:
@@ -170,8 +175,11 @@ class TestDagDependencies:
     def test_resolve_participant_photo_upstream_is_validate_input(self) -> None:
         assert self._upstream_ids("resolve_participant_photo") == {"validate_input"}
 
-    def test_art_direction_upstream_is_resolve_participant_photo(self) -> None:
-        assert self._upstream_ids("art_direction") == {"resolve_participant_photo"}
+    def test_art_direction_upstream_is_resolve_participant_photo_and_fetch_history(self) -> None:
+        assert self._upstream_ids("art_direction") == {
+            "resolve_participant_photo",
+            "fetch_recent_history",
+        }
 
     def test_generate_thumbnail_option_a_upstream_is_art_direction(self) -> None:
         assert self._upstream_ids("generate_thumbnail_option_a") == {"art_direction"}
@@ -194,14 +202,20 @@ class TestDagDependencies:
     def test_check_score_threshold_upstream_is_score_option_a(self) -> None:
         assert self._upstream_ids("check_score_threshold") == {"score_option_a"}
 
-    def test_art_direction_retry_upstream_is_check_score_threshold(self) -> None:
-        assert self._upstream_ids("art_direction_retry") == {"check_score_threshold"}
+    def test_art_direction_retry_upstream_is_check_score_threshold_and_fetch_history(self) -> None:
+        assert self._upstream_ids("art_direction_retry") == {
+            "check_score_threshold",
+            "fetch_recent_history",
+        }
 
     def test_choose_best_option_upstream_is_check_score_threshold_and_score_option_b(self) -> None:
         assert self._upstream_ids("choose_best_option") == {"check_score_threshold", "score_option_b"}
 
-    def test_generate_title_upstream_is_choose_best_option(self) -> None:
-        assert self._upstream_ids("generate_title") == {"choose_best_option"}
+    def test_generate_title_upstream_is_choose_best_option_and_fetch_history(self) -> None:
+        assert self._upstream_ids("generate_title") == {
+            "choose_best_option",
+            "fetch_recent_history",
+        }
 
     def test_persist_results_upstream_is_generate_title(self) -> None:
         assert self._upstream_ids("persist_results") == {"generate_title"}
@@ -972,3 +986,121 @@ class TestTaskPersistResultsEmptyFilter:
         assert options_list is not None, "persist_results must be called with options argument"
         assert len(options_list) == 1, f"persist_results options must have 1 item, got {len(options_list)}"
         assert options_list[0]["label"] == "option_a"
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: fetch_recent_history DAG task wiring
+# ---------------------------------------------------------------------------
+
+
+class TestFetchRecentHistoryDagTask:
+    """Phase 6: DAG must include fetch_recent_history as a root pre-task wired to
+    art_direction, art_direction_retry, and generate_title.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _dag_mod(self) -> None:
+        if "congress_videos.generic_thumbnail_generator_dag" in sys.modules:
+            del sys.modules["congress_videos.generic_thumbnail_generator_dag"]
+        self.mod = importlib.import_module("congress_videos.generic_thumbnail_generator_dag")
+        self.dag = self.mod.dag
+
+    def _upstream_ids(self, task_id: str) -> set[str]:
+        task = self.dag.get_task(task_id)
+        return {t.task_id for t in task.upstream_list}
+
+    def test_dag_has_fetch_recent_history_task(self) -> None:
+        """DAG must contain a task with task_id='fetch_recent_history'."""
+        task_ids = {task.task_id for task in self.dag.tasks}
+        assert "fetch_recent_history" in task_ids, (
+            f"DAG must have 'fetch_recent_history' task, got: {task_ids}"
+        )
+
+    def test_fetch_recent_history_is_upstream_of_art_direction(self) -> None:
+        """fetch_recent_history must be in the upstream set of art_direction."""
+        upstream = self._upstream_ids("art_direction")
+        assert "fetch_recent_history" in upstream, (
+            f"art_direction upstream must include 'fetch_recent_history', got: {upstream}"
+        )
+
+    def test_fetch_recent_history_is_upstream_of_art_direction_retry(self) -> None:
+        """fetch_recent_history must be in the upstream set of art_direction_retry."""
+        upstream = self._upstream_ids("art_direction_retry")
+        assert "fetch_recent_history" in upstream, (
+            f"art_direction_retry upstream must include 'fetch_recent_history', got: {upstream}"
+        )
+
+    def test_fetch_recent_history_is_upstream_of_generate_title(self) -> None:
+        """fetch_recent_history must be in the upstream set of generate_title."""
+        upstream = self._upstream_ids("generate_title")
+        assert "fetch_recent_history" in upstream, (
+            f"generate_title upstream must include 'fetch_recent_history', got: {upstream}"
+        )
+
+    def test_fetch_recent_history_callable_returns_briefs_and_titles(self, mocker) -> None:
+        """_task_fetch_recent_history must call fetch_recent_thumbnail_history and
+        push {briefs: [...], titles: [...]} via XCom return value."""
+        dag_mod = self.mod
+
+        mocker.patch.object(
+            dag_mod,
+            "fetch_recent_thumbnail_history",
+            return_value=(["brief A", "brief B"], ["Title A"]),
+        )
+
+        ti = MagicMock(name="TaskInstance")
+        result = dag_mod._task_fetch_recent_history(ti)
+
+        assert result == {"briefs": ["brief A", "brief B"], "titles": ["Title A"]}, (
+            f"_task_fetch_recent_history must return {{briefs: [...], titles: [...]}}, got: {result}"
+        )
+
+    def test_task_art_direction_passes_sibling_briefs(self, mocker) -> None:
+        """_task_art_direction must pull fetch_recent_history XCom and pass sibling_briefs."""
+        dag_mod = self.mod
+
+        history_data = {"briefs": ["brief A sobre mercado"], "titles": ["Title A"]}
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "fetch_recent_history": history_data,
+            }
+        )
+
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mock_art_direct = mocker.patch.object(dag_mod, "art_direct", return_value=_FAKE_ART_BRIEF)
+
+        dag_mod._task_art_direction(ti)
+
+        mock_art_direct.assert_called_once()
+        _, kwargs = mock_art_direct.call_args
+        assert "sibling_briefs" in kwargs, (
+            "_task_art_direction must pass sibling_briefs= to art_direct"
+        )
+        assert kwargs["sibling_briefs"] == ["brief A sobre mercado"]
+
+    def test_task_generate_title_passes_sibling_titles(self, mocker) -> None:
+        """_task_generate_title must pull fetch_recent_history XCom and pass sibling_titles."""
+        dag_mod = self.mod
+
+        history_data = {"briefs": ["brief A"], "titles": ["Title X", "Title Y"]}
+        best = {"style": "A", "prompt": "mercado", "label": "option_a", "main_score": 77.0}
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "choose_best_option": best,
+                "fetch_recent_history": history_data,
+            }
+        )
+
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mock_generate_title = mocker.patch.object(dag_mod, "generate_title", return_value="Un título")
+
+        dag_mod._task_generate_title(ti)
+
+        mock_generate_title.assert_called_once()
+        _, kwargs = mock_generate_title.call_args
+        assert "sibling_titles" in kwargs, (
+            "_task_generate_title must pass sibling_titles= to generate_title"
+        )
+        assert kwargs["sibling_titles"] == ["Title X", "Title Y"]
