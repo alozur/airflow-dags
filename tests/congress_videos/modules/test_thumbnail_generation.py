@@ -1193,6 +1193,41 @@ class TestSummariseSiblingBrief:
         assert len(result) <= 200, f"Fallback must truncate to 200 chars, got {len(result)}"
         assert result == long_prompt[:200]
 
+    def test_summarise_sibling_brief_extracts_from_real_pikzels_format(self) -> None:
+        """Must capture person and mood from the REAL rendered Pikzels prompt.
+
+        The stored ``video_thumbnails.prompt`` uses ``SUBJECT (...):`` for the
+        person axis and ``Overall mood:`` for the mood axis — not the synthetic
+        ``person:``/``mood:`` field names. These are exactly the axes that were
+        converging in production, so they must survive summarisation. The TEXT
+        phrase must be extracted from its quotes without the styling boilerplate.
+        """
+        from congress_videos.modules.thumbnail_generation import _summarise_sibling_brief
+
+        brief = (
+            "A thick gold (#C9A84C) border frames the entire image edge.\n\n"
+            "BACKGROUND: protesta callejera con pancartas.\n\n"
+            "SUBJECT (RIGHT HALF): mujer de unos 30 años, con expresión de "
+            "indignación, ropa casual. Face fills 35-40%. Looks at camera.\n\n"
+            "TEXT (LEFT HALF, 42% from top): Bold ALL-CAPS white (#FFFFFF) "
+            "'¡BASTA DE CORRUPCIÓN!'.\n"
+            "Font: bold compressed sans-serif (Impact / Bebas Neue).\n\n"
+            "Overall mood: indignación.\n"
+            "16:9 YouTube thumbnail."
+        )
+        result = _summarise_sibling_brief(brief)
+
+        assert len(result) <= 200, f"Result must be ≤ 200 chars, got {len(result)}"
+        # Person axis captured, boilerplate tail dropped.
+        assert "mujer de unos 30 años" in result
+        assert "Face fills" not in result
+        # Mood axis captured (from "Overall mood:", not "mood:").
+        assert "indignación" in result
+        # Text phrase captured from quotes, styling boilerplate dropped.
+        assert "¡BASTA DE CORRUPCIÓN!" in result
+        assert "Bold ALL-CAPS" not in result
+        assert "protesta callejera" in result
+
 
 # ---------------------------------------------------------------------------
 # Phase 4: Sibling Injection on art_direct and generate_title

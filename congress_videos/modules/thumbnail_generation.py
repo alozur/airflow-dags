@@ -389,11 +389,14 @@ def generate_title(
 
 
 def _summarise_sibling_brief(brief: str) -> str:
-    """Extract key visual axes from a stored Pikzels prompt and cap to 200 chars.
+    """Extract the key visual axes from a stored Pikzels prompt, cap at 200 chars.
 
-    Looks for lines starting with ``background``, ``person``, ``mood``, or
-    ``text`` (case-insensitive) and joins them into a compact summary.
-    If no such lines are found, falls back to raw truncation at 200 chars.
+    The stored ``video_thumbnails.prompt`` is the *rendered* Pikzels template,
+    whose axis lines look like ``BACKGROUND: ...``, ``SUBJECT (RIGHT HALF): ...``,
+    ``TEXT (LEFT HALF, ...): ... '<phrase>'`` and ``Overall mood: ...``. This
+    normalises each recognised axis to ``label: value`` and joins them. The
+    synthetic ``person:``/``mood:`` prefixes are also accepted for robustness.
+    When no axis line is recognised, falls back to raw truncation at 200 chars.
 
     Args:
         brief: Full Pikzels prompt string stored in ``video_thumbnails.prompt``.
@@ -401,16 +404,34 @@ def _summarise_sibling_brief(brief: str) -> str:
     Returns:
         A short string of at most 200 characters summarising the visual axes.
     """
-    _FIELD_PREFIXES = ("background", "person", "mood", "text")
-    lines = brief.splitlines()
-    extracted = [
-        line.strip()
-        for line in lines
-        if line.strip().lower().startswith(_FIELD_PREFIXES)
-    ]
-    if extracted:
-        summary = " | ".join(extracted)
-        return summary[:200]
+    # Normalised axis label -> line-prefix(es) as they appear in the rendered
+    # Pikzels template (and the synthetic field name, for tolerance).
+    _AXIS_PREFIXES: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("background", ("background",)),
+        ("person", ("subject", "person")),
+        ("mood", ("overall mood", "mood")),
+        ("text", ("text",)),
+    )
+    parts: list[str] = []
+    for raw_line in brief.splitlines():
+        line = raw_line.strip()
+        low = line.lower()
+        for label, prefixes in _AXIS_PREFIXES:
+            if not low.startswith(prefixes):
+                continue
+            value = line.split(":", 1)[1].strip() if ":" in line else line
+            if label == "text":
+                # Prefer the quoted phrase; drop the font/styling boilerplate.
+                match = re.search(r"['\"]([^'\"]+)['\"]", value)
+                if match:
+                    value = match.group(1)
+            elif label == "person":
+                # Drop the fixed "Face fills…/Looks…" boilerplate tail.
+                value = value.split(". Face fills")[0].strip()
+            parts.append(f"{label}: {value}")
+            break
+    if parts:
+        return " | ".join(parts)[:200]
     return brief[:200]
 
 
