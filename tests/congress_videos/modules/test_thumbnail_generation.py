@@ -997,3 +997,478 @@ class TestScoreRetryThreshold:
         # This test uses a synthetic config dict to confirm the fallback works.
         cfg_without_threshold = {}
         assert cfg_without_threshold.get("score_retry_threshold", 60) == 60
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Prompt Constants — diversity / de-anchoring
+# ---------------------------------------------------------------------------
+
+
+class TestArtDirectionPromptDiversity:
+    """Phase 1: ART_DIRECTION_SYSTEM_PROMPT must not anchor on specific moods/backgrounds."""
+
+    def test_art_direction_prompt_mood_not_anchored_on_indignacion(self) -> None:
+        """Mood list MUST NOT start with 'indignación' as the first entry."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        # Find the mood line — look for a parenthetical list after "mood:"
+        # The constraint: indignación must not be the FIRST item in the mood list
+        prompt_lower = ART_DIRECTION_SYSTEM_PROMPT.lower()
+        # Find the mood field description section
+        mood_idx = prompt_lower.find("mood:")
+        assert mood_idx != -1, "ART_DIRECTION_SYSTEM_PROMPT must contain 'mood:' field"
+        # Get the text after "mood:" up to end of that sentence/parenthetical
+        after_mood = ART_DIRECTION_SYSTEM_PROMPT[mood_idx:]
+        # Extract the parenthetical list content (between parentheses)
+        paren_start = after_mood.find("(")
+        paren_end = after_mood.find(")")
+        assert paren_start != -1, "mood field must have a parenthetical list"
+        mood_list_text = after_mood[paren_start + 1:paren_end]
+        first_mood = mood_list_text.split(",")[0].strip().lower()
+        assert first_mood != "indignación", (
+            f"Mood list MUST NOT start with 'indignación'; first entry is {first_mood!r}"
+        )
+
+    def test_art_direction_prompt_background_not_anchored_on_protesta(self) -> None:
+        """Background parenthetical MUST NOT start with 'protesta callejera'."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        prompt_lower = ART_DIRECTION_SYSTEM_PROMPT.lower()
+        background_idx = prompt_lower.find("background:")
+        assert background_idx != -1, "ART_DIRECTION_SYSTEM_PROMPT must contain 'background:' field"
+        after_background = ART_DIRECTION_SYSTEM_PROMPT[background_idx:]
+        paren_start = after_background.find("(")
+        paren_end = after_background.find(")")
+        assert paren_start != -1, "background field must have a parenthetical example list"
+        bg_list_text = after_background[paren_start + 1:paren_end]
+        first_bg = bg_list_text.split(",")[0].strip().lower()
+        assert "protesta callejera" not in first_bg, (
+            f"Background parenthetical MUST NOT start with 'protesta callejera'; first entry is {first_bg!r}"
+        )
+
+    def test_art_direction_prompt_contains_variety_instruction(self) -> None:
+        """ART_DIRECTION_SYSTEM_PROMPT MUST contain an explicit visual-variety instruction."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "DISTINTO" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "ART_DIRECTION_SYSTEM_PROMPT must contain 'DISTINTO' (visual variety instruction)"
+        )
+
+    def test_title_prompt_contains_variety_note(self) -> None:
+        """THUMBNAIL_TITLE_SYSTEM_PROMPT MUST contain a variety note about emotional register."""
+        from congress_videos.config.ai_prompts import THUMBNAIL_TITLE_SYSTEM_PROMPT
+
+        prompt_lower = THUMBNAIL_TITLE_SYSTEM_PROMPT.lower()
+        has_variety = (
+            "varía" in prompt_lower
+            or "varia" in prompt_lower
+            or "varied" in prompt_lower
+            or "distinto" in prompt_lower
+            or "registr" in prompt_lower
+        )
+        assert has_variety, (
+            "THUMBNAIL_TITLE_SYSTEM_PROMPT must contain a variety note about emotional register"
+        )
+
+    def test_art_direction_prompt_http_prohibition_intact(self) -> None:
+        """The http prohibition MUST still be present after the rewrite."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "http" in ART_DIRECTION_SYSTEM_PROMPT.lower(), (
+            "ART_DIRECTION_SYSTEM_PROMPT must still contain the http prohibition"
+        )
+
+    def test_art_direction_prompt_json_only_rule_intact(self) -> None:
+        """The JSON-only response rule MUST still be present after the rewrite."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "JSON" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "ART_DIRECTION_SYSTEM_PROMPT must still contain the JSON-only rule"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Temperature Tuning
+# ---------------------------------------------------------------------------
+
+
+class TestTemperatureTuning:
+    """Phase 2: art_direct and generate_title must pass temperature=0.7."""
+
+    def _make_cfg(self) -> dict:
+        return {
+            "styles": [
+                {"label": "option_a", "layout": "A"},
+                {"label": "option_b", "layout": "B"},
+            ],
+            "participants_lookup": lambda slug: None,
+            "party_logo_map": None,
+        }
+
+    def _valid_brief_response(self) -> dict:
+        return {
+            "data": {
+                "text": "CRISIS TOTAL",
+                "background": "mercado en crisis, gente preocupada",
+                "person": "ciudadano de mediana edad, expresión tensa",
+                "mood": "amenaza",
+            },
+            "error": None,
+        }
+
+    def test_art_direct_passes_temperature_07(self, mocker) -> None:
+        """art_direct must call generate_json_completion with temperature=0.7."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        captured_kwargs: list[dict] = []
+
+        def _capture(system_prompt, user_prompt, **kw):
+            captured_kwargs.append(kw)
+            return self._valid_brief_response()
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_capture,
+        )
+        art_direct("Un debate sobre pensiones", self._make_cfg())
+
+        assert captured_kwargs, "generate_json_completion must be called at least once"
+        assert captured_kwargs[0].get("temperature") == 0.7, (
+            f"art_direct must pass temperature=0.7, got {captured_kwargs[0].get('temperature')!r}"
+        )
+
+    def test_generate_title_passes_temperature_07(self, mocker) -> None:
+        """generate_title must call generate_json_completion with temperature=0.7."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        captured_kwargs: list[dict] = []
+
+        def _capture(system_prompt, user_prompt, **kw):
+            captured_kwargs.append(kw)
+            return {"data": {"title": "Un título válido de longitud normal"}, "error": None}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_capture,
+        )
+        best = {"style": "A", "prompt": "mercado en crisis"}
+        generate_title("debate summary", best, self._make_cfg())
+
+        assert captured_kwargs, "generate_json_completion must be called at least once"
+        assert captured_kwargs[0].get("temperature") == 0.7, (
+            f"generate_title must pass temperature=0.7, got {captured_kwargs[0].get('temperature')!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Sibling-Brief Helper
+# ---------------------------------------------------------------------------
+
+
+class TestSummariseSiblingBrief:
+    """Phase 3: _summarise_sibling_brief extracts key fields and caps at 200 chars."""
+
+    def test_summarise_sibling_brief_extracts_fields(self) -> None:
+        """Should extract background/person/mood/text lines and cap to 200 chars."""
+        from congress_videos.modules.thumbnail_generation import _summarise_sibling_brief
+
+        brief = (
+            "background: mercado en crisis, gente desesperada\n"
+            "person: ciudadano de mediana edad, expresión tensa\n"
+            "mood: amenaza\n"
+            "text: TODO SE DERRUMBA\n"
+            "some other line that should be ignored\n"
+        )
+        result = _summarise_sibling_brief(brief)
+        assert len(result) <= 200, f"Result must be ≤ 200 chars, got {len(result)}"
+        assert "mercado en crisis" in result
+        assert "amenaza" in result
+
+    def test_summarise_sibling_brief_raw_truncates_when_no_match(self) -> None:
+        """When no recognisable field prefixes, raw-truncate fallback to 200 chars."""
+        from congress_videos.modules.thumbnail_generation import _summarise_sibling_brief
+
+        long_prompt = "x" * 500
+        result = _summarise_sibling_brief(long_prompt)
+        assert len(result) <= 200, f"Fallback must truncate to 200 chars, got {len(result)}"
+        assert result == long_prompt[:200]
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Sibling Injection on art_direct and generate_title
+# ---------------------------------------------------------------------------
+
+
+class TestArtDirectSiblingInjection:
+    """Phase 4: art_direct optional sibling_briefs injection."""
+
+    def _make_cfg(self) -> dict:
+        return {
+            "styles": [
+                {"label": "option_a", "layout": "A"},
+                {"label": "option_b", "layout": "B"},
+            ],
+            "participants_lookup": lambda slug: None,
+            "party_logo_map": None,
+        }
+
+    def _valid_brief_response(self) -> dict:
+        return {
+            "data": {
+                "text": "NUEVA CRISIS",
+                "background": "hospital desbordado",
+                "person": "enfermero exhausto, expresión preocupada",
+                "mood": "pérdida",
+            },
+            "error": None,
+        }
+
+    def test_art_direct_injects_sibling_briefs_when_nonempty(self, mocker) -> None:
+        """When sibling_briefs is non-empty, 'NO REPITAS' must appear in user_prompt."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        captured_prompts: list[str] = []
+
+        def _capture(system_prompt, user_prompt, **kw):
+            captured_prompts.append(user_prompt)
+            return self._valid_brief_response()
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_capture,
+        )
+        art_direct(
+            "debate summary",
+            self._make_cfg(),
+            sibling_briefs=["brief A sobre plaza pública", "brief B con fábrica cerrada"],
+        )
+
+        assert captured_prompts, "generate_json_completion must be called"
+        assert "NO REPITAS" in captured_prompts[0], (
+            "sibling_briefs block must appear in user_prompt"
+        )
+        assert "brief A sobre plaza pública" in captured_prompts[0]
+        assert "brief B con fábrica cerrada" in captured_prompts[0]
+
+    def test_art_direct_no_injection_when_sibling_briefs_none(self, mocker) -> None:
+        """When sibling_briefs=None (default), 'NO REPITAS' must NOT appear in user_prompt."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        captured_prompts: list[str] = []
+
+        def _capture(system_prompt, user_prompt, **kw):
+            captured_prompts.append(user_prompt)
+            return self._valid_brief_response()
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_capture,
+        )
+        art_direct("debate summary", self._make_cfg())
+
+        assert captured_prompts, "generate_json_completion must be called"
+        assert "NO REPITAS" not in captured_prompts[0], (
+            "sibling_briefs block must NOT appear when sibling_briefs=None"
+        )
+
+    def test_art_direct_no_injection_when_sibling_briefs_empty(self, mocker) -> None:
+        """When sibling_briefs=[], 'NO REPITAS' must NOT appear in user_prompt."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        captured_prompts: list[str] = []
+
+        def _capture(system_prompt, user_prompt, **kw):
+            captured_prompts.append(user_prompt)
+            return self._valid_brief_response()
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_capture,
+        )
+        art_direct("debate summary", self._make_cfg(), sibling_briefs=[])
+
+        assert captured_prompts, "generate_json_completion must be called"
+        assert "NO REPITAS" not in captured_prompts[0], (
+            "sibling_briefs block must NOT appear when sibling_briefs=[]"
+        )
+
+
+class TestGenerateTitleSiblingInjection:
+    """Phase 4: generate_title optional sibling_titles injection."""
+
+    def _make_cfg(self) -> dict:
+        return {
+            "styles": [],
+            "participants_lookup": lambda slug: None,
+            "party_logo_map": None,
+        }
+
+    def _valid_title_response(self, title: str = "Un título válido") -> dict:
+        return {"data": {"title": title}, "error": None}
+
+    def test_generate_title_injects_sibling_titles_when_nonempty(self, mocker) -> None:
+        """When sibling_titles is non-empty, a do-not-repeat block must appear in user_prompt."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        captured_prompts: list[str] = []
+
+        def _capture(system_prompt, user_prompt, **kw):
+            captured_prompts.append(user_prompt)
+            return self._valid_title_response()
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_capture,
+        )
+        best = {"style": "A", "prompt": "hospital desbordado"}
+        generate_title(
+            "debate summary",
+            best,
+            self._make_cfg(),
+            sibling_titles=["Title A: La crisis sanitaria", "Title B: El colapso del sistema"],
+        )
+
+        assert captured_prompts, "generate_json_completion must be called"
+        assert "NO REPITAS" in captured_prompts[0], (
+            "sibling_titles block must appear in user_prompt"
+        )
+        assert "Title A: La crisis sanitaria" in captured_prompts[0]
+        assert "Title B: El colapso del sistema" in captured_prompts[0]
+
+    def test_generate_title_no_injection_when_sibling_titles_none(self, mocker) -> None:
+        """When sibling_titles=None (default), no sibling block in user_prompt."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        captured_prompts: list[str] = []
+
+        def _capture(system_prompt, user_prompt, **kw):
+            captured_prompts.append(user_prompt)
+            return self._valid_title_response()
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_capture,
+        )
+        best = {"style": "A", "prompt": "mercado"}
+        generate_title("debate summary", best, self._make_cfg())
+
+        assert captured_prompts, "generate_json_completion must be called"
+        assert "NO REPITAS" not in captured_prompts[0], (
+            "sibling_titles block must NOT appear when sibling_titles=None"
+        )
+
+    def test_generate_title_no_injection_when_sibling_titles_empty(self, mocker) -> None:
+        """When sibling_titles=[], no sibling block in user_prompt."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        captured_prompts: list[str] = []
+
+        def _capture(system_prompt, user_prompt, **kw):
+            captured_prompts.append(user_prompt)
+            return self._valid_title_response()
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_capture,
+        )
+        best = {"style": "A", "prompt": "mercado"}
+        generate_title("debate summary", best, self._make_cfg(), sibling_titles=[])
+
+        assert captured_prompts, "generate_json_completion must be called"
+        assert "NO REPITAS" not in captured_prompts[0], (
+            "sibling_titles block must NOT appear when sibling_titles=[]"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: fetch_recent_thumbnail_history
+# ---------------------------------------------------------------------------
+
+
+class TestFetchRecentThumbnailHistory:
+    """Phase 5: fetch_recent_thumbnail_history — happy path, empty, and never-raises."""
+
+    def _make_cursor_mock(self, rows: list[tuple]) -> MagicMock:
+        """Return a mock cursor whose fetchall() returns `rows`."""
+        cursor = MagicMock()
+        cursor.__enter__ = MagicMock(return_value=cursor)
+        cursor.__exit__ = MagicMock(return_value=False)
+        cursor.fetchall.return_value = rows
+        return cursor
+
+    def _make_conn_mock(self, cursor_mock: MagicMock) -> MagicMock:
+        conn = MagicMock()
+        conn.__enter__ = MagicMock(return_value=conn)
+        conn.__exit__ = MagicMock(return_value=False)
+        conn.cursor.return_value = cursor_mock
+        return conn
+
+    def test_fetch_recent_thumbnail_history_happy_path(self, mocker) -> None:
+        """Happy path: 3 rows returned; briefs are summarised, None titles excluded."""
+        from congress_videos.modules.thumbnail_generation import fetch_recent_thumbnail_history
+
+        rows = [
+            ("background: mercado en crisis\nperson: ciudadano\nmood: amenaza\ntext: TODO CAE", "Título A"),
+            ("background: hospital lleno\nperson: enfermero\nmood: pérdida\ntext: COLAPSO", "Título B"),
+            ("background: fábrica cerrada\nperson: obrero\nmood: tristeza\ntext: SIN TRABAJO", None),
+        ]
+
+        cursor_mock = self._make_cursor_mock(rows)
+        conn_mock = self._make_conn_mock(cursor_mock)
+        pg_mock = MagicMock()
+        pg_mock.get_qualified_table.return_value = "public.video_thumbnails"
+        pg_mock.get_connection.return_value = conn_mock
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.PostgresConnection",
+            return_value=pg_mock,
+        )
+
+        briefs, titles = fetch_recent_thumbnail_history(limit=5)
+
+        assert len(briefs) == 3, f"Expected 3 briefs, got {len(briefs)}"
+        assert len(titles) == 2, f"Expected 2 titles (None excluded), got {len(titles)}"
+        assert "Título A" in titles
+        assert "Título B" in titles
+        # Each brief must be a summarised version (≤200 chars)
+        for b in briefs:
+            assert len(b) <= 200, f"Brief must be ≤ 200 chars, got {len(b)}"
+
+    def test_fetch_recent_thumbnail_history_empty_returns_empty_lists(self, mocker) -> None:
+        """When cursor returns no rows, return ([], [])."""
+        from congress_videos.modules.thumbnail_generation import fetch_recent_thumbnail_history
+
+        cursor_mock = self._make_cursor_mock([])
+        conn_mock = self._make_conn_mock(cursor_mock)
+        pg_mock = MagicMock()
+        pg_mock.get_qualified_table.return_value = "public.video_thumbnails"
+        pg_mock.get_connection.return_value = conn_mock
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.PostgresConnection",
+            return_value=pg_mock,
+        )
+
+        briefs, titles = fetch_recent_thumbnail_history()
+
+        assert briefs == []
+        assert titles == []
+
+    def test_fetch_recent_thumbnail_history_db_error_never_raises(self, mocker, caplog) -> None:
+        """When PostgresConnection raises, return ([], []) and log WARNING."""
+        import logging
+        from congress_videos.modules.thumbnail_generation import fetch_recent_thumbnail_history
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.PostgresConnection",
+            side_effect=Exception("DB connection failed"),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
+            briefs, titles = fetch_recent_thumbnail_history()
+
+        assert briefs == []
+        assert titles == []
+        assert any(r.levelno >= logging.WARNING for r in caplog.records), (
+            "A WARNING must be logged when DB raises"
+        )

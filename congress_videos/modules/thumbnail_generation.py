@@ -24,8 +24,10 @@ import requests
 
 from congress_videos.config.ai_prompts import (
     ART_DIRECTION_RETRY_INSTRUCTION,
+    ART_DIRECTION_SIBLING_INSTRUCTION,
     ART_DIRECTION_SYSTEM_PROMPT,
     ART_DIRECTION_USER_PROMPT_TEMPLATE,
+    THUMBNAIL_TITLE_SIBLING_INSTRUCTION,
     THUMBNAIL_TITLE_SYSTEM_PROMPT,
     THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE,
 )
@@ -82,6 +84,7 @@ def art_direct(
     debate_summary: str,
     domain_cfg: dict,
     previous_brief: dict | None = None,
+    sibling_briefs: list[str] | None = None,
 ) -> dict:
     """Generate an art-direction brief for a Pikzels thumbnail via OpenAI.
 
@@ -95,6 +98,9 @@ def art_direct(
         previous_brief: When set, injects ART_DIRECTION_RETRY_INSTRUCTION
             into the prompt to force a DIFFERENT visual approach. Used by
             the art_direction_retry DAG task. None means first generation.
+        sibling_briefs: When non-empty, injects a "NO REPITAS" block listing
+            recent chosen briefs to steer the model away from repetition.
+            None or empty list → prompt unchanged (backward compatible).
     """
     import json
 
@@ -107,6 +113,12 @@ def art_direct(
                 previous_brief_json=json.dumps(previous_brief, ensure_ascii=False)
             )
             user_prompt += f"\n\n{retry_instruction}"
+        if sibling_briefs:
+            sibling_list = "\n".join(f"- {b}" for b in sibling_briefs)
+            sibling_block = ART_DIRECTION_SIBLING_INSTRUCTION.format(
+                sibling_list=sibling_list
+            )
+            user_prompt += f"\n\n{sibling_block}"
         if extra_instruction:
             user_prompt += f"\n\nINSTRUCCIÓN ADICIONAL: {extra_instruction}"
         try:
@@ -115,6 +127,7 @@ def art_direct(
                 user_prompt=user_prompt,
                 model="gpt-4o-mini",
                 max_tokens=400,
+                temperature=0.7,
             )
         except Exception as exc:
             logger.warning("art_direct: generate_json_completion raised: %s", exc)
@@ -251,7 +264,12 @@ def choose_best_option(options: list[dict]) -> dict:
     return {**best, "is_chosen": True}
 
 
-def generate_title(summary: str, best: dict, cfg: dict) -> str:
+def generate_title(
+    summary: str,
+    best: dict,
+    cfg: dict,
+    sibling_titles: list[str] | None = None,
+) -> str:
     """Generate a YouTube title for the chosen thumbnail option via OpenAI.
 
     Validates the returned title against constraints (≤90 chars, no emojis,
@@ -263,6 +281,9 @@ def generate_title(summary: str, best: dict, cfg: dict) -> str:
         summary: Debate summary text used to contextualise the title.
         best: The chosen option dict (must contain ``style`` and ``prompt``).
         cfg: Per-domain config dict (currently unused but kept for future extensibility).
+        sibling_titles: When non-empty, injects a "NO REPITAS" block listing
+            recent chosen titles to prevent tonal repetition.
+            None or empty list → prompt unchanged (backward compatible).
 
     Returns:
         A YouTube title string (≤90 chars, no emojis, no forbidden chars).
@@ -306,6 +327,12 @@ def generate_title(summary: str, best: dict, cfg: dict) -> str:
             style=style_text,
             prompt=prompt_text,
         )
+        if sibling_titles:
+            sibling_list = "\n".join(f"- {t}" for t in sibling_titles)
+            sibling_block = THUMBNAIL_TITLE_SIBLING_INSTRUCTION.format(
+                sibling_list=sibling_list
+            )
+            user_prompt += f"\n\n{sibling_block}"
         if extra_instruction:
             user_prompt += f"\n\nINSTRUCCIÓN ADICIONAL: {extra_instruction}"
 
@@ -314,6 +341,7 @@ def generate_title(summary: str, best: dict, cfg: dict) -> str:
             user_prompt=user_prompt,
             model="gpt-4o-mini",
             max_tokens=120,
+            temperature=0.7,
         )
         if result.get("error"):
             logger.warning("generate_title: OpenAI error: %s", result["error"])
@@ -358,6 +386,77 @@ def generate_title(summary: str, best: dict, cfg: dict) -> str:
         candidate,
     )
     return sanitised
+
+
+def _summarise_sibling_brief(brief: str) -> str:
+    """Extract key visual axes from a stored Pikzels prompt and cap to 200 chars.
+
+    Looks for lines starting with ``background``, ``person``, ``mood``, or
+    ``text`` (case-insensitive) and joins them into a compact summary.
+    If no such lines are found, falls back to raw truncation at 200 chars.
+
+    Args:
+        brief: Full Pikzels prompt string stored in ``video_thumbnails.prompt``.
+
+    Returns:
+        A short string of at most 200 characters summarising the visual axes.
+    """
+    _FIELD_PREFIXES = ("background", "person", "mood", "text")
+    lines = brief.splitlines()
+    extracted = [
+        line.strip()
+        for line in lines
+        if line.strip().lower().startswith(_FIELD_PREFIXES)
+    ]
+    if extracted:
+        summary = " | ".join(extracted)
+        return summary[:200]
+    return brief[:200]
+
+
+def fetch_recent_thumbnail_history(
+    limit: int = 5,
+) -> tuple[list[str], list[str]]:
+    """Return the most recent chosen thumbnail briefs and titles, GLOBAL scope.
+
+    Queries ``video_thumbnails`` for the last ``limit`` rows where
+    ``is_chosen = TRUE``, ordered by ``chapter_id DESC``. Returns two parallel
+    lists: summarised brief strings and non-null title strings.
+
+    MUST NEVER RAISE: on any exception or empty result, returns ``([], [])``
+    and logs a WARNING.
+
+    Args:
+        limit: Maximum number of history rows to fetch (default 5).
+
+    Returns:
+        Tuple of (briefs, titles). briefs uses ``_summarise_sibling_brief``
+        on each stored prompt. titles excludes NULL/empty openai_title values.
+    """
+    try:
+        pg = PostgresConnection()
+        table = pg.get_qualified_table("video_thumbnails")
+        sql = (
+            f"SELECT prompt, openai_title FROM {table} "
+            f"WHERE is_chosen = TRUE ORDER BY chapter_id DESC LIMIT %s"
+        )
+        with pg.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (limit,))
+                rows = cur.fetchall()
+
+        if not rows:
+            return [], []
+
+        briefs = [_summarise_sibling_brief(row[0] or "") for row in rows]
+        titles = [row[1] for row in rows if row[1]]
+        return briefs, titles
+
+    except Exception as exc:
+        logger.warning(
+            "fetch_recent_thumbnail_history: failed to load history — %s", exc
+        )
+        return [], []
 
 
 def persist_results(
