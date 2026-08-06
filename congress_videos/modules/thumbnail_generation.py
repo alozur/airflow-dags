@@ -183,7 +183,11 @@ def resolve_participant_photo(slug: str, cfg: dict) -> dict:
     participant = lookup_fn(slug)
 
     if participant is None:
-        raise LookupError(f"Participant not found: {slug!r}")
+        logger.warning(
+            "resolve_participant_photo: participant not found for slug %r — returning empty result",
+            slug,
+        )
+        return EMPTY_RESULT
 
     photo_url = participant.get("photo_url")
 
@@ -222,9 +226,11 @@ def resolve_participant_photo(slug: str, cfg: dict) -> dict:
             "source": "party_logo",
         }
 
-    raise ValueError(
-        f"no photo source available for participant {slug!r}: "
-        "photo_url is absent/undownloadable and no party_logo_map configured"
+    logger.warning(
+        "resolve_participant_photo: no photo source available for participant %r "
+        "(photo_url absent/undownloadable and no party_logo_map configured) — "
+        "returning empty result",
+        slug,
     )
     return EMPTY_RESULT
 
