@@ -49,6 +49,7 @@ from congress_videos.modules import pikzels_client as _pkz
 from congress_videos.modules.thumbnail_generation import (
     art_direct,
     choose_best_option,
+    fetch_recent_thumbnail_history,
     generate_title,
     persist_results,
     resolve_participant_photo,
@@ -116,11 +117,29 @@ def _task_resolve_photo(ti: TaskInstance, **context: object) -> dict:
     return resolve_participant_photo(conf.get("slug"), domain_cfg)
 
 
+def _task_fetch_recent_history(ti: TaskInstance, **context: object) -> dict:
+    """Fetch the most recent chosen thumbnail briefs and titles (GLOBAL scope).
+
+    Calls fetch_recent_thumbnail_history which never raises — on DB error
+    or empty result it returns ([], []). Pushes via XCom return value.
+
+    Returns:
+        Dict with 'briefs' (list[str]) and 'titles' (list[str]).
+    """
+    briefs, titles = fetch_recent_thumbnail_history()
+    return {"briefs": briefs, "titles": titles}
+
+
 def _task_art_direction(ti: TaskInstance, **context: object) -> dict:
     """Generate the art-direction brief shared by both thumbnail options."""
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
+    history: dict = ti.xcom_pull(task_ids="fetch_recent_history") or {}
     domain_cfg = get_domain_config(conf["domain"])
-    return art_direct(conf["debate_summary"], domain_cfg)
+    return art_direct(
+        conf["debate_summary"],
+        domain_cfg,
+        sibling_briefs=history.get("briefs") or None,
+    )
 
 
 def _task_generate_thumbnail(label: str, ti: TaskInstance, **context: object) -> dict:
@@ -212,8 +231,14 @@ def _task_generate_title(ti: TaskInstance, **context: object) -> str:
     """Generate a YouTube title for the chosen thumbnail option."""
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
     best: dict = ti.xcom_pull(task_ids="choose_best_option") or {}
+    history: dict = ti.xcom_pull(task_ids="fetch_recent_history") or {}
     domain_cfg = get_domain_config(conf["domain"])
-    return generate_title(conf["debate_summary"], best, domain_cfg)
+    return generate_title(
+        conf["debate_summary"],
+        best,
+        domain_cfg,
+        sibling_titles=history.get("titles") or None,
+    )
 
 
 def _task_persist_results(ti: TaskInstance, **context: object) -> None:
@@ -271,11 +296,18 @@ def _task_art_direction_retry(ti: TaskInstance, **context: object) -> dict:
 
     Pulls the original brief from task_ids='art_direction' and passes it as
     previous_brief so art_direct injects the retry instruction.
+    Also passes sibling_briefs from fetch_recent_history to steer diversity.
     """
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
     previous_brief: dict = ti.xcom_pull(task_ids="art_direction") or {}
+    history: dict = ti.xcom_pull(task_ids="fetch_recent_history") or {}
     domain_cfg = get_domain_config(conf["domain"])
-    return art_direct(conf["debate_summary"], domain_cfg, previous_brief=previous_brief)
+    return art_direct(
+        conf["debate_summary"],
+        domain_cfg,
+        previous_brief=previous_brief,
+        sibling_briefs=history.get("briefs") or None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +347,11 @@ with DAG(
     t_resolve_photo = PythonOperator(
         task_id="resolve_participant_photo",
         python_callable=_task_resolve_photo,
+    )
+
+    t_fetch_recent_history = PythonOperator(
+        task_id="fetch_recent_history",
+        python_callable=_task_fetch_recent_history,
     )
 
     t_art_direction = PythonOperator(
@@ -388,16 +425,24 @@ with DAG(
     )
 
     # Task dependency graph:
-    #   validate_input → resolve_participant_photo → art_direction
+    #   validate_input → resolve_participant_photo ──────────────────────┐
+    #   validate_input → fetch_recent_history ──────────────────────────┤
+    #                                                                    ↓
+    #                                                              art_direction
     #     → generate_thumbnail_option_a → download_option_a → score_option_a
     #       → check_score_threshold [BranchPythonOperator]
-    #           ├─[score < threshold]→ art_direction_retry
+    #           ├─[score < threshold]→ art_direction_retry (also fed by fetch_recent_history)
     #           │                        → generate_thumbnail_option_b → download_option_b → score_option_b ─┐
     #           └─[score >= threshold]──────────────────────────────────────────────────────────────────────┤
     #                                  → choose_best_option (trigger_rule=none_failed_min_one_success) ◄────┘
-    #                                    → generate_title → persist_results → thumbnail_result
-    t_validate >> t_resolve_photo >> t_art_direction
+    #                                    → generate_title (also fed by fetch_recent_history)
+    #                                      → persist_results → thumbnail_result
+    t_validate >> t_resolve_photo
+    t_validate >> t_fetch_recent_history
+    [t_resolve_photo, t_fetch_recent_history] >> t_art_direction
     t_art_direction >> t_gen_a >> t_dl_a >> t_score_a >> t_check_score
     t_check_score >> t_art_direction_retry >> t_gen_b >> t_dl_b >> t_score_b >> t_choose
     t_check_score >> t_choose
+    t_fetch_recent_history >> t_art_direction_retry
+    t_fetch_recent_history >> t_title
     t_choose >> t_title >> t_persist >> t_result
