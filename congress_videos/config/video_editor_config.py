@@ -2,7 +2,12 @@
 
 This module provides the domain-keyed config dict used by the video editor
 module. Each domain entry defines per-tipo overlay style keys used to
-construct ffmpeg drawtext filter arguments.
+construct ffmpeg drawtext or Pillow-rendered overlay arguments.
+
+Two renderers are supported:
+- ``"drawtext"`` (default): ffmpeg drawtext filter; keys mirror ffmpeg options.
+- ``"pillow"``: Pillow-rendered transparent PNG composited via ffmpeg overlay;
+  keys are Python/Pillow-native (RGB tuples, ints).
 
 Usage::
 
@@ -14,7 +19,7 @@ Usage::
 
 from __future__ import annotations
 
-from congress_videos.config.paths import FONT_BOLD
+from congress_videos.config.paths import FONT_BOLD, FONT_REGULAR
 
 
 class ConfigError(Exception):
@@ -23,32 +28,108 @@ class ConfigError(Exception):
 
 _VIDEO_EDITOR_CONFIG: dict = {
     "congreso": {
-        # Per-tipo overlay style dicts.  Each entry maps a tipo label to the
-        # ffmpeg drawtext arguments needed to render that overlay style.
         "tipos": {
+            # ------------------------------------------------------------------
+            # Pillow tipos: rendered as transparent PNG, composited via ffmpeg.
+            # Color values are (R, G, B) or (R, G, B, A) tuples.
+            # ------------------------------------------------------------------
+
+            # Bottom-centered 90% bar: session extract label.
+            # titulo      → main extract text (large)
+            # descripcion → optional subtitle (small, optional)
             "extracto_sesion": {
-                # Absolute path to the font file on the Airflow image.
+                "renderer": "pillow",
                 "fontfile": FONT_BOLD,
-                # Font size in pixels.
-                "fontsize": 42,
-                # Font colour (ffmpeg colour name or hex).
-                "fontcolor": "white",
-                # Draw a filled box behind the text (1 = enabled).
-                "box": 1,
-                # Box fill colour and opacity.
-                "boxcolor": "black@0.5",
-                # Padding around the text inside the box (pixels).
-                "boxborderw": 8,
-                # Horizontal position expression (ffmpeg geometry).
-                # (w-text_w)/2 centres the text horizontally.
-                "x": "(w-text_w)/2",
-                # Vertical position expression.
-                # h-th-60 places the text 60px from the bottom edge.
-                "y": "h-th-60",
-                # Minimum overlay duration in seconds (informational).
-                "min_duration_secs": 1.0,
-                # Maximum overlay duration in seconds (informational).
-                "max_duration_secs": 15.0,
+                "fontfile_sub": FONT_REGULAR,
+                "fontsize_title": 30,
+                "fontsize_sub": 18,
+                "bg_color": (12, 36, 97, 215),
+                "accent_color": (0, 120, 255, 255),
+                "title_color": (255, 255, 255, 255),
+                "sub_color": (180, 210, 255, 240),
+                "width_pct": 0.90,
+                "height": 104,
+                "margin_y": 60,
+            },
+
+            # Lower-left card: speaker name + role/party.
+            # titulo   → speaker name (large)
+            # descripcion → role · party (small, optional)
+            "speaker_id": {
+                "renderer": "pillow",
+                "fontfile": FONT_BOLD,
+                "fontfile_sub": FONT_REGULAR,
+                "fontsize_title": 34,
+                "fontsize_sub": 20,
+                "bg_color": (12, 36, 97, 215),
+                "accent_color": (0, 120, 255, 255),
+                "title_color": (255, 255, 255, 255),
+                "sub_color": (180, 210, 255, 240),
+                "width_pct": 0.46,
+                "height": 104,
+                "margin_x": 64,
+                "margin_y": 60,
+            },
+
+            # Centered large quote highlight.
+            # titulo      → quote body (large, white)
+            # descripcion → attribution, e.g. "— Juan Pérez" (small, gold)
+            "cita_destacada": {
+                "renderer": "pillow",
+                "fontfile": FONT_BOLD,
+                "fontfile_sub": FONT_REGULAR,
+                "fontsize_title": 32,
+                "fontsize_sub": 20,
+                "bg_color": (0, 0, 0, 155),
+                "accent_color": (255, 190, 0, 255),
+                "title_color": (255, 255, 255, 255),
+                "sub_color": (255, 190, 0, 230),
+                "width_pct": 0.86,
+                "padding": 28,
+            },
+
+            # Top red breaking-news banner.
+            # titulo      → news text
+            # descripcion → optional detail line (smaller)
+            "urgente": {
+                "renderer": "pillow",
+                "fontfile": FONT_BOLD,
+                "fontfile_sub": FONT_REGULAR,
+                "fontsize_label": 18,
+                "fontsize_title": 26,
+                "fontsize_sub": 17,
+                "bg_color": (180, 15, 15, 235),
+                "label_bg_color": (220, 0, 0, 255),
+                "accent_color": (255, 230, 0, 255),
+                "label_color": (255, 230, 0, 255),
+                "title_color": (255, 255, 255, 255),
+                "sub_color": (255, 210, 210, 230),
+                "label": "URGENTE",
+                "width_pct": 0.90,
+                "height": 62,
+                "margin_y": 24,
+            },
+
+            # Bottom-right compact data/context box.
+            # titulo      → headline or number (large)
+            # descripcion → context sentence (small, optional)
+            "dato_contexto": {
+                "renderer": "pillow",
+                "fontfile": FONT_BOLD,
+                "fontfile_sub": FONT_REGULAR,
+                "fontsize_header": 14,
+                "fontsize_title": 30,
+                "fontsize_sub": 16,
+                "bg_color": (12, 36, 97, 215),
+                "accent_color": (255, 190, 0, 255),
+                "header_color": (255, 190, 0, 255),
+                "title_color": (255, 255, 255, 255),
+                "sub_color": (180, 210, 255, 230),
+                "label": "DATO",
+                "width": 300,
+                "padding": 18,
+                "margin_x": 64,
+                "margin_y": 60,
             },
         },
     },

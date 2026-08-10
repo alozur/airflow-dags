@@ -83,14 +83,16 @@ class TestVideoEditorConfig:
         assert len(result["tipos"]) >= 1
 
     def test_congreso_extracto_sesion_has_required_style_fields(self) -> None:
-        """The extracto_sesion tipo must have all required style keys."""
+        """The extracto_sesion tipo must have all required Pillow style keys."""
         from congress_videos.config.video_editor_config import get_domain_config
 
         result = get_domain_config("congreso")
         assert "extracto_sesion" in result["tipos"]
         style = result["tipos"]["extracto_sesion"]
-        for key in ("fontfile", "fontsize", "fontcolor", "box", "boxcolor", "x", "y"):
+        for key in ("renderer", "fontfile", "fontfile_sub", "fontsize_title", "fontsize_sub",
+                    "bg_color", "accent_color", "title_color", "width_pct", "height"):
             assert key in style, f"Missing required style key: {key}"
+        assert style["renderer"] == "pillow"
 
     def test_unknown_domain_raises_config_error(self) -> None:
         """get_domain_config('unknown_domain') must raise ConfigError."""
@@ -642,3 +644,468 @@ class TestApplyOverlays:
             domain_cfg=_MINIMAL_DOMAIN_CFG,
         )
         mock_timeout.assert_called_once_with(300.0)
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers for Pillow tests
+# ---------------------------------------------------------------------------
+
+_W, _H = 320, 180  # small frame keeps render tests fast
+
+_PILLOW_OVERLAY_SPEAKER = {
+    "tipo": "speaker_id",
+    "tiempo_inicio": 1.0,
+    "tiempo_fin": 8.0,
+    "titulo": "María García López",
+    "descripcion": "Portavoz · Grupo Socialista",
+}
+_PILLOW_OVERLAY_CITA = {
+    "tipo": "cita_destacada",
+    "tiempo_inicio": 2.0,
+    "tiempo_fin": 15.0,
+    "titulo": "Esta ley afecta a tres millones de familias",
+    "descripcion": "— María García López",
+}
+_PILLOW_OVERLAY_URGENTE = {
+    "tipo": "urgente",
+    "tiempo_inicio": 0.5,
+    "tiempo_fin": 10.0,
+    "titulo": "El Congreso rechaza los Presupuestos",
+    "descripcion": "187 en contra · 163 a favor",
+}
+_PILLOW_OVERLAY_DATO = {
+    "tipo": "dato_contexto",
+    "tiempo_inicio": 3.0,
+    "tiempo_fin": 18.0,
+    "titulo": "63%",
+    "descripcion": "del gasto es en pensiones",
+}
+
+_PILLOW_OVERLAY_EXTRACTO = {
+    "tipo": "extracto_sesion",
+    "tiempo_inicio": 1.0,
+    "tiempo_fin": 9.0,
+    "titulo": "Extracto de la Sesión Plenaria",
+    "descripcion": "15 de enero de 2026",
+}
+
+_ALL_PILLOW_OVERLAYS = [
+    _PILLOW_OVERLAY_EXTRACTO,
+    _PILLOW_OVERLAY_SPEAKER,
+    _PILLOW_OVERLAY_CITA,
+    _PILLOW_OVERLAY_URGENTE,
+    _PILLOW_OVERLAY_DATO,
+]
+
+_PILLOW_TIPO_NAMES = ["extracto_sesion", "speaker_id", "cita_destacada", "urgente", "dato_contexto"]
+
+# Minimal domain cfg with a fake pillow tipo (avoids font-file checks in unit tests)
+_MINIMAL_PILLOW_STYLE = {
+    "renderer": "pillow",
+    "fontfile": "/nonexistent/Bold.ttf",
+    "fontfile_sub": "/nonexistent/Regular.ttf",
+    "fontsize_title": 24,
+    "fontsize_sub": 14,
+    "bg_color": (10, 20, 80, 200),
+    "accent_color": (0, 100, 255, 255),
+    "title_color": (255, 255, 255, 255),
+    "sub_color": (180, 210, 255, 240),
+    "width_pct": 0.46,
+    "height": 80,
+    "margin_x": 20,
+    "margin_y": 20,
+}
+_MINIMAL_PILLOW_DOMAIN_CFG = {
+    "tipos": {
+        "speaker_id": _MINIMAL_PILLOW_STYLE,
+    }
+}
+
+
+# ---------------------------------------------------------------------------
+# T-09: TestVideoEditorConfigPilloTipos — Pillow tipo registration
+# ---------------------------------------------------------------------------
+
+
+class TestVideoEditorConfigPilloTipos:
+    """T-09: The 4 Pillow tipos must be registered in the congreso domain config."""
+
+    def _cfg(self):
+        from congress_videos.config.video_editor_config import get_domain_config
+        return get_domain_config("congreso")
+
+    @pytest.mark.parametrize("tipo", _PILLOW_TIPO_NAMES)
+    def test_pillow_tipo_exists_in_congreso(self, tipo: str) -> None:
+        """Each Pillow tipo must be present under congreso.tipos."""
+        assert tipo in self._cfg()["tipos"]
+
+    @pytest.mark.parametrize("tipo", _PILLOW_TIPO_NAMES)
+    def test_pillow_tipo_has_renderer_pillow(self, tipo: str) -> None:
+        """Each Pillow tipo must declare renderer='pillow'."""
+        style = self._cfg()["tipos"][tipo]
+        assert style.get("renderer") == "pillow"
+
+    @pytest.mark.parametrize("tipo", _PILLOW_TIPO_NAMES)
+    def test_pillow_tipo_has_fontfile(self, tipo: str) -> None:
+        """Each Pillow tipo must define a fontfile key."""
+        assert "fontfile" in self._cfg()["tipos"][tipo]
+
+    @pytest.mark.parametrize("tipo", _PILLOW_TIPO_NAMES)
+    def test_pillow_tipo_has_bg_and_accent_colors(self, tipo: str) -> None:
+        """Each Pillow tipo must define bg_color and accent_color as tuples."""
+        style = self._cfg()["tipos"][tipo]
+        assert "bg_color" in style
+        assert "accent_color" in style
+        assert isinstance(style["bg_color"], tuple)
+        assert isinstance(style["accent_color"], tuple)
+
+    def test_urgente_has_label_bg_color(self) -> None:
+        """urgente must have a distinct label_bg_color for the badge."""
+        assert "label_bg_color" in self._cfg()["tipos"]["urgente"]
+
+    def test_urgente_label_is_config_driven(self) -> None:
+        """urgente must carry a 'label' key so the badge text is not hardcoded."""
+        assert "label" in self._cfg()["tipos"]["urgente"]
+
+    def test_dato_contexto_has_header_color(self) -> None:
+        """dato_contexto must have a header_color for the label."""
+        assert "header_color" in self._cfg()["tipos"]["dato_contexto"]
+
+    def test_dato_contexto_label_is_config_driven(self) -> None:
+        """dato_contexto must carry a 'label' key so the header text is not hardcoded."""
+        assert "label" in self._cfg()["tipos"]["dato_contexto"]
+
+
+# ---------------------------------------------------------------------------
+# T-10: TestRenderPillowOverlay — render dispatch and output shape
+# ---------------------------------------------------------------------------
+
+
+class TestRenderPillowOverlay:
+    """T-10: render_pillow_overlay must return an RGBA PIL Image of the correct size."""
+
+    @pytest.mark.parametrize("overlay", _ALL_PILLOW_OVERLAYS, ids=_PILLOW_TIPO_NAMES)
+    def test_returns_rgba_image_of_correct_size(self, overlay: dict) -> None:
+        """Each renderer must return a PIL Image in RGBA mode sized (W, H)."""
+        from congress_videos.config.video_editor_config import get_domain_config
+        from congress_videos.modules.video_editor import render_pillow_overlay
+
+        cfg = get_domain_config("congreso")
+        img = render_pillow_overlay(overlay, cfg, _W, _H)
+        assert img.size == (_W, _H)
+        assert img.mode == "RGBA"
+
+    @pytest.mark.parametrize("overlay", _ALL_PILLOW_OVERLAYS, ids=_PILLOW_TIPO_NAMES)
+    def test_image_is_not_fully_transparent(self, overlay: dict) -> None:
+        """The rendered image must contain at least one non-transparent pixel."""
+        from congress_videos.config.video_editor_config import get_domain_config
+        from congress_videos.modules.video_editor import render_pillow_overlay
+
+        cfg = get_domain_config("congreso")
+        img = render_pillow_overlay(overlay, cfg, _W, _H)
+        pixels = list(img.getdata())
+        assert any(px[3] > 0 for px in pixels), "All pixels are transparent — nothing was drawn."
+
+    @pytest.mark.parametrize("overlay,tipo", [
+        ({**_PILLOW_OVERLAY_EXTRACTO, "descripcion": None}, "extracto_sesion"),
+        ({**_PILLOW_OVERLAY_SPEAKER,  "descripcion": None}, "speaker_id"),
+        ({**_PILLOW_OVERLAY_CITA,     "descripcion": None}, "cita_destacada"),
+        ({**_PILLOW_OVERLAY_URGENTE,  "descripcion": None}, "urgente"),
+        ({**_PILLOW_OVERLAY_DATO,     "descripcion": None}, "dato_contexto"),
+    ], ids=_PILLOW_TIPO_NAMES)
+    def test_renders_without_descripcion(self, overlay: dict, tipo: str) -> None:
+        """Each renderer must succeed when 'descripcion' is absent or None."""
+        from congress_videos.config.video_editor_config import get_domain_config
+        from congress_videos.modules.video_editor import render_pillow_overlay
+
+        cfg = get_domain_config("congreso")
+        img = render_pillow_overlay(overlay, cfg, _W, _H)
+        assert img.size == (_W, _H)
+
+    def test_unknown_tipo_raises_key_error(self) -> None:
+        """A tipo with no registered Pillow renderer must raise KeyError."""
+        from congress_videos.config.video_editor_config import get_domain_config
+        from congress_videos.modules.video_editor import render_pillow_overlay
+
+        cfg = get_domain_config("congreso")
+        overlay = {**_PILLOW_OVERLAY_SPEAKER, "tipo": "tipo_inexistente"}
+        with pytest.raises(KeyError, match="tipo_inexistente"):
+            render_pillow_overlay(overlay, cfg, _W, _H)
+
+    def test_render_dispatch_importable(self) -> None:
+        """render_pillow_overlay must be importable from the module."""
+        from congress_videos.modules.video_editor import render_pillow_overlay  # noqa: F401
+
+
+# ---------------------------------------------------------------------------
+# T-11: TestBuildFfmpegPillowCmd — command builder
+# ---------------------------------------------------------------------------
+
+
+class TestBuildFfmpegPillowCmd:
+    """T-11: build_ffmpeg_pillow_cmd must build a valid filter_complex ffmpeg argv."""
+
+    def test_single_overlay_has_source_and_png_inputs(self) -> None:
+        """A single-overlay command must have exactly 2 -i inputs (video + PNG)."""
+        from congress_videos.modules.video_editor import build_ffmpeg_pillow_cmd
+
+        cmd = build_ffmpeg_pillow_cmd("/src.mp4", "/out.mp4", [("/o.png", 2.0, 10.0)])
+        assert cmd.count("-i") == 2
+        assert "/src.mp4" in cmd
+        assert "/o.png" in cmd
+
+    def test_single_overlay_contains_between_expr(self) -> None:
+        """filter_complex must contain enable='between(t,start,end)'."""
+        from congress_videos.modules.video_editor import build_ffmpeg_pillow_cmd
+
+        cmd = build_ffmpeg_pillow_cmd("/src.mp4", "/out.mp4", [("/o.png", 2.0, 10.0)])
+        fc = cmd[cmd.index("-filter_complex") + 1]
+        assert "between(t,2.0,10.0)" in fc
+
+    def test_two_overlays_chains_filter(self) -> None:
+        """Two overlays must produce a chained filter_complex with an intermediate label."""
+        from congress_videos.modules.video_editor import build_ffmpeg_pillow_cmd
+
+        cmd = build_ffmpeg_pillow_cmd(
+            "/src.mp4", "/out.mp4",
+            [("/a.png", 0.0, 5.0), ("/b.png", 6.0, 12.0)],
+        )
+        fc = cmd[cmd.index("-filter_complex") + 1]
+        # First segment must produce an intermediate label
+        assert "[v0]" in fc
+        # Both timing expressions present
+        assert "between(t,0.0,5.0)" in fc
+        assert "between(t,6.0,12.0)" in fc
+
+    def test_output_path_is_last_positional_arg(self) -> None:
+        """The output path must be the last element of the argv list."""
+        from congress_videos.modules.video_editor import build_ffmpeg_pillow_cmd
+
+        cmd = build_ffmpeg_pillow_cmd("/src.mp4", "/out.mp4", [("/o.png", 1.0, 5.0)])
+        assert cmd[-1] == "/out.mp4"
+
+    def test_command_starts_with_ffmpeg(self) -> None:
+        """The command must start with 'ffmpeg'."""
+        from congress_videos.modules.video_editor import build_ffmpeg_pillow_cmd
+
+        cmd = build_ffmpeg_pillow_cmd("/src.mp4", "/out.mp4", [("/o.png", 1.0, 5.0)])
+        assert cmd[0] == "ffmpeg"
+
+    def test_libx264_codec_present(self) -> None:
+        """Output must be encoded with libx264."""
+        from congress_videos.modules.video_editor import build_ffmpeg_pillow_cmd
+
+        cmd = build_ffmpeg_pillow_cmd("/src.mp4", "/out.mp4", [("/o.png", 1.0, 5.0)])
+        assert "libx264" in cmd
+
+
+# ---------------------------------------------------------------------------
+# T-12: TestGetSourceDimensions — ffprobe dimensions helper
+# ---------------------------------------------------------------------------
+
+
+class TestGetSourceDimensions:
+    """T-12: _get_source_dimensions must parse ffprobe output or return None on failure."""
+
+    def test_returns_width_height_tuple(self, mocker) -> None:
+        """Valid ffprobe output '1280,720' must return (1280, 720)."""
+        from congress_videos.modules.video_editor import _get_source_dimensions
+
+        completed = MagicMock()
+        completed.returncode = 0
+        completed.stdout = "1280,720\n"
+        mocker.patch("congress_videos.modules.video_editor.subprocess.run", return_value=completed)
+
+        result = _get_source_dimensions("/any/video.mp4")
+        assert result == (1280, 720)
+
+    def test_returns_none_on_non_zero_returncode(self, mocker) -> None:
+        """A non-zero ffprobe exit must return None (benign degradation)."""
+        from congress_videos.modules.video_editor import _get_source_dimensions
+
+        completed = MagicMock()
+        completed.returncode = 1
+        completed.stdout = ""
+        mocker.patch("congress_videos.modules.video_editor.subprocess.run", return_value=completed)
+
+        result = _get_source_dimensions("/any/video.mp4")
+        assert result is None
+
+    def test_returns_none_on_subprocess_exception(self, mocker) -> None:
+        """A subprocess exception must return None (benign degradation)."""
+        from congress_videos.modules.video_editor import _get_source_dimensions
+
+        mocker.patch(
+            "congress_videos.modules.video_editor.subprocess.run",
+            side_effect=OSError("ffprobe not found"),
+        )
+        result = _get_source_dimensions("/any/video.mp4")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# T-13: TestApplyOverlaysPillow — apply_overlays with Pillow renderer
+# ---------------------------------------------------------------------------
+
+
+class TestApplyOverlaysPillow:
+    """T-13: apply_overlays must route pillow overlays through the PNG composite path."""
+
+    @pytest.fixture()
+    def mock_subprocess(self, mocker):
+        completed = MagicMock()
+        completed.returncode = 0
+        completed.stdout = ""
+        completed.stderr = ""
+        return mocker.patch(
+            "congress_videos.modules.video_editor.subprocess.run",
+            return_value=completed,
+        )
+
+    @pytest.fixture()
+    def mock_duration_and_dims(self, mocker):
+        mocker.patch("congress_videos.modules.video_editor._get_source_duration", return_value=60.0)
+        mocker.patch("congress_videos.modules.video_editor._get_source_dimensions", return_value=(1280, 720))
+
+    @pytest.fixture()
+    def mock_pillow_render(self, mocker):
+        """Return a small blank RGBA Image instead of rendering real overlays."""
+        from PIL import Image
+        fake_img = Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
+        return mocker.patch(
+            "congress_videos.modules.video_editor.render_pillow_overlay",
+            return_value=fake_img,
+        )
+
+    def test_pillow_overlay_returns_success_dict(
+        self, mock_subprocess, mock_duration_and_dims, mock_pillow_render
+    ) -> None:
+        """apply_overlays with a pillow tipo must return {success: True, output_path}."""
+        from congress_videos.modules.video_editor import apply_overlays
+
+        result = apply_overlays(
+            source_path="/data/in.mp4",
+            output_path="/data/out.mp4",
+            overlays=[{**_PILLOW_OVERLAY_SPEAKER}],
+            domain_cfg=_MINIMAL_PILLOW_DOMAIN_CFG,
+        )
+        assert result["success"] is True
+        assert result["output_path"] == "/data/out.mp4"
+
+    def test_pillow_overlay_calls_render_once_per_overlay(
+        self, mock_subprocess, mock_duration_and_dims, mock_pillow_render
+    ) -> None:
+        """render_pillow_overlay must be called once for each overlay."""
+        from congress_videos.modules.video_editor import apply_overlays
+
+        apply_overlays(
+            source_path="/data/in.mp4",
+            output_path="/data/out.mp4",
+            overlays=[{**_PILLOW_OVERLAY_SPEAKER}],
+            domain_cfg=_MINIMAL_PILLOW_DOMAIN_CFG,
+        )
+        assert mock_pillow_render.call_count == 1
+
+    def test_pillow_non_zero_ffmpeg_raises_runtime_error(
+        self, mock_subprocess, mock_duration_and_dims, mock_pillow_render
+    ) -> None:
+        """A non-zero ffmpeg exit in the Pillow path must raise RuntimeError."""
+        mock_subprocess.return_value.returncode = 1
+        mock_subprocess.return_value.stderr = "pillow ffmpeg error"
+
+        from congress_videos.modules.video_editor import apply_overlays
+
+        with pytest.raises(RuntimeError, match="pillow ffmpeg error"):
+            apply_overlays(
+                source_path="/data/in.mp4",
+                output_path="/data/out.mp4",
+                overlays=[{**_PILLOW_OVERLAY_SPEAKER}],
+                domain_cfg=_MINIMAL_PILLOW_DOMAIN_CFG,
+            )
+
+    def test_pillow_temp_files_cleaned_up_on_success(
+        self, mock_subprocess, mock_duration_and_dims, mock_pillow_render, mocker
+    ) -> None:
+        """Temp PNG files must be unlinked after a successful ffmpeg run."""
+        from congress_videos.modules.video_editor import apply_overlays
+
+        unlink_calls: list[str] = []
+        original_unlink = __import__("os").unlink
+
+        def tracking_unlink(path):
+            unlink_calls.append(path)
+
+        mocker.patch("congress_videos.modules.video_editor.os.unlink", side_effect=tracking_unlink)
+
+        apply_overlays(
+            source_path="/data/in.mp4",
+            output_path="/data/out.mp4",
+            overlays=[{**_PILLOW_OVERLAY_SPEAKER}],
+            domain_cfg=_MINIMAL_PILLOW_DOMAIN_CFG,
+        )
+        assert len(unlink_calls) == 1
+
+    def test_pillow_temp_files_cleaned_up_on_ffmpeg_failure(
+        self, mock_subprocess, mock_duration_and_dims, mock_pillow_render, mocker
+    ) -> None:
+        """Temp PNG files must be unlinked even when ffmpeg fails."""
+        mock_subprocess.return_value.returncode = 1
+        mock_subprocess.return_value.stderr = "boom"
+
+        from congress_videos.modules.video_editor import apply_overlays
+
+        unlink_calls: list[str] = []
+        mocker.patch("congress_videos.modules.video_editor.os.unlink", side_effect=lambda p: unlink_calls.append(p))
+
+        with pytest.raises(RuntimeError):
+            apply_overlays(
+                source_path="/data/in.mp4",
+                output_path="/data/out.mp4",
+                overlays=[{**_PILLOW_OVERLAY_SPEAKER}],
+                domain_cfg=_MINIMAL_PILLOW_DOMAIN_CFG,
+            )
+        assert len(unlink_calls) == 1
+
+    def test_mixed_renderers_raises_value_error(self) -> None:
+        """Mixing drawtext and pillow overlays in one call must raise ValueError."""
+        from congress_videos.modules.video_editor import apply_overlays
+
+        mixed_cfg = {
+            "tipos": {
+                "extracto_sesion": {**_MINIMAL_STYLE, "renderer": "drawtext"},
+                "speaker_id": {**_MINIMAL_PILLOW_STYLE, "renderer": "pillow"},
+            }
+        }
+        with pytest.raises(ValueError, match="renderer"):
+            apply_overlays(
+                source_path="/data/in.mp4",
+                output_path="/data/out.mp4",
+                overlays=[
+                    {**_VALID_OVERLAY},
+                    {**_PILLOW_OVERLAY_SPEAKER},
+                ],
+                domain_cfg=mixed_cfg,
+            )
+
+    def test_fallback_dimensions_when_probe_fails(
+        self, mock_subprocess, mock_pillow_render, mocker
+    ) -> None:
+        """When _get_source_dimensions returns None, must default to 1280×720."""
+        from congress_videos.modules.video_editor import apply_overlays
+
+        mocker.patch("congress_videos.modules.video_editor._get_source_duration", return_value=None)
+        mocker.patch("congress_videos.modules.video_editor._get_source_dimensions", return_value=None)
+
+        result = apply_overlays(
+            source_path="/data/in.mp4",
+            output_path="/data/out.mp4",
+            overlays=[{**_PILLOW_OVERLAY_SPEAKER}],
+            domain_cfg=_MINIMAL_PILLOW_DOMAIN_CFG,
+        )
+        # Must succeed with fallback dimensions, not raise
+        assert result["success"] is True
+        # render must have been called with the 1280×720 fallback
+        _, call_kwargs = mock_pillow_render.call_args
+        call_args = mock_pillow_render.call_args[0]
+        assert 1280 in call_args
+        assert 720 in call_args
