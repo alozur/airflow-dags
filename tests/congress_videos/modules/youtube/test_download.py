@@ -1913,3 +1913,159 @@ class TestDownloadGuardForwarding:
         )
 
         assert spy.call_args.kwargs["guard_live_status"] is False
+
+
+# ---------------------------------------------------------------------------
+# PR3 — _flatten_speakers wired into identify_interesting_chapters (Task 3.7 RED)
+# ---------------------------------------------------------------------------
+
+class TestIdentifyInterestingChaptersFlattenSpeakers:
+    """Assert that identify_interesting_chapters flattens structured speaker
+    objects (new LLM prompt format) to list[str] before returning chapters.
+
+    The 'speakers' field in every interesting_chapter must be list[str]
+    regardless of whether the LLM returned the new object form or the legacy
+    flat-string form — backward compat is required in both paths.
+    """
+
+    def _make_summarized_chunk(self, number=1, duration_minutes=130):
+        return {
+            "chunk_number": number,
+            "start_time": "00:00:00",
+            "end_time": "02:10:00",
+            "duration_seconds": duration_minutes * 60,
+            "duration_minutes": duration_minutes,
+            "speakers": [{"name": "Diputado López", "role": "Diputado"}],
+            "topics": ["Presupuestos"],
+            "summary": "Debate largo sobre presupuestos"
+        }
+
+    def _make_srt_chunk(self, number=1, duration_minutes=130):
+        return {
+            "chunk_number": number,
+            "start_time": "00:00:00",
+            "end_time": "02:10:00",
+            "duration_minutes": duration_minutes,
+            "content": "1\n00:00:01,000 --> 00:00:05,000\nContenido de prueba"
+        }
+
+    def test_structured_speaker_objects_flattened_to_strings(self, mocker):
+        """LLM returns new object-form speakers → chapter['speakers'] is list[str]."""
+        # LLM returns structured speaker objects (new prompt format)
+        chapters_json = json.dumps({
+            "interesting_chapters": [{
+                "title": "Debate Presupuestos",
+                "description": "Desc",
+                "start_time": "00:00:00",
+                "end_time": "01:00:00",
+                "duration_minutes": 60,
+                "speakers": [
+                    {"speaker_name": "Ana López", "speaker_role": "Diputada", "speaker_confidence": 0.95},
+                    {"speaker_name": None, "speaker_role": "Portavoz", "speaker_confidence": 0.3},
+                ],
+                "topics": ["Presupuestos"]
+            }]
+        })
+        _patch_completion(mocker, chapters_json)
+
+        from congress_videos.modules.youtube.download import identify_interesting_chapters
+
+        chunk_summaries = {"videos": [{
+            "video_id": "v1",
+            "video_title": "Test",
+            "summarized_chunks": [self._make_summarized_chunk(1)]
+        }]}
+        chunked_srt = {"videos": [{
+            "video_id": "v1",
+            "chunks": [self._make_srt_chunk(1)]
+        }]}
+
+        result = identify_interesting_chapters(chunk_summaries, chunked_srt, "2025-01-01",
+                                               min_chapter_duration=15, max_optimal_duration=120)
+
+        assert result["total_videos"] == 1
+        chapters = result["videos"][0]["chunks_with_chapters"][0]["interesting_chapters"]
+        assert len(chapters) == 1
+        speakers = chapters[0]["speakers"]
+        # Must be flat list[str], not list[dict]
+        assert all(isinstance(s, str) for s in speakers), (
+            f"speakers must be list[str], got: {speakers!r}"
+        )
+        # Null speaker_name must be dropped; real name must be kept
+        assert "Ana López" in speakers
+        assert len(speakers) == 1, "null speaker_name entry must be dropped"
+
+    def test_legacy_flat_string_speakers_pass_through(self, mocker):
+        """LLM returns old flat-string speaker list → chapter['speakers'] unchanged."""
+        chapters_json = json.dumps({
+            "interesting_chapters": [{
+                "title": "Debate",
+                "description": "Desc",
+                "start_time": "00:00:00",
+                "end_time": "01:00:00",
+                "duration_minutes": 60,
+                "speakers": ["Ana López", "Pedro García"],
+                "topics": ["Política"]
+            }]
+        })
+        _patch_completion(mocker, chapters_json)
+
+        from congress_videos.modules.youtube.download import identify_interesting_chapters
+
+        chunk_summaries = {"videos": [{
+            "video_id": "v1",
+            "video_title": "Test",
+            "summarized_chunks": [self._make_summarized_chunk(1)]
+        }]}
+        chunked_srt = {"videos": [{
+            "video_id": "v1",
+            "chunks": [self._make_srt_chunk(1)]
+        }]}
+
+        result = identify_interesting_chapters(chunk_summaries, chunked_srt, "2025-01-01",
+                                               min_chapter_duration=15, max_optimal_duration=120)
+
+        chapters = result["videos"][0]["chunks_with_chapters"][0]["interesting_chapters"]
+        speakers = chapters[0]["speakers"]
+        assert speakers == ["Ana López", "Pedro García"], (
+            f"flat-string speakers must pass through unchanged, got: {speakers!r}"
+        )
+
+    def test_all_null_speaker_names_yields_empty_list(self, mocker):
+        """LLM returns only null speaker_name objects → speakers list is empty."""
+        chapters_json = json.dumps({
+            "interesting_chapters": [{
+                "title": "Debate",
+                "description": "Desc",
+                "start_time": "00:00:00",
+                "end_time": "01:00:00",
+                "duration_minutes": 60,
+                "speakers": [
+                    {"speaker_name": None, "speaker_role": "Portavoz PP", "speaker_confidence": None},
+                    {"speaker_name": None, "speaker_role": "Portavoz PSOE", "speaker_confidence": None},
+                ],
+                "topics": ["Política"]
+            }]
+        })
+        _patch_completion(mocker, chapters_json)
+
+        from congress_videos.modules.youtube.download import identify_interesting_chapters
+
+        chunk_summaries = {"videos": [{
+            "video_id": "v1",
+            "video_title": "Test",
+            "summarized_chunks": [self._make_summarized_chunk(1)]
+        }]}
+        chunked_srt = {"videos": [{
+            "video_id": "v1",
+            "chunks": [self._make_srt_chunk(1)]
+        }]}
+
+        result = identify_interesting_chapters(chunk_summaries, chunked_srt, "2025-01-01",
+                                               min_chapter_duration=15, max_optimal_duration=120)
+
+        chapters = result["videos"][0]["chunks_with_chapters"][0]["interesting_chapters"]
+        speakers = chapters[0]["speakers"]
+        assert speakers == [], (
+            f"all-null speaker_name objects must yield empty list, got: {speakers!r}"
+        )
