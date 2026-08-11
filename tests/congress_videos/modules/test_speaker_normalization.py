@@ -185,7 +185,7 @@ class TestFuzzyThresholdMiss:
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
-                1, ["UnknownSpeakerXYZ"], [], [],
+                1, ["Carlos Romero Alias"], [], [],
                 mock_conn, _make_config()
             )
 
@@ -201,7 +201,7 @@ class TestFuzzyThresholdMiss:
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
-                1, ["UnknownSpeakerXYZ"], [], [],
+                1, ["Carlos Romero Alias"], [], [],
                 mock_conn, _make_config()
             )
 
@@ -218,7 +218,7 @@ class TestFuzzyThresholdMiss:
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
-                1, ["UnknownSpeakerXYZ"], [], [],
+                1, ["Carlos Romero Alias"], [], [],
                 mock_conn, _make_config()
             )
 
@@ -250,7 +250,7 @@ class TestAINoMatch:
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
-                1, ["PedroSanchezVariant"], [], [],
+                1, ["Pedro Sanchez Variant"], [], [],
                 mock_conn, _make_config()
             )
 
@@ -273,7 +273,7 @@ class TestAINoMatch:
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
-                1, ["PedroSanchezVariant"], [], [],
+                1, ["Pedro Sanchez Variant"], [], [],
                 mock_conn, _make_config()
             )
 
@@ -302,7 +302,7 @@ class TestAINeedsManual:
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
-                1, ["PedroAmbiguous"], [], [],
+                1, ["Pedro Ambiguo Real"], [], [],
                 mock_conn, _make_config()
             )
 
@@ -322,7 +322,7 @@ class TestAINeedsManual:
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
-                1, ["PedroAmbiguous"], [], [],
+                1, ["Pedro Ambiguo Real"], [], [],
                 mock_conn, _make_config()
             )
 
@@ -341,8 +341,8 @@ class TestMultipleSpeakers:
         mock_conn, mock_cursor = mock_db_conn
 
         participant_map = {
-            "Speaker One": _make_participant("Speaker One", "speaker one"),
-            "Speaker Two": _make_participant("Speaker Two", "speaker two"),
+            "Ana Ruiz Pérez": _make_participant("Ana Ruiz Pérez", "ana ruiz perez"),
+            "Juan García López": _make_participant("Juan García López", "juan garcia lopez"),
         }
 
         def fuzzy_side(name, threshold):
@@ -359,22 +359,22 @@ class TestMultipleSpeakers:
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
                 7,
-                ["Speaker One", "Speaker Two", "Unknown"],
+                ["Ana Ruiz Pérez", "Juan García López", "María Fernández Gil"],
                 [],
                 [],
                 mock_conn,
                 _make_config(),
             )
 
-        # One cache row per unique dirty speaker
+        # One cache row per unique dirty speaker (all three are real multi-word names)
         assert len(result.cache_rows) == 3
 
     def test_only_matched_speakers_corrected(self, mock_db_conn):
         mock_conn, mock_cursor = mock_db_conn
 
         def fuzzy_side(name, threshold):
-            if name == "Speaker One":
-                return _make_participant("Speaker One", "speaker one")
+            if name == "Ana Ruiz Pérez":
+                return _make_participant("Ana Ruiz Pérez", "ana ruiz perez")
             return None
 
         ai_result = _make_ai_result("match", confidence=0.90)
@@ -388,16 +388,16 @@ class TestMultipleSpeakers:
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
                 7,
-                ["Speaker One", "Speaker Two", "Unknown"],
+                ["Ana Ruiz Pérez", "Juan García López", "María Fernández Gil"],
                 [],
                 [],
                 mock_conn,
                 _make_config(),
             )
 
-        assert "Speaker One" in result.corrections
-        assert "Speaker Two" not in result.corrections
-        assert "Unknown" not in result.corrections
+        assert "Ana Ruiz Pérez" in result.corrections
+        assert "Juan García López" not in result.corrections
+        assert "María Fernández Gil" not in result.corrections
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +449,85 @@ class TestAICallError:
         assert result.updated is False
         calls_sql = [str(c.args[0]).lower() for c in mock_cursor.execute.call_args_list]
         assert not any("update" in s and "video_chapters" in s for s in calls_sql)
+
+
+# ---------------------------------------------------------------------------
+# T-08: _dedupe_dirty_speakers drops placeholder names (Task 1.7 RED)
+# ---------------------------------------------------------------------------
+
+class TestDedupeDirtySpeakersPlaceholderFilter:
+    """Task 1.7 RED — _dedupe_dirty_speakers must filter placeholders before dedup."""
+
+    def test_desconocido_dropped_from_speakers(self):
+        """'Desconocido' must not appear in the deduped output."""
+        from congress_videos.modules.speaker_normalization import _dedupe_dirty_speakers
+
+        result = _dedupe_dirty_speakers(
+            ["Desconocido", "Pedro Sánchez"],
+            [],
+            [],
+        )
+        assert "Desconocido" not in result
+        assert "Pedro Sánchez" in result
+
+    def test_unknown_dropped_from_speakers(self):
+        """'Unknown' must not appear in the deduped output."""
+        from congress_videos.modules.speaker_normalization import _dedupe_dirty_speakers
+
+        result = _dedupe_dirty_speakers(
+            ["Unknown", "María López"],
+            [],
+            [],
+        )
+        assert "Unknown" not in result
+        assert "María López" in result
+
+    def test_no_especificado_dropped_from_key_speakers(self):
+        """'(No especificado)' in key_speakers must be filtered."""
+        from congress_videos.modules.speaker_normalization import _dedupe_dirty_speakers
+
+        result = _dedupe_dirty_speakers(
+            [],
+            ["(No especificado)", "Ana Martínez"],
+            [],
+        )
+        assert "(No especificado)" not in result
+        assert "Ana Martínez" in result
+
+    def test_placeholder_in_timeline_speaker_dropped(self):
+        """Placeholder in timeline[].speaker must be filtered."""
+        from congress_videos.modules.speaker_normalization import _dedupe_dirty_speakers
+
+        result = _dedupe_dirty_speakers(
+            [],
+            [],
+            [{"speaker": "Desconocido", "content": "...", "time": "00:01:00"}],
+        )
+        assert "Desconocido" not in result
+
+    def test_all_real_speakers_preserved(self):
+        """Non-placeholder names must still appear in deduped output."""
+        from congress_videos.modules.speaker_normalization import _dedupe_dirty_speakers
+
+        result = _dedupe_dirty_speakers(
+            ["Ana Ruiz", "Pedro García"],
+            ["Laura Gómez"],
+            [],
+        )
+        assert "Ana Ruiz" in result
+        assert "Pedro García" in result
+        assert "Laura Gómez" in result
+
+    def test_mix_placeholders_and_real_names(self):
+        """Mixed list: only real names survive, order preserved."""
+        from congress_videos.modules.speaker_normalization import _dedupe_dirty_speakers
+
+        result = _dedupe_dirty_speakers(
+            ["Desconocido", "Ana Ruiz", "Unknown"],
+            ["Pedro García"],
+            [{"speaker": "No especificado", "content": "", "time": "00:00"}],
+        )
+        assert result == ["Ana Ruiz", "Pedro García"]
 
 
 # ---------------------------------------------------------------------------
