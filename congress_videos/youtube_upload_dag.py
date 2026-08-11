@@ -4,7 +4,7 @@ Congress YouTube Chapter Uploader DAG
 This DAG uploads individual chapters from congressional videos to YouTube:
 
 1. Ensure data directory exists
-2. Query top 5 uploadable chapters from uploadable_chapters view
+2. Query the highest-priority uploadable chapter from uploadable_chapters view
    - Ordered by relevance_score DESC (highest relevance first)
    - Then by created_at DESC (most recent first)
    - Only chapters not yet uploaded to YouTube
@@ -37,13 +37,14 @@ from utils.env_loader import load_env_if_local
 load_env_if_local()
 
 # Check if running in development environment
-POSTGRES_SCHEMA = os.getenv('POSTGRES_SCHEMA', 'development')
-IS_DEVELOPMENT = POSTGRES_SCHEMA == 'development'
+POSTGRES_SCHEMA = os.getenv("POSTGRES_SCHEMA", "development")
+IS_DEVELOPMENT = POSTGRES_SCHEMA == "development"
 
-# Upload thresholds by hour — skip upload unless queue_size strictly exceeds the threshold.
-# 11:00: skip if queue_size <= 10 (REQ-THRESH-01)
-# 14:00: skip if queue_size <= 20 (REQ-THRESH-02)
-# 17:00: skip if queue_size < 1  (REQ-THRESH-03)
+# The scheduled 19:00 UTC run uploads only when at least one chapter is queued.
+# This is a calendar-day cap for long-form chapter uploads; database quota data
+# reports successful uploads_today, while limit=1 remains a selection safeguard.
+DAILY_LONG_FORM_UPLOAD_LIMIT = 1
+# Retain legacy thresholds for manually triggered runs using their logical hours.
 THRESHOLD_BY_HOUR = {11: 10, 14: 20, 17: 0}
 STALE_RUN_TOLERANCE_MINUTES = int(
     os.getenv("CHAPTER_UPLOADER_STALE_RUN_TOLERANCE_MINUTES", "30")
@@ -66,13 +67,26 @@ def should_upload(**context):
             logging.info(
                 "Skipping stale re-parse replay: data_interval_end=%s is %s "
                 "behind now=%s (tolerance=%dm)",
-                data_interval_end, staleness, now, STALE_RUN_TOLERANCE_MINUTES,
+                data_interval_end,
+                staleness,
+                now,
+                STALE_RUN_TOLERANCE_MINUTES,
             )
             return False
-    ti = context['ti']
-    upload_quota = ti.xcom_pull(key='upload_quota') or {}
-    queue_size = upload_quota.get('queue_size', 0)
-    hour = context['logical_date'].hour
+    ti = context["ti"]
+    upload_quota = ti.xcom_pull(key="upload_quota") or {}
+    queue_size = upload_quota.get("queue_size", 0)
+    uploads_today = upload_quota.get("uploads_today", 0)
+    if uploads_today >= DAILY_LONG_FORM_UPLOAD_LIMIT:
+        logging.info(
+            "Skipping upload: %d long-form chapter upload(s) already recorded today "
+            "(daily limit=%d)",
+            uploads_today,
+            DAILY_LONG_FORM_UPLOAD_LIMIT,
+        )
+        return False
+
+    hour = context["logical_date"].hour
     threshold = THRESHOLD_BY_HOUR.get(hour, 0)
     return queue_size > threshold
 
@@ -80,6 +94,7 @@ def should_upload(**context):
 # ---------------------------------------------------------------------------
 # Thumbnail pipeline helpers
 # ---------------------------------------------------------------------------
+
 
 def _resolve_speaker_name(chapter: dict) -> str | None:
     """Extract the first speaker name from key_speakers or speakers.
@@ -130,9 +145,7 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
     session_date = chapter.get("session_date")
 
     # debate_summary: title + description (D6)
-    debate_summary = (
-        f"{title}\n{description}" if description else title
-    )
+    debate_summary = f"{title}\n{description}" if description else title
 
     # session label (D6)
     if session_number is not None:
@@ -165,7 +178,12 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
 
 
 def _thumbnail_failure(chapter_id: int | None) -> dict:
-    return {"chapter_id": chapter_id, "success": False, "output_path": None, "title": None}
+    return {
+        "chapter_id": chapter_id,
+        "success": False,
+        "output_path": None,
+        "title": None,
+    }
 
 
 def trigger_thumbnail_generation(ti, **context) -> str | None:
@@ -193,7 +211,9 @@ def trigger_thumbnail_generation(ti, **context) -> str | None:
             run_id=f"chapter_thumbnail_{context['run_id']}",
         )
     except Exception as exc:
-        logging.warning("Could not trigger thumbnail DAG for chapter_id=%s: %s", chapter_id, exc)
+        logging.warning(
+            "Could not trigger thumbnail DAG for chapter_id=%s: %s", chapter_id, exc
+        )
         ti.xcom_push(key="thumbnail_result", value=_thumbnail_failure(chapter_id))
         return None
 
@@ -227,7 +247,9 @@ def trigger_thumbnail_generation(ti, **context) -> str | None:
             and isinstance(result.get("title"), str)
             and result["title"]
         ):
-            logging.warning("Thumbnail DAG run %s returned no valid result", child_run_id)
+            logging.warning(
+                "Thumbnail DAG run %s returned no valid result", child_run_id
+            )
             ti.xcom_push(key="thumbnail_result", value=_thumbnail_failure(chapter_id))
             return child_run_id
 
@@ -277,6 +299,7 @@ def _backfill_thumbnail_video_id(ti, db=None) -> None:
 
     if db is None:
         from congress_videos.modules.database import CongressionalVideoDB
+
         db = CongressionalVideoDB()
 
     db.update_thumbnail_youtube_video_id(
@@ -284,42 +307,44 @@ def _backfill_thumbnail_video_id(ti, db=None) -> None:
     )
     logging.info(
         "_backfill_thumbnail_video_id: chapter_id=%s → %r",
-        chapter_id, youtube_video_id,
+        chapter_id,
+        youtube_video_id,
     )
 
 
 default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
+    "owner": "airflow",
+    "depends_on_past": False,
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
 }
 
-with DAG(
-    'congress_youtube_chapter_uploader',
-    default_args=default_args,
-    description='Upload top congressional video chapters to YouTube based on relevance score',
-    schedule='0 11,14,17 * * *',  # Run at 11:00, 14:00, and 17:00 UTC daily
-    start_date=datetime(2025, 11, 14),
-    catchup=False,
-    tags=['congress', 'youtube', 'chapters'],
-    params={
-        "max_chapters": 1,
-        "min_relevance_score": 2,
-        "isTesting": False,
-        "dry_run": False,  # Set to True to run the full pipeline without triggering the YouTube upload
-    }
-) as dag:
-
+with (
+    DAG(
+        "congress_youtube_chapter_uploader",
+        default_args=default_args,
+        description="Upload top congressional video chapters to YouTube based on relevance score",
+        schedule="0 19 * * *",  # Run once daily at 19:00 UTC; gate enforces one long video per calendar day
+        start_date=datetime(2025, 11, 14),
+        catchup=False,
+        tags=["congress", "youtube", "chapters"],
+        params={
+            "max_chapters": 1,
+            "min_relevance_score": 2,
+            "isTesting": False,
+            "dry_run": False,  # Set to True to run the full pipeline without triggering the YouTube upload
+        },
+    ) as dag
+):
     # Step 0: Ensure data directory exists
     t0 = PythonOperator(
-        task_id='ensure_data_directory',
+        task_id="ensure_data_directory",
         python_callable=lambda ti: xcom_task(
             ti,
-            lambda: ensure_project_data_directory('congress_videos'),
-            'data_directory_path'
+            lambda: ensure_project_data_directory("congress_videos"),
+            "data_directory_path",
         ),
     )
 
@@ -327,44 +352,46 @@ with DAG(
     # Queries DB for uploads today and pending queue size.
     # Returns {queue_size, uploads_today}.
     t1_quota = PostgreSQLOperator(
-        task_id='check_upload_quota',
-        operation='check_upload_quota',
-        output_xcom_key='upload_quota',
+        task_id="check_upload_quota",
+        operation="check_upload_quota",
+        output_xcom_key="upload_quota",
     )
 
     # Step 1b: Short-circuit based on queue_size vs time-of-day threshold
     t1_skip = ShortCircuitOperator(
-        task_id='skip_if_quota_reached',
+        task_id="skip_if_quota_reached",
         python_callable=should_upload,
     )
 
     # Step 2: Get uploadable chapters (limit=1 per run)
     # Ordered by: session_date DESC, relevance_score DESC, created_at DESC
     t1_db = PostgreSQLOperator(
-        task_id='get_uploadable_chapters',
-        operation='get_uploadable_chapters',
-        output_xcom_key='uploadable_chapters'
+        task_id="get_uploadable_chapters",
+        operation="get_uploadable_chapters",
+        output_xcom_key="uploadable_chapters",
     )
 
     def _generate_youtube_metadata(ti):
         from congress_videos.modules.youtube import youtube_ai
+
         return xcom_task(
             ti,
             lambda: youtube_ai.generate_youtube_metadata_for_selected_videos(
-                ti.xcom_pull(key='uploadable_chapters')
+                ti.xcom_pull(key="uploadable_chapters")
             ),
-            'youtube_metadata_results'
+            "youtube_metadata_results",
         )
 
     def _run_prepare_thumbnail_config(ti):
         """Resolve speaker name and build thumbnail config struct for the chapter."""
         from congress_videos.modules.database import CongressionalVideoDB
-        chapters = ti.xcom_pull(key='uploadable_chapters') or []
+
+        chapters = ti.xcom_pull(key="uploadable_chapters") or []
         # Uploader processes exactly 1 chapter per run
         chapter = chapters[0] if chapters else {}
         db = CongressionalVideoDB()
         result = _prepare_thumbnail_config(chapter, db)
-        ti.xcom_push(key='thumbnail_config', value=result)
+        ti.xcom_push(key="thumbnail_config", value=result)
 
     def _run_generate_thumbnail(ti):
         """Trigger the generic thumbnail DAG and retain its completed result."""
@@ -372,26 +399,28 @@ with DAG(
 
     def _extract_chapter_videos(ti):
         from congress_videos.modules import video_splitter
+
         return xcom_task(
             ti,
             lambda: video_splitter.extract_chapters_from_video(
-                ti.xcom_pull(key='uploadable_chapters'),
-                ti.xcom_pull(key='data_directory_path')
+                ti.xcom_pull(key="uploadable_chapters"),
+                ti.xcom_pull(key="data_directory_path"),
             ),
-            'chapter_extraction_results'
+            "chapter_extraction_results",
         )
 
     def _prepare_upload_config(ti, **context):
         from congress_videos.modules.youtube import prepare_chapter_upload_config
+
         return xcom_task(
             ti,
             lambda: prepare_chapter_upload_config(
-                ti.xcom_pull(key='chapter_extraction_results'),
-                ti.xcom_pull(key='youtube_metadata_results'),
-                thumbnail_result=ti.xcom_pull(key='thumbnail_result'),
-                is_testing=context["params"].get("isTesting", False)
+                ti.xcom_pull(key="chapter_extraction_results"),
+                ti.xcom_pull(key="youtube_metadata_results"),
+                thumbnail_result=ti.xcom_pull(key="thumbnail_result"),
+                is_testing=context["params"].get("isTesting", False),
             ),
-            'upload_config'
+            "upload_config",
         )
 
     def _run_backfill_thumbnail_video_id(ti):
@@ -400,31 +429,31 @@ with DAG(
 
     # Step 2: Generate YouTube metadata for chapters
     t2 = PythonOperator(
-        task_id='generate_youtube_metadata',
+        task_id="generate_youtube_metadata",
         python_callable=_generate_youtube_metadata,
     )
 
     # Step 3 (new): Prepare thumbnail config — resolve speaker, build config struct
     t3_prepare = PythonOperator(
-        task_id='prepare_thumbnail_config',
+        task_id="prepare_thumbnail_config",
         python_callable=_run_prepare_thumbnail_config,
     )
 
     # Step 4 (new): Generate thumbnail via the generic thumbnail DAG
     t4_generate = PythonOperator(
-        task_id='generate_thumbnail',
+        task_id="generate_thumbnail",
         python_callable=_run_generate_thumbnail,
     )
 
     # Step 5: Extract chapter videos from source YouTube videos using ffmpeg
     t5 = PythonOperator(
-        task_id='extract_chapter_videos',
+        task_id="extract_chapter_videos",
         python_callable=_extract_chapter_videos,
     )
 
     # Step 6: Prepare upload configuration for generic YouTube uploader DAG
     t6 = PythonOperator(
-        task_id='prepare_upload_config',
+        task_id="prepare_upload_config",
         python_callable=_prepare_upload_config,
     )
 
@@ -436,21 +465,23 @@ with DAG(
 
         if context.get("params", {}).get("dry_run", False):
             logging.info("dry_run=True — skipping YouTube upload")
-            ti.xcom_push(key='upload_results', value={'upload_details': []})
+            ti.xcom_push(key="upload_results", value={"upload_details": []})
             return None
 
         # Get config from XCom
-        config = ti.xcom_pull(key='upload_config')
+        config = ti.xcom_pull(key="upload_config")
 
         if not config:
             logging.warning("No upload config found, skipping upload")
-            ti.xcom_push(key='upload_results', value={'upload_details': []})
+            ti.xcom_push(key="upload_results", value={"upload_details": []})
             return None
 
         # Trigger the DAG
-        logging.info(f"Triggering generic_youtube_uploader with {len(config.get('videos', []))} videos")
+        logging.info(
+            f"Triggering generic_youtube_uploader with {len(config.get('videos', []))} videos"
+        )
         dag_run = trigger_dag_api(
-            dag_id='generic_youtube_uploader',
+            dag_id="generic_youtube_uploader",
             conf=config,
             run_id=f"chapter_upload_{context['run_id']}",
         )
@@ -463,53 +494,60 @@ with DAG(
             time.sleep(10)
             dag_run.refresh_from_db()
 
-            if dag_run.state in ['success', 'failed']:
+            if dag_run.state in ["success", "failed"]:
                 logging.info(f"Upload DAG completed with state: {dag_run.state}")
 
                 # Pull upload results from the triggered DAG
                 upload_results = XCom.get_many(
                     execution_date=dag_run.execution_date,
-                    dag_ids=['generic_youtube_uploader'],
-                    task_ids=['upload_videos'],
-                    key='return_value',
-                    limit=1
+                    dag_ids=["generic_youtube_uploader"],
+                    task_ids=["upload_videos"],
+                    key="return_value",
+                    limit=1,
                 )
 
                 if upload_results:
                     results_data = upload_results[0].value
                     logging.info(f"Retrieved upload results: {results_data}")
-                    ti.xcom_push(key='upload_results', value=results_data)
+                    ti.xcom_push(key="upload_results", value=results_data)
                 else:
                     logging.warning("No upload results found from triggered DAG")
                     # Create results based on config and DAG state
                     upload_details = []
-                    for video_config in config.get('videos', []):
-                        upload_details.append({
-                            'chapter_id': video_config.get('chapter_id'),
-                            'video_id': video_config.get('video_id'),
-                            'video_file': video_config.get('video_file'),
-                            'success': dag_run.state == 'success',
-                            'youtube_video_id': None,
-                            'error': 'Upload failed - no results available' if dag_run.state == 'failed' else None
-                        })
-                    ti.xcom_push(key='upload_results', value={'upload_details': upload_details})
+                    for video_config in config.get("videos", []):
+                        upload_details.append(
+                            {
+                                "chapter_id": video_config.get("chapter_id"),
+                                "video_id": video_config.get("video_id"),
+                                "video_file": video_config.get("video_file"),
+                                "success": dag_run.state == "success",
+                                "youtube_video_id": None,
+                                "error": "Upload failed - no results available"
+                                if dag_run.state == "failed"
+                                else None,
+                            }
+                        )
+                    ti.xcom_push(
+                        key="upload_results", value={"upload_details": upload_details}
+                    )
 
                 return dag_run.run_id
 
     def _check_upload_failures(ti):
         """Raise after DB writes so failures are visible in the Airflow UI."""
-        updates = ti.xcom_pull(key='chapter_upload_updates')
+        updates = ti.xcom_pull(key="chapter_upload_updates")
         if updates is None:
             raise Exception(
                 "chapter_upload_updates XCom missing after mark_chapters_uploaded succeeded"
             )
 
-        recorded = updates.get('recorded_failures', 0)
-        failed = updates.get('failed_updates', 0)
+        recorded = updates.get("recorded_failures", 0)
+        failed = updates.get("failed_updates", 0)
         if recorded > 0 or failed > 0:
             bad = [
-                d for d in updates.get('details', [])
-                if d.get('status') in ('failure_recorded', 'failed')
+                d
+                for d in updates.get("details", [])
+                if d.get("status") in ("failure_recorded", "failed")
             ]
             raise Exception(
                 f"Chapter upload failures: {recorded} recorded, {failed} "
@@ -519,30 +557,44 @@ with DAG(
         logging.info("No chapter upload failures recorded")
 
     t7 = PythonOperator(
-        task_id='trigger_youtube_upload',
+        task_id="trigger_youtube_upload",
         python_callable=trigger_upload_with_config,
     )
 
     # Step 8: Update database to mark chapters as uploaded
     t8_db = PostgreSQLOperator(
-        task_id='mark_chapters_uploaded',
-        operation='mark_chapters_uploaded',
-        xcom_keys={'upload_results': 'upload_results'},
-        output_xcom_key='chapter_upload_updates'
+        task_id="mark_chapters_uploaded",
+        operation="mark_chapters_uploaded",
+        xcom_keys={"upload_results": "upload_results"},
+        output_xcom_key="chapter_upload_updates",
     )
 
     # Step 8b: Back-fill youtube_video_id in video_thumbnails
     t8_backfill = PythonOperator(
-        task_id='backfill_thumbnail_video_id',
+        task_id="backfill_thumbnail_video_id",
         python_callable=_run_backfill_thumbnail_video_id,
     )
 
     # Step 9: Alert when chapter upload failures were recorded (after DB write)
     t9 = PythonOperator(
-        task_id='check_upload_failures',
+        task_id="check_upload_failures",
         python_callable=_check_upload_failures,
     )
 
     # Task dependencies (13 tasks total)
     # t0 > t1_quota > t1_skip > t1_db > t2 > t3_prepare > t4_generate > t5 > t6 > t7 > t8_db > t8_backfill > t9
-    t0 >> t1_quota >> t1_skip >> t1_db >> t2 >> t3_prepare >> t4_generate >> t5 >> t6 >> t7 >> t8_db >> t8_backfill >> t9
+    (
+        t0
+        >> t1_quota
+        >> t1_skip
+        >> t1_db
+        >> t2
+        >> t3_prepare
+        >> t4_generate
+        >> t5
+        >> t6
+        >> t7
+        >> t8_db
+        >> t8_backfill
+        >> t9
+    )
