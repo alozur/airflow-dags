@@ -24,6 +24,7 @@ from congress_videos.config.ai_prompts import (
 )
 from congress_videos.modules.participants_db import lookup_participant_fuzzy
 from congress_videos.modules.participants_ingestion import normalize_member_name
+from congress_videos.modules.speaker_placeholders import is_placeholder
 from utils.llm_cache import cached_json_completion
 
 logger = logging.getLogger(__name__)
@@ -56,11 +57,20 @@ def _dedupe_dirty_speakers(
     key_speakers: list[str],
     timeline: list[dict],
 ) -> list[str]:
-    """Return a de-duplicated, ordered list of unique dirty speaker names."""
+    """Return a de-duplicated, ordered list of unique dirty speaker names.
+
+    Placeholder speaker strings (e.g. "Desconocido", "Unknown",
+    "(No especificado)", single-token role abbreviations) are filtered out
+    before deduplication so they are never sent to the normalization pipeline.
+    """
     seen: list[str] = []
     seen_set: set[str] = set()
-    for name in list(speakers) + list(key_speakers) + [e.get("speaker", "") for e in timeline]:
-        if name and name not in seen_set:
+    for name in (
+        list(speakers)
+        + list(key_speakers)
+        + [e.get("speaker", "") for e in timeline]
+    ):
+        if name and not is_placeholder(name) and name not in seen_set:
             seen.append(name)
             seen_set.add(name)
     return seen

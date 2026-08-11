@@ -7,6 +7,8 @@ specific to the congressional video processing workflow.
 
 from typing import Dict, List
 
+from congress_videos.modules.speaker_placeholders import is_placeholder
+
 
 def format_speaker_list(
     speakers_info: List[Dict[str, str]],
@@ -15,6 +17,8 @@ def format_speaker_list(
 ) -> str:
     """
     Format a list of speakers into a text representation.
+
+    Entries whose speaker_name is missing or is a known placeholder are skipped.
 
     Args:
         speakers_info: List of dicts with 'speaker_name' and 'role' keys
@@ -29,13 +33,18 @@ def format_speaker_list(
 
     speaker_lines = []
     for speaker in speakers_info[:max_speakers]:
-        name = speaker.get("speaker_name", "Desconocido")
+        name = speaker.get("speaker_name", "")
+        if is_placeholder(name):
+            continue
         role = speaker.get("role", "")
 
         if include_role and role:
             speaker_lines.append(f"- {name} ({role})")
         else:
             speaker_lines.append(f"- {name}")
+
+    if not speaker_lines:
+        return "No hay participantes especificados"
 
     result = "\n".join(speaker_lines)
 
@@ -53,6 +62,8 @@ def format_speaker_context(
     """
     Format speakers into a compact context string for prompts.
 
+    Entries whose speaker_name is missing or is a known placeholder are skipped.
+
     Args:
         speakers_info: List of dicts with 'speaker_name' and 'role' keys
         max_speakers: Maximum number of speakers to include
@@ -66,11 +77,16 @@ def format_speaker_context(
 
     speaker_names = []
     for speaker in speakers_info[:max_speakers]:
-        name = speaker.get("speaker_name", "Unknown")
+        name = speaker.get("speaker_name", "")
+        if is_placeholder(name):
+            continue
         role = speaker.get("role", "")
         if role:
             speaker_names.append(f"{name} ({role})")
         else:
             speaker_names.append(name)
+
+    if not speaker_names:
+        return ""
 
     return f"{prefix}: {', '.join(speaker_names)}"
