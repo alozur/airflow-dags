@@ -1104,3 +1104,63 @@ class TestFetchRecentHistoryDagTask:
             "_task_generate_title must pass sibling_titles= to generate_title"
         )
         assert kwargs["sibling_titles"] == ["Title X", "Title Y"]
+
+
+# ---------------------------------------------------------------------------
+# title-news-format Phase 5: key_speakers threading in _task_generate_title
+# ---------------------------------------------------------------------------
+
+
+class TestTaskGenerateTitleKeySpeakers:
+    """Phase 5: _task_generate_title must forward key_speakers from XCom conf."""
+
+    def test_key_speakers_forwarded_when_present(self, mocker) -> None:
+        """When validate_input conf has key_speakers, _task_generate_title passes them to generate_title."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        conf_with_speakers = {**_FAKE_CONF, "key_speakers": ["Ana Pastor"]}
+        best = {"style": "A", "prompt": "debate", "label": "option_a", "main_score": 77.0}
+        ti = _make_fake_ti(
+            {
+                "validate_input": conf_with_speakers,
+                "choose_best_option": best,
+                "fetch_recent_history": {"briefs": [], "titles": []},
+            }
+        )
+
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mock_generate_title = mocker.patch.object(
+            dag_mod, "generate_title", return_value="Un título"
+        )
+
+        dag_mod._task_generate_title(ti)
+
+        mock_generate_title.assert_called_once()
+        _, kwargs = mock_generate_title.call_args
+        assert "key_speakers" in kwargs, (
+            "_task_generate_title must pass key_speakers= to generate_title"
+        )
+        assert kwargs["key_speakers"] == ["Ana Pastor"]
+
+    def test_missing_key_speakers_does_not_raise(self, mocker) -> None:
+        """When validate_input conf has no key_speakers key, _task_generate_title succeeds."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        conf_without = {k: v for k, v in _FAKE_CONF.items() if k != "key_speakers"}
+        best = {"style": "A", "prompt": "debate", "label": "option_a", "main_score": 77.0}
+        ti = _make_fake_ti(
+            {
+                "validate_input": conf_without,
+                "choose_best_option": best,
+                "fetch_recent_history": {"briefs": [], "titles": []},
+            }
+        )
+
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mock_generate_title = mocker.patch.object(
+            dag_mod, "generate_title", return_value="Un título"
+        )
+
+        # Must not raise KeyError
+        dag_mod._task_generate_title(ti)
+        mock_generate_title.assert_called_once()

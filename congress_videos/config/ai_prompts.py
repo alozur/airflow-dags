@@ -204,12 +204,40 @@ ART_DIRECTION_RETRY_INSTRUCTION = (
 
 
 # Thumbnail Title Generation (Pikzels + OpenAI pipeline)
+
+# Editorial keyword lists — edit these to steer LLM word choice at the persona level.
+# Source: issue #60 verbatim.
+TITLE_PRIORITY_KEYWORDS: tuple[str, ...] = (
+    "corrupción",
+    "Sánchez",
+    "Feijóo",
+    "Yolanda Díaz",
+)
+
+TITLE_WORDS_TO_AVOID: tuple[str, ...] = (
+    "vivienda",
+    "crisis",
+    "LGTBI",
+    "eutanasia",
+)
+
+# Soft speaker hint injected into the user prompt when key_speakers is truthy.
+THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION = (
+    "Si es natural, menciona a alguno de estos protagonistas del debate:\n{speaker_list}"
+)
+
 THUMBNAIL_TITLE_SYSTEM_PROMPT = (
     "Eres un redactor político experto en titulares de alto impacto para YouTube. "
-    "Creas títulos dramáticos, directos y en español que capturan la esencia del debate parlamentario. "
+    "Escribe titulares declarativos en formato de noticias: [Nombre] + verbo de acción + complemento o cita. "
+    "Ejemplos correctos: «Sánchez anuncia recortes en pensiones», «Feijóo acusa al Gobierno de corrupción». "
+    "NUNCA uses signos de interrogación (¿?): ningún titular puede ser una pregunta. "
     "Los títulos deben generar urgencia y curiosidad sin perder rigor informativo. "
     "Varía el registro emocional entre títulos consecutivos: alterna entre urgencia, pérdida, "
     "amenaza, curiosidad e identidad para evitar la monotonía tonal. "
+    "PRIORIZA términos con alto impacto político cuando sean relevantes: "
+    + ", ".join(TITLE_PRIORITY_KEYWORDS) + ". "
+    "EVITA términos genéricos que no diferencian el contenido: "
+    + ", ".join(TITLE_WORDS_TO_AVOID) + ". "
     "RESTRICCIONES ABSOLUTAS: máximo 90 caracteres; sin emojis; sin comillas; "
     "sin símbolos de canal; sin hashtags; sin los caracteres: # @ | ~ ^. "
     "Usa mayúsculas y minúsculas normales (capitalización estándar en español): "
@@ -217,31 +245,28 @@ THUMBNAIL_TITLE_SYSTEM_PROMPT = (
     "partidos (PSOE, PP, VOX, IVA)."
 )
 
-THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE = """Genera un título para miniatura de YouTube basado en el siguiente debate parlamentario.
+_AVOID_TERMS_LIST = ", ".join(TITLE_WORDS_TO_AVOID)
 
-RESUMEN DEL DEBATE:
-{summary}
-
-ESTILO VISUAL DE LA MINIATURA:
-{style}
-
-CONTEXTO DE LA IMAGEN (prompt utilizado):
-{prompt}
-
-FORMATO DE RESPUESTA (JSON):
-{{
-  "title": "<título en español, máximo 90 caracteres, sin emojis, sin comillas, sin # @ | ~ ^>"
-}}
-
-REQUISITOS:
-- Máximo 90 caracteres (CRÍTICO)
-- Español, tono dramático político
-- Sin emojis, sin comillas, sin símbolos de canal
-- Sin los caracteres: # @ | ~ ^
-- Capitalización estándar en español (mayúsculas y minúsculas normales), NUNCA todo en mayúsculas, respetando las siglas de partidos (PSOE, PP, VOX, IVA)
-- Refleja el contenido visual de la miniatura descrito en el estilo y el prompt
-
-Devuelve SOLO el JSON, sin markdown."""
+THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE = (
+    "Genera un título para miniatura de YouTube basado en el siguiente debate parlamentario.\n\n"
+    "RESUMEN DEL DEBATE:\n{summary}\n\n"
+    "ESTILO VISUAL DE LA MINIATURA:\n{style}\n\n"
+    "CONTEXTO DE LA IMAGEN (prompt utilizado):\n{prompt}\n\n"
+    "FORMATO DE RESPUESTA (JSON):\n"
+    '{{\n  "title": "<título en español, máximo 90 caracteres, sin emojis, sin comillas, sin # @ | ~ ^>"\n}}\n\n'
+    "REQUISITOS:\n"
+    "- Máximo 90 caracteres (CRÍTICO)\n"
+    "- Español, tono dramático político\n"
+    "- Formato declarativo: [Nombre] + verbo + complemento. Nunca como pregunta (sin interrogación ¿?).\n"
+    "- Prioriza mencionar personas relevantes cuando sean el foco del debate.\n"
+    "- Sin emojis, sin comillas, sin símbolos de canal\n"
+    "- Sin los caracteres: # @ | ~ ^\n"
+    "- Capitalización estándar en español (mayúsculas y minúsculas normales), NUNCA todo en mayúsculas, "
+    "respetando las siglas de partidos (PSOE, PP, VOX, IVA)\n"
+    f"- Evita términos genéricos como: {_AVOID_TERMS_LIST}\n"
+    "- Refleja el contenido visual de la miniatura descrito en el estilo y el prompt\n\n"
+    "Devuelve SOLO el JSON, sin markdown."
+)
 
 
 # Chunk Summarization - For silence-based chunks before chapter analysis
