@@ -30,6 +30,7 @@ import pytest
 # Helpers / shared fixtures
 # ---------------------------------------------------------------------------
 
+
 def _make_cfg(
     *,
     party_logo_map=None,
@@ -38,12 +39,15 @@ def _make_cfg(
 ) -> dict:
     """Build a minimal domain-config dict for testing."""
     if lookup_raises:
+
         def _lookup(name: str):
             raise RuntimeError("unexpected call to lookup")
     elif lookup_return is not None:
+
         def _lookup(name: str):
             return lookup_return
     else:
+
         def _lookup(name: str):
             return None
 
@@ -62,14 +66,20 @@ def _make_cfg(
 # T-01: resolve_participant_photo
 # ---------------------------------------------------------------------------
 
+
 class TestResolveParticipantPhoto:
     """resolve_participant_photo(name, cfg) contracts."""
 
     def test_photo_url_present_returns_base64_dict(self, monkeypatch):
         """When participant has photo_url, HTTP GET is performed and bytes returned."""
-        from congress_videos.modules.thumbnail_generation import resolve_participant_photo
+        from congress_videos.modules.thumbnail_generation import (
+            resolve_participant_photo,
+        )
 
-        participant = {"normalized_name": "garcia_maria", "photo_url": "https://example.com/garcia.jpg"}
+        participant = {
+            "normalized_name": "garcia_maria",
+            "photo_url": "https://example.com/garcia.jpg",
+        }
         cfg = _make_cfg(lookup_return=participant)
 
         fake_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
@@ -92,7 +102,9 @@ class TestResolveParticipantPhoto:
 
     def test_photo_url_none_with_logo_returns_logo_bytes(self, tmp_path):
         """When photo_url is NULL but party logo exists, logo bytes returned, no HTTP."""
-        from congress_videos.modules.thumbnail_generation import resolve_participant_photo
+        from congress_videos.modules.thumbnail_generation import (
+            resolve_participant_photo,
+        )
 
         logo_file = tmp_path / "logo.png"
         logo_bytes = b"\x89PNG\r\n\x1a\n" + b"\xff" * 20
@@ -110,7 +122,10 @@ class TestResolveParticipantPhoto:
 
     def test_photo_url_none_no_logo_returns_empty_result(self):
         """When photo_url is NULL and no party logo, EMPTY_RESULT returned + WARNING logged."""
-        from congress_videos.modules.thumbnail_generation import resolve_participant_photo, EMPTY_RESULT
+        from congress_videos.modules.thumbnail_generation import (
+            resolve_participant_photo,
+            EMPTY_RESULT,
+        )
 
         participant = {"normalized_name": "garcia_maria", "photo_url": None}
         cfg = _make_cfg(lookup_return=participant, party_logo_map=None)
@@ -123,7 +138,10 @@ class TestResolveParticipantPhoto:
 
     def test_participant_not_found_returns_empty_result(self):
         """When lookup returns None (unknown slug), EMPTY_RESULT returned + WARNING logged."""
-        from congress_videos.modules.thumbnail_generation import resolve_participant_photo, EMPTY_RESULT
+        from congress_videos.modules.thumbnail_generation import (
+            resolve_participant_photo,
+            EMPTY_RESULT,
+        )
 
         cfg = _make_cfg(lookup_return=None)
 
@@ -144,9 +162,14 @@ class TestSlugResolution:
 
     def test_slug_hit_returns_photo_source_and_non_empty_b64(self, monkeypatch):
         """Valid slug resolving to a participant with photo_url → source='photo' + non-empty b64."""
-        from congress_videos.modules.thumbnail_generation import resolve_participant_photo
+        from congress_videos.modules.thumbnail_generation import (
+            resolve_participant_photo,
+        )
 
-        participant = {"slug": "garcia-lopez-maria", "photo_url": "https://example.com/img.jpg"}
+        participant = {
+            "slug": "garcia-lopez-maria",
+            "photo_url": "https://example.com/img.jpg",
+        }
         cfg = _make_cfg(lookup_return=participant)
 
         fake_bytes = b"\x89PNG" + b"\x00" * 20
@@ -158,17 +181,23 @@ class TestSlugResolution:
             result = resolve_participant_photo("garcia-lopez-maria", cfg)
 
         import base64
+
         assert result["source"] == "photo"
         assert result["support_image_b64"] == base64.b64encode(fake_bytes).decode()
 
     def test_absent_slug_none_returns_empty_result_no_lookup(self, caplog):
         """slug=None → EMPTY_RESULT returned + WARNING logged, lookup never called."""
         import logging
-        from congress_videos.modules.thumbnail_generation import resolve_participant_photo, EMPTY_RESULT
+        from congress_videos.modules.thumbnail_generation import (
+            resolve_participant_photo,
+            EMPTY_RESULT,
+        )
 
         cfg = _make_cfg(lookup_raises=True)  # lookup raises if called
 
-        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
+        with caplog.at_level(
+            logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
+        ):
             result = resolve_participant_photo(None, cfg)
 
         assert result == EMPTY_RESULT
@@ -177,11 +206,16 @@ class TestSlugResolution:
     def test_empty_string_slug_returns_empty_result_no_lookup(self, caplog):
         """slug='' → EMPTY_RESULT + WARNING, lookup never called."""
         import logging
-        from congress_videos.modules.thumbnail_generation import resolve_participant_photo, EMPTY_RESULT
+        from congress_videos.modules.thumbnail_generation import (
+            resolve_participant_photo,
+            EMPTY_RESULT,
+        )
 
         cfg = _make_cfg(lookup_raises=True)
 
-        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
+        with caplog.at_level(
+            logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
+        ):
             result = resolve_participant_photo("", cfg)
 
         assert result == EMPTY_RESULT
@@ -190,39 +224,60 @@ class TestSlugResolution:
     def test_whitespace_slug_returns_empty_result_no_lookup(self, caplog):
         """slug='   ' → EMPTY_RESULT + WARNING, lookup never called."""
         import logging
-        from congress_videos.modules.thumbnail_generation import resolve_participant_photo, EMPTY_RESULT
+        from congress_videos.modules.thumbnail_generation import (
+            resolve_participant_photo,
+            EMPTY_RESULT,
+        )
 
         cfg = _make_cfg(lookup_raises=True)
 
-        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
+        with caplog.at_level(
+            logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
+        ):
             result = resolve_participant_photo("   ", cfg)
 
         assert result == EMPTY_RESULT
         assert any(r.levelno >= logging.WARNING for r in caplog.records)
 
-    def test_unknown_slug_lookup_returns_none_gives_empty_result_with_warning(self, caplog):
+    def test_unknown_slug_lookup_returns_none_gives_empty_result_with_warning(
+        self, caplog
+    ):
         """Unknown slug (lookup returns None) → EMPTY_RESULT + WARNING, no raise."""
         import logging
-        from congress_videos.modules.thumbnail_generation import resolve_participant_photo, EMPTY_RESULT
+        from congress_videos.modules.thumbnail_generation import (
+            resolve_participant_photo,
+            EMPTY_RESULT,
+        )
 
         cfg = _make_cfg(lookup_return=None)
 
-        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
+        with caplog.at_level(
+            logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
+        ):
             result = resolve_participant_photo("nonexistent-slug-xyz", cfg)
 
         assert result == EMPTY_RESULT
         assert any(r.levelno >= logging.WARNING for r in caplog.records)
 
-    def test_photo_url_none_party_logo_map_none_returns_empty_result_no_http(self, caplog):
+    def test_photo_url_none_party_logo_map_none_returns_empty_result_no_http(
+        self, caplog
+    ):
         """photo_url=None + party_logo_map=None → EMPTY_RESULT + WARNING, no HTTP call."""
         import logging
-        from congress_videos.modules.thumbnail_generation import resolve_participant_photo, EMPTY_RESULT
+        from congress_videos.modules.thumbnail_generation import (
+            resolve_participant_photo,
+            EMPTY_RESULT,
+        )
 
         participant = {"slug": "garcia-ana", "photo_url": None}
         cfg = _make_cfg(lookup_return=participant, party_logo_map=None)
 
-        with patch("requests.get") as mock_get, \
-             caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
+        with (
+            patch("requests.get") as mock_get,
+            caplog.at_level(
+                logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
+            ),
+        ):
             result = resolve_participant_photo("garcia-ana", cfg)
 
         mock_get.assert_not_called()
@@ -232,16 +287,26 @@ class TestSlugResolution:
     def test_http_404_returns_empty_result_with_warning(self, caplog):
         """HTTP 404 for photo_url (no logo fallback) → EMPTY_RESULT + WARNING."""
         import logging
-        from congress_videos.modules.thumbnail_generation import resolve_participant_photo, EMPTY_RESULT
+        from congress_videos.modules.thumbnail_generation import (
+            resolve_participant_photo,
+            EMPTY_RESULT,
+        )
 
-        participant = {"slug": "garcia-ana", "photo_url": "https://example.com/broken.jpg"}
+        participant = {
+            "slug": "garcia-ana",
+            "photo_url": "https://example.com/broken.jpg",
+        }
         cfg = _make_cfg(lookup_return=participant, party_logo_map=None)
 
         mock_resp = MagicMock()
         mock_resp.status_code = 404
 
-        with patch("requests.get", return_value=mock_resp), \
-             caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
+        with (
+            patch("requests.get", return_value=mock_resp),
+            caplog.at_level(
+                logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
+            ),
+        ):
             result = resolve_participant_photo("garcia-ana", cfg)
 
         assert result == EMPTY_RESULT
@@ -251,13 +316,23 @@ class TestSlugResolution:
         """requests.RequestException → EMPTY_RESULT + WARNING."""
         import logging
         import requests as req
-        from congress_videos.modules.thumbnail_generation import resolve_participant_photo, EMPTY_RESULT
+        from congress_videos.modules.thumbnail_generation import (
+            resolve_participant_photo,
+            EMPTY_RESULT,
+        )
 
-        participant = {"slug": "garcia-ana", "photo_url": "https://example.com/broken.jpg"}
+        participant = {
+            "slug": "garcia-ana",
+            "photo_url": "https://example.com/broken.jpg",
+        }
         cfg = _make_cfg(lookup_return=participant, party_logo_map=None)
 
-        with patch("requests.get", side_effect=req.RequestException("timeout")), \
-             caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
+        with (
+            patch("requests.get", side_effect=req.RequestException("timeout")),
+            caplog.at_level(
+                logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
+            ),
+        ):
             result = resolve_participant_photo("garcia-ana", cfg)
 
         assert result == EMPTY_RESULT
@@ -268,6 +343,7 @@ class TestSlugResolution:
 # T-02: choose_best_option
 # ---------------------------------------------------------------------------
 
+
 class TestChooseBestOption:
     """choose_best_option(options) selects max score; tie → first option."""
 
@@ -276,8 +352,20 @@ class TestChooseBestOption:
         from congress_videos.modules.thumbnail_generation import choose_best_option
 
         options = [
-            {"label": "option_a", "main_score": 72.0, "output_url": "urlA", "local_path": "/a.png", "style": "s"},
-            {"label": "option_b", "main_score": 85.0, "output_url": "urlB", "local_path": "/b.png", "style": "s"},
+            {
+                "label": "option_a",
+                "main_score": 72.0,
+                "output_url": "urlA",
+                "local_path": "/a.png",
+                "style": "s",
+            },
+            {
+                "label": "option_b",
+                "main_score": 85.0,
+                "output_url": "urlB",
+                "local_path": "/b.png",
+                "style": "s",
+            },
         ]
         best = choose_best_option(options)
         assert best["label"] == "option_b"
@@ -287,8 +375,20 @@ class TestChooseBestOption:
         from congress_videos.modules.thumbnail_generation import choose_best_option
 
         options = [
-            {"label": "option_a", "main_score": 78.0, "output_url": "urlA", "local_path": "/a.png", "style": "s"},
-            {"label": "option_b", "main_score": 78.0, "output_url": "urlB", "local_path": "/b.png", "style": "s"},
+            {
+                "label": "option_a",
+                "main_score": 78.0,
+                "output_url": "urlA",
+                "local_path": "/a.png",
+                "style": "s",
+            },
+            {
+                "label": "option_b",
+                "main_score": 78.0,
+                "output_url": "urlB",
+                "local_path": "/b.png",
+                "style": "s",
+            },
         ]
         best = choose_best_option(options)
         assert best["label"] == "option_a"
@@ -298,8 +398,20 @@ class TestChooseBestOption:
         from congress_videos.modules.thumbnail_generation import choose_best_option
 
         options = [
-            {"label": "option_a", "main_score": 90.0, "output_url": "u", "local_path": "/a.png", "style": "s"},
-            {"label": "option_b", "main_score": 50.0, "output_url": "u", "local_path": "/b.png", "style": "s"},
+            {
+                "label": "option_a",
+                "main_score": 90.0,
+                "output_url": "u",
+                "local_path": "/a.png",
+                "style": "s",
+            },
+            {
+                "label": "option_b",
+                "main_score": 50.0,
+                "output_url": "u",
+                "local_path": "/b.png",
+                "style": "s",
+            },
         ]
         best = choose_best_option(options)
         assert best.get("is_chosen") is True
@@ -320,6 +432,7 @@ def test_art_direct_is_publicly_importable():
 # ---------------------------------------------------------------------------
 # T-04: generate_title
 # ---------------------------------------------------------------------------
+
 
 class TestGenerateTitle:
     """generate_title(summary, best, cfg) contracts."""
@@ -368,6 +481,7 @@ class TestGenerateTitle:
         mock_fn.assert_called_once()
         # Verify no openai direct call was made via module import
         import congress_videos.modules.thumbnail_generation as m
+
         assert not hasattr(m, "openai"), "Module must not import openai directly"
 
     def test_title_exceeding_90_chars_triggers_reprompt(self, mocker):
@@ -436,7 +550,10 @@ class TestGenerateTitle:
         assert isinstance(result, str)
         assert len(result) <= 90
         assert "\U0001f525" not in result
-        assert any("WARNING" in r.levelname or r.levelno >= logging.WARNING for r in caplog.records)
+        assert any(
+            "WARNING" in r.levelname or r.levelno >= logging.WARNING
+            for r in caplog.records
+        )
 
     def test_all_uppercase_title_triggers_reprompt(self, mocker):
         """First response entirely in UPPERCASE triggers a second OpenAI call."""
@@ -481,6 +598,7 @@ class TestGenerateTitle:
 # ---------------------------------------------------------------------------
 # T-04: persist_results
 # ---------------------------------------------------------------------------
+
 
 class TestPersistResults:
     """persist_results(chapter_id, youtube_video_id, title, options, best_label) contracts."""
@@ -539,7 +657,9 @@ class TestPersistResults:
         assert title in chosen_params
         assert True in chosen_params
 
-    def test_non_chosen_option_has_null_title_and_is_chosen_false(self, mock_psycopg2_connection):
+    def test_non_chosen_option_has_null_title_and_is_chosen_false(
+        self, mock_psycopg2_connection
+    ):
         """Non-chosen row has openai_title=None and is_chosen=False."""
         from congress_videos.modules.thumbnail_generation import persist_results
 
@@ -567,8 +687,7 @@ class TestPersistResults:
         persist_results(7, "vid123", "Título", options, "option_a")
 
         all_calls_flat = [
-            c[0][1] if len(c[0]) > 1 else ()
-            for c in mock_cursor.execute.call_args_list
+            c[0][1] if len(c[0]) > 1 else () for c in mock_cursor.execute.call_args_list
         ]
         all_params = [item for row in all_calls_flat for item in row]
         assert "/opt/airflow/data/thumbnails/vid/option_a.png" in all_params
@@ -579,18 +698,24 @@ class TestPersistResults:
 # T-05: TRIANGULATE edge cases
 # ---------------------------------------------------------------------------
 
+
 class TestTriangulateEdgeCases:
     """Edge-case triangulation for resolve_participant_photo and choose_best_option."""
 
     def test_resolve_photo_http_non_200_falls_back_to_logo(self, tmp_path):
         """When HTTP GET for photo returns non-200, fallback to party logo."""
-        from congress_videos.modules.thumbnail_generation import resolve_participant_photo
+        from congress_videos.modules.thumbnail_generation import (
+            resolve_participant_photo,
+        )
 
         logo_file = tmp_path / "logo.png"
         logo_bytes = b"\x89PNG" + b"\xaa" * 16
         logo_file.write_bytes(logo_bytes)
 
-        participant = {"normalized_name": "garcia_maria", "photo_url": "https://example.com/broken.jpg"}
+        participant = {
+            "normalized_name": "garcia_maria",
+            "photo_url": "https://example.com/broken.jpg",
+        }
         cfg = _make_cfg(lookup_return=participant, party_logo_map=str(logo_file))
 
         mock_resp = MagicMock()
@@ -617,17 +742,24 @@ class TestTriangulateEdgeCases:
 
     def test_resolve_photo_request_exception_falls_back_to_logo(self, tmp_path):
         """When requests.get raises RequestException, fallback to party logo."""
-        from congress_videos.modules.thumbnail_generation import resolve_participant_photo
+        from congress_videos.modules.thumbnail_generation import (
+            resolve_participant_photo,
+        )
         import requests as req
 
         logo_file = tmp_path / "logo.png"
         logo_bytes = b"\x89PNG" + b"\xbb" * 16
         logo_file.write_bytes(logo_bytes)
 
-        participant = {"normalized_name": "garcia_maria", "photo_url": "https://example.com/broken.jpg"}
+        participant = {
+            "normalized_name": "garcia_maria",
+            "photo_url": "https://example.com/broken.jpg",
+        }
         cfg = _make_cfg(lookup_return=participant, party_logo_map=str(logo_file))
 
-        with patch("requests.get", side_effect=req.RequestException("connection refused")):
+        with patch(
+            "requests.get", side_effect=req.RequestException("connection refused")
+        ):
             result = resolve_participant_photo("garcia_maria", cfg)
 
         assert result["source"] == "party_logo"
@@ -717,7 +849,10 @@ class TestArtDirect:
 
     def test_malformed_response_reprompts_once_then_default(self, mocker) -> None:
         """Malformed response (missing keys) → reprompt once → _DEFAULT_ART_BRIEF on second failure."""
-        from congress_videos.modules.thumbnail_generation import art_direct, _DEFAULT_ART_BRIEF
+        from congress_videos.modules.thumbnail_generation import (
+            art_direct,
+            _DEFAULT_ART_BRIEF,
+        )
 
         call_count = {"n": 0}
 
@@ -849,10 +984,118 @@ class TestArtDirect:
         )
         cfg = self._make_cfg()
 
-        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
+        with caplog.at_level(
+            logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
+        ):
             art_direct("summary", cfg)
 
         assert any(r.levelno >= logging.WARNING for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Issue #54: Art-direction audience policy at the completion-provider seam
+# ---------------------------------------------------------------------------
+
+
+class TestArtDirectionAudiencePolicy:
+    """The model receives the manually maintained audience-selection policy."""
+
+    def _make_cfg(self) -> dict:
+        return {
+            "styles": [{"label": "option_a", "layout": "A"}],
+            "participants_lookup": lambda slug: None,
+            "party_logo_map": None,
+        }
+
+    @staticmethod
+    def _valid_brief_response() -> dict:
+        return {
+            "data": {
+                "text": "DEBATE CLAVE",
+                "background": "una calle española",
+                "person": "un ciudadano preocupado, ropa casual",
+                "mood": "urgencia",
+            },
+            "error": None,
+        }
+
+    def _system_prompt_for(self, mocker, debate_summary: str) -> str:
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        completion = mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value=self._valid_brief_response(),
+        )
+        art_direct(debate_summary, self._make_cfg())
+        return completion.call_args.kwargs["system_prompt"]
+
+    def test_default_policy_uses_youtube_analytics_audience_distribution(
+        self, mocker
+    ) -> None:
+        """The provider sees the 80% male and 63% 65+ audience distribution."""
+        system_prompt = self._system_prompt_for(mocker, "Debate presupuestario general")
+
+        assert "80%" in system_prompt
+        assert "63%" in system_prompt
+        assert "65+" in system_prompt
+        assert "persona relatable" in system_prompt.lower()
+        assert "nunca el ponente ni la foto de un participante" in system_prompt.lower()
+
+    def test_policy_source_is_youtube_analytics_and_manually_maintained(
+        self, mocker
+    ) -> None:
+        """Audience figures are an explicit manually maintained YouTube Analytics configuration."""
+        system_prompt = self._system_prompt_for(mocker, "Debate general")
+
+        prompt_lower = system_prompt.lower()
+        assert "youtube analytics" in prompt_lower
+        assert "configuración manual" in prompt_lower
+
+    def test_policy_does_not_use_database_or_live_analytics(self, mocker) -> None:
+        """The provider is told not to query a database, API, or live analytics."""
+        system_prompt = self._system_prompt_for(mocker, "Debate general")
+
+        prompt_lower = system_prompt.lower()
+        assert "no consultes" in prompt_lower
+        assert "base de datos" in prompt_lower
+        assert "api" in prompt_lower
+        assert "analíticas en tiempo real" in prompt_lower
+
+    def test_maternity_topics_override_the_generic_fallback(self, mocker) -> None:
+        """Maternity, pregnancy, and conciliation select a woman of child-bearing age."""
+        system_prompt = self._system_prompt_for(
+            mocker, "Propuesta de conciliación y embarazo"
+        )
+
+        prompt_lower = system_prompt.lower()
+        assert "maternidad, embarazo o conciliación" in prompt_lower
+        assert "mujer en edad de tener hijos" in prompt_lower
+        assert "prevalece sobre la regla general" in prompt_lower
+
+    def test_pensions_topics_override_the_generic_fallback(self, mocker) -> None:
+        """Pensions, dependency, and geriatric healthcare select an older person."""
+        system_prompt = self._system_prompt_for(
+            mocker, "Debate sobre pensiones y dependencia"
+        )
+
+        prompt_lower = system_prompt.lower()
+        assert "pensiones, dependencia o atención sanitaria geriátrica" in prompt_lower
+        assert "persona mayor" in prompt_lower
+        assert "prevalece sobre la regla general" in prompt_lower
+
+    def test_general_or_ambiguous_topics_use_the_probabilistic_fallback(
+        self, mocker
+    ) -> None:
+        """General summaries favor older men while retaining women and younger adults."""
+        system_prompt = self._system_prompt_for(
+            mocker, "Debate general sin tema dominante"
+        )
+
+        prompt_lower = system_prompt.lower()
+        assert "resúmenes generales o ambiguos" in prompt_lower
+        assert "hombres mayores aproximadamente el 80%" in prompt_lower
+        assert "mujeres y adultos jóvenes" in prompt_lower
+        assert "repetición entre hermanos prevalecen" in prompt_lower
 
 
 # ---------------------------------------------------------------------------
@@ -925,7 +1168,9 @@ class TestArtDirectRetry:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             side_effect=_capture,
         )
-        art_direct("Debate sobre pensiones", self._make_cfg(), previous_brief=previous_brief)
+        art_direct(
+            "Debate sobre pensiones", self._make_cfg(), previous_brief=previous_brief
+        )
 
         assert captured_prompts, "generate_json_completion must be called"
         assert "REINTENTO" in captured_prompts[0], (
@@ -1023,7 +1268,7 @@ class TestArtDirectionPromptDiversity:
         paren_start = after_mood.find("(")
         paren_end = after_mood.find(")")
         assert paren_start != -1, "mood field must have a parenthetical list"
-        mood_list_text = after_mood[paren_start + 1:paren_end]
+        mood_list_text = after_mood[paren_start + 1 : paren_end]
         first_mood = mood_list_text.split(",")[0].strip().lower()
         assert first_mood != "indignación", (
             f"Mood list MUST NOT start with 'indignación'; first entry is {first_mood!r}"
@@ -1035,12 +1280,16 @@ class TestArtDirectionPromptDiversity:
 
         prompt_lower = ART_DIRECTION_SYSTEM_PROMPT.lower()
         background_idx = prompt_lower.find("background:")
-        assert background_idx != -1, "ART_DIRECTION_SYSTEM_PROMPT must contain 'background:' field"
+        assert background_idx != -1, (
+            "ART_DIRECTION_SYSTEM_PROMPT must contain 'background:' field"
+        )
         after_background = ART_DIRECTION_SYSTEM_PROMPT[background_idx:]
         paren_start = after_background.find("(")
         paren_end = after_background.find(")")
-        assert paren_start != -1, "background field must have a parenthetical example list"
-        bg_list_text = after_background[paren_start + 1:paren_end]
+        assert paren_start != -1, (
+            "background field must have a parenthetical example list"
+        )
+        bg_list_text = after_background[paren_start + 1 : paren_end]
         first_bg = bg_list_text.split(",")[0].strip().lower()
         assert "protesta callejera" not in first_bg, (
             f"Background parenthetical MUST NOT start with 'protesta callejera'; first entry is {first_bg!r}"
@@ -1145,7 +1394,10 @@ class TestTemperatureTuning:
 
         def _capture(system_prompt, user_prompt, **kw):
             captured_kwargs.append(kw)
-            return {"data": {"title": "Un título válido de longitud normal"}, "error": None}
+            return {
+                "data": {"title": "Un título válido de longitud normal"},
+                "error": None,
+            }
 
         mocker.patch(
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
@@ -1170,7 +1422,9 @@ class TestSummariseSiblingBrief:
 
     def test_summarise_sibling_brief_extracts_fields(self) -> None:
         """Should extract background/person/mood/text lines and cap to 200 chars."""
-        from congress_videos.modules.thumbnail_generation import _summarise_sibling_brief
+        from congress_videos.modules.thumbnail_generation import (
+            _summarise_sibling_brief,
+        )
 
         brief = (
             "background: mercado en crisis, gente desesperada\n"
@@ -1186,11 +1440,15 @@ class TestSummariseSiblingBrief:
 
     def test_summarise_sibling_brief_raw_truncates_when_no_match(self) -> None:
         """When no recognisable field prefixes, raw-truncate fallback to 200 chars."""
-        from congress_videos.modules.thumbnail_generation import _summarise_sibling_brief
+        from congress_videos.modules.thumbnail_generation import (
+            _summarise_sibling_brief,
+        )
 
         long_prompt = "x" * 500
         result = _summarise_sibling_brief(long_prompt)
-        assert len(result) <= 200, f"Fallback must truncate to 200 chars, got {len(result)}"
+        assert len(result) <= 200, (
+            f"Fallback must truncate to 200 chars, got {len(result)}"
+        )
         assert result == long_prompt[:200]
 
     def test_summarise_sibling_brief_extracts_from_real_pikzels_format(self) -> None:
@@ -1202,7 +1460,9 @@ class TestSummariseSiblingBrief:
         converging in production, so they must survive summarisation. The TEXT
         phrase must be extracted from its quotes without the styling boilerplate.
         """
-        from congress_videos.modules.thumbnail_generation import _summarise_sibling_brief
+        from congress_videos.modules.thumbnail_generation import (
+            _summarise_sibling_brief,
+        )
 
         brief = (
             "A thick gold (#C9A84C) border frames the entire image edge.\n\n"
@@ -1275,7 +1535,10 @@ class TestArtDirectSiblingInjection:
         art_direct(
             "debate summary",
             self._make_cfg(),
-            sibling_briefs=["brief A sobre plaza pública", "brief B con fábrica cerrada"],
+            sibling_briefs=[
+                "brief A sobre plaza pública",
+                "brief B con fábrica cerrada",
+            ],
         )
 
         assert captured_prompts, "generate_json_completion must be called"
@@ -1360,7 +1623,10 @@ class TestGenerateTitleSiblingInjection:
             "debate summary",
             best,
             self._make_cfg(),
-            sibling_titles=["Title A: La crisis sanitaria", "Title B: El colapso del sistema"],
+            sibling_titles=[
+                "Title A: La crisis sanitaria",
+                "Title B: El colapso del sistema",
+            ],
         )
 
         assert captured_prompts, "generate_json_completion must be called"
@@ -1392,7 +1658,9 @@ class TestGenerateTitleSiblingInjection:
             "sibling_titles block must NOT appear when sibling_titles=None"
         )
 
-    def test_generate_title_no_injection_when_sibling_titles_empty(self, mocker) -> None:
+    def test_generate_title_no_injection_when_sibling_titles_empty(
+        self, mocker
+    ) -> None:
         """When sibling_titles=[], no sibling block in user_prompt."""
         from congress_videos.modules.thumbnail_generation import generate_title
 
@@ -1440,12 +1708,23 @@ class TestFetchRecentThumbnailHistory:
 
     def test_fetch_recent_thumbnail_history_happy_path(self, mocker) -> None:
         """Happy path: 3 rows returned; briefs are summarised, None titles excluded."""
-        from congress_videos.modules.thumbnail_generation import fetch_recent_thumbnail_history
+        from congress_videos.modules.thumbnail_generation import (
+            fetch_recent_thumbnail_history,
+        )
 
         rows = [
-            ("background: mercado en crisis\nperson: ciudadano\nmood: amenaza\ntext: TODO CAE", "Título A"),
-            ("background: hospital lleno\nperson: enfermero\nmood: pérdida\ntext: COLAPSO", "Título B"),
-            ("background: fábrica cerrada\nperson: obrero\nmood: tristeza\ntext: SIN TRABAJO", None),
+            (
+                "background: mercado en crisis\nperson: ciudadano\nmood: amenaza\ntext: TODO CAE",
+                "Título A",
+            ),
+            (
+                "background: hospital lleno\nperson: enfermero\nmood: pérdida\ntext: COLAPSO",
+                "Título B",
+            ),
+            (
+                "background: fábrica cerrada\nperson: obrero\nmood: tristeza\ntext: SIN TRABAJO",
+                None,
+            ),
         ]
 
         cursor_mock = self._make_cursor_mock(rows)
@@ -1469,9 +1748,13 @@ class TestFetchRecentThumbnailHistory:
         for b in briefs:
             assert len(b) <= 200, f"Brief must be ≤ 200 chars, got {len(b)}"
 
-    def test_fetch_recent_thumbnail_history_empty_returns_empty_lists(self, mocker) -> None:
+    def test_fetch_recent_thumbnail_history_empty_returns_empty_lists(
+        self, mocker
+    ) -> None:
         """When cursor returns no rows, return ([], [])."""
-        from congress_videos.modules.thumbnail_generation import fetch_recent_thumbnail_history
+        from congress_videos.modules.thumbnail_generation import (
+            fetch_recent_thumbnail_history,
+        )
 
         cursor_mock = self._make_cursor_mock([])
         conn_mock = self._make_conn_mock(cursor_mock)
@@ -1489,17 +1772,23 @@ class TestFetchRecentThumbnailHistory:
         assert briefs == []
         assert titles == []
 
-    def test_fetch_recent_thumbnail_history_db_error_never_raises(self, mocker, caplog) -> None:
+    def test_fetch_recent_thumbnail_history_db_error_never_raises(
+        self, mocker, caplog
+    ) -> None:
         """When PostgresConnection raises, return ([], []) and log WARNING."""
         import logging
-        from congress_videos.modules.thumbnail_generation import fetch_recent_thumbnail_history
+        from congress_videos.modules.thumbnail_generation import (
+            fetch_recent_thumbnail_history,
+        )
 
         mocker.patch(
             "congress_videos.modules.thumbnail_generation.PostgresConnection",
             side_effect=Exception("DB connection failed"),
         )
 
-        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
+        with caplog.at_level(
+            logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
+        ):
             briefs, titles = fetch_recent_thumbnail_history()
 
         assert briefs == []

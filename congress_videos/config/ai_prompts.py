@@ -54,9 +54,7 @@ Devuelve SOLO el JSON, sin markdown."""
 
 
 # YouTube Title Generation
-YOUTUBE_TITLE_SYSTEM_PROMPT = (
-    "Eres un experto en crear títulos atractivos para contenido político español en YouTube."
-)
+YOUTUBE_TITLE_SYSTEM_PROMPT = "Eres un experto en crear títulos atractivos para contenido político español en YouTube."
 
 YOUTUBE_TITLE_USER_PROMPT_TEMPLATE = """
 Genera un título optimizado para YouTube de un vídeo del Congreso de España. El título debe ser:
@@ -135,6 +133,14 @@ IMPORTANTE: Si la frase supera {max_length} caracteres, acórtala eliminando pal
 
 Devuelve SOLO la frase, sin explicaciones."""
 
+# Manually maintained YouTube Analytics audience profile. This is deliberately
+# static configuration: do not replace it with a database, API, or live-analytics lookup.
+YOUTUBE_ANALYTICS_AUDIENCE_PROFILE = {
+    "source": "YouTube Analytics",
+    "male_percentage": 80,
+    "aged_65_plus_percentage": 63,
+}
+
 # Art Direction — produces a JSON brief ({text, background, person, mood}) used by
 # build_pikzels_prompt to fill Template A/B/C from the congress-thumbnail skill.
 ART_DIRECTION_SYSTEM_PROMPT = (
@@ -145,8 +151,24 @@ ART_DIRECTION_SYSTEM_PROMPT = (
     "calle vacía al atardecer, etc.). "
     "NUNCA hemiciclo, cámara parlamentaria ni sala de gobierno.\n"
     "- person: persona relatable, edad/expresión/ropa concreta. Ocupa el 35-40%% del frame. "
-    "Expresión emocional (indignación, miedo, sorpresa). Que cualquier ciudadano español se vea reflejado.\n"
+    "Expresión emocional (indignación, miedo, sorpresa). Que cualquier ciudadano español se vea reflejado. "
+    "Representa a un espectador o ciudadano relatable, nunca el ponente ni la foto de un participante.\n"
     "- mood: tono emocional dominante (curiosidad, pérdida, amenaza, indignación, identidad).\n\n"
+    "POLÍTICA DE SELECCIÓN DE PERSONA:\n"
+    f"- Datos de {YOUTUBE_ANALYTICS_AUDIENCE_PROFILE['source']}: "
+    f"{YOUTUBE_ANALYTICS_AUDIENCE_PROFILE['male_percentage']}% de audiencia masculina y "
+    f"{YOUTUBE_ANALYTICS_AUDIENCE_PROFILE['aged_65_plus_percentage']}% de audiencia de 65+. "
+    "Son configuración manual; no consultes base de datos, API ni analíticas en tiempo real.\n"
+    "- Para maternidad, embarazo o conciliación, elige una mujer en edad de tener hijos; "
+    "esta regla prevalece sobre la regla general.\n"
+    "- Para pensiones, dependencia o atención sanitaria geriátrica, elige una persona mayor; "
+    "esta regla prevalece sobre la regla general.\n"
+    "- Para desempleo juvenil, vivienda joven o educación universitaria, elige una persona joven; "
+    "esta regla prevalece sobre la regla general.\n"
+    "- Para resúmenes generales o ambiguos, favorece hombres mayores aproximadamente el 80% de los casos, "
+    "permitiendo también mujeres y adultos jóvenes.\n"
+    "Las restricciones de repetición entre hermanos prevalecen sobre la regla general: evita repetir "
+    "tipos de persona aunque el fallback favorezca hombres mayores.\n\n"
     "Cada brief debe ser visualmente DISTINTO al anterior: evita repetir fondos, tipos de persona o "
     "emociones en briefs consecutivos.\n\n"
     "PROHIBICIÓN ABSOLUTA: no incluyas nunca URLs ni la palabra 'http' en ningún campo. "
@@ -157,9 +179,7 @@ ART_DIRECTION_SYSTEM_PROMPT = (
 
 # Sibling-brief injection block: appended to the art_direct user prompt when
 # recent chosen briefs are available to steer the model away from repetition.
-ART_DIRECTION_SIBLING_INSTRUCTION = (
-    "NO REPITAS estos enfoques recientes (varía fondo, persona, mood y texto):\n{sibling_list}"
-)
+ART_DIRECTION_SIBLING_INSTRUCTION = "NO REPITAS estos enfoques recientes (varía fondo, persona, mood y texto):\n{sibling_list}"
 
 # Sibling-titles injection block: appended to the generate_title user prompt when
 # recent chosen titles are available to prevent emotional/tonal repetition.
@@ -494,8 +514,8 @@ SPEAKER_MATCH_SYSTEM_PROMPT = (
     "Given a dirty speaker name extracted from a transcript and a candidate participant from the "
     "congress_participants database, decide whether they refer to the same person. "
     "Always respond with a strict JSON object and NOTHING else. "
-    "JSON schema: {\"decision\": \"match\" | \"no_match\" | \"needs_manual\", "
-    "\"confidence\": <float 0-1>, \"reason\": \"<one sentence>\"}"
+    'JSON schema: {"decision": "match" | "no_match" | "needs_manual", '
+    '"confidence": <float 0-1>, "reason": "<one sentence>"}'
 )
 
 SPEAKER_MATCH_USER_PROMPT_TEMPLATE = """Dirty speaker name (from transcript): {dirty_name}
