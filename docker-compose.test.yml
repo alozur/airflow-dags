@@ -48,6 +48,16 @@ x-airflow-common: &airflow-common
     # path inside the container hides the host's real .venv from Airflow without
     # touching the host filesystem or the shared root .airflowignore.
     - /opt/airflow/dags/.venv
+    # Same recursive-loop failure mode, different source: untracked agent-tooling
+    # dirs. `.claude/skills/*` and `.pi/skills/*` hold symlinks into `.agents/skills/*`,
+    # so the same real dir is reached via multiple paths and the followlinks walk
+    # raises "Detected recursive loop". Emptying `.agents` here leaves those symlinks
+    # dangling (targets gone), so os.walk skips them and the loop never forms.
+    - /opt/airflow/dags/.agents
+    # `downloads/` holds untracked one-off scripts (e.g. dated thumbnail generators)
+    # with imports absent from the lightweight test image (ModuleNotFoundError). None
+    # of these dirs are tracked, so they are absent from git-sync'd prod.
+    - /opt/airflow/dags/downloads
   # default bridge network only (no external networks)
 
 services:
