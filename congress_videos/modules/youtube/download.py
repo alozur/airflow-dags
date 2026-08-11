@@ -1327,6 +1327,7 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
         - videos: List with video_id, chunks_with_chapters (interesting chapters found in each chunk)
     """
     from congress_videos.config.ai_prompts import CHAPTER_IDENTIFICATION_SYSTEM_PROMPT, CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE
+    from utils.ai_chapter_analyzer import _flatten_speakers
     import json
 
     if not chunk_summaries or not chunk_summaries.get('videos'):
@@ -1518,6 +1519,10 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
                                 chapter.get('start_time'),
                                 chapter.get('end_time'),
                             )
+                            # Flatten structured speaker objects to list[str] so
+                            # video_chapters.speakers TEXT[] stays byte-compatible.
+                            # Also tolerates legacy flat-string form (backward compat).
+                            chapter['speakers'] = _flatten_speakers(chapter.get('speakers', []))
                             valid_chapters.append(chapter)
                         else:
                             logging.warning(

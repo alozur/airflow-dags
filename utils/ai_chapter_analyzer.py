@@ -391,6 +391,36 @@ def format_seconds_to_timestamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
+def _flatten_speakers(raw: list) -> list[str]:
+    """Flatten a speakers list that may contain object-form or plain-string elements.
+
+    Accepts the new structured form returned by the restructured
+    CHAPTER_IDENTIFICATION prompt (list of dicts with ``speaker_name``,
+    ``speaker_role``, ``speaker_confidence``) AND the legacy flat-string
+    form for backward compatibility.
+
+    Rules:
+    - dict with ``speaker_name`` key: include value only when non-null and non-empty.
+    - plain string: include as-is (backward compat with old prompt format).
+    - dict missing ``speaker_name``: skip.
+
+    Args:
+        raw: List of either dicts or strings from LLM speaker field.
+
+    Returns:
+        Flat ``list[str]`` of real speaker names; null/empty names are dropped.
+    """
+    result: list[str] = []
+    for element in raw:
+        if isinstance(element, dict):
+            name = element.get("speaker_name")
+            if name is not None and name != "":
+                result.append(name)
+        elif isinstance(element, str):
+            result.append(element)
+    return result
+
+
 def analyze_chapters_with_ai(
     srt_content: str,
     agenda_content: str,
