@@ -174,6 +174,7 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
         "domain": "congreso",
         "session": session,
         "slug": slug,
+        "key_speakers": chapter.get("key_speakers") or [],
     }
 
 
