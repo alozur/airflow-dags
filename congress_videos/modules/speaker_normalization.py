@@ -24,6 +24,7 @@ from congress_videos.config.ai_prompts import (
 )
 from congress_videos.modules.participants_db import lookup_participant_fuzzy
 from congress_videos.modules.participants_ingestion import normalize_member_name
+from congress_videos.modules.speaker_placeholders import is_placeholder
 from utils.llm_cache import cached_json_completion
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,10 @@ class NormalizationResult:
     updated: bool = False
     """True if video_chapters was written back (at least one match confirmed)."""
 
+    resolved_participant_slug: str | None = None
+    """Slug of the first confirmed matched participant, derived LLM-free from
+    the candidate's normalized_name.  None when no match was confirmed."""
+
 
 # ---------------------------------------------------------------------------
 # Private helpers
@@ -56,11 +61,20 @@ def _dedupe_dirty_speakers(
     key_speakers: list[str],
     timeline: list[dict],
 ) -> list[str]:
-    """Return a de-duplicated, ordered list of unique dirty speaker names."""
+    """Return a de-duplicated, ordered list of unique dirty speaker names.
+
+    Placeholder speaker strings (e.g. "Desconocido", "Unknown",
+    "(No especificado)", single-token role abbreviations) are filtered out
+    before deduplication so they are never sent to the normalization pipeline.
+    """
     seen: list[str] = []
     seen_set: set[str] = set()
-    for name in list(speakers) + list(key_speakers) + [e.get("speaker", "") for e in timeline]:
-        if name and name not in seen_set:
+    for name in (
+        list(speakers)
+        + list(key_speakers)
+        + [e.get("speaker", "") for e in timeline]
+    ):
+        if name and not is_placeholder(name) and name not in seen_set:
             seen.append(name)
             seen_set.add(name)
     return seen
@@ -211,11 +225,12 @@ def normalize_chapter_speakers(
             # Map AI decision to cache status
             if decision == "match":
                 canonical = candidate["display_name"]
+                normalized_name = candidate.get("normalized_name") or ""
                 _upsert_cache_row(
                     cursor, chapter_id, dirty,
                     status="matched",
                     canonical_speaker=canonical,
-                    participant_normalized_name=candidate.get("normalized_name"),
+                    participant_normalized_name=normalized_name or None,
                     confidence_score=confidence,
                 )
                 result.cache_rows.append({
@@ -225,6 +240,11 @@ def normalize_chapter_speakers(
                     "confidence_score": confidence,
                 })
                 result.corrections[dirty] = canonical
+                # Derive slug LLM-free from the authoritative normalized_name.
+                # slug = REPLACE(normalized_name, ' ', '-') — same formula as migration 018.
+                # Record only the first matched speaker's slug for this chapter.
+                if result.resolved_participant_slug is None and normalized_name:
+                    result.resolved_participant_slug = normalized_name.replace(" ", "-")
                 logger.info(
                     "normalize_chapter_speakers: matched %r -> %r (chapter %d, confidence=%.2f)",
                     dirty, canonical, chapter_id, confidence or 0.0,
@@ -251,21 +271,38 @@ def normalize_chapter_speakers(
             new_key_speakers = _apply_corrections(key_speakers, result.corrections)
             new_timeline = _apply_corrections_to_timeline(timeline, result.corrections)
 
-            cursor.execute(
-                f"""
-                UPDATE {_CHAPTERS_TABLE}
-                SET speakers     = %s,
-                    key_speakers = %s,
-                    timeline     = %s::jsonb,
-                    updated_at   = CURRENT_TIMESTAMP
-                WHERE chapter_id = %s
-                """,
-                (new_speakers, new_key_speakers, json.dumps(new_timeline), chapter_id),
-            )
+            if result.resolved_participant_slug is not None:
+                cursor.execute(
+                    f"""
+                    UPDATE {_CHAPTERS_TABLE}
+                    SET speakers     = %s,
+                        key_speakers = %s,
+                        timeline     = %s::jsonb,
+                        resolved_participant_slug = %s,
+                        updated_at   = CURRENT_TIMESTAMP
+                    WHERE chapter_id = %s
+                    """,
+                    (new_speakers, new_key_speakers, json.dumps(new_timeline),
+                     result.resolved_participant_slug, chapter_id),
+                )
+            else:
+                cursor.execute(
+                    f"""
+                    UPDATE {_CHAPTERS_TABLE}
+                    SET speakers     = %s,
+                        key_speakers = %s,
+                        timeline     = %s::jsonb,
+                        updated_at   = CURRENT_TIMESTAMP
+                    WHERE chapter_id = %s
+                    """,
+                    (new_speakers, new_key_speakers, json.dumps(new_timeline), chapter_id),
+                )
             result.updated = True
             logger.info(
-                "normalize_chapter_speakers: updated %d speaker(s) in chapter %d",
+                "normalize_chapter_speakers: updated %d speaker(s) in chapter %d%s",
                 len(result.corrections), chapter_id,
+                f" (slug={result.resolved_participant_slug!r})"
+                if result.resolved_participant_slug else "",
             )
 
     return result
