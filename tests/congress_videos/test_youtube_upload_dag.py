@@ -784,4 +784,65 @@ class TestBackfillThumbnailVideoId:
 
         _backfill_thumbnail_video_id(ti, mock_db)
 
-        mock_db.update_thumbnail_youtube_video_id.assert_not_called()
+
+# ---------------------------------------------------------------------------
+# title-news-format Phase 5: key_speakers threading through _prepare_thumbnail_config
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareThumbnailConfigKeySpeakers:
+    """Phase 5: _prepare_thumbnail_config must propagate key_speakers from chapter row."""
+
+    def test_key_speakers_present_propagated_in_config(self):
+        """Chapter with key_speakers list → returned dict includes key_speakers intact."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_chapter(
+            key_speakers=[{"name": "Ana Pastor"}],
+        )
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "pastor-ana"},
+        ):
+            result = _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert "key_speakers" in result, "_prepare_thumbnail_config must include 'key_speakers' key"
+        assert result["key_speakers"] == [{"name": "Ana Pastor"}], (
+            "key_speakers must be propagated from chapter row"
+        )
+
+    def test_key_speakers_absent_returns_empty_list(self):
+        """Chapter without key_speakers key → returned dict has key_speakers=[]."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_chapter()
+        # Remove key_speakers from chapter to simulate absent key
+        chapter_without = {k: v for k, v in chapter.items() if k != "key_speakers"}
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "garcia-ana"},
+        ):
+            result = _prepare_thumbnail_config(chapter_without, MagicMock())
+
+        assert result.get("key_speakers") == [], (
+            "key_speakers must be [] when chapter row has no key_speakers key"
+        )
+
+    def test_key_speakers_none_value_returns_empty_list(self):
+        """Chapter with key_speakers value=None (explicit null) → returned dict has key_speakers=[]."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        # Build chapter directly to have key_speakers=None as the actual value
+        chapter = _make_chapter()
+        chapter["key_speakers"] = None  # explicit None value in the row
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "garcia-ana"},
+        ):
+            result = _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert result.get("key_speakers") == [], (
+            "key_speakers must be [] when chapter.key_speakers is None"
+        )

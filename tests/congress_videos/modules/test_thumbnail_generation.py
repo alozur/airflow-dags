@@ -1796,3 +1796,368 @@ class TestFetchRecentThumbnailHistory:
         assert any(r.levelno >= logging.WARNING for r in caplog.records), (
             "A WARNING must be logged when DB raises"
         )
+
+
+# ---------------------------------------------------------------------------
+# title-news-format Phase 1: keyword constants in ai_prompts.py
+# ---------------------------------------------------------------------------
+
+
+class TestNewsFormatConstants:
+    """Phase 1: TITLE_PRIORITY_KEYWORDS and TITLE_WORDS_TO_AVOID must exist and be non-empty."""
+
+    def test_priority_keywords_is_non_empty_tuple_of_strings(self) -> None:
+        """TITLE_PRIORITY_KEYWORDS must be a non-empty sequence of strings."""
+        from congress_videos.config.ai_prompts import TITLE_PRIORITY_KEYWORDS
+
+        assert TITLE_PRIORITY_KEYWORDS, "TITLE_PRIORITY_KEYWORDS must be non-empty"
+        assert all(isinstance(k, str) for k in TITLE_PRIORITY_KEYWORDS), (
+            "All TITLE_PRIORITY_KEYWORDS entries must be strings"
+        )
+
+    def test_words_to_avoid_is_non_empty_tuple_of_strings(self) -> None:
+        """TITLE_WORDS_TO_AVOID must be a non-empty sequence of strings."""
+        from congress_videos.config.ai_prompts import TITLE_WORDS_TO_AVOID
+
+        assert TITLE_WORDS_TO_AVOID, "TITLE_WORDS_TO_AVOID must be non-empty"
+        assert all(isinstance(w, str) for w in TITLE_WORDS_TO_AVOID), (
+            "All TITLE_WORDS_TO_AVOID entries must be strings"
+        )
+
+    def test_speakers_instruction_contains_speaker_list_placeholder(self) -> None:
+        """THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION must contain '{speaker_list}'."""
+        from congress_videos.config.ai_prompts import THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION
+
+        assert "{speaker_list}" in THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION, (
+            "THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION must contain '{speaker_list}' placeholder"
+        )
+
+
+# ---------------------------------------------------------------------------
+# title-news-format Phase 2: news-format system prompt + user template
+# ---------------------------------------------------------------------------
+
+
+class TestNewsFormatSystemPrompt:
+    """Phase 2: THUMBNAIL_TITLE_SYSTEM_PROMPT must contain news-format and question ban."""
+
+    def test_system_prompt_contains_nombre_verbo_formula(self) -> None:
+        """System prompt must specify the [Nombre] + verbo + complemento formula."""
+        from congress_videos.config.ai_prompts import THUMBNAIL_TITLE_SYSTEM_PROMPT
+
+        prompt_lower = THUMBNAIL_TITLE_SYSTEM_PROMPT.lower()
+        has_formula = (
+            "nombre" in prompt_lower and "verbo" in prompt_lower
+        ) or "nombre + verbo" in prompt_lower
+        assert has_formula, (
+            "THUMBNAIL_TITLE_SYSTEM_PROMPT must contain the [Nombre] + verbo formula"
+        )
+
+    def test_system_prompt_contains_question_ban(self) -> None:
+        """System prompt must explicitly ban question-format titles."""
+        from congress_videos.config.ai_prompts import THUMBNAIL_TITLE_SYSTEM_PROMPT
+
+        prompt_lower = THUMBNAIL_TITLE_SYSTEM_PROMPT.lower()
+        has_ban = (
+            "nunca pregunta" in prompt_lower
+            or "no uses interrogación" in prompt_lower
+            or "interrogaci" in prompt_lower
+            or "nunca termines" in prompt_lower
+            or "sin signos de interrogación" in prompt_lower
+        )
+        assert has_ban, (
+            "THUMBNAIL_TITLE_SYSTEM_PROMPT must explicitly ban question-format titles"
+        )
+
+    def test_priority_keyword_appears_in_prompt_text(self) -> None:
+        """At least one TITLE_PRIORITY_KEYWORDS term must appear in the combined prompt text."""
+        from congress_videos.config.ai_prompts import (
+            THUMBNAIL_TITLE_SYSTEM_PROMPT,
+            THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE,
+            TITLE_PRIORITY_KEYWORDS,
+        )
+
+        combined = THUMBNAIL_TITLE_SYSTEM_PROMPT + THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE
+        assert any(kw in combined for kw in TITLE_PRIORITY_KEYWORDS), (
+            "At least one TITLE_PRIORITY_KEYWORDS term must appear in combined prompt text"
+        )
+
+    def test_avoid_keyword_appears_in_prompt_text(self) -> None:
+        """At least one TITLE_WORDS_TO_AVOID term must appear in the combined prompt text."""
+        from congress_videos.config.ai_prompts import (
+            THUMBNAIL_TITLE_SYSTEM_PROMPT,
+            THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE,
+            TITLE_WORDS_TO_AVOID,
+        )
+
+        combined = THUMBNAIL_TITLE_SYSTEM_PROMPT + THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE
+        assert any(w in combined for w in TITLE_WORDS_TO_AVOID), (
+            "At least one TITLE_WORDS_TO_AVOID term must appear in combined prompt text"
+        )
+
+    def test_user_template_references_keyword_lists(self) -> None:
+        """THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE must reference keyword lists."""
+        from congress_videos.config.ai_prompts import THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE
+
+        template_lower = THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE.lower()
+        has_ref = (
+            "interrogac" in template_lower
+            or "prioriza" in template_lower
+            or "evita" in template_lower
+            or "palabras clave" in template_lower
+        )
+        assert has_ref, (
+            "THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE must reference keyword/interrogation guidance"
+        )
+
+
+# ---------------------------------------------------------------------------
+# title-news-format Phase 3: ?/¿ rejection and reprompt
+# ---------------------------------------------------------------------------
+
+
+class TestQuestionMarkRejection:
+    """Phase 3: _is_valid must reject titles containing ? or starting with ¿."""
+
+    def _generate_title_with_mock(self, mocker, first_title: str, second_title: str | None = None):
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        call_count = {"n": 0}
+
+        def _side_effect(system_prompt, user_prompt, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {"data": {"title": first_title}, "error": None}
+            return {"data": {"title": second_title or first_title}, "error": None}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side_effect,
+        )
+        cfg = _make_cfg()
+        best = {"style": "A", "prompt": "debate"}
+        return generate_title("Debate summary", best, cfg), call_count
+
+    def test_title_ending_in_question_mark_rejected(self, mocker) -> None:
+        """_is_valid returns False for a title ending with ?."""
+        valid_second = "Sánchez anuncia medidas económicas"
+        _, call_count = self._generate_title_with_mock(mocker, "¿Qué pasará con las pensiones?", valid_second)
+        assert call_count["n"] == 2, "Title ending in ? must trigger a second LLM call"
+
+    def test_title_starting_with_inverted_question_mark_rejected(self, mocker) -> None:
+        """_is_valid returns False for a title starting with ¿."""
+        valid_second = "Sánchez anuncia medidas económicas"
+        _, call_count = self._generate_title_with_mock(mocker, "¿Cuándo acabará la crisis?", valid_second)
+        assert call_count["n"] == 2, "Title starting with ¿ must trigger a second LLM call"
+
+    def test_title_with_mid_string_question_mark_rejected(self, mocker) -> None:
+        """_is_valid returns False for a title with ? in the middle."""
+        valid_second = "Sánchez anuncia medidas económicas"
+        _, call_count = self._generate_title_with_mock(mocker, "Sánchez? el futuro del país", valid_second)
+        assert call_count["n"] == 2, "Title with mid-string ? must trigger a second LLM call"
+
+    def test_valid_declarative_title_passes_without_reprompt(self, mocker) -> None:
+        """A declarative title with no ? or ¿ must pass _is_valid on first attempt."""
+        result, call_count = self._generate_title_with_mock(
+            mocker, "Sánchez anuncia recortes en vivienda"
+        )
+        assert call_count["n"] == 1, "Valid declarative title must NOT trigger a second LLM call"
+        assert result == "Sánchez anuncia recortes en vivienda"
+
+
+class TestQuestionMarkReprompt:
+    """Phase 3: reprompt must fire with interrogación instruction; ALL-CAPS regression."""
+
+    def test_first_question_title_triggers_reprompt_with_interrogacion_instruction(self, mocker) -> None:
+        """When first attempt returns a question title, second call extra_instruction contains 'interrogación'."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        captured_prompts: list[str] = []
+        call_count = {"n": 0}
+
+        def _side_effect(system_prompt, user_prompt, **kwargs):
+            call_count["n"] += 1
+            captured_prompts.append(user_prompt)
+            if call_count["n"] == 1:
+                return {"data": {"title": "¿Qué pasará?"}, "error": None}
+            return {"data": {"title": "Sánchez anuncia medidas"}, "error": None}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side_effect,
+        )
+        cfg = _make_cfg()
+        best = {"style": "A", "prompt": "debate"}
+        result = generate_title("Debate summary", best, cfg)
+
+        assert call_count["n"] == 2
+        assert "interrogaci" in captured_prompts[1].lower(), (
+            "Second call must include 'interrogaci' in the extra instruction"
+        )
+        assert result == "Sánchez anuncia medidas"
+
+    def test_second_valid_title_is_returned_after_reprompt(self, mocker) -> None:
+        """After question rejection, the valid second title is returned."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        call_count = {"n": 0}
+
+        def _side_effect(system_prompt, user_prompt, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {"data": {"title": "¿La crisis sin fin?"}, "error": None}
+            return {"data": {"title": "Feijóo critica la política del Gobierno"}, "error": None}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side_effect,
+        )
+        cfg = _make_cfg()
+        best = {"style": "A", "prompt": "debate"}
+        result = generate_title("Debate summary", best, cfg)
+
+        assert result == "Feijóo critica la política del Gobierno"
+
+    def test_all_caps_hook_word_passes_is_valid_unchanged(self, mocker) -> None:
+        """ESCÁNDALO: Sánchez admite el engaño passes _is_valid (no reprompt for all-caps first word)."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        call_count = {"n": 0}
+
+        def _side_effect(system_prompt, user_prompt, **kwargs):
+            call_count["n"] += 1
+            return {"data": {"title": "ESCÁNDALO: Sánchez admite el engaño"}, "error": None}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side_effect,
+        )
+        cfg = _make_cfg()
+        best = {"style": "A", "prompt": "debate"}
+        result = generate_title("Debate summary", best, cfg)
+
+        assert call_count["n"] == 1, (
+            "ESCÁNDALO: Sánchez admite el engaño must NOT trigger a reprompt"
+        )
+        assert result == "ESCÁNDALO: Sánchez admite el engaño"
+
+
+class TestQuestionMarkSanitise:
+    """Phase 3: when both attempts produce question titles, sanitiser strips ? and ¿."""
+
+    def test_both_attempts_question_sanitiser_strips_marks(self, mocker, caplog) -> None:
+        """When both LLM calls return question titles, final result has no ? or ¿."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value={"data": {"title": "¿Precio del gas?"}, "error": None},
+        )
+        cfg = _make_cfg()
+        best = {"style": "A", "prompt": "debate"}
+
+        with caplog.at_level(logging.WARNING):
+            result = generate_title("Debate summary", best, cfg)
+
+        assert "?" not in result, f"Sanitised result must not contain '?': {result!r}"
+        assert "¿" not in result, f"Sanitised result must not contain '¿': {result!r}"
+
+
+# ---------------------------------------------------------------------------
+# title-news-format Phase 4: key_speakers optional param
+# ---------------------------------------------------------------------------
+
+
+class TestKeySpeakersParam:
+    """Phase 4: generate_title optional key_speakers parameter contracts."""
+
+    def _make_best(self) -> dict:
+        return {"style": "A", "prompt": "debate parlamentario"}
+
+    def _valid_response(self, title: str = "Sánchez anuncia medidas") -> dict:
+        return {"data": {"title": title}, "error": None}
+
+    def test_generate_title_without_key_speakers_completes(self, mocker) -> None:
+        """generate_title(summary, best, cfg) — without key_speakers — completes without error."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value=self._valid_response(),
+        )
+        result = generate_title("Debate summary", self._make_best(), _make_cfg())
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_generate_title_with_key_speakers_none_completes(self, mocker) -> None:
+        """generate_title(..., key_speakers=None) completes identically to no-param case."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value=self._valid_response(),
+        )
+        result = generate_title("Debate summary", self._make_best(), _make_cfg(), key_speakers=None)
+        assert isinstance(result, str)
+
+    def test_generate_title_with_empty_key_speakers_completes(self, mocker) -> None:
+        """generate_title(..., key_speakers=[]) completes identically to None case."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value=self._valid_response(),
+        )
+        result = generate_title("Debate summary", self._make_best(), _make_cfg(), key_speakers=[])
+        assert isinstance(result, str)
+
+    def test_key_speakers_string_list_injected_into_prompt(self, mocker) -> None:
+        """When key_speakers=['Pedro Sánchez', 'Feijóo'], both names appear in captured user_prompt."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        captured_prompts: list[str] = []
+
+        def _side_effect(system_prompt, user_prompt, **kwargs):
+            captured_prompts.append(user_prompt)
+            return self._valid_response()
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side_effect,
+        )
+        generate_title(
+            "Debate summary",
+            self._make_best(),
+            _make_cfg(),
+            key_speakers=["Pedro Sánchez", "Feijóo"],
+        )
+
+        assert captured_prompts, "generate_json_completion must be called"
+        prompt = captured_prompts[0]
+        assert "Pedro Sánchez" in prompt, "prompt must contain 'Pedro Sánchez'"
+        assert "Feijóo" in prompt, "prompt must contain 'Feijóo'"
+
+    def test_key_speakers_dict_list_injected_into_prompt(self, mocker) -> None:
+        """key_speakers=[{'name': 'Ana Pastor'}] → 'Ana Pastor' appears in prompt."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        captured_prompts: list[str] = []
+
+        def _side_effect(system_prompt, user_prompt, **kwargs):
+            captured_prompts.append(user_prompt)
+            return self._valid_response()
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side_effect,
+        )
+        generate_title(
+            "Debate summary",
+            self._make_best(),
+            _make_cfg(),
+            key_speakers=[{"name": "Ana Pastor"}],
+        )
+
+        assert "Ana Pastor" in captured_prompts[0], (
+            "prompt must contain 'Ana Pastor' when key_speakers=[{'name': 'Ana Pastor'}]"
+        )

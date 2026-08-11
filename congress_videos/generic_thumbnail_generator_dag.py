@@ -238,6 +238,7 @@ def _task_generate_title(ti: TaskInstance, **context: object) -> str:
         best,
         domain_cfg,
         sibling_titles=history.get("titles") or None,
+        key_speakers=conf.get("key_speakers") or None,
     )
 
 

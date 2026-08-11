@@ -28,6 +28,7 @@ from congress_videos.config.ai_prompts import (
     ART_DIRECTION_SYSTEM_PROMPT,
     ART_DIRECTION_USER_PROMPT_TEMPLATE,
     THUMBNAIL_TITLE_SIBLING_INSTRUCTION,
+    THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION,
     THUMBNAIL_TITLE_SYSTEM_PROMPT,
     THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE,
 )
@@ -269,13 +270,15 @@ def generate_title(
     best: dict,
     cfg: dict,
     sibling_titles: list[str] | None = None,
+    key_speakers: list | None = None,
 ) -> str:
     """Generate a YouTube title for the chosen thumbnail option via OpenAI.
 
     Validates the returned title against constraints (≤90 chars, no emojis,
-    no forbidden characters). Re-prompts once if the first attempt is invalid.
-    If both attempts are invalid, strips emojis/forbidden chars and truncates to
-    90 characters, logs a WARNING, and returns the sanitised result without raising.
+    no forbidden characters, no question marks). Re-prompts once if the first
+    attempt is invalid. If both attempts are invalid, strips forbidden chars
+    and truncates to 90 characters, logs a WARNING, and returns the sanitised
+    result without raising.
 
     Args:
         summary: Debate summary text used to contextualise the title.
@@ -284,9 +287,12 @@ def generate_title(
         sibling_titles: When non-empty, injects a "NO REPITAS" block listing
             recent chosen titles to prevent tonal repetition.
             None or empty list → prompt unchanged (backward compatible).
+        key_speakers: Optional list of speaker names (strings or dicts with ``name`` key)
+            to soft-hint the LLM toward mentioning them. None or empty list → no injection
+            (backward compatible). Best-effort: names are a soft hint only, not validated.
 
     Returns:
-        A YouTube title string (≤90 chars, no emojis, no forbidden chars).
+        A YouTube title string (≤90 chars, no emojis, no forbidden chars, no question marks).
     """
 
     def _is_all_caps(title: str) -> bool:
@@ -309,12 +315,15 @@ def generate_title(
             return False
         if _is_all_caps(title):
             return False
+        if title.strip().startswith("¿") or "?" in title:
+            return False
         return True
 
     def _sanitise(title: str) -> str:
-        """Strip emojis and forbidden chars, then truncate to TITLE_MAX_CHARS."""
+        """Strip emojis, forbidden chars, and question marks, then truncate to TITLE_MAX_CHARS."""
         cleaned = _EMOJI_RE.sub("", title)
         cleaned = _FORBIDDEN_CHARS_RE.sub("", cleaned)
+        cleaned = cleaned.replace("¿", "").replace("?", "")
         cleaned = cleaned.strip().strip('"').strip("'")
         return cleaned[:TITLE_MAX_CHARS]
 
@@ -333,6 +342,14 @@ def generate_title(
                 sibling_list=sibling_list
             )
             user_prompt += f"\n\n{sibling_block}"
+        if key_speakers:
+            speaker_list = ", ".join(
+                s["name"] if isinstance(s, dict) else s for s in key_speakers
+            )
+            speaker_block = THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION.format(
+                speaker_list=speaker_list
+            )
+            user_prompt += f"\n\n{speaker_block}"
         if extra_instruction:
             user_prompt += f"\n\nINSTRUCCIÓN ADICIONAL: {extra_instruction}"
 
@@ -357,7 +374,12 @@ def generate_title(
         return title
 
     # Determine re-prompt instruction
-    if title and len(title) > TITLE_MAX_CHARS:
+    if title and (title.strip().startswith("¿") or "?" in title):
+        instruction = (
+            "El título es una pregunta. Reescríbelo como titular declarativo de noticias: "
+            "[Nombre] + verbo + complemento, sin signos de interrogación."
+        )
+    elif title and len(title) > TITLE_MAX_CHARS:
         instruction = f"El título es demasiado largo. Máximo {TITLE_MAX_CHARS} caracteres."
     elif title and _is_all_caps(title):
         instruction = (
