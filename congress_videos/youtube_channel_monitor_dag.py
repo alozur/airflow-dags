@@ -563,12 +563,27 @@ with DAG(
         from congress_videos.modules.database import CongressionalVideoDB
         from utils.postgres_helpers import PostgresConnection
 
+        from datetime import datetime
+
         ti = context["ti"]
         db_save_results = ti.xcom_pull(key="db_save_results")
 
         if not db_save_results:
             logging.info("_normalize_speakers: no db_save_results XCom — skipping")
             return True
+
+        # Map each video to its session date so institutional-role mentions can be
+        # resolved point-in-time (which minister/spokesperson held the role then).
+        session_date_info = ti.xcom_pull(key="session_date") or {}
+        video_dates = {}
+        for entry in session_date_info.get("videos", []):
+            raw_date = entry.get("target_date")
+            try:
+                video_dates[entry.get("video_id")] = (
+                    datetime.strptime(raw_date, "%Y-%m-%d").date() if raw_date else None
+                )
+            except (ValueError, TypeError):
+                video_dates[entry.get("video_id")] = None
 
         pg = PostgresConnection()
         chapters_table = pg.get_qualified_table("video_chapters")
@@ -602,6 +617,7 @@ with DAG(
                                 timeline_raw,
                                 conn,
                                 snc,
+                                session_date=video_dates.get(video_id),
                             )
                             if result.updated:
                                 logging.info(
