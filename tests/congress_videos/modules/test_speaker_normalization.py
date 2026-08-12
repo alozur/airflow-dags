@@ -718,3 +718,73 @@ class TestEnabledFalse:
         assert result.updated is False
         assert result.corrections == {}
         assert result.cache_rows == []
+
+
+# ---------------------------------------------------------------------------
+# T-07: Institutional-role resolution (PR2)
+# ---------------------------------------------------------------------------
+
+class TestInstitutionalRoleResolution:
+    """Role-only mentions resolve to a canonical name via the bundled catalog."""
+
+    def test_role_mention_resolved_for_non_deputy_uses_catalog_name(self, mock_db_conn):
+        from datetime import date
+
+        mock_conn, mock_cursor = mock_db_conn
+
+        with (
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_by_slug",
+                  return_value=None),
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy") as mock_fuzzy,
+            patch("congress_videos.modules.speaker_normalization.cached_json_completion") as mock_ai,
+        ):
+            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
+            result = normalize_chapter_speakers(
+                7, ["Ministra de Defensa"], [], [],
+                mock_conn, _make_config(), session_date=date(2026, 6, 1),
+            )
+
+        assert result.corrections["Ministra de Defensa"] == "Robles Fernández, Margarita"
+        # A deterministic role hit must not consult fuzzy matching or the LLM.
+        mock_fuzzy.assert_not_called()
+        mock_ai.assert_not_called()
+
+    def test_role_mention_prefers_participant_row_display_name(self, mock_db_conn):
+        from datetime import date
+
+        mock_conn, _ = mock_db_conn
+        row = _make_participant("Puente Santiago, Óscar", "oscar puente santiago")
+
+        with (
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_by_slug",
+                  return_value=row),
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy"),
+            patch("congress_videos.modules.speaker_normalization.cached_json_completion"),
+        ):
+            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
+            result = normalize_chapter_speakers(
+                8, ["el Ministro de Transportes"], [], [],
+                mock_conn, _make_config(), session_date=date(2026, 6, 1),
+            )
+
+        assert result.corrections["el Ministro de Transportes"] == "Puente Santiago, Óscar"
+
+    def test_missing_session_date_skips_role_resolution(self, mock_db_conn):
+        mock_conn, _ = mock_db_conn
+
+        with (
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_by_slug") as mock_slug,
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
+                  return_value=None),
+            patch("congress_videos.modules.speaker_normalization.cached_json_completion"),
+        ):
+            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
+            result = normalize_chapter_speakers(
+                9, ["Ministra de Defensa"], [], [],
+                mock_conn, _make_config(),
+            )
+
+        # Without a session date the catalog is never consulted; the role-only
+        # mention is left to the placeholder filter, so it is not corrected.
+        assert "Ministra de Defensa" not in result.corrections
+        mock_slug.assert_not_called()
