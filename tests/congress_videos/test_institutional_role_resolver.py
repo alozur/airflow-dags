@@ -244,3 +244,29 @@ def test_resolve_returns_none_before_validity_and_for_unknown_roles():
     # Before Armengol's term and after Batet's — no assignment covers this date.
     assert catalog.resolve("presidenta del congreso", date(2023, 7, 1)) is None
     assert catalog.resolve("ministro de teletransporte", date(2026, 1, 1)) is None
+
+
+def test_resolve_assignment_exposes_display_name_for_non_deputy_minister():
+    catalog = bundled_catalog()
+
+    assignment = catalog.resolve_assignment("Ministro del Interior", date(2026, 6, 1))
+
+    assert assignment is not None
+    assert assignment.participant_slug == "fernando-grande-marlaska-gomez"
+    assert assignment.display_name == "Grande-Marlaska Gómez, Fernando"
+
+
+def test_resolve_assignment_exposes_display_name_for_deputy():
+    catalog = bundled_catalog()
+
+    assignment = catalog.resolve_assignment("presidencia del gobierno", date(2024, 1, 1))
+
+    assert assignment is not None
+    assert assignment.participant_slug == "pedro-sanchez-perez-castejon"
+    assert assignment.display_name == "Sánchez Pérez-Castejón, Pedro"
+
+
+def test_resolve_assignment_returns_none_for_unknown_role():
+    catalog = bundled_catalog()
+
+    assert catalog.resolve_assignment("ministro de teletransporte", date(2026, 1, 1)) is None

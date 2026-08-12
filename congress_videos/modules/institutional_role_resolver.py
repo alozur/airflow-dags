@@ -32,6 +32,7 @@ class Assignment:
     validity_to: date | None
     is_open_ended: bool
     diagnostic: str | None
+    display_name: str | None = None
 
     @property
     def is_valid(self) -> bool:
@@ -51,21 +52,31 @@ class Catalog:
     def resolve(self, mention: str, on: date) -> str | None:
         """Return the participant slug for the role *mention* in force on *on*.
 
+        Thin wrapper over :meth:`resolve_assignment` that returns just the slug.
+        """
+        assignment = self.resolve_assignment(mention, on)
+        return assignment.participant_slug if assignment is not None else None
+
+    def resolve_assignment(self, mention: str, on: date) -> Assignment | None:
+        """Return the assignment for the role *mention* in force on *on*.
+
         The mention is matched accent- and case-insensitively against every role
-        key and alias. Among the valid assignments for that role, the one whose
-        validity interval covers *on* wins. Returns ``None`` when the mention is
-        unknown, no assignment covers the date, or the coverage is ambiguous.
+        key and alias (tolerating a leading article). Among the valid assignments
+        for that role, the one whose validity interval covers *on* wins. Returns
+        ``None`` when the mention is unknown, no assignment covers the date, or
+        the coverage is ambiguous (more than one distinct participant).
         """
         role_key = self._label_index.get(_strip_leading_article(normalize_role_label(mention)))
         if role_key is None:
             return None
 
-        covering = {
-            assignment.participant_slug
+        covering = [
+            assignment
             for assignment in self.valid_assignments
             if assignment.role == role_key and _covers(assignment, on)
-        }
-        return next(iter(covering)) if len(covering) == 1 else None
+        ]
+        distinct_slugs = {assignment.participant_slug for assignment in covering}
+        return covering[0] if len(distinct_slugs) == 1 else None
 
     @property
     def _label_index(self) -> dict[str, str]:
@@ -149,6 +160,7 @@ class CatalogLoader:
         validity = raw.get("validity")
         starts_on, ends_on, open_ended, interval_error = self._parse_interval(validity)
 
+        display_name = raw.get("display_name") if isinstance(raw.get("display_name"), str) else None
         diagnostic = (
             "missing_assignment_id" if not identifier else
             "undeclared_role" if role not in role_keys else
@@ -156,7 +168,9 @@ class CatalogLoader:
             interval_error or
             self._provenance_error(raw.get("provenance"))
         )
-        return Assignment(identifier, role, slug, starts_on, ends_on, open_ended, diagnostic)
+        return Assignment(
+            identifier, role, slug, starts_on, ends_on, open_ended, diagnostic, display_name
+        )
 
     @staticmethod
     def _parse_interval(raw: object) -> tuple[date | None, date | None, bool, str | None]:
@@ -204,6 +218,7 @@ class CatalogLoader:
                 assignment.diagnostic or (
                     "duplicate_assignment_id" if assignment.identifier in duplicates else None
                 ),
+                assignment.display_name,
             )
             for assignment in assignments
         )
