@@ -12,9 +12,53 @@
       "aliases": ["ministro de la presidencia justicia y relaciones con las cortes"]
     },
     {
+      "key": "ministerio de transportes y movilidad sostenible",
+      "scope": "ministerial",
+      "aliases": ["ministro de transportes y movilidad sostenible", "ministro de transportes"]
+    },
+    {
+      "key": "ministerio de trabajo y economia social",
+      "scope": "ministerial",
+      "aliases": [
+        "ministra de trabajo y economia social",
+        "ministra de trabajo",
+        "vicepresidenta segunda del gobierno"
+      ]
+    },
+    {
       "key": "presidencia del congreso",
       "scope": "presidency_mesa",
       "aliases": ["presidenta del congreso"]
+    },
+    {
+      "key": "lider de la oposicion",
+      "scope": "parliamentary_group",
+      "aliases": ["presidente del partido popular", "lider del partido popular"]
+    },
+    {
+      "key": "presidencia de vox",
+      "scope": "parliamentary_group",
+      "aliases": ["presidente de vox", "lider de vox"]
+    },
+    {
+      "key": "portavoz de esquerra republicana",
+      "scope": "parliamentary_group",
+      "aliases": ["portavoz del grupo parlamentario republicano", "portavoz de erc"]
+    },
+    {
+      "key": "portavoz de junts per catalunya",
+      "scope": "parliamentary_group",
+      "aliases": ["portavoz de junts", "portavoz del grupo parlamentario junts per catalunya"]
+    },
+    {
+      "key": "portavoz de euskal herria bildu",
+      "scope": "parliamentary_group",
+      "aliases": ["portavoz de eh bildu", "portavoz de bildu"]
+    },
+    {
+      "key": "secretaria general de podemos",
+      "scope": "parliamentary_group",
+      "aliases": ["lider de podemos"]
     }
   ],
   "assignments": [
@@ -43,6 +87,30 @@
       }
     },
     {
+      "id": "ministry-transport-2023-oscar-puente",
+      "role": "ministerio de transportes y movilidad sostenible",
+      "participant_slug": "oscar-puente-santiago",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/Paginas/index.aspx",
+        "evidence_note": "Official government composition reviewed for the transport ministry assignment; participant slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-labour-2023-yolanda-diaz",
+      "role": "ministerio de trabajo y economia social",
+      "participant_slug": "yolanda-diaz-perez",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/Paginas/index.aspx",
+        "evidence_note": "Official government composition reviewed for the labour ministry and second vice-presidency assignment; participant slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
       "id": "mesa-presidency-2019-meritxell-batet",
       "role": "presidencia del congreso",
       "participant_slug": "meritxell-batet-lamana",
@@ -64,6 +132,78 @@
         "reference_url": "https://www.congreso.es/mesa",
         "evidence_note": "Official Mesa record reviewed for the XV Legislature presidency assignment.",
         "reviewed_on": "2023-08-17"
+      }
+    },
+    {
+      "id": "opposition-leader-2023-alberto-nunez-feijoo",
+      "role": "lider de la oposicion",
+      "participant_slug": "alberto-nunez-feijoo",
+      "validity": {"from": "2023-08-17", "to": "open"},
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/busqueda-de-diputados",
+        "evidence_note": "XV Legislature Popular parliamentary group leadership reviewed against the official Congress register; participant slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "vox-presidency-2023-santiago-abascal",
+      "role": "presidencia de vox",
+      "participant_slug": "santiago-abascal-conde",
+      "validity": {"from": "2023-08-17", "to": "open"},
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/busqueda-de-diputados",
+        "evidence_note": "XV Legislature VOX parliamentary group leadership reviewed against the official Congress register; participant slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "erc-spokesperson-2023-gabriel-rufian",
+      "role": "portavoz de esquerra republicana",
+      "participant_slug": "gabriel-rufian-romero",
+      "validity": {"from": "2023-08-17", "to": "open"},
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/grupos",
+        "evidence_note": "XV Legislature Republican parliamentary group spokesperson reviewed against the official Congress register; participant slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "junts-spokesperson-2023-miriam-nogueras",
+      "role": "portavoz de junts per catalunya",
+      "participant_slug": "miriam-nogueras-i-camero",
+      "validity": {"from": "2023-08-17", "to": "open"},
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/grupos",
+        "evidence_note": "XV Legislature Junts per Catalunya parliamentary group spokesperson reviewed against the official Congress register; participant slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "bildu-spokesperson-2023-mertxe-aizpurua",
+      "role": "portavoz de euskal herria bildu",
+      "participant_slug": "mertxe-aizpurua-arzallus",
+      "validity": {"from": "2023-08-17", "to": "open"},
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/grupos",
+        "evidence_note": "XV Legislature EH Bildu parliamentary group spokesperson reviewed against the official Congress register; participant slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "podemos-secretary-general-2023-ione-belarra",
+      "role": "secretaria general de podemos",
+      "participant_slug": "ione-belarra-urteaga",
+      "validity": {"from": "2023-08-17", "to": "open"},
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/busqueda-de-diputados",
+        "evidence_note": "XV Legislature Podemos leadership reviewed against the official Congress register; participant slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-08-12"
       }
     }
   ]

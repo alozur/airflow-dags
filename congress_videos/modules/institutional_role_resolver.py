@@ -99,7 +99,7 @@ class CatalogLoader:
             aliases = raw_role.get("aliases", [])
             if not isinstance(key, str) or not key or key != normalize_role_label(key):
                 raise CatalogValidationError("normalized")
-            if scope not in {"ministerial", "presidency_mesa"}:
+            if scope not in {"ministerial", "presidency_mesa", "parliamentary_group"}:
                 raise CatalogValidationError("scope")
             if not isinstance(aliases, list) or any(
                 not isinstance(alias, str) or not alias or alias != normalize_role_label(alias)
