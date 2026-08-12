@@ -1,0 +1,70 @@
+{
+  "catalog_version": 1,
+  "roles": [
+    {
+      "key": "presidencia del gobierno",
+      "scope": "ministerial",
+      "aliases": ["presidente del gobierno"]
+    },
+    {
+      "key": "ministerio de la presidencia justicia y relaciones con las cortes",
+      "scope": "ministerial",
+      "aliases": ["ministro de la presidencia justicia y relaciones con las cortes"]
+    },
+    {
+      "key": "presidencia del congreso",
+      "scope": "presidency_mesa",
+      "aliases": ["presidenta del congreso"]
+    }
+  ],
+  "assignments": [
+    {
+      "id": "government-presidency-2018-pedro-sanchez",
+      "role": "presidencia del gobierno",
+      "participant_slug": "pedro-sanchez-perez-castejon",
+      "validity": {"from": "2018-06-02", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/Paginas/index.aspx",
+        "evidence_note": "Official government composition reviewed for the continued presidency assignment.",
+        "reviewed_on": "2023-11-21"
+      }
+    },
+    {
+      "id": "ministry-presidency-justice-2023-felix-bolanos",
+      "role": "ministerio de la presidencia justicia y relaciones con las cortes",
+      "participant_slug": "felix-bolanos-garcia",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/Paginas/index.aspx",
+        "evidence_note": "Official government composition reviewed for the ministry assignment.",
+        "reviewed_on": "2023-11-21"
+      }
+    },
+    {
+      "id": "mesa-presidency-2019-meritxell-batet",
+      "role": "presidencia del congreso",
+      "participant_slug": "meritxell-batet-lamana",
+      "validity": {"from": "2019-12-03", "to": "2023-05-30"},
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/mesa",
+        "evidence_note": "Official Mesa record reviewed for the XIV Legislature presidency assignment.",
+        "reviewed_on": "2023-08-17"
+      }
+    },
+    {
+      "id": "mesa-presidency-2023-francina-armengol",
+      "role": "presidencia del congreso",
+      "participant_slug": "francina-armengol-socias",
+      "validity": {"from": "2023-08-17", "to": "open"},
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/mesa",
+        "evidence_note": "Official Mesa record reviewed for the XV Legislature presidency assignment.",
+        "reviewed_on": "2023-08-17"
+      }
+    }
+  ]
+}
