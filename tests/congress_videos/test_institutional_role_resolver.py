@@ -170,6 +170,20 @@ def test_bundled_catalog_resolves_expected_current_holders():
     assert open_holders["portavoz de euskal herria bildu"] == "mertxe-aizpurua-arzallus"
     assert open_holders["secretaria general de podemos"] == "ione-belarra-urteaga"
 
+    # Parliamentary group spokespersons (verified sitting deputies).
+    assert open_holders["portavoz del grupo parlamentario socialista"] == "patxi-lopez-alvarez"
+    assert open_holders["portavoz del grupo parlamentario popular"] == "miguel-tellado-filgueira"
+    assert open_holders["portavoz del grupo parlamentario vox"] == "maria-jose-rodriguez-de-millan-parro"
+    assert open_holders["portavoz del grupo plurinacional sumar"] == "veronica-martinez-barbero"
+
+    # Full cabinet coverage (most ministers are not sitting deputies; the slug is
+    # derived from the official name and will not match a participant row).
+    assert open_holders["ministerio del interior"] == "fernando-grande-marlaska-gomez"
+    assert open_holders["ministerio de defensa"] == "margarita-robles-fernandez"
+    assert open_holders["ministerio de hacienda"] == "arcadi-espana-garcia"
+    assert open_holders["ministerio de cultura"] == "ernest-urtasun-domenech"
+    assert open_holders["ministerio de juventud e infancia"] == "sira-rego"
+
 
 def test_loader_requires_complete_nondereferenced_provenance(tmp_path):
     document = valid_catalog()

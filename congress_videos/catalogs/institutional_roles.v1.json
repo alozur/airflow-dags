@@ -7,14 +7,14 @@
       "aliases": ["presidente del gobierno"]
     },
     {
-      "key": "ministerio de la presidencia justicia y relaciones con las cortes",
+      "key": "ministerio de economia comercio y empresa",
       "scope": "ministerial",
-      "aliases": ["ministro de la presidencia justicia y relaciones con las cortes"]
-    },
-    {
-      "key": "ministerio de transportes y movilidad sostenible",
-      "scope": "ministerial",
-      "aliases": ["ministro de transportes y movilidad sostenible", "ministro de transportes"]
+      "aliases": [
+        "ministro de economia comercio y empresa",
+        "ministro de economia",
+        "vicepresidente primero del gobierno",
+        "vicepresidencia primera del gobierno"
+      ]
     },
     {
       "key": "ministerio de trabajo y economia social",
@@ -24,6 +24,113 @@
         "ministra de trabajo",
         "vicepresidenta segunda del gobierno"
       ]
+    },
+    {
+      "key": "ministerio para la transicion ecologica y el reto demografico",
+      "scope": "ministerial",
+      "aliases": [
+        "ministra para la transicion ecologica",
+        "vicepresidenta tercera del gobierno"
+      ]
+    },
+    {
+      "key": "ministerio de asuntos exteriores union europea y cooperacion",
+      "scope": "ministerial",
+      "aliases": ["ministro de asuntos exteriores", "ministro de exteriores"]
+    },
+    {
+      "key": "ministerio de la presidencia justicia y relaciones con las cortes",
+      "scope": "ministerial",
+      "aliases": ["ministro de la presidencia justicia y relaciones con las cortes"]
+    },
+    {
+      "key": "ministerio de defensa",
+      "scope": "ministerial",
+      "aliases": ["ministra de defensa"]
+    },
+    {
+      "key": "ministerio de hacienda",
+      "scope": "ministerial",
+      "aliases": ["ministro de hacienda"]
+    },
+    {
+      "key": "ministerio del interior",
+      "scope": "ministerial",
+      "aliases": ["ministro del interior"]
+    },
+    {
+      "key": "ministerio de transportes y movilidad sostenible",
+      "scope": "ministerial",
+      "aliases": ["ministro de transportes y movilidad sostenible", "ministro de transportes"]
+    },
+    {
+      "key": "ministerio de educacion formacion profesional y deportes",
+      "scope": "ministerial",
+      "aliases": ["ministra de educacion formacion profesional y deportes", "ministra de educacion"]
+    },
+    {
+      "key": "ministerio de industria y turismo",
+      "scope": "ministerial",
+      "aliases": ["ministro de industria y turismo", "ministro de industria"]
+    },
+    {
+      "key": "ministerio de agricultura pesca y alimentacion",
+      "scope": "ministerial",
+      "aliases": ["ministro de agricultura pesca y alimentacion", "ministro de agricultura"]
+    },
+    {
+      "key": "ministerio de politica territorial y memoria democratica",
+      "scope": "ministerial",
+      "aliases": ["ministro de politica territorial y memoria democratica", "ministro de politica territorial"]
+    },
+    {
+      "key": "ministerio de vivienda y agenda urbana",
+      "scope": "ministerial",
+      "aliases": ["ministra de vivienda y agenda urbana", "ministra de vivienda"]
+    },
+    {
+      "key": "ministerio de cultura",
+      "scope": "ministerial",
+      "aliases": ["ministro de cultura"]
+    },
+    {
+      "key": "ministerio de sanidad",
+      "scope": "ministerial",
+      "aliases": ["ministra de sanidad"]
+    },
+    {
+      "key": "ministerio de derechos sociales consumo y agenda 2030",
+      "scope": "ministerial",
+      "aliases": ["ministro de derechos sociales consumo y agenda 2030", "ministro de derechos sociales"]
+    },
+    {
+      "key": "ministerio de ciencia innovacion y universidades",
+      "scope": "ministerial",
+      "aliases": ["ministra de ciencia innovacion y universidades", "ministra de ciencia"]
+    },
+    {
+      "key": "ministerio de igualdad",
+      "scope": "ministerial",
+      "aliases": ["ministra de igualdad"]
+    },
+    {
+      "key": "ministerio de inclusion seguridad social y migraciones",
+      "scope": "ministerial",
+      "aliases": [
+        "ministra de inclusion seguridad social y migraciones",
+        "ministra de inclusion",
+        "portavoz del gobierno"
+      ]
+    },
+    {
+      "key": "ministerio para la transformacion digital y de la funcion publica",
+      "scope": "ministerial",
+      "aliases": ["ministro para la transformacion digital y de la funcion publica", "ministro de funcion publica"]
+    },
+    {
+      "key": "ministerio de juventud e infancia",
+      "scope": "ministerial",
+      "aliases": ["ministra de juventud e infancia", "ministra de juventud"]
     },
     {
       "key": "presidencia del congreso",
@@ -59,6 +166,26 @@
       "key": "secretaria general de podemos",
       "scope": "parliamentary_group",
       "aliases": ["lider de podemos"]
+    },
+    {
+      "key": "portavoz del grupo parlamentario socialista",
+      "scope": "parliamentary_group",
+      "aliases": ["portavoz del psoe", "portavoz socialista"]
+    },
+    {
+      "key": "portavoz del grupo parlamentario popular",
+      "scope": "parliamentary_group",
+      "aliases": ["portavoz del pp", "portavoz popular"]
+    },
+    {
+      "key": "portavoz del grupo parlamentario vox",
+      "scope": "parliamentary_group",
+      "aliases": ["portavoz de vox"]
+    },
+    {
+      "key": "portavoz del grupo plurinacional sumar",
+      "scope": "parliamentary_group",
+      "aliases": ["portavoz de sumar"]
     }
   ],
   "assignments": [
@@ -69,9 +196,57 @@
       "validity": {"from": "2018-06-02", "to": "open"},
       "provenance": {
         "publisher": "La Moncloa",
-        "reference_url": "https://www.lamoncloa.gob.es/gobierno/Paginas/index.aspx",
-        "evidence_note": "Official government composition reviewed for the continued presidency assignment.",
-        "reviewed_on": "2023-11-21"
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "vp1-economy-2023-carlos-cuerpo",
+      "role": "ministerio de economia comercio y empresa",
+      "participant_slug": "carlos-cuerpo-caballero",
+      "validity": {"from": "2023-12-29", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "vp2-labour-2023-yolanda-diaz",
+      "role": "ministerio de trabajo y economia social",
+      "participant_slug": "yolanda-diaz-perez",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "vp3-ecological-transition-2024-sara-aagesen",
+      "role": "ministerio para la transicion ecologica y el reto demografico",
+      "participant_slug": "sara-aagesen-munoz",
+      "validity": {"from": "2024-11-25", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-foreign-affairs-2023-jose-manuel-albares",
+      "role": "ministerio de asuntos exteriores union europea y cooperacion",
+      "participant_slug": "jose-manuel-albares-bueno",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
       }
     },
     {
@@ -81,9 +256,45 @@
       "validity": {"from": "2023-11-21", "to": "open"},
       "provenance": {
         "publisher": "La Moncloa",
-        "reference_url": "https://www.lamoncloa.gob.es/gobierno/Paginas/index.aspx",
-        "evidence_note": "Official government composition reviewed for the ministry assignment.",
-        "reviewed_on": "2023-11-21"
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-defence-2023-margarita-robles",
+      "role": "ministerio de defensa",
+      "participant_slug": "margarita-robles-fernandez",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-treasury-2026-arcadi-espana",
+      "role": "ministerio de hacienda",
+      "participant_slug": "arcadi-espana-garcia",
+      "validity": {"from": "2026-03-27", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-interior-2023-fernando-grande-marlaska",
+      "role": "ministerio del interior",
+      "participant_slug": "fernando-grande-marlaska-gomez",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
       }
     },
     {
@@ -93,20 +304,164 @@
       "validity": {"from": "2023-11-21", "to": "open"},
       "provenance": {
         "publisher": "La Moncloa",
-        "reference_url": "https://www.lamoncloa.gob.es/gobierno/Paginas/index.aspx",
-        "evidence_note": "Official government composition reviewed for the transport ministry assignment; participant slug cross-checked against the active-deputies register.",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug cross-checked against the active-deputies register.",
         "reviewed_on": "2026-08-12"
       }
     },
     {
-      "id": "ministry-labour-2023-yolanda-diaz",
-      "role": "ministerio de trabajo y economia social",
-      "participant_slug": "yolanda-diaz-perez",
+      "id": "ministry-education-2025-milagros-tolon",
+      "role": "ministerio de educacion formacion profesional y deportes",
+      "participant_slug": "milagros-tolon-jaime",
+      "validity": {"from": "2025-12-22", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-industry-2023-jordi-hereu",
+      "role": "ministerio de industria y turismo",
+      "participant_slug": "jordi-hereu-boher",
       "validity": {"from": "2023-11-21", "to": "open"},
       "provenance": {
         "publisher": "La Moncloa",
-        "reference_url": "https://www.lamoncloa.gob.es/gobierno/Paginas/index.aspx",
-        "evidence_note": "Official government composition reviewed for the labour ministry and second vice-presidency assignment; participant slug cross-checked against the active-deputies register.",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-agriculture-2023-luis-planas",
+      "role": "ministerio de agricultura pesca y alimentacion",
+      "participant_slug": "luis-planas-puchades",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-territorial-policy-2023-angel-victor-torres",
+      "role": "ministerio de politica territorial y memoria democratica",
+      "participant_slug": "angel-victor-torres-perez",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-housing-2023-isabel-rodriguez",
+      "role": "ministerio de vivienda y agenda urbana",
+      "participant_slug": "isabel-rodriguez-garcia",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-culture-2023-ernest-urtasun",
+      "role": "ministerio de cultura",
+      "participant_slug": "ernest-urtasun-domenech",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-health-2023-monica-garcia",
+      "role": "ministerio de sanidad",
+      "participant_slug": "monica-garcia-gomez",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-social-rights-2023-pablo-bustinduy",
+      "role": "ministerio de derechos sociales consumo y agenda 2030",
+      "participant_slug": "pablo-bustinduy-amador",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-science-2023-diana-morant",
+      "role": "ministerio de ciencia innovacion y universidades",
+      "participant_slug": "diana-morant-ripoll",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-equality-2023-ana-redondo",
+      "role": "ministerio de igualdad",
+      "participant_slug": "ana-redondo-garcia",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-inclusion-2023-elma-saiz",
+      "role": "ministerio de inclusion seguridad social y migraciones",
+      "participant_slug": "elma-saiz-delgado",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; also government spokesperson since 2025-12-22; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-digital-transformation-2024-oscar-lopez",
+      "role": "ministerio para la transformacion digital y de la funcion publica",
+      "participant_slug": "oscar-lopez-agueda",
+      "validity": {"from": "2024-09-06", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "ministry-youth-2023-sira-rego",
+      "role": "ministerio de juventud e infancia",
+      "participant_slug": "sira-rego",
+      "validity": {"from": "2023-11-21", "to": "open"},
+      "provenance": {
+        "publisher": "La Moncloa",
+        "reference_url": "https://www.lamoncloa.gob.es/gobierno/composiciondelgobierno/paginas/index.aspx",
+        "evidence_note": "Official government composition; participant slug derived from the official name and not present in the active-deputies register.",
         "reviewed_on": "2026-08-12"
       }
     },
@@ -130,8 +485,8 @@
       "provenance": {
         "publisher": "Congress of Deputies",
         "reference_url": "https://www.congreso.es/mesa",
-        "evidence_note": "Official Mesa record reviewed for the XV Legislature presidency assignment.",
-        "reviewed_on": "2023-08-17"
+        "evidence_note": "Official Mesa record reviewed for the XV Legislature presidency assignment; participant slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-08-12"
       }
     },
     {
@@ -203,6 +558,54 @@
         "publisher": "Congress of Deputies",
         "reference_url": "https://www.congreso.es/busqueda-de-diputados",
         "evidence_note": "XV Legislature Podemos leadership reviewed against the official Congress register; participant slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "psoe-spokesperson-2023-patxi-lopez",
+      "role": "portavoz del grupo parlamentario socialista",
+      "participant_slug": "patxi-lopez-alvarez",
+      "validity": {"from": "2023-08-17", "to": "open"},
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/grupos",
+        "evidence_note": "XV Legislature Socialist parliamentary group spokesperson reviewed against the official Congress register; participant slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "pp-spokesperson-2023-miguel-tellado",
+      "role": "portavoz del grupo parlamentario popular",
+      "participant_slug": "miguel-tellado-filgueira",
+      "validity": {"from": "2023-08-17", "to": "open"},
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/grupos",
+        "evidence_note": "XV Legislature Popular parliamentary group spokesperson reviewed against the official Congress register; participant slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "vox-spokesperson-2023-pepa-millan",
+      "role": "portavoz del grupo parlamentario vox",
+      "participant_slug": "maria-jose-rodriguez-de-millan-parro",
+      "validity": {"from": "2023-08-17", "to": "open"},
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/grupos",
+        "evidence_note": "XV Legislature VOX parliamentary group spokesperson reviewed against the official Congress register; participant slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-08-12"
+      }
+    },
+    {
+      "id": "sumar-spokesperson-2026-veronica-martinez-barbero",
+      "role": "portavoz del grupo plurinacional sumar",
+      "participant_slug": "veronica-martinez-barbero",
+      "validity": {"from": "2023-08-17", "to": "open"},
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/grupos",
+        "evidence_note": "Plurinational SUMAR parliamentary group spokesperson reviewed against the official Congress register; group-spokesperson start date recorded as the legislature start as a best-effort bound; participant slug cross-checked against the active-deputies register.",
         "reviewed_on": "2026-08-12"
       }
     }
