@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 import json
 from pathlib import Path
 
@@ -193,3 +194,53 @@ def test_loader_requires_complete_nondereferenced_provenance(tmp_path):
 
     assert catalog.assignments[0].is_valid is False
     assert catalog.assignments[0].diagnostic == "invalid_provenance"
+
+
+# ---------------------------------------------------------------------------
+# Point-in-time resolution
+# ---------------------------------------------------------------------------
+
+def bundled_catalog():
+    return CatalogLoader(CATALOG_PATH).load()
+
+
+def test_resolve_matches_role_key_at_covering_date():
+    catalog = bundled_catalog()
+
+    assert catalog.resolve("presidencia del gobierno", date(2024, 1, 1)) == (
+        "pedro-sanchez-perez-castejon"
+    )
+
+
+def test_resolve_matches_alias_case_and_accent_insensitively():
+    catalog = bundled_catalog()
+
+    # Aliases carry the actual office-holder's gender; matching ignores case,
+    # accents, and surrounding whitespace.
+    assert catalog.resolve("Ministro de Hacienda", date(2026, 6, 1)) == "arcadi-espana-garcia"
+    assert catalog.resolve("  la   MINISTRA  de Defensa ", date(2026, 6, 1)) == (
+        "margarita-robles-fernandez"
+    )
+    assert catalog.resolve("el PORTAVOZ de vox", date(2026, 6, 1)) == (
+        "maria-jose-rodriguez-de-millan-parro"
+    )
+
+
+def test_resolve_is_point_in_time_for_closed_and_open_assignments():
+    catalog = bundled_catalog()
+
+    # Batet held the presidency of Congress in the XIV Legislature; Armengol holds it now.
+    assert catalog.resolve("presidenta del congreso", date(2022, 1, 1)) == (
+        "meritxell-batet-lamana"
+    )
+    assert catalog.resolve("presidenta del congreso", date(2026, 1, 1)) == (
+        "francina-armengol-socias"
+    )
+
+
+def test_resolve_returns_none_before_validity_and_for_unknown_roles():
+    catalog = bundled_catalog()
+
+    # Before Armengol's term and after Batet's — no assignment covers this date.
+    assert catalog.resolve("presidenta del congreso", date(2023, 7, 1)) is None
+    assert catalog.resolve("ministro de teletransporte", date(2026, 1, 1)) is None

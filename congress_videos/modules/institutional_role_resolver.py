@@ -48,6 +48,33 @@ class Catalog:
     def valid_assignments(self) -> tuple[Assignment, ...]:
         return tuple(assignment for assignment in self.assignments if assignment.is_valid)
 
+    def resolve(self, mention: str, on: date) -> str | None:
+        """Return the participant slug for the role *mention* in force on *on*.
+
+        The mention is matched accent- and case-insensitively against every role
+        key and alias. Among the valid assignments for that role, the one whose
+        validity interval covers *on* wins. Returns ``None`` when the mention is
+        unknown, no assignment covers the date, or the coverage is ambiguous.
+        """
+        role_key = self._label_index.get(_strip_leading_article(normalize_role_label(mention)))
+        if role_key is None:
+            return None
+
+        covering = {
+            assignment.participant_slug
+            for assignment in self.valid_assignments
+            if assignment.role == role_key and _covers(assignment, on)
+        }
+        return next(iter(covering)) if len(covering) == 1 else None
+
+    @property
+    def _label_index(self) -> dict[str, str]:
+        index: dict[str, str] = {}
+        for role in self.roles:
+            for label in (role.key, *role.aliases):
+                index[label] = role.key
+        return index
+
 
 def normalize_role_label(label: str) -> str:
     """Return the catalog's mechanical, accent-insensitive role key."""
@@ -180,6 +207,24 @@ class CatalogLoader:
             )
             for assignment in assignments
         )
+
+
+_LEADING_ARTICLES = {"el", "la", "los", "las"}
+
+
+def _strip_leading_article(label: str) -> str:
+    """Drop a single leading Spanish definite article from a normalized label."""
+    head, _, tail = label.partition(" ")
+    return tail if head in _LEADING_ARTICLES and tail else label
+
+
+def _covers(assignment: Assignment, on: date) -> bool:
+    """Return True when *on* falls within the assignment's validity interval."""
+    if assignment.validity_from is None or on < assignment.validity_from:
+        return False
+    if assignment.is_open_ended:
+        return True
+    return assignment.validity_to is not None and on <= assignment.validity_to
 
 
 def _parse_iso_date(value: object) -> date | None:
