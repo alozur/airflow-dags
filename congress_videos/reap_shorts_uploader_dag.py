@@ -36,10 +36,27 @@ POSTGRES_SCHEMA = os.getenv("POSTGRES_SCHEMA", "development")
 
 
 def _resolve_speakers(ch: dict) -> tuple[str, str]:
-    speakers = ch.get("key_speakers") or ch.get("speakers") or []
-    if not speakers:
+    """Return (primary_speaker, rest_speakers) filtering placeholders.
+
+    Priority: key_speakers (placeholder-filtered) before speakers
+    (placeholder-filtered). Deduplicates order-preserving. Returns ("", "")
+    when the combined pool is empty after filtering.
+    """
+    from congress_videos.modules.speaker_placeholders import is_placeholder
+
+    key_speakers: list[str] = ch.get("key_speakers") or []
+    speakers: list[str] = ch.get("speakers") or []
+
+    seen: set[str] = set()
+    pool: list[str] = []
+    for name in list(key_speakers) + list(speakers):
+        if not is_placeholder(name) and name not in seen:
+            pool.append(name)
+            seen.add(name)
+
+    if not pool:
         return ("", "")
-    return (speakers[0].strip(), ", ".join(speakers[1:]))
+    return (pool[0].strip(), ", ".join(pool[1:]))
 
 
 _MONTHS = [

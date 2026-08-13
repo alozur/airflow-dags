@@ -159,6 +159,10 @@ ART_DIRECTION_SYSTEM_PROMPT = (
     "(zona reservada al contador de duración de YouTube).\n"
     "- mood: tono emocional dominante (curiosidad, pérdida, amenaza, indignación, identidad).\n\n"
     "POLÍTICA DE SELECCIÓN DE PERSONA:\n"
+    "- IGNORA el sexo gramatical de los ponentes: que los participantes sean mujeres "
+    "(o usen marcadores femeninos en el resumen) NO determina el sexo ni la edad de la "
+    "persona del brief; aplica siempre la política de audiencia y las excepciones "
+    "temáticas, independientemente del género de los ponentes.\n"
     f"- Datos de {YOUTUBE_ANALYTICS_AUDIENCE_PROFILE['source']}: "
     f"{YOUTUBE_ANALYTICS_AUDIENCE_PROFILE['male_percentage']}% de audiencia masculina y "
     f"{YOUTUBE_ANALYTICS_AUDIENCE_PROFILE['aged_65_plus_percentage']}% de audiencia de 65+. "
@@ -273,6 +277,22 @@ THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE = (
 )
 
 
+# Lapidary quote ranking — selects the most impactful verbatim SRT phrase for
+# the thumbnail text field.  The LLM only picks an index (never rewrites text).
+LAPIDARY_RANKING_SYSTEM_PROMPT = (
+    "Eres un experto en contenido político viral de YouTube. "
+    "Se te dará una lista numerada de frases extraídas literalmente de un discurso parlamentario. "
+    "Tu tarea es elegir la frase que tenga más impacto emocional y viral para usar como texto de miniatura. "
+    "Responde ÚNICAMENTE con el número de la frase elegida (1, 2, 3…) o con la palabra NONE si ninguna "
+    "es suficientemente impactante. No escribas nada más."
+)
+
+LAPIDARY_RANKING_USER_TEMPLATE = (
+    "Frases candidatas:\n{candidates}\n\n"
+    "Responde solo con el número de la frase más impactante o con NONE."
+)
+
+
 # Chunk Summarization - For silence-based chunks before chapter analysis
 CHUNK_SUMMARY_SYSTEM_PROMPT = """Eres un experto en analizar transcripciones de sesiones parlamentarias españolas.
 
@@ -367,6 +387,15 @@ Tu tarea es analizar UN CHUNK de sesión parlamentaria que dura MÁS de 45 minut
 - Máximo 120 minutos por capítulo (solo si es tema único coherente)
 - Si divides, hazlo en pausas naturales (4-5+ segundos de silencio)
 
+FORMATO DE HABLADORES:
+Cada entrada en "speakers" es un objeto con tres campos:
+- speaker_name: nombre completo del hablador (string) o null si no se puede identificar
+- speaker_role: cargo o rol parlamentario (string) o null si no se conoce
+- speaker_confidence: confianza en la identificación (número 0.0-1.0) o null
+
+REGLA CRÍTICA: Usa null para speaker_name cuando el hablador no sea identificable por nombre.
+No uses texto genérico en speaker_name — los valores desconocidos siempre son null.
+
 IMPORTANTE:
 - Prioriza mantener temas completos juntos
 - Solo divide por tiempo si supera 2 horas
@@ -432,7 +461,13 @@ FORMATO DE RESPUESTA:
       "start_time": "HH:MM:SS,mmm",
       "end_time": "HH:MM:SS,mmm",
       "duration_minutes": <número>,
-      "speakers": ["Lista de habladores"],
+      "speakers": [
+        {{
+          "speaker_name": "Nombre completo o null si desconocido",
+          "speaker_role": "Cargo o rol o null",
+          "speaker_confidence": 0.9
+        }}
+      ],
       "topics": ["Lista de temas"]
     }}
   ]
@@ -449,7 +484,12 @@ Output: 1 capítulo completo (≤ 120 min, OK)
       "start_time": "00:00:00,000",
       "end_time": "01:30:00,000",
       "duration_minutes": 90.0,
-      "speakers": ["Portavoz PP", "Presidente Sánchez", "Portavoz Sumar", "Ministra"],
+      "speakers": [
+        {{"speaker_name": "Pedro Sánchez", "speaker_role": "Presidente del Gobierno", "speaker_confidence": 0.95}},
+        {{"speaker_name": "Alberto Núñez Feijóo", "speaker_role": "Líder del PP", "speaker_confidence": 0.95}},
+        {{"speaker_name": null, "speaker_role": "Portavoz Sumar", "speaker_confidence": null}},
+        {{"speaker_name": null, "speaker_role": "Ministra", "speaker_confidence": null}}
+      ],
       "topics": ["Víctimas Dana", "Responsabilidad gobierno", "Ayudas", "Prevención"]
     }}
   ]
@@ -466,7 +506,9 @@ Output: 2 capítulos divididos en pausas naturales
       "start_time": "00:00:00,000",
       "end_time": "01:25:00,000",
       "duration_minutes": 85.0,
-      "speakers": ["..."],
+      "speakers": [
+        {{"speaker_name": null, "speaker_role": "Portavoz PP", "speaker_confidence": null}}
+      ],
       "topics": ["Energía", "Precios luz", "Renovables"]
     }},
     {{
@@ -475,7 +517,9 @@ Output: 2 capítulos divididos en pausas naturales
       "start_time": "01:25:00,000",
       "end_time": "02:45:00,000",
       "duration_minutes": 80.0,
-      "speakers": ["..."],
+      "speakers": [
+        {{"speaker_name": null, "speaker_role": "Portavoz PSOE", "speaker_confidence": null}}
+      ],
       "topics": ["Energía", "Dependencia energética", "Transición"]
     }}
   ]
@@ -491,6 +535,7 @@ Output: 2 capítulos (uno por tema)
 - Solo divide por tiempo si el chunk > 120 minutos
 - Divide en pausas naturales (4-5+ segundos)
 - NUNCA lista vacía - mínimo 1 capítulo
+- speaker_name DEBE ser null (nunca texto genérico) cuando el hablador sea desconocido
 
 Devuelve SOLO el JSON."""
 

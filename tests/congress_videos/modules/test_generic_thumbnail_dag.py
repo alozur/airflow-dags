@@ -118,7 +118,7 @@ EXPECTED_TASK_IDS = {
 
 
 def test_art_direction_task_delegates_to_art_direct(mocker) -> None:
-    """The DAG task wrapper supplies its run context to art_direct."""
+    """The DAG task wrapper supplies its run context to art_direct (no srt_fragment)."""
     dag_mod = importlib.import_module("congress_videos.generic_thumbnail_generator_dag")
     ti = _make_fake_ti({"validate_input": _FAKE_CONF, "fetch_recent_history": None})
     domain_cfg = {"styles": []}
@@ -131,6 +131,26 @@ def test_art_direction_task_delegates_to_art_direct(mocker) -> None:
         _FAKE_CONF["debate_summary"],
         domain_cfg,
         sibling_briefs=None,
+        srt_fragment=None,
+    )
+
+
+def test_art_direction_task_forwards_srt_fragment_when_present(mocker) -> None:
+    """When conf contains srt_fragment, it is forwarded non-None to art_direct."""
+    dag_mod = importlib.import_module("congress_videos.generic_thumbnail_generator_dag")
+    conf_with_srt = {**_FAKE_CONF, "srt_fragment": "Hay que tener cara señoría"}
+    ti = _make_fake_ti({"validate_input": conf_with_srt, "fetch_recent_history": None})
+    domain_cfg = {"styles": []}
+
+    mocker.patch.object(dag_mod, "get_domain_config", return_value=domain_cfg)
+    art_direct = mocker.patch.object(dag_mod, "art_direct", return_value={"text": "BRIEF"})
+
+    dag_mod._task_art_direction(ti)
+    art_direct.assert_called_once_with(
+        conf_with_srt["debate_summary"],
+        domain_cfg,
+        sibling_briefs=None,
+        srt_fragment="Hay que tener cara señoría",
     )
 
 

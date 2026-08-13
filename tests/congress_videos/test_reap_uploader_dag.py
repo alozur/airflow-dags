@@ -316,22 +316,27 @@ class TestMarkShortsUploaded:
 
 class TestResolveSpeakers:
     def test_resolve_speakers_uses_key_speakers_first(self):
+        """key_speakers take priority; speakers adds non-duplicate real names to the pool."""
         from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
 
-        result = _resolve_speakers({"key_speakers": ["A", "B"], "speakers": ["C"]})
-        assert result == ("A", "B")
+        result = _resolve_speakers({
+            "key_speakers": ["Ana García", "Pedro López"],
+            "speakers": ["María Ruiz"],
+        })
+        # Pool: [Ana García, Pedro López, María Ruiz] — key_speakers first, then new speakers
+        assert result == ("Ana García", "Pedro López, María Ruiz")
 
     def test_resolve_speakers_falls_back_to_speakers(self):
         from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
 
-        result = _resolve_speakers({"speakers": ["X", "Y"]})
-        assert result == ("X", "Y")
+        result = _resolve_speakers({"speakers": ["Xose Fernández", "Yolanda Díaz"]})
+        assert result == ("Xose Fernández", "Yolanda Díaz")
 
     def test_resolve_speakers_key_speakers_empty_list(self):
         from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
 
-        result = _resolve_speakers({"key_speakers": [], "speakers": ["Z"]})
-        assert result == ("Z", "")
+        result = _resolve_speakers({"key_speakers": [], "speakers": ["Zoila Martínez"]})
+        assert result == ("Zoila Martínez", "")
 
     def test_resolve_speakers_empty_both(self):
         from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
@@ -342,14 +347,93 @@ class TestResolveSpeakers:
     def test_resolve_speakers_single_speaker(self):
         from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
 
-        result = _resolve_speakers({"key_speakers": ["Solo"]})
-        assert result == ("Solo", "")
+        result = _resolve_speakers({"key_speakers": ["Pedro Sánchez"]})
+        assert result == ("Pedro Sánchez", "")
 
     def test_resolve_speakers_none_values(self):
         from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
 
         result = _resolve_speakers({"key_speakers": None, "speakers": None})
         assert result == ("", "")
+
+    # -------------------------------------------------------------------------
+    # Placeholder-aware _resolve_speakers spec scenarios (Task 1.4 RED)
+    # -------------------------------------------------------------------------
+
+    def test_key_speakers_real_name_wins_over_speakers_placeholder(self):
+        """Spec scenario 1: key_speakers has a real name; speakers[0] is placeholder.
+
+        GIVEN key_speakers=["Ana Martínez"], speakers=["Desconocido", "Pedro López"]
+        THEN  primary="Ana Martínez", secondary="Pedro López"
+        """
+        from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
+
+        result = _resolve_speakers({
+            "key_speakers": ["Ana Martínez"],
+            "speakers": ["Desconocido", "Pedro López"],
+        })
+        assert result == ("Ana Martínez", "Pedro López"), (
+            f"Expected ('Ana Martínez', 'Pedro López'), got {result!r}"
+        )
+
+    def test_placeholder_at_speakers_index_0_is_skipped(self):
+        """Spec scenario 2: key_speakers empty; speakers[1] is real, speakers[0] is placeholder.
+
+        GIVEN key_speakers=[], speakers=["Portavoz", "Pedro López"]
+        THEN  primary="Pedro López", secondary=""
+        """
+        from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
+
+        result = _resolve_speakers({
+            "key_speakers": [],
+            "speakers": ["Portavoz", "Pedro López"],
+        })
+        assert result == ("Pedro López", ""), (
+            f"Expected ('Pedro López', ''), got {result!r}"
+        )
+
+    def test_all_placeholders_returns_empty_sentinel(self):
+        """Spec scenario 3: All speakers are placeholders → ("", ""), no crash.
+
+        GIVEN key_speakers=["Desconocido"], speakers=["(No especificado)"]
+        THEN  returns ("", "")
+        """
+        from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
+
+        result = _resolve_speakers({
+            "key_speakers": ["Desconocido"],
+            "speakers": ["(No especificado)"],
+        })
+        assert result == ("", ""), (
+            f"Expected ('', ''), got {result!r}"
+        )
+
+    def test_both_arrays_empty_returns_empty_sentinel(self):
+        """Spec scenario 4: Both arrays empty → ("", "").
+
+        GIVEN key_speakers=[], speakers=[]
+        THEN  returns ("", "")
+        """
+        from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
+
+        result = _resolve_speakers({"key_speakers": [], "speakers": []})
+        assert result == ("", "")
+
+    def test_only_key_speakers_real_speakers_empty(self):
+        """Spec scenario 5: Only key_speakers has a real name; speakers is empty.
+
+        GIVEN key_speakers=["Laura Gómez"], speakers=[]
+        THEN  primary="Laura Gómez", secondary=""
+        """
+        from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
+
+        result = _resolve_speakers({
+            "key_speakers": ["Laura Gómez"],
+            "speakers": [],
+        })
+        assert result == ("Laura Gómez", ""), (
+            f"Expected ('Laura Gómez', ''), got {result!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -540,3 +540,143 @@ class TestDetectSilenceGapsAdaptive:
 
         assert len(result) == 1
         assert result[0]["gap_duration_seconds"] == pytest.approx(295, rel=1e-2)
+
+
+# --------------------------------------------------------------------------- #
+# _flatten_speakers (PR3 — Task 3.1 RED)
+# --------------------------------------------------------------------------- #
+
+class TestFlattenSpeakers:
+    """Tests for _flatten_speakers: object-form + plain-string tolerance.
+
+    Spec: https://github.com/alozur/airflow-dags/issues/56
+    """
+
+    def test_object_form_real_name_extracted(self):
+        """Object with non-null speaker_name → name extracted to list[str]."""
+        from utils.ai_chapter_analyzer import _flatten_speakers
+
+        raw = [{"speaker_name": "Ana López", "speaker_role": "Diputada", "speaker_confidence": 0.95}]
+        result = _flatten_speakers(raw)
+
+        assert result == ["Ana López"]
+
+    def test_object_form_null_speaker_name_dropped(self):
+        """Object with speaker_name=null → element dropped from output list."""
+        from utils.ai_chapter_analyzer import _flatten_speakers
+
+        raw = [{"speaker_name": None, "speaker_role": "Portavoz", "speaker_confidence": 0.3}]
+        result = _flatten_speakers(raw)
+
+        assert result == []
+
+    def test_object_form_empty_string_speaker_name_dropped(self):
+        """Object with speaker_name='' → element dropped (empty is treated as unknown)."""
+        from utils.ai_chapter_analyzer import _flatten_speakers
+
+        raw = [{"speaker_name": "", "speaker_role": "Ministro", "speaker_confidence": 0.5}]
+        result = _flatten_speakers(raw)
+
+        assert result == []
+
+    def test_old_flat_string_form_tolerated(self):
+        """Old flat-string list element → passed through unchanged (backward compat)."""
+        from utils.ai_chapter_analyzer import _flatten_speakers
+
+        raw = ["Ana López"]
+        result = _flatten_speakers(raw)
+
+        assert result == ["Ana López"]
+
+    def test_mixed_list_only_real_names_kept(self):
+        """Mixed list of objects and strings → only real names kept; nulls dropped."""
+        from utils.ai_chapter_analyzer import _flatten_speakers
+
+        raw = [
+            {"speaker_name": "Ana López", "speaker_role": "Diputada", "speaker_confidence": 0.9},
+            {"speaker_name": None, "speaker_role": "Portavoz", "speaker_confidence": 0.2},
+            "Pedro García",  # old flat-string format
+            {"speaker_name": "", "speaker_role": "Presidente", "speaker_confidence": 0.1},
+        ]
+        result = _flatten_speakers(raw)
+
+        assert result == ["Ana López", "Pedro García"]
+
+    def test_empty_list_returns_empty(self):
+        """Empty input → empty output."""
+        from utils.ai_chapter_analyzer import _flatten_speakers
+
+        assert _flatten_speakers([]) == []
+
+    def test_multiple_objects_all_real_names(self):
+        """Multiple object entries with real names → all extracted in order."""
+        from utils.ai_chapter_analyzer import _flatten_speakers
+
+        raw = [
+            {"speaker_name": "Ana López", "speaker_role": "Diputada", "speaker_confidence": 0.9},
+            {"speaker_name": "Pedro García", "speaker_role": "Ministro", "speaker_confidence": 0.8},
+        ]
+        result = _flatten_speakers(raw)
+
+        assert result == ["Ana López", "Pedro García"]
+
+
+# --------------------------------------------------------------------------- #
+# CHAPTER_IDENTIFICATION prompt structure (PR3 — Task 3.4 RED)
+# --------------------------------------------------------------------------- #
+
+class TestChapterIdentificationPromptStructure:
+    """Golden/structural assertions on the CHAPTER_IDENTIFICATION prompts.
+
+    Verifies that the restructured prompt instructs the LLM to return
+    speaker objects with speaker_name/speaker_role/speaker_confidence fields
+    and does NOT use 'Desconocido' as a literal fallback value.
+    """
+
+    def test_system_prompt_contains_speaker_name_field(self):
+        """CHAPTER_IDENTIFICATION_SYSTEM_PROMPT must mention 'speaker_name' field."""
+        from congress_videos.config.ai_prompts import CHAPTER_IDENTIFICATION_SYSTEM_PROMPT
+
+        assert "speaker_name" in CHAPTER_IDENTIFICATION_SYSTEM_PROMPT, (
+            "CHAPTER_IDENTIFICATION_SYSTEM_PROMPT must instruct LLM to return speaker_name field"
+        )
+
+    def test_system_prompt_contains_speaker_role_field(self):
+        """CHAPTER_IDENTIFICATION_SYSTEM_PROMPT must mention 'speaker_role' field."""
+        from congress_videos.config.ai_prompts import CHAPTER_IDENTIFICATION_SYSTEM_PROMPT
+
+        assert "speaker_role" in CHAPTER_IDENTIFICATION_SYSTEM_PROMPT, (
+            "CHAPTER_IDENTIFICATION_SYSTEM_PROMPT must instruct LLM to return speaker_role field"
+        )
+
+    def test_system_prompt_contains_speaker_confidence_field(self):
+        """CHAPTER_IDENTIFICATION_SYSTEM_PROMPT must mention 'speaker_confidence' field."""
+        from congress_videos.config.ai_prompts import CHAPTER_IDENTIFICATION_SYSTEM_PROMPT
+
+        assert "speaker_confidence" in CHAPTER_IDENTIFICATION_SYSTEM_PROMPT, (
+            "CHAPTER_IDENTIFICATION_SYSTEM_PROMPT must instruct LLM to return speaker_confidence field"
+        )
+
+    def test_system_prompt_does_not_use_desconocido_fallback(self):
+        """CHAPTER_IDENTIFICATION_SYSTEM_PROMPT must NOT use 'Desconocido' as fallback value."""
+        from congress_videos.config.ai_prompts import CHAPTER_IDENTIFICATION_SYSTEM_PROMPT
+
+        assert "Desconocido" not in CHAPTER_IDENTIFICATION_SYSTEM_PROMPT, (
+            "CHAPTER_IDENTIFICATION_SYSTEM_PROMPT must not use 'Desconocido' literal; use null instead"
+        )
+
+    def test_user_prompt_template_contains_speaker_name_field(self):
+        """CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE format section must reference speaker_name."""
+        from congress_videos.config.ai_prompts import CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE
+
+        assert "speaker_name" in CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE, (
+            "CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE must show speaker_name in response format"
+        )
+
+    def test_user_prompt_template_does_not_use_desconocido(self):
+        """CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE must NOT use 'Desconocido' literal."""
+        from congress_videos.config.ai_prompts import CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE
+
+        assert "Desconocido" not in CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE, (
+            "CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE must not use 'Desconocido' literal"
+        )

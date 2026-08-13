@@ -2164,6 +2164,385 @@ class TestKeySpeakersParam:
 
 
 # ---------------------------------------------------------------------------
+# Bug #79: Art direction must ignore speakers' grammatical gender
+# ---------------------------------------------------------------------------
+
+
+class TestArtDirectionSystemPrompt:
+    """ART_DIRECTION_SYSTEM_PROMPT content contracts — bug #79 gender-ignore clause.
+
+    Two tests start RED (assert the new bullet that does not yet exist).
+    Five regression guards start GREEN (protect existing content).
+    """
+
+    # ------------------------------------------------------------------
+    # Task 1.2 — RED: gender-ignore clause must be present (fails before the edit)
+    # ------------------------------------------------------------------
+
+    def test_prompt_contains_gender_ignore_clause(self) -> None:
+        """ART_DIRECTION_SYSTEM_PROMPT must instruct the model to ignore speakers' grammatical gender.
+
+        RED before the bullet is added: both substrings are absent.
+        GREEN after the bullet is added.
+        """
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "sexo gramatical de los ponentes" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "ART_DIRECTION_SYSTEM_PROMPT must contain the gender-ignore instruction "
+            "(phrase: 'sexo gramatical de los ponentes')"
+        )
+        assert "independientemente del género de los ponentes" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "ART_DIRECTION_SYSTEM_PROMPT must close the gender-ignore rule with "
+            "'independientemente del género de los ponentes'"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.3 — RED: wiring test — art_direct passes the (updated) prompt as system_prompt
+    # ------------------------------------------------------------------
+
+    def test_art_direct_passes_gender_ignore_system_prompt(self, mocker) -> None:
+        """art_direct must pass ART_DIRECTION_SYSTEM_PROMPT (which must contain the
+        gender-ignore clause) as the system_prompt kwarg to generate_json_completion.
+
+        RED before the bullet is added: the kwarg assertion fails because the
+        substring is absent from the prompt constant.
+        GREEN after the bullet is added.
+        """
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        mock_completion = mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value={
+                "data": {
+                    "text": "DEBATE CLAVE",
+                    "background": "una calle española",
+                    "person": "un ciudadano preocupado",
+                    "mood": "urgencia",
+                },
+                "error": None,
+            },
+        )
+        cfg = _make_cfg()
+        art_direct("La representante defendió la moción", cfg)
+
+        assert mock_completion.call_args is not None, (
+            "generate_json_completion must be called by art_direct"
+        )
+        passed_prompt = mock_completion.call_args.kwargs["system_prompt"]
+        assert passed_prompt == ART_DIRECTION_SYSTEM_PROMPT, (
+            "art_direct must pass ART_DIRECTION_SYSTEM_PROMPT as system_prompt kwarg"
+        )
+        assert "sexo gramatical de los ponentes" in passed_prompt, (
+            "The system_prompt passed through must contain the gender-ignore clause"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.4 — Regression guard: maternidad override intact (GREEN from start)
+    # ------------------------------------------------------------------
+
+    def test_maternidad_override_intact(self) -> None:
+        """The maternidad/embarazo/conciliación override clause must remain present."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "maternidad" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "maternidad override must still be present in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+        assert "mujer en edad de tener hijos" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "'mujer en edad de tener hijos' phrase must still be present"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.5 — Regression guard: pensiones override intact (GREEN from start)
+    # ------------------------------------------------------------------
+
+    def test_pensiones_override_intact(self) -> None:
+        """The pensiones/dependencia/geriátrica override clause must remain present."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "pensiones" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "pensiones override must still be present in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+        assert "persona mayor" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "'persona mayor' phrase must still be present"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.6 — Regression guard: desempleo juvenil override intact (GREEN from start)
+    # ------------------------------------------------------------------
+
+    def test_desempleo_juvenil_override_intact(self) -> None:
+        """The desempleo juvenil/vivienda joven/educación override clause must remain present."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "desempleo juvenil" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "desempleo juvenil override must still be present in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+        assert "persona joven" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "'persona joven' phrase must still be present"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.7 — Regression guard: audience ~80% fallback line intact (GREEN from start)
+    # ------------------------------------------------------------------
+
+    def test_audience_fallback_line_intact(self) -> None:
+        """The general-topic ~80% older-man audience fallback line must remain present."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "80%" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "80% audience figure must still be present in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+        assert "hombres mayores aproximadamente el 80%" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "'hombres mayores aproximadamente el 80%' phrase must still be present"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.8 — Regression guard: sibling anti-repetition line intact (GREEN from start)
+    # ------------------------------------------------------------------
+
+    def test_sibling_anti_repetition_intact(self) -> None:
+        """The sibling anti-repetition constraint must remain present."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "hermanos" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "'hermanos' (sibling constraint) must still be present in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+        assert "Las restricciones de repetición entre hermanos prevalecen" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "Exact sibling anti-repetition phrase must still be present"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T-06: Lapidary prompts (Phase 1)
+# ---------------------------------------------------------------------------
+
+
+class TestLapidaryPrompts:
+    """LAPIDARY_RANKING_SYSTEM_PROMPT and LAPIDARY_RANKING_USER_TEMPLATE contracts."""
+
+    def test_lapidary_system_prompt_importable(self):
+        """LAPIDARY_RANKING_SYSTEM_PROMPT must exist in ai_prompts."""
+        from congress_videos.config.ai_prompts import LAPIDARY_RANKING_SYSTEM_PROMPT
+
+        assert isinstance(LAPIDARY_RANKING_SYSTEM_PROMPT, str)
+        assert len(LAPIDARY_RANKING_SYSTEM_PROMPT) > 0
+
+    def test_lapidary_system_prompt_instructs_index_or_none(self):
+        """System prompt must instruct LLM to respond with a number or NONE."""
+        from congress_videos.config.ai_prompts import LAPIDARY_RANKING_SYSTEM_PROMPT
+
+        lower = LAPIDARY_RANKING_SYSTEM_PROMPT.lower()
+        # Must mention responding with a number/index or NONE
+        assert "none" in lower or "número" in lower or "numero" in lower
+
+    def test_lapidary_user_template_importable(self):
+        """LAPIDARY_RANKING_USER_TEMPLATE must exist in ai_prompts."""
+        from congress_videos.config.ai_prompts import LAPIDARY_RANKING_USER_TEMPLATE
+
+        assert isinstance(LAPIDARY_RANKING_USER_TEMPLATE, str)
+        assert len(LAPIDARY_RANKING_USER_TEMPLATE) > 0
+
+    def test_lapidary_user_template_renders_candidates(self):
+        """Formatting the template with candidates produces a string containing them."""
+        from congress_videos.config.ai_prompts import LAPIDARY_RANKING_USER_TEMPLATE
+
+        rendered = LAPIDARY_RANKING_USER_TEMPLATE.format(candidates="1. vamos a votar")
+        assert "vamos a votar" in rendered
+        assert len(rendered) > 0
+
+
+# ---------------------------------------------------------------------------
+# T-07: extract_lapidary_quote (Phase 2)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractLapidaryQuote:
+    """Unit tests for extract_lapidary_quote()."""
+
+    def test_empty_fragment_returns_none_without_calling_llm(self):
+        """Empty string must return None without invoking completion_fn."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        called = []
+
+        def fake_fn(**_kw):
+            called.append(True)
+            return {"content": "1", "error": None}
+
+        result = extract_lapidary_quote("", completion_fn=fake_fn)
+        assert result is None
+        assert called == [], "completion_fn must not be called when fragment is empty"
+
+    def test_no_candidates_survive_returns_none_without_llm(self):
+        """Fragment whose every clause exceeds limits must return None without LLM call."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        called = []
+
+        def fake_fn(**_kw):
+            called.append(True)
+            return {"content": "1", "error": None}
+
+        # All words => more than 8 words each clause, or > 40 chars
+        long_clause = "uno dos tres cuatro cinco seis siete ocho nueve"
+        result = extract_lapidary_quote(long_clause, completion_fn=fake_fn)
+        assert result is None
+        assert called == [], "completion_fn must not be called when no candidates survive"
+
+    def test_stop_word_filtered_only_valid_candidate_passed_to_llm(self):
+        """Clause starting with stop-word is filtered; only valid clause reaches LLM."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        received_calls = []
+
+        def fake_fn(system_prompt, user_prompt, **_kw):
+            received_calls.append(user_prompt)
+            return {"content": "1", "error": None}
+
+        # "de los derechos sociales" starts with "de" (stop-word), filtered.
+        # "vamos a votar ya" is 4 words, valid.
+        fragment = "de los derechos sociales. vamos a votar ya"
+        result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
+
+        assert len(received_calls) == 1
+        # Only the valid candidate should appear in the user prompt
+        assert "vamos a votar ya" in received_calls[0]
+        assert "de los derechos sociales" not in received_calls[0]
+        assert result == "vamos a votar ya"
+
+    def test_happy_path_returns_verbatim_candidate(self):
+        """LLM returns '1', function returns candidate at index 0 verbatim."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        def fake_fn(**_kw):
+            return {"content": "1", "error": None}
+
+        fragment = "esto es una prueba seria. vamos a votar ya"
+        result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
+
+        assert result == "esto es una prueba seria"
+
+    def test_llm_returns_none_string_returns_none(self):
+        """When LLM responds 'NONE', function returns None."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        def fake_fn(**_kw):
+            return {"content": "NONE", "error": None}
+
+        fragment = "esto es una prueba seria. vamos a votar ya"
+        result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
+        assert result is None
+
+    def test_unparseable_llm_response_returns_none(self):
+        """When LLM returns non-integer, non-NONE text, function returns None."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        def fake_fn(**_kw):
+            return {"content": "banana", "error": None}
+
+        fragment = "esto es una prueba seria. vamos a votar ya"
+        result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
+        assert result is None
+
+    def test_out_of_range_index_returns_none(self):
+        """When LLM returns index beyond candidate list length, return None."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        def fake_fn(**_kw):
+            return {"content": "99", "error": None}
+
+        fragment = "esto es una prueba seria. vamos a votar ya"
+        result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# T-08: art_direct srt_fragment override (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+class TestArtDirectSrtOverride:
+    """art_direct() must accept srt_fragment and override brief['text'] when a quote is found."""
+
+    def _call_art_direct(self, monkeypatch, srt_fragment, extract_return, brief_return=None):
+        """Helper: patch art_direct dependencies and call with given srt_fragment."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        default_brief = {
+            "text": "TEXTO INVENTADO",
+            "background": "ciudad",
+            "person": "hombre maduro",
+            "mood": "tensión",
+            "logo": "",
+        }
+        if brief_return is None:
+            brief_return = default_brief
+
+        # Patch the internal _call_api to return brief_return directly
+        monkeypatch.setattr(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            lambda **_kw: {"data": brief_return, "error": None},
+        )
+        monkeypatch.setattr(
+            "congress_videos.modules.thumbnail_generation.extract_lapidary_quote",
+            lambda fragment, **_kw: extract_return,
+        )
+
+        cfg = {"styles": [], "participants_lookup": lambda s: None, "party_logo_map": None}
+        return art_direct("resumen debate", cfg, srt_fragment=srt_fragment)
+
+    def test_srt_fragment_none_does_not_call_extract(self, monkeypatch):
+        """When srt_fragment=None, extract_lapidary_quote must never be called."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        called = []
+
+        monkeypatch.setattr(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            lambda **_kw: {
+                "data": {
+                    "text": "TEXTO ORIGINAL",
+                    "background": "ciudad",
+                    "person": "hombre",
+                    "mood": "tensión",
+                },
+                "error": None,
+            },
+        )
+        monkeypatch.setattr(
+            "congress_videos.modules.thumbnail_generation.extract_lapidary_quote",
+            lambda *_a, **_kw: called.append(True) or "override",
+        )
+
+        cfg = {"styles": [], "participants_lookup": lambda s: None, "party_logo_map": None}
+        art_direct("resumen", cfg, srt_fragment=None)
+        assert called == [], "extract_lapidary_quote must not be called when srt_fragment=None"
+
+    def test_srt_fragment_overrides_text_field(self, monkeypatch):
+        """When extract returns a string, brief['text'] is overridden."""
+        result = self._call_art_direct(
+            monkeypatch,
+            srt_fragment="anything",
+            extract_return="vamos a votar ya",
+        )
+        assert result["text"] == "vamos a votar ya"
+        # Other fields must be unchanged
+        assert result["background"] == "ciudad"
+        assert result["person"] == "hombre maduro"
+        assert result["mood"] == "tensión"
+
+    def test_srt_fragment_quote_none_preserves_invented_text(self, monkeypatch):
+        """When extract returns None, brief['text'] remains as the invented value."""
+        result = self._call_art_direct(
+            monkeypatch,
+            srt_fragment="anything",
+            extract_return=None,
+        )
+        assert result["text"] == "TEXTO INVENTADO"
+
+
+# ---------------------------------------------------------------------------
 # Safe-Zone & Rule-of-Thirds (REQ-2)
 # ---------------------------------------------------------------------------
 

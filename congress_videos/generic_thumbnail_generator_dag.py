@@ -139,6 +139,7 @@ def _task_art_direction(ti: TaskInstance, **context: object) -> dict:
         conf["debate_summary"],
         domain_cfg,
         sibling_briefs=history.get("briefs") or None,
+        srt_fragment=conf.get("srt_fragment"),
     )
 
 
