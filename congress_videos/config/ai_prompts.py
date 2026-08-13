@@ -269,6 +269,22 @@ THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE = (
 )
 
 
+# Lapidary quote ranking — selects the most impactful verbatim SRT phrase for
+# the thumbnail text field.  The LLM only picks an index (never rewrites text).
+LAPIDARY_RANKING_SYSTEM_PROMPT = (
+    "Eres un experto en contenido político viral de YouTube. "
+    "Se te dará una lista numerada de frases extraídas literalmente de un discurso parlamentario. "
+    "Tu tarea es elegir la frase que tenga más impacto emocional y viral para usar como texto de miniatura. "
+    "Responde ÚNICAMENTE con el número de la frase elegida (1, 2, 3…) o con la palabra NONE si ninguna "
+    "es suficientemente impactante. No escribas nada más."
+)
+
+LAPIDARY_RANKING_USER_TEMPLATE = (
+    "Frases candidatas:\n{candidates}\n\n"
+    "Responde solo con el número de la frase más impactante o con NONE."
+)
+
+
 # Chunk Summarization - For silence-based chunks before chapter analysis
 CHUNK_SUMMARY_SYSTEM_PROMPT = """Eres un experto en analizar transcripciones de sesiones parlamentarias españolas.
 
