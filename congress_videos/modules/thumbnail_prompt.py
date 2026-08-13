@@ -24,7 +24,7 @@ TEXT (LEFT HALF, 42% from top): Bold ALL-CAPS white (#FFFFFF) '{text}'.
 Font: bold compressed sans-serif (Impact / Bebas Neue).
 3-4px black (#000000) outline + drop shadow (4px down, 6px blur, 80% opacity).
 
-{logo_line}NO logos, icons, watermarks, play buttons, channel symbols, or brand marks.
+{logo_line}{safe_zone_line}NO logos, icons, watermarks, play buttons, channel symbols, or brand marks.
 NO data charts, infographic overlays, or economic graphs.
 NO government chambers or parliamentary hemiciclo.
 
@@ -42,7 +42,7 @@ TEXT (RIGHT HALF, 42% from top): Bold ALL-CAPS white (#FFFFFF) '{text}'.
 Font: bold compressed sans-serif (Impact / Bebas Neue).
 3-4px black (#000000) outline + drop shadow (4px down, 6px blur, 80% opacity).
 
-{logo_line}NO logos, icons, watermarks, play buttons, channel symbols, or brand marks.
+{logo_line}{safe_zone_line}NO logos, icons, watermarks, play buttons, channel symbols, or brand marks.
 NO data charts, infographic overlays, or economic graphs.
 NO government chambers or parliamentary hemiciclo.
 
@@ -61,7 +61,7 @@ The text dominates the bottom third of the image, filling most of its width. \
 Font: bold compressed sans-serif (Impact / Bebas Neue). \
 3-4px black (#000000) outline + drop shadow (4px down, 6px blur, 80% opacity).
 
-{logo_line}NO logos, icons, watermarks, play buttons, channel symbols, or brand marks.
+{logo_line}{safe_zone_line}NO logos, icons, watermarks, play buttons, channel symbols, or brand marks.
 NO data charts, infographic overlays, or economic graphs.
 NO government chambers or parliamentary hemiciclo.
 
@@ -72,6 +72,14 @@ Overall mood: {mood}.
 _LOGO_LINE_A = "TOP-LEFT corner, small {logo} logo.\n\n"
 _LOGO_LINE_B = "TOP-RIGHT corner, small {logo} logo.\n\n"
 _LOGO_LINE_C = "BOTTOM-RIGHT corner, small {logo} logo.\n\n"
+
+# Safe-zone constraint: keep text/face/key subject out of the bottom-right corner.
+# Scoped to non-logo elements so it does not contradict _LOGO_LINE_C.
+# Must contain no "http" substring (build_pikzels_prompt strips "http").
+_SAFE_ZONE_LINE = (
+    "SAFE ZONE: keep the text, the face, and any key subject element out of the "
+    "bottom-right corner (reserved for the YouTube duration overlay); the logo is exempt.\n"
+)
 
 _TEMPLATES = {"A": _TEMPLATE_A, "B": _TEMPLATE_B, "C": _TEMPLATE_C}
 _LOGO_LINES = {"A": _LOGO_LINE_A, "B": _LOGO_LINE_B, "C": _LOGO_LINE_C}
@@ -120,6 +128,7 @@ def build_pikzels_prompt(art_brief: dict, layout: str) -> str:
         person=person,
         mood=mood,
         logo_line=logo_line,
+        safe_zone_line=_SAFE_ZONE_LINE,
     )
 
     # Defensive: strip any accidental "http" that may have leaked from brief values.
