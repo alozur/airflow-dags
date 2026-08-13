@@ -177,12 +177,21 @@ ART_DIRECTION_SYSTEM_PROMPT = (
     "permitiendo también mujeres y adultos jóvenes.\n"
     "Las restricciones de repetición entre hermanos prevalecen sobre la regla general: evita repetir "
     "tipos de persona aunque el fallback favorezca hombres mayores.\n\n"
+    "ARQUETIPO DRAMÁTICO:\n"
+    "Clasifica la forma dramática del vídeo a partir del debate_summary en uno de estos cinco tokens "
+    "e incluye el token elegido en el campo 'archetype' del JSON. "
+    "El 'person' debe adaptarse a la composición ciudadana del arquetipo (NUNCA políticos ni hemiciclo):\n"
+    "- careo: dos ciudadanos con emociones opuestas, uno en cada tercio horizontal del frame.\n"
+    "- denuncia: un ciudadano sosteniendo o señalando un objeto-evidencia metafórico (documento, factura, etc.).\n"
+    "- monologo: un ciudadano realizando un gesto de acción fuerte (puño en alto, señalando al frente).\n"
+    "- anuncio: un ciudadano en pose heroica o con expresión de alivio y esperanza.\n"
+    "- generico: molde general — ciudadano mayor preocupado, ropa casual, expresión seria.\n\n"
     "Cada brief debe ser visualmente DISTINTO al anterior: evita repetir fondos, tipos de persona o "
     "emociones en briefs consecutivos.\n\n"
     "PROHIBICIÓN ABSOLUTA: no incluyas nunca URLs ni la palabra 'http' en ningún campo. "
     "Pikzels rechaza cualquier prompt que contenga 'http'.\n\n"
     "Responde SOLO con JSON válido, sin markdown:\n"
-    '{"text": "...", "background": "...", "person": "...", "mood": "..."}'
+    '{"text": "...", "background": "...", "person": "...", "mood": "...", "archetype": "careo|denuncia|monologo|anuncio|generico"}'
 )
 
 # Sibling-brief injection block: appended to the art_direct user prompt when
