@@ -482,6 +482,7 @@ def _make_chapter(
     session_date: str | None = "2025-06-10",
     key_speakers: list | None = None,
     speakers: list | None = None,
+    resolved_participant_slug: str | None = None,
 ) -> dict:
     return {
         "chapter_id": chapter_id,
@@ -493,6 +494,7 @@ def _make_chapter(
         if key_speakers is not None
         else [{"name": "Ana García"}],
         "speakers": speakers if speakers is not None else ["Ana García"],
+        "resolved_participant_slug": resolved_participant_slug,
     }
 
 
@@ -527,6 +529,42 @@ class TestPrepareThumbnailConfig:
         assert result["debate_summary"] != ""
         assert result["session"] is not None
         assert result["chapter_id"] == 42
+
+    def test_resolved_participant_slug_is_preferred_over_fuzzy(self):
+        """A chapter's resolved_participant_slug wins; no fuzzy lookup is spent."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_chapter(
+            chapter_id=7,
+            key_speakers=[{"name": "Ministra de Defensa"}],
+            resolved_participant_slug="margarita-robles-fernandez",
+        )
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+        ) as lookup:
+            result = _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert result["slug"] == "margarita-robles-fernandez"
+        lookup.assert_not_called()
+
+    def test_falls_back_to_fuzzy_when_no_resolved_slug(self):
+        """Without a resolved slug the raw-speaker fuzzy path still applies."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_chapter(
+            key_speakers=[{"name": "Ana García"}],
+            resolved_participant_slug=None,
+        )
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "garcia-ana"},
+        ) as lookup:
+            result = _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert result["slug"] == "garcia-ana"
+        lookup.assert_called_once_with("Ana García")
 
     def test_lookup_error_sets_slug_to_none(self):
         """A speaker lookup failure yields slug=None without raising."""

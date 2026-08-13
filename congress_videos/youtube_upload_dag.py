@@ -158,20 +158,24 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
     else:
         session = str(session_date) if session_date else None
 
-    # Fuzzy matching is confined to this raw-speaker boundary. Downstream
-    # thumbnail code receives only the stable participant slug.
-    try:
-        raw_speaker = _resolve_speaker_name(chapter)
-        participant = lookup_participant_fuzzy(raw_speaker) if raw_speaker else None
-        slug = participant.get("slug") if participant else None
-    except Exception as exc:
-        logging.warning(
-            "_prepare_thumbnail_config: speaker resolution failed for "
-            "chapter_id=%s: %s — setting slug=None",
-            chapter_id,
-            exc,
-        )
-        slug = None
+    # Prefer the authoritative slug written by speaker normalization (fuzzy or
+    # institutional-role resolution). Fall back to a raw-speaker fuzzy match only
+    # when the chapter was never resolved. Fuzzy matching stays confined to this
+    # boundary; downstream thumbnail code receives only the stable slug.
+    slug = chapter.get("resolved_participant_slug") or None
+    if not slug:
+        try:
+            raw_speaker = _resolve_speaker_name(chapter)
+            participant = lookup_participant_fuzzy(raw_speaker) if raw_speaker else None
+            slug = participant.get("slug") if participant else None
+        except Exception as exc:
+            logging.warning(
+                "_prepare_thumbnail_config: speaker resolution failed for "
+                "chapter_id=%s: %s — setting slug=None",
+                chapter_id,
+                exc,
+            )
+            slug = None
 
     config = {
         "chapter_id": chapter_id,

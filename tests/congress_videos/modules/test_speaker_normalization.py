@@ -185,7 +185,7 @@ class TestFuzzyThresholdMiss:
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
-                1, ["UnknownSpeakerXYZ"], [], [],
+                1, ["Carlos Romero Alias"], [], [],
                 mock_conn, _make_config()
             )
 
@@ -201,7 +201,7 @@ class TestFuzzyThresholdMiss:
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
-                1, ["UnknownSpeakerXYZ"], [], [],
+                1, ["Carlos Romero Alias"], [], [],
                 mock_conn, _make_config()
             )
 
@@ -218,7 +218,7 @@ class TestFuzzyThresholdMiss:
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
-                1, ["UnknownSpeakerXYZ"], [], [],
+                1, ["Carlos Romero Alias"], [], [],
                 mock_conn, _make_config()
             )
 
@@ -250,7 +250,7 @@ class TestAINoMatch:
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
-                1, ["PedroSanchezVariant"], [], [],
+                1, ["Pedro Sanchez Variant"], [], [],
                 mock_conn, _make_config()
             )
 
@@ -273,7 +273,7 @@ class TestAINoMatch:
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
-                1, ["PedroSanchezVariant"], [], [],
+                1, ["Pedro Sanchez Variant"], [], [],
                 mock_conn, _make_config()
             )
 
@@ -302,7 +302,7 @@ class TestAINeedsManual:
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
-                1, ["PedroAmbiguous"], [], [],
+                1, ["Pedro Ambiguo Real"], [], [],
                 mock_conn, _make_config()
             )
 
@@ -322,7 +322,7 @@ class TestAINeedsManual:
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
-                1, ["PedroAmbiguous"], [], [],
+                1, ["Pedro Ambiguo Real"], [], [],
                 mock_conn, _make_config()
             )
 
@@ -341,8 +341,8 @@ class TestMultipleSpeakers:
         mock_conn, mock_cursor = mock_db_conn
 
         participant_map = {
-            "Speaker One": _make_participant("Speaker One", "speaker one"),
-            "Speaker Two": _make_participant("Speaker Two", "speaker two"),
+            "Ana Ruiz Pérez": _make_participant("Ana Ruiz Pérez", "ana ruiz perez"),
+            "Juan García López": _make_participant("Juan García López", "juan garcia lopez"),
         }
 
         def fuzzy_side(name, threshold):
@@ -359,22 +359,22 @@ class TestMultipleSpeakers:
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
                 7,
-                ["Speaker One", "Speaker Two", "Unknown"],
+                ["Ana Ruiz Pérez", "Juan García López", "María Fernández Gil"],
                 [],
                 [],
                 mock_conn,
                 _make_config(),
             )
 
-        # One cache row per unique dirty speaker
+        # One cache row per unique dirty speaker (all three are real multi-word names)
         assert len(result.cache_rows) == 3
 
     def test_only_matched_speakers_corrected(self, mock_db_conn):
         mock_conn, mock_cursor = mock_db_conn
 
         def fuzzy_side(name, threshold):
-            if name == "Speaker One":
-                return _make_participant("Speaker One", "speaker one")
+            if name == "Ana Ruiz Pérez":
+                return _make_participant("Ana Ruiz Pérez", "ana ruiz perez")
             return None
 
         ai_result = _make_ai_result("match", confidence=0.90)
@@ -388,16 +388,16 @@ class TestMultipleSpeakers:
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
                 7,
-                ["Speaker One", "Speaker Two", "Unknown"],
+                ["Ana Ruiz Pérez", "Juan García López", "María Fernández Gil"],
                 [],
                 [],
                 mock_conn,
                 _make_config(),
             )
 
-        assert "Speaker One" in result.corrections
-        assert "Speaker Two" not in result.corrections
-        assert "Unknown" not in result.corrections
+        assert "Ana Ruiz Pérez" in result.corrections
+        assert "Juan García López" not in result.corrections
+        assert "María Fernández Gil" not in result.corrections
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +452,247 @@ class TestAICallError:
 
 
 # ---------------------------------------------------------------------------
+# T-08: _dedupe_dirty_speakers drops placeholder names (Task 1.7 RED)
+# ---------------------------------------------------------------------------
+
+class TestDedupeDirtySpeakersPlaceholderFilter:
+    """Task 1.7 RED — _dedupe_dirty_speakers must filter placeholders before dedup."""
+
+    def test_desconocido_dropped_from_speakers(self):
+        """'Desconocido' must not appear in the deduped output."""
+        from congress_videos.modules.speaker_normalization import _dedupe_dirty_speakers
+
+        result = _dedupe_dirty_speakers(
+            ["Desconocido", "Pedro Sánchez"],
+            [],
+            [],
+        )
+        assert "Desconocido" not in result
+        assert "Pedro Sánchez" in result
+
+    def test_unknown_dropped_from_speakers(self):
+        """'Unknown' must not appear in the deduped output."""
+        from congress_videos.modules.speaker_normalization import _dedupe_dirty_speakers
+
+        result = _dedupe_dirty_speakers(
+            ["Unknown", "María López"],
+            [],
+            [],
+        )
+        assert "Unknown" not in result
+        assert "María López" in result
+
+    def test_no_especificado_dropped_from_key_speakers(self):
+        """'(No especificado)' in key_speakers must be filtered."""
+        from congress_videos.modules.speaker_normalization import _dedupe_dirty_speakers
+
+        result = _dedupe_dirty_speakers(
+            [],
+            ["(No especificado)", "Ana Martínez"],
+            [],
+        )
+        assert "(No especificado)" not in result
+        assert "Ana Martínez" in result
+
+    def test_placeholder_in_timeline_speaker_dropped(self):
+        """Placeholder in timeline[].speaker must be filtered."""
+        from congress_videos.modules.speaker_normalization import _dedupe_dirty_speakers
+
+        result = _dedupe_dirty_speakers(
+            [],
+            [],
+            [{"speaker": "Desconocido", "content": "...", "time": "00:01:00"}],
+        )
+        assert "Desconocido" not in result
+
+    def test_all_real_speakers_preserved(self):
+        """Non-placeholder names must still appear in deduped output."""
+        from congress_videos.modules.speaker_normalization import _dedupe_dirty_speakers
+
+        result = _dedupe_dirty_speakers(
+            ["Ana Ruiz", "Pedro García"],
+            ["Laura Gómez"],
+            [],
+        )
+        assert "Ana Ruiz" in result
+        assert "Pedro García" in result
+        assert "Laura Gómez" in result
+
+    def test_mix_placeholders_and_real_names(self):
+        """Mixed list: only real names survive, order preserved."""
+        from congress_videos.modules.speaker_normalization import _dedupe_dirty_speakers
+
+        result = _dedupe_dirty_speakers(
+            ["Desconocido", "Ana Ruiz", "Unknown"],
+            ["Pedro García"],
+            [{"speaker": "No especificado", "content": "", "time": "00:00"}],
+        )
+        assert result == ["Ana Ruiz", "Pedro García"]
+
+
+# ---------------------------------------------------------------------------
+# T-09 (Task 2.3 RED): update_chapter_speakers — optional resolved_participant_slug param
+# ---------------------------------------------------------------------------
+
+class TestUpdateChapterSpeakersSlugParam:
+    """Task 2.3 RED — update_chapter_speakers must accept and write resolved_participant_slug.
+
+    Tests the Database.update_chapter_speakers method in database.py.
+    """
+
+    def test_slug_written_when_provided(self, mock_psycopg2_connection):
+        """When resolved_participant_slug is provided, it must be included in the UPDATE."""
+        _, mock_conn, mock_cursor = mock_psycopg2_connection
+
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        db = CongressionalVideoDB()
+        db.update_chapter_speakers(
+            chapter_id=42,
+            speakers=["Pedro Sánchez"],
+            key_speakers=["Pedro Sánchez"],
+            timeline=[],
+            resolved_participant_slug="pedro-sanchez",
+        )
+
+        # Find the UPDATE call and assert resolved_participant_slug appears in it
+        update_calls = [
+            c for c in mock_cursor.execute.call_args_list
+            if "UPDATE" in str(c.args[0]).upper() and "video_chapters" in str(c.args[0]).lower()
+        ]
+        assert update_calls, "Expected UPDATE video_chapters to be called"
+        sql = str(update_calls[0].args[0])
+        assert "resolved_participant_slug" in sql, (
+            "resolved_participant_slug column must be in the UPDATE SQL"
+        )
+        # Verify the slug value is in the params
+        params = update_calls[0].args[1]
+        assert "pedro-sanchez" in params, (
+            "resolved_participant_slug value must be passed as a parameter"
+        )
+
+    def test_slug_not_written_when_none(self, mock_psycopg2_connection):
+        """When resolved_participant_slug is None (default), it must NOT appear in UPDATE SQL."""
+        _, mock_conn, mock_cursor = mock_psycopg2_connection
+
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        db = CongressionalVideoDB()
+        db.update_chapter_speakers(
+            chapter_id=99,
+            speakers=["Ana López"],
+            key_speakers=[],
+            timeline=[],
+        )
+
+        update_calls = [
+            c for c in mock_cursor.execute.call_args_list
+            if "UPDATE" in str(c.args[0]).upper() and "video_chapters" in str(c.args[0]).lower()
+        ]
+        assert update_calls, "Expected UPDATE video_chapters to be called"
+        sql = str(update_calls[0].args[0])
+        assert "resolved_participant_slug" not in sql, (
+            "resolved_participant_slug must not be in the UPDATE SQL when not provided"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T-10 (Task 2.5 RED): normalize_chapter_speakers — slug fill on matched entry
+# ---------------------------------------------------------------------------
+
+class TestNormalizeChapterSpeakersSlugFill:
+    """Task 2.5 RED — normalize_chapter_speakers must write resolved_participant_slug on match.
+
+    After AI confirms 'match', the function derives the slug from the candidate's
+    normalized_name and writes it via update_chapter_speakers (or direct UPDATE).
+    No LLM call is triggered by the slug fill itself.
+    """
+
+    def test_matched_cache_entry_triggers_slug_write(self, mock_db_conn):
+        """A confirmed 'matched' cache entry must write resolved_participant_slug."""
+        mock_conn, mock_cursor = mock_db_conn
+
+        candidate = _make_participant("Pedro Sánchez", "pedro sanchez")
+        ai_result = _make_ai_result("match", confidence=0.95)
+
+        with (
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
+                  return_value=candidate),
+            patch("congress_videos.modules.speaker_normalization.cached_json_completion",
+                  return_value=ai_result),
+        ):
+            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
+            normalize_chapter_speakers(
+                42, ["Pedro Sanchez"], ["Pedro Sanchez"], [],
+                mock_conn, _make_config()
+            )
+
+        # The bulk UPDATE on video_chapters must include resolved_participant_slug
+        update_calls = [
+            c for c in mock_cursor.execute.call_args_list
+            if "UPDATE" in str(c.args[0]).upper() and "video_chapters" in str(c.args[0]).lower()
+        ]
+        assert update_calls, "Expected UPDATE video_chapters to be called"
+        sql = str(update_calls[0].args[0])
+        assert "resolved_participant_slug" in sql, (
+            "resolved_participant_slug must be set in the UPDATE after a matched entry"
+        )
+        params = update_calls[0].args[1]
+        # Slug derived from normalized_name "pedro sanchez" → "pedro-sanchez"
+        assert "pedro-sanchez" in params, (
+            "slug 'pedro-sanchez' must be passed as a parameter in the UPDATE"
+        )
+
+    def test_unresolved_chapter_slug_stays_null(self, mock_db_conn):
+        """When there is no match, resolved_participant_slug must not be written."""
+        mock_conn, mock_cursor = mock_db_conn
+
+        with (
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
+                  return_value=None),
+            patch("congress_videos.modules.speaker_normalization.cached_json_completion"),
+        ):
+            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
+            result = normalize_chapter_speakers(
+                99, ["Unknown Speaker"], [], [],
+                mock_conn, _make_config()
+            )
+
+        # No UPDATE should have been issued (no match, no write)
+        update_calls = [
+            c for c in mock_cursor.execute.call_args_list
+            if "UPDATE" in str(c.args[0]).upper() and "video_chapters" in str(c.args[0]).lower()
+        ]
+        assert not update_calls, (
+            "UPDATE video_chapters must NOT be called when there is no match"
+        )
+
+    def test_no_llm_call_on_slug_fill_path(self, mock_db_conn):
+        """Slug fill must not trigger any additional LLM calls beyond the match itself."""
+        mock_conn, mock_cursor = mock_db_conn
+
+        candidate = _make_participant("Pedro Sánchez", "pedro sanchez")
+        ai_result = _make_ai_result("match", confidence=0.95)
+
+        with (
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
+                  return_value=candidate),
+            patch("congress_videos.modules.speaker_normalization.cached_json_completion",
+                  return_value=ai_result) as mock_ai,
+        ):
+            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
+            normalize_chapter_speakers(
+                42, ["Pedro Sanchez"], [], [],
+                mock_conn, _make_config()
+            )
+
+        # cached_json_completion called exactly once (for the match decision only)
+        assert mock_ai.call_count == 1, (
+            "cached_json_completion must be called exactly once — slug fill is LLM-free"
+        )
+
+
+# ---------------------------------------------------------------------------
 # T-07 (Bonus from task description): ENABLED=False → immediate return
 # ---------------------------------------------------------------------------
 
@@ -477,3 +718,73 @@ class TestEnabledFalse:
         assert result.updated is False
         assert result.corrections == {}
         assert result.cache_rows == []
+
+
+# ---------------------------------------------------------------------------
+# T-07: Institutional-role resolution (PR2)
+# ---------------------------------------------------------------------------
+
+class TestInstitutionalRoleResolution:
+    """Role-only mentions resolve to a canonical name via the bundled catalog."""
+
+    def test_role_mention_resolved_for_non_deputy_uses_catalog_name(self, mock_db_conn):
+        from datetime import date
+
+        mock_conn, mock_cursor = mock_db_conn
+
+        with (
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_by_slug",
+                  return_value=None),
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy") as mock_fuzzy,
+            patch("congress_videos.modules.speaker_normalization.cached_json_completion") as mock_ai,
+        ):
+            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
+            result = normalize_chapter_speakers(
+                7, ["Ministra de Defensa"], [], [],
+                mock_conn, _make_config(), session_date=date(2026, 6, 1),
+            )
+
+        assert result.corrections["Ministra de Defensa"] == "Robles Fernández, Margarita"
+        # A deterministic role hit must not consult fuzzy matching or the LLM.
+        mock_fuzzy.assert_not_called()
+        mock_ai.assert_not_called()
+
+    def test_role_mention_prefers_participant_row_display_name(self, mock_db_conn):
+        from datetime import date
+
+        mock_conn, _ = mock_db_conn
+        row = _make_participant("Puente Santiago, Óscar", "oscar puente santiago")
+
+        with (
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_by_slug",
+                  return_value=row),
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy"),
+            patch("congress_videos.modules.speaker_normalization.cached_json_completion"),
+        ):
+            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
+            result = normalize_chapter_speakers(
+                8, ["el Ministro de Transportes"], [], [],
+                mock_conn, _make_config(), session_date=date(2026, 6, 1),
+            )
+
+        assert result.corrections["el Ministro de Transportes"] == "Puente Santiago, Óscar"
+
+    def test_missing_session_date_skips_role_resolution(self, mock_db_conn):
+        mock_conn, _ = mock_db_conn
+
+        with (
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_by_slug") as mock_slug,
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
+                  return_value=None),
+            patch("congress_videos.modules.speaker_normalization.cached_json_completion"),
+        ):
+            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
+            result = normalize_chapter_speakers(
+                9, ["Ministra de Defensa"], [], [],
+                mock_conn, _make_config(),
+            )
+
+        # Without a session date the catalog is never consulted; the role-only
+        # mention is left to the placeholder filter, so it is not corrected.
+        assert "Ministra de Defensa" not in result.corrections
+        mock_slug.assert_not_called()

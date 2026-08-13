@@ -1319,6 +1319,7 @@ class CongressionalVideoDB:
         speakers: list,
         key_speakers: list,
         timeline: list,
+        resolved_participant_slug: str | None = None,
     ) -> None:
         """Overwrite the speakers, key_speakers and timeline JSONB for a chapter.
 
@@ -1330,26 +1331,46 @@ class CongressionalVideoDB:
             speakers: Updated list of speaker display names.
             key_speakers: Updated list of key speaker display names.
             timeline: Updated list of timeline dicts (each has 'speaker' field).
+            resolved_participant_slug: When provided, also writes the FK column
+                ``resolved_participant_slug`` linking this chapter to a verified
+                ``congress_participants`` row. Omit (or pass None) to leave the
+                column unchanged.
         """
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
 
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    UPDATE {chapters_table}
-                    SET speakers = %s,
-                        key_speakers = %s,
-                        timeline = %s::jsonb,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE chapter_id = %s
-                    """,
-                    (speakers, key_speakers, json.dumps(timeline), chapter_id),
-                )
+                if resolved_participant_slug is not None:
+                    cur.execute(
+                        f"""
+                        UPDATE {chapters_table}
+                        SET speakers = %s,
+                            key_speakers = %s,
+                            timeline = %s::jsonb,
+                            resolved_participant_slug = %s,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE chapter_id = %s
+                        """,
+                        (speakers, key_speakers, json.dumps(timeline),
+                         resolved_participant_slug, chapter_id),
+                    )
+                else:
+                    cur.execute(
+                        f"""
+                        UPDATE {chapters_table}
+                        SET speakers = %s,
+                            key_speakers = %s,
+                            timeline = %s::jsonb,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE chapter_id = %s
+                        """,
+                        (speakers, key_speakers, json.dumps(timeline), chapter_id),
+                    )
                 logger.info(
                     "update_chapter_speakers: updated chapter %d "
-                    "(%d speakers, %d key_speakers, %d timeline entries)",
+                    "(%d speakers, %d key_speakers, %d timeline entries%s)",
                     chapter_id, len(speakers), len(key_speakers), len(timeline),
+                    f", slug={resolved_participant_slug!r}" if resolved_participant_slug else "",
                 )
 
     def get_processed_video_ids(self, video_ids: list[str]) -> set[str]:
