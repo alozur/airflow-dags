@@ -30,6 +30,11 @@ from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from congress_videos.modules.participants_db import lookup_participant_fuzzy
+from congress_videos.srt_helpers import (
+    _parse_srt_blocks,
+    _srt_timestamp_to_seconds,
+    find_srt_for_chapter,
+)
 from utils.airflow_helpers import ensure_project_data_directory, xcom_task
 from utils.env_loader import load_env_if_local
 
@@ -172,7 +177,7 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
             )
             slug = None
 
-    return {
+    config = {
         "chapter_id": chapter_id,
         "debate_summary": debate_summary,
         "domain": "congreso",
@@ -180,6 +185,28 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
         "slug": slug,
         "key_speakers": chapter.get("key_speakers") or [],
     }
+
+    # Resolve SRT fragment for lapidary quote extraction (issue #57).
+    video_id = chapter.get("video_id")
+    srt_path = (
+        find_srt_for_chapter(str(video_id), chapter_id, str(session_date) if session_date else None)
+        if video_id is not None
+        else None
+    )
+    if srt_path is not None:
+        blocks = _parse_srt_blocks(srt_path)
+        # Convert chapter time-window boundaries (SRT-format strings) to seconds.
+        chapter_start_secs = _srt_timestamp_to_seconds(chapter.get("start_time", "00:00:00,000"))
+        chapter_end_secs = _srt_timestamp_to_seconds(chapter.get("end_time", "99:59:59,999"))
+        window_texts = [
+            b["text"]
+            for b in blocks
+            if b["start_secs"] >= chapter_start_secs and b["end_secs"] <= chapter_end_secs
+        ]
+        joined = " ".join(window_texts)
+        config["srt_fragment"] = joined[:10_000]
+
+    return config
 
 
 def _thumbnail_failure(chapter_id: int | None) -> dict:
@@ -209,6 +236,8 @@ def trigger_thumbnail_generation(ti, **context) -> str | None:
         **{key: thumbnail_config[key] for key in required_values},
         "slug": thumbnail_config.get("slug"),
     }
+    if "srt_fragment" in thumbnail_config:
+        child_conf["srt_fragment"] = thumbnail_config["srt_fragment"]
     try:
         dag_run = trigger_dag_api(
             dag_id=_THUMBNAIL_DAG_ID,
