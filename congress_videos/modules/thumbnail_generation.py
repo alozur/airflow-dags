@@ -27,6 +27,8 @@ from congress_videos.config.ai_prompts import (
     ART_DIRECTION_SIBLING_INSTRUCTION,
     ART_DIRECTION_SYSTEM_PROMPT,
     ART_DIRECTION_USER_PROMPT_TEMPLATE,
+    LAPIDARY_RANKING_SYSTEM_PROMPT,
+    LAPIDARY_RANKING_USER_TEMPLATE,
     THUMBNAIL_TITLE_SIBLING_INSTRUCTION,
     THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION,
     THUMBNAIL_TITLE_SYSTEM_PROMPT,
@@ -94,6 +96,112 @@ def _coerce_archetype(value: object) -> str:
     return _DEFAULT_ARCHETYPE
 
 
+# Spanish stop-words that disqualify a candidate when they appear as the first token.
+_LAPIDARY_STOP_WORDS = frozenset(
+    "de que y o pero si en con por a el la los las un una".split()
+)
+
+# Clause boundary splitter for lapidary candidate extraction.
+_LAPIDARY_SPLIT_RE = re.compile(r"[.!?;,]\s+")
+
+
+def extract_lapidary_quote(
+    srt_fragment: str,
+    max_chars: int = 40,
+    min_words: int = 3,
+    max_words: int = 8,
+    completion_fn=None,
+) -> str | None:
+    """Extract the most impactful verbatim quote from an SRT fragment.
+
+    Splits the fragment on clause boundaries, filters by word count and length,
+    removes stop-word-leading candidates, deduplicates, then asks an LLM to rank
+    the survivors.  Returns the verbatim candidate string at the selected index,
+    or ``None`` when no candidates survive or the LLM declines.
+
+    Args:
+        srt_fragment: Raw SRT text for a chapter time window.
+        max_chars: Maximum character length of an accepted candidate (default 40).
+        min_words: Minimum word count per candidate (default 3).
+        max_words: Maximum word count per candidate (default 8).
+        completion_fn: Injectable callable with the same signature as
+            ``generate_chat_completion`` (for unit-test isolation).  Defaults to
+            the real ``generate_chat_completion`` when ``None``.
+
+    Returns:
+        Verbatim candidate string, or ``None``.
+    """
+    if completion_fn is None:
+        from utils.ai_helpers import generate_chat_completion as _real_fn
+
+        completion_fn = _real_fn
+
+    if not srt_fragment:
+        return None
+
+    # 1. Split on clause boundaries.
+    clauses = _LAPIDARY_SPLIT_RE.split(srt_fragment)
+
+    # 2. Filter by word count and character length.
+    candidates: list[str] = []
+    seen_lower: set[str] = set()
+    for clause in clauses:
+        clause = clause.strip()
+        if not clause:
+            continue
+        words = clause.split()
+        if not (min_words <= len(words) <= max_words):
+            continue
+        if len(clause) > max_chars:
+            continue
+        # 3. Discard when first token is a Spanish stop-word (case-insensitive).
+        if words[0].lower() in _LAPIDARY_STOP_WORDS:
+            continue
+        # 4. Deduplicate case-insensitively.
+        lower = clause.lower()
+        if lower in seen_lower:
+            continue
+        seen_lower.add(lower)
+        candidates.append(clause)
+
+    # 5. No candidates → return None without calling the LLM.
+    if not candidates:
+        return None
+
+    # 6. Build numbered list and call the LLM ranker.
+    numbered = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(candidates))
+    user_prompt = LAPIDARY_RANKING_USER_TEMPLATE.format(candidates=numbered)
+
+    response = completion_fn(
+        system_prompt=LAPIDARY_RANKING_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        model="gpt-4o-mini",
+        temperature=0.2,
+        max_tokens=5,
+    )
+
+    content: str = (response or {}).get("content") or ""
+    content = content.strip()
+
+    if content.upper() == "NONE":
+        return None
+
+    # 7. Parse 1-based index.
+    match = re.search(r"\d+", content)
+    if not match:
+        return None
+
+    try:
+        idx = int(match.group()) - 1
+    except (ValueError, AttributeError):
+        return None
+
+    if idx < 0 or idx >= len(candidates):
+        return None
+
+    return candidates[idx]
+
+
 # ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
@@ -104,6 +212,7 @@ def art_direct(
     domain_cfg: dict,
     previous_brief: dict | None = None,
     sibling_briefs: list[str] | None = None,
+    srt_fragment: str | None = None,
 ) -> dict:
     """Generate an art-direction brief for a Pikzels thumbnail via OpenAI.
 
@@ -120,6 +229,10 @@ def art_direct(
         sibling_briefs: When non-empty, injects a "NO REPITAS" block listing
             recent chosen briefs to steer the model away from repetition.
             None or empty list → prompt unchanged (backward compatible).
+        srt_fragment: When provided, ``extract_lapidary_quote`` is called and,
+            if it returns a non-None string, ``brief["text"]`` is overridden
+            with the verbatim SRT quote.  ``None`` (default) leaves the
+            existing invented-from-summary flow fully unchanged.
     """
     import json
 
@@ -178,10 +291,18 @@ def art_direct(
 
     brief.setdefault("logo", "")
     brief["archetype"] = _coerce_archetype(brief.get("archetype"))
-    return {
+    result = {
         key: value.replace("http", "") if isinstance(value, str) else value
         for key, value in brief.items()
     }
+
+    # SRT lapidary override: replace the invented text with a verbatim quote.
+    if srt_fragment is not None:
+        quote = extract_lapidary_quote(srt_fragment)
+        if quote is not None:
+            result["text"] = quote
+
+    return result
 
 
 def resolve_participant_photo(slug: str, cfg: dict) -> dict:
