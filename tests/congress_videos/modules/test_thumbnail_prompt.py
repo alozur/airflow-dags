@@ -297,3 +297,63 @@ class TestInputImmutability:
         assert brief["text"] == original_text, (
             "brief['text'] must remain unchanged after build_pikzels_prompt call"
         )
+
+
+# ---------------------------------------------------------------------------
+# T-06: Safe-zone constraint (REQ-1)
+# ---------------------------------------------------------------------------
+
+
+class TestSafeZone:
+    """build_pikzels_prompt must include a bottom-right safe-zone prohibition in all layouts."""
+
+    def test_safe_zone_line_present_layout_a(self) -> None:
+        """Layout A output must contain 'SAFE ZONE'."""
+        from congress_videos.modules.thumbnail_prompt import build_pikzels_prompt
+
+        assert "SAFE ZONE" in build_pikzels_prompt(_BRIEF, "A")
+
+    def test_safe_zone_line_present_layout_b(self) -> None:
+        """Layout B output must contain 'SAFE ZONE'."""
+        from congress_videos.modules.thumbnail_prompt import build_pikzels_prompt
+
+        assert "SAFE ZONE" in build_pikzels_prompt(_BRIEF, "B")
+
+    def test_safe_zone_line_present_layout_c(self) -> None:
+        """Layout C output must contain 'SAFE ZONE'."""
+        from congress_videos.modules.thumbnail_prompt import build_pikzels_prompt
+
+        assert "SAFE ZONE" in build_pikzels_prompt(_BRIEF, "C")
+
+    def test_bottom_right_corner_substring_all_layouts(self) -> None:
+        """All layouts must reference 'bottom-right corner' in the safe-zone line."""
+        from congress_videos.modules.thumbnail_prompt import build_pikzels_prompt
+
+        for layout in ("A", "B", "C"):
+            result = build_pikzels_prompt(_BRIEF, layout)
+            assert "bottom-right corner" in result, (
+                f"Layout {layout} missing 'bottom-right corner' safe-zone substring"
+            )
+
+    def test_logo_is_exempt_substring_all_layouts(self) -> None:
+        """All layouts must state 'the logo is exempt' in the safe-zone line."""
+        from congress_videos.modules.thumbnail_prompt import build_pikzels_prompt
+
+        for layout in ("A", "B", "C"):
+            result = build_pikzels_prompt(_BRIEF, layout)
+            assert "the logo is exempt" in result, (
+                f"Layout {layout} missing 'the logo is exempt' safe-zone substring"
+            )
+
+    def test_logo_line_and_safe_zone_coexist_layout_c(self) -> None:
+        """Layout C with a logo must contain both BOTTOM-RIGHT (logo) and SAFE ZONE lines."""
+        from congress_videos.modules.thumbnail_prompt import build_pikzels_prompt
+
+        brief = {**_BRIEF, "logo": "TVE"}
+        result = build_pikzels_prompt(brief, "C")
+        assert "BOTTOM-RIGHT corner" in result, (
+            "Layout C with logo must still render _LOGO_LINE_C"
+        )
+        assert "SAFE ZONE" in result, (
+            "Layout C with logo must also contain the safe-zone line"
+        )

@@ -2540,3 +2540,36 @@ class TestArtDirectSrtOverride:
             extract_return=None,
         )
         assert result["text"] == "TEXTO INVENTADO"
+
+
+# ---------------------------------------------------------------------------
+# Safe-Zone & Rule-of-Thirds (REQ-2)
+# ---------------------------------------------------------------------------
+
+
+class TestArtDirectionSafeZone:
+    """ART_DIRECTION_SYSTEM_PROMPT must encode rule-of-thirds and safe-zone guidance."""
+
+    def test_art_direction_contains_esquina_inferior_derecha(self) -> None:
+        """ART_DIRECTION_SYSTEM_PROMPT must contain 'esquina inferior derecha'."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "esquina inferior derecha" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "ART_DIRECTION_SYSTEM_PROMPT must mention 'esquina inferior derecha' (YouTube overlay safe zone)"
+        )
+
+    def test_art_direction_contains_tercio(self) -> None:
+        """ART_DIRECTION_SYSTEM_PROMPT must contain 'tercio' (rule-of-thirds language)."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "tercio" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "ART_DIRECTION_SYSTEM_PROMPT must contain 'tercio' for rule-of-thirds guidance"
+        )
+
+    def test_art_direction_contains_regla_de_los_tercios(self) -> None:
+        """ART_DIRECTION_SYSTEM_PROMPT must contain 'regla de los tercios'."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "regla de los tercios" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "ART_DIRECTION_SYSTEM_PROMPT must mention 'regla de los tercios'"
+        )
