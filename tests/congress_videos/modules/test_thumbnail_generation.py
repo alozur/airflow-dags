@@ -2161,3 +2161,153 @@ class TestKeySpeakersParam:
         assert "Ana Pastor" in captured_prompts[0], (
             "prompt must contain 'Ana Pastor' when key_speakers=[{'name': 'Ana Pastor'}]"
         )
+
+
+# ---------------------------------------------------------------------------
+# Bug #79: Art direction must ignore speakers' grammatical gender
+# ---------------------------------------------------------------------------
+
+
+class TestArtDirectionSystemPrompt:
+    """ART_DIRECTION_SYSTEM_PROMPT content contracts — bug #79 gender-ignore clause.
+
+    Two tests start RED (assert the new bullet that does not yet exist).
+    Five regression guards start GREEN (protect existing content).
+    """
+
+    # ------------------------------------------------------------------
+    # Task 1.2 — RED: gender-ignore clause must be present (fails before the edit)
+    # ------------------------------------------------------------------
+
+    def test_prompt_contains_gender_ignore_clause(self) -> None:
+        """ART_DIRECTION_SYSTEM_PROMPT must instruct the model to ignore speakers' grammatical gender.
+
+        RED before the bullet is added: both substrings are absent.
+        GREEN after the bullet is added.
+        """
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "sexo gramatical de los ponentes" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "ART_DIRECTION_SYSTEM_PROMPT must contain the gender-ignore instruction "
+            "(phrase: 'sexo gramatical de los ponentes')"
+        )
+        assert "independientemente del género de los ponentes" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "ART_DIRECTION_SYSTEM_PROMPT must close the gender-ignore rule with "
+            "'independientemente del género de los ponentes'"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.3 — RED: wiring test — art_direct passes the (updated) prompt as system_prompt
+    # ------------------------------------------------------------------
+
+    def test_art_direct_passes_gender_ignore_system_prompt(self, mocker) -> None:
+        """art_direct must pass ART_DIRECTION_SYSTEM_PROMPT (which must contain the
+        gender-ignore clause) as the system_prompt kwarg to generate_json_completion.
+
+        RED before the bullet is added: the kwarg assertion fails because the
+        substring is absent from the prompt constant.
+        GREEN after the bullet is added.
+        """
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        mock_completion = mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value={
+                "data": {
+                    "text": "DEBATE CLAVE",
+                    "background": "una calle española",
+                    "person": "un ciudadano preocupado",
+                    "mood": "urgencia",
+                },
+                "error": None,
+            },
+        )
+        cfg = _make_cfg()
+        art_direct("La representante defendió la moción", cfg)
+
+        assert mock_completion.call_args is not None, (
+            "generate_json_completion must be called by art_direct"
+        )
+        passed_prompt = mock_completion.call_args.kwargs["system_prompt"]
+        assert passed_prompt == ART_DIRECTION_SYSTEM_PROMPT, (
+            "art_direct must pass ART_DIRECTION_SYSTEM_PROMPT as system_prompt kwarg"
+        )
+        assert "sexo gramatical de los ponentes" in passed_prompt, (
+            "The system_prompt passed through must contain the gender-ignore clause"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.4 — Regression guard: maternidad override intact (GREEN from start)
+    # ------------------------------------------------------------------
+
+    def test_maternidad_override_intact(self) -> None:
+        """The maternidad/embarazo/conciliación override clause must remain present."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "maternidad" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "maternidad override must still be present in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+        assert "mujer en edad de tener hijos" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "'mujer en edad de tener hijos' phrase must still be present"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.5 — Regression guard: pensiones override intact (GREEN from start)
+    # ------------------------------------------------------------------
+
+    def test_pensiones_override_intact(self) -> None:
+        """The pensiones/dependencia/geriátrica override clause must remain present."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "pensiones" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "pensiones override must still be present in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+        assert "persona mayor" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "'persona mayor' phrase must still be present"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.6 — Regression guard: desempleo juvenil override intact (GREEN from start)
+    # ------------------------------------------------------------------
+
+    def test_desempleo_juvenil_override_intact(self) -> None:
+        """The desempleo juvenil/vivienda joven/educación override clause must remain present."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "desempleo juvenil" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "desempleo juvenil override must still be present in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+        assert "persona joven" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "'persona joven' phrase must still be present"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.7 — Regression guard: audience ~80% fallback line intact (GREEN from start)
+    # ------------------------------------------------------------------
+
+    def test_audience_fallback_line_intact(self) -> None:
+        """The general-topic ~80% older-man audience fallback line must remain present."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "80%" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "80% audience figure must still be present in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+        assert "hombres mayores aproximadamente el 80%" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "'hombres mayores aproximadamente el 80%' phrase must still be present"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.8 — Regression guard: sibling anti-repetition line intact (GREEN from start)
+    # ------------------------------------------------------------------
+
+    def test_sibling_anti_repetition_intact(self) -> None:
+        """The sibling anti-repetition constraint must remain present."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "hermanos" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "'hermanos' (sibling constraint) must still be present in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+        assert "Las restricciones de repetición entre hermanos prevalecen" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "Exact sibling anti-repetition phrase must still be present"
+        )
