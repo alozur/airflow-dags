@@ -73,9 +73,27 @@ _DEFAULT_ART_BRIEF: dict = {
     "text": "LO QUE NO TE CUENTAN",
     "mood": "tensión y curiosidad",
     "logo": "",
+    "archetype": "generico",
 }
 
 _ART_BRIEF_REQUIRED_KEYS = ("text", "background", "person", "mood")
+
+# Archetype enum — dramatic form classification for thumbnail composition.
+# Must stay in sync with the ARQUETIPO DRAMÁTICO section in ART_DIRECTION_SYSTEM_PROMPT.
+_ARCHETYPES = ("careo", "denuncia", "monologo", "anuncio", "generico")
+_DEFAULT_ARCHETYPE = "generico"
+
+
+def _coerce_archetype(value: object) -> str:
+    """Map any LLM-returned value to a valid _ARCHETYPES member or 'generico'.
+
+    Pure: lowercases/strips str input; non-str, unknown, empty, or None → 'generico'.
+    """
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in _ARCHETYPES:
+            return token
+    return _DEFAULT_ARCHETYPE
 
 
 # Spanish stop-words that disqualify a candidate when they appear as the first token.
@@ -272,6 +290,7 @@ def art_direct(
         brief = dict(_DEFAULT_ART_BRIEF)
 
     brief.setdefault("logo", "")
+    brief["archetype"] = _coerce_archetype(brief.get("archetype"))
     result = {
         key: value.replace("http", "") if isinstance(value, str) else value
         for key, value in brief.items()
