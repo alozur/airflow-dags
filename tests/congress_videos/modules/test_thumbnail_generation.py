@@ -2161,3 +2161,791 @@ class TestKeySpeakersParam:
         assert "Ana Pastor" in captured_prompts[0], (
             "prompt must contain 'Ana Pastor' when key_speakers=[{'name': 'Ana Pastor'}]"
         )
+
+
+# ---------------------------------------------------------------------------
+# Bug #79: Art direction must ignore speakers' grammatical gender
+# ---------------------------------------------------------------------------
+
+
+class TestArtDirectionSystemPrompt:
+    """ART_DIRECTION_SYSTEM_PROMPT content contracts — bug #79 gender-ignore clause.
+
+    Two tests start RED (assert the new bullet that does not yet exist).
+    Five regression guards start GREEN (protect existing content).
+    """
+
+    # ------------------------------------------------------------------
+    # Task 1.2 — RED: gender-ignore clause must be present (fails before the edit)
+    # ------------------------------------------------------------------
+
+    def test_prompt_contains_gender_ignore_clause(self) -> None:
+        """ART_DIRECTION_SYSTEM_PROMPT must instruct the model to ignore speakers' grammatical gender.
+
+        RED before the bullet is added: both substrings are absent.
+        GREEN after the bullet is added.
+        """
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "sexo gramatical de los ponentes" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "ART_DIRECTION_SYSTEM_PROMPT must contain the gender-ignore instruction "
+            "(phrase: 'sexo gramatical de los ponentes')"
+        )
+        assert "independientemente del género de los ponentes" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "ART_DIRECTION_SYSTEM_PROMPT must close the gender-ignore rule with "
+            "'independientemente del género de los ponentes'"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.3 — RED: wiring test — art_direct passes the (updated) prompt as system_prompt
+    # ------------------------------------------------------------------
+
+    def test_art_direct_passes_gender_ignore_system_prompt(self, mocker) -> None:
+        """art_direct must pass ART_DIRECTION_SYSTEM_PROMPT (which must contain the
+        gender-ignore clause) as the system_prompt kwarg to generate_json_completion.
+
+        RED before the bullet is added: the kwarg assertion fails because the
+        substring is absent from the prompt constant.
+        GREEN after the bullet is added.
+        """
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        mock_completion = mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value={
+                "data": {
+                    "text": "DEBATE CLAVE",
+                    "background": "una calle española",
+                    "person": "un ciudadano preocupado",
+                    "mood": "urgencia",
+                },
+                "error": None,
+            },
+        )
+        cfg = _make_cfg()
+        art_direct("La representante defendió la moción", cfg)
+
+        assert mock_completion.call_args is not None, (
+            "generate_json_completion must be called by art_direct"
+        )
+        passed_prompt = mock_completion.call_args.kwargs["system_prompt"]
+        assert passed_prompt == ART_DIRECTION_SYSTEM_PROMPT, (
+            "art_direct must pass ART_DIRECTION_SYSTEM_PROMPT as system_prompt kwarg"
+        )
+        assert "sexo gramatical de los ponentes" in passed_prompt, (
+            "The system_prompt passed through must contain the gender-ignore clause"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.4 — Regression guard: maternidad override intact (GREEN from start)
+    # ------------------------------------------------------------------
+
+    def test_maternidad_override_intact(self) -> None:
+        """The maternidad/embarazo/conciliación override clause must remain present."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "maternidad" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "maternidad override must still be present in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+        assert "mujer en edad de tener hijos" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "'mujer en edad de tener hijos' phrase must still be present"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.5 — Regression guard: pensiones override intact (GREEN from start)
+    # ------------------------------------------------------------------
+
+    def test_pensiones_override_intact(self) -> None:
+        """The pensiones/dependencia/geriátrica override clause must remain present."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "pensiones" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "pensiones override must still be present in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+        assert "persona mayor" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "'persona mayor' phrase must still be present"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.6 — Regression guard: desempleo juvenil override intact (GREEN from start)
+    # ------------------------------------------------------------------
+
+    def test_desempleo_juvenil_override_intact(self) -> None:
+        """The desempleo juvenil/vivienda joven/educación override clause must remain present."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "desempleo juvenil" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "desempleo juvenil override must still be present in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+        assert "persona joven" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "'persona joven' phrase must still be present"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.7 — Regression guard: audience ~80% fallback line intact (GREEN from start)
+    # ------------------------------------------------------------------
+
+    def test_audience_fallback_line_intact(self) -> None:
+        """The general-topic ~80% older-man audience fallback line must remain present."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "80%" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "80% audience figure must still be present in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+        assert "hombres mayores aproximadamente el 80%" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "'hombres mayores aproximadamente el 80%' phrase must still be present"
+        )
+
+    # ------------------------------------------------------------------
+    # Task 1.8 — Regression guard: sibling anti-repetition line intact (GREEN from start)
+    # ------------------------------------------------------------------
+
+    def test_sibling_anti_repetition_intact(self) -> None:
+        """The sibling anti-repetition constraint must remain present."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "hermanos" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "'hermanos' (sibling constraint) must still be present in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+        assert "Las restricciones de repetición entre hermanos prevalecen" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "Exact sibling anti-repetition phrase must still be present"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T-06: Lapidary prompts (Phase 1)
+# ---------------------------------------------------------------------------
+
+
+class TestLapidaryPrompts:
+    """LAPIDARY_RANKING_SYSTEM_PROMPT and LAPIDARY_RANKING_USER_TEMPLATE contracts."""
+
+    def test_lapidary_system_prompt_importable(self):
+        """LAPIDARY_RANKING_SYSTEM_PROMPT must exist in ai_prompts."""
+        from congress_videos.config.ai_prompts import LAPIDARY_RANKING_SYSTEM_PROMPT
+
+        assert isinstance(LAPIDARY_RANKING_SYSTEM_PROMPT, str)
+        assert len(LAPIDARY_RANKING_SYSTEM_PROMPT) > 0
+
+    def test_lapidary_system_prompt_instructs_index_or_none(self):
+        """System prompt must instruct LLM to respond with a number or NONE."""
+        from congress_videos.config.ai_prompts import LAPIDARY_RANKING_SYSTEM_PROMPT
+
+        lower = LAPIDARY_RANKING_SYSTEM_PROMPT.lower()
+        # Must mention responding with a number/index or NONE
+        assert "none" in lower or "número" in lower or "numero" in lower
+
+    def test_lapidary_user_template_importable(self):
+        """LAPIDARY_RANKING_USER_TEMPLATE must exist in ai_prompts."""
+        from congress_videos.config.ai_prompts import LAPIDARY_RANKING_USER_TEMPLATE
+
+        assert isinstance(LAPIDARY_RANKING_USER_TEMPLATE, str)
+        assert len(LAPIDARY_RANKING_USER_TEMPLATE) > 0
+
+    def test_lapidary_user_template_renders_candidates(self):
+        """Formatting the template with candidates produces a string containing them."""
+        from congress_videos.config.ai_prompts import LAPIDARY_RANKING_USER_TEMPLATE
+
+        rendered = LAPIDARY_RANKING_USER_TEMPLATE.format(candidates="1. vamos a votar")
+        assert "vamos a votar" in rendered
+        assert len(rendered) > 0
+
+
+# ---------------------------------------------------------------------------
+# T-07: extract_lapidary_quote (Phase 2)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractLapidaryQuote:
+    """Unit tests for extract_lapidary_quote()."""
+
+    def test_empty_fragment_returns_none_without_calling_llm(self):
+        """Empty string must return None without invoking completion_fn."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        called = []
+
+        def fake_fn(**_kw):
+            called.append(True)
+            return {"content": "1", "error": None}
+
+        result = extract_lapidary_quote("", completion_fn=fake_fn)
+        assert result is None
+        assert called == [], "completion_fn must not be called when fragment is empty"
+
+    def test_no_candidates_survive_returns_none_without_llm(self):
+        """Fragment whose every clause exceeds limits must return None without LLM call."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        called = []
+
+        def fake_fn(**_kw):
+            called.append(True)
+            return {"content": "1", "error": None}
+
+        # All words => more than 8 words each clause, or > 40 chars
+        long_clause = "uno dos tres cuatro cinco seis siete ocho nueve"
+        result = extract_lapidary_quote(long_clause, completion_fn=fake_fn)
+        assert result is None
+        assert called == [], "completion_fn must not be called when no candidates survive"
+
+    def test_stop_word_filtered_only_valid_candidate_passed_to_llm(self):
+        """Clause starting with stop-word is filtered; only valid clause reaches LLM."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        received_calls = []
+
+        def fake_fn(system_prompt, user_prompt, **_kw):
+            received_calls.append(user_prompt)
+            return {"content": "1", "error": None}
+
+        # "de los derechos sociales" starts with "de" (stop-word), filtered.
+        # "vamos a votar ya" is 4 words, valid.
+        fragment = "de los derechos sociales. vamos a votar ya"
+        result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
+
+        assert len(received_calls) == 1
+        # Only the valid candidate should appear in the user prompt
+        assert "vamos a votar ya" in received_calls[0]
+        assert "de los derechos sociales" not in received_calls[0]
+        assert result == "vamos a votar ya"
+
+    def test_happy_path_returns_verbatim_candidate(self):
+        """LLM returns '1', function returns candidate at index 0 verbatim."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        def fake_fn(**_kw):
+            return {"content": "1", "error": None}
+
+        fragment = "esto es una prueba seria. vamos a votar ya"
+        result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
+
+        assert result == "esto es una prueba seria"
+
+    def test_llm_returns_none_string_returns_none(self):
+        """When LLM responds 'NONE', function returns None."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        def fake_fn(**_kw):
+            return {"content": "NONE", "error": None}
+
+        fragment = "esto es una prueba seria. vamos a votar ya"
+        result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
+        assert result is None
+
+    def test_unparseable_llm_response_returns_none(self):
+        """When LLM returns non-integer, non-NONE text, function returns None."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        def fake_fn(**_kw):
+            return {"content": "banana", "error": None}
+
+        fragment = "esto es una prueba seria. vamos a votar ya"
+        result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
+        assert result is None
+
+    def test_out_of_range_index_returns_none(self):
+        """When LLM returns index beyond candidate list length, return None."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        def fake_fn(**_kw):
+            return {"content": "99", "error": None}
+
+        fragment = "esto es una prueba seria. vamos a votar ya"
+        result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# T-08: art_direct srt_fragment override (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+class TestArtDirectSrtOverride:
+    """art_direct() must accept srt_fragment and override brief['text'] when a quote is found."""
+
+    def _call_art_direct(self, monkeypatch, srt_fragment, extract_return, brief_return=None):
+        """Helper: patch art_direct dependencies and call with given srt_fragment."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        default_brief = {
+            "text": "TEXTO INVENTADO",
+            "background": "ciudad",
+            "person": "hombre maduro",
+            "mood": "tensión",
+            "logo": "",
+        }
+        if brief_return is None:
+            brief_return = default_brief
+
+        # Patch the internal _call_api to return brief_return directly
+        monkeypatch.setattr(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            lambda **_kw: {"data": brief_return, "error": None},
+        )
+        monkeypatch.setattr(
+            "congress_videos.modules.thumbnail_generation.extract_lapidary_quote",
+            lambda fragment, **_kw: extract_return,
+        )
+
+        cfg = {"styles": [], "participants_lookup": lambda s: None, "party_logo_map": None}
+        return art_direct("resumen debate", cfg, srt_fragment=srt_fragment)
+
+    def test_srt_fragment_none_does_not_call_extract(self, monkeypatch):
+        """When srt_fragment=None, extract_lapidary_quote must never be called."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        called = []
+
+        monkeypatch.setattr(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            lambda **_kw: {
+                "data": {
+                    "text": "TEXTO ORIGINAL",
+                    "background": "ciudad",
+                    "person": "hombre",
+                    "mood": "tensión",
+                },
+                "error": None,
+            },
+        )
+        monkeypatch.setattr(
+            "congress_videos.modules.thumbnail_generation.extract_lapidary_quote",
+            lambda *_a, **_kw: called.append(True) or "override",
+        )
+
+        cfg = {"styles": [], "participants_lookup": lambda s: None, "party_logo_map": None}
+        art_direct("resumen", cfg, srt_fragment=None)
+        assert called == [], "extract_lapidary_quote must not be called when srt_fragment=None"
+
+    def test_srt_fragment_overrides_text_field(self, monkeypatch):
+        """When extract returns a string, brief['text'] is overridden."""
+        result = self._call_art_direct(
+            monkeypatch,
+            srt_fragment="anything",
+            extract_return="vamos a votar ya",
+        )
+        assert result["text"] == "vamos a votar ya"
+        # Other fields must be unchanged
+        assert result["background"] == "ciudad"
+        assert result["person"] == "hombre maduro"
+        assert result["mood"] == "tensión"
+
+    def test_srt_fragment_quote_none_preserves_invented_text(self, monkeypatch):
+        """When extract returns None, brief['text'] remains as the invented value."""
+        result = self._call_art_direct(
+            monkeypatch,
+            srt_fragment="anything",
+            extract_return=None,
+        )
+        assert result["text"] == "TEXTO INVENTADO"
+
+
+# ---------------------------------------------------------------------------
+# Safe-Zone & Rule-of-Thirds (REQ-2)
+# ---------------------------------------------------------------------------
+
+
+class TestArtDirectionSafeZone:
+    """ART_DIRECTION_SYSTEM_PROMPT must encode rule-of-thirds and safe-zone guidance."""
+
+    def test_art_direction_contains_esquina_inferior_derecha(self) -> None:
+        """ART_DIRECTION_SYSTEM_PROMPT must contain 'esquina inferior derecha'."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "esquina inferior derecha" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "ART_DIRECTION_SYSTEM_PROMPT must mention 'esquina inferior derecha' (YouTube overlay safe zone)"
+        )
+
+    def test_art_direction_contains_tercio(self) -> None:
+        """ART_DIRECTION_SYSTEM_PROMPT must contain 'tercio' (rule-of-thirds language)."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "tercio" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "ART_DIRECTION_SYSTEM_PROMPT must contain 'tercio' for rule-of-thirds guidance"
+        )
+
+    def test_art_direction_contains_regla_de_los_tercios(self) -> None:
+        """ART_DIRECTION_SYSTEM_PROMPT must contain 'regla de los tercios'."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "regla de los tercios" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "ART_DIRECTION_SYSTEM_PROMPT must mention 'regla de los tercios'"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T-01 / T-02 / T-03 — Non-regression guards (issue #54, #79, #59)
+# ---------------------------------------------------------------------------
+
+
+class TestArchetypeNonRegression:
+    """Non-regression guards that lock existing prompt content against accidental deletion.
+
+    T-01: hemiciclo ban (#54) preserved.
+    T-02: gender-ignore clause (#79) preserved.
+    T-03: composición/safe-zone bullet (#59) preserved.
+
+    All should be GREEN immediately — they assert existing text.
+    """
+
+    # T-01
+    def test_prompt_contains_hemiciclo_ban(self) -> None:
+        """#54 ban: 'NUNCA hemiciclo' must remain in ART_DIRECTION_SYSTEM_PROMPT."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "NUNCA hemiciclo" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "The hemiciclo ban ('NUNCA hemiciclo') must remain in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+
+    def test_prompt_never_references_ponente_per_54(self) -> None:
+        """#54 ban: 'nunca el ponente' must remain in ART_DIRECTION_SYSTEM_PROMPT."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "nunca el ponente" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "The ponente ban ('nunca el ponente') must remain in ART_DIRECTION_SYSTEM_PROMPT"
+        )
+
+    # T-02
+    def test_prompt_contains_gender_ignore_clause_79(self) -> None:
+        """#79 gender-ignore bullet must remain present and textually identical."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "sexo gramatical de los ponentes" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "#79 gender-ignore clause ('sexo gramatical de los ponentes') must remain"
+        )
+        assert "independientemente del género de los ponentes" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "#79 gender-ignore close phrase must remain"
+        )
+
+    # T-03
+    def test_prompt_contains_composicion_bullet_59(self) -> None:
+        """#59 composición bullet must remain in ART_DIRECTION_SYSTEM_PROMPT."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "composición:" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "#59 composición bullet ('composición:') must remain in prompt"
+        )
+
+    def test_prompt_contains_tercio_izquierdo_derecho(self) -> None:
+        """#59 safe-zone wording (tercio izquierdo o derecho) must remain."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "tercio izquierdo o derecho" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "#59 safe-zone phrase ('tercio izquierdo o derecho') must remain in prompt"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T-04 / T-05 / T-06 / T-07 — Archetype prompt presence (RED until GREEN)
+# ---------------------------------------------------------------------------
+
+
+class TestArchetypePrompt:
+    """Tests asserting the ARQUETIPO DRAMÁTICO section is in ART_DIRECTION_SYSTEM_PROMPT.
+
+    T-04: section header + 5 enum tokens present.
+    T-05: per-archetype composition wording present (5 distinct instructions).
+    T-06: drift guard — _ARCHETYPES tuple matches prompt token list exactly.
+    T-07: JSON schema line contains archetype field.
+
+    All start RED (section doesn't exist yet).
+    """
+
+    # T-04
+    def test_prompt_contains_arquetipo_dramatico_section(self) -> None:
+        """ART_DIRECTION_SYSTEM_PROMPT must contain 'ARQUETIPO DRAMÁTICO' section header."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "ARQUETIPO DRAMÁTICO" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "ART_DIRECTION_SYSTEM_PROMPT must include an 'ARQUETIPO DRAMÁTICO' section"
+        )
+
+    def test_prompt_contains_all_five_enum_tokens(self) -> None:
+        """ART_DIRECTION_SYSTEM_PROMPT must contain all 5 archetype enum tokens."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        for token in ("careo", "denuncia", "monologo", "anuncio", "generico"):
+            assert token in ART_DIRECTION_SYSTEM_PROMPT, (
+                f"Archetype token '{token}' must appear in ART_DIRECTION_SYSTEM_PROMPT"
+            )
+
+    # T-05
+    def test_careo_composition_in_prompt(self) -> None:
+        """careo archetype must have two-citizens + opposite-emotions composition wording."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        # Must describe two citizens with opposite/contrasting emotions
+        assert "careo" in ART_DIRECTION_SYSTEM_PROMPT
+        # Unique substring for careo: two citizens, opposite emotions
+        assert "dos ciudadanos" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "careo composition must mention 'dos ciudadanos'"
+        )
+        assert "emociones opuestas" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "careo composition must mention 'emociones opuestas'"
+        )
+
+    def test_denuncia_composition_in_prompt(self) -> None:
+        """denuncia archetype must have citizen holding/pointing evidence-object wording."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "denuncia" in ART_DIRECTION_SYSTEM_PROMPT
+        assert "objeto" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "denuncia composition must mention an evidence-object"
+        )
+
+    def test_monologo_composition_in_prompt(self) -> None:
+        """monologo archetype must have citizen + strong action gesture wording."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "monologo" in ART_DIRECTION_SYSTEM_PROMPT
+        assert "gesto" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "monologo composition must mention a 'gesto' (action gesture)"
+        )
+
+    def test_anuncio_composition_in_prompt(self) -> None:
+        """anuncio archetype must have citizen in heroic/relief/hope key wording."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "anuncio" in ART_DIRECTION_SYSTEM_PROMPT
+        assert "heroic" in ART_DIRECTION_SYSTEM_PROMPT or "heroica" in ART_DIRECTION_SYSTEM_PROMPT or "esperanza" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "anuncio composition must mention heroic key, relief, or hope (esperanza)"
+        )
+
+    def test_generico_composition_in_prompt(self) -> None:
+        """generico archetype must reference general mold / older citizen / worried wording."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "generico" in ART_DIRECTION_SYSTEM_PROMPT
+        assert "molde general" in ART_DIRECTION_SYSTEM_PROMPT or "ciudadano mayor" in ART_DIRECTION_SYSTEM_PROMPT, (
+            "generico composition must mention 'molde general' or 'ciudadano mayor'"
+        )
+
+    # T-06
+    def test_archetypes_tuple_matches_prompt_tokens(self) -> None:
+        """Drift guard: every _ARCHETYPES member must appear in ART_DIRECTION_SYSTEM_PROMPT,
+        and the tuple must have exactly 5 members."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+        from congress_videos.modules.thumbnail_generation import _ARCHETYPES
+
+        assert len(_ARCHETYPES) == 5, (
+            f"_ARCHETYPES must have exactly 5 members, got {len(_ARCHETYPES)}"
+        )
+        for token in _ARCHETYPES:
+            assert token in ART_DIRECTION_SYSTEM_PROMPT, (
+                f"_ARCHETYPES token '{token}' must appear in ART_DIRECTION_SYSTEM_PROMPT"
+            )
+
+    # T-07
+    def test_prompt_json_schema_line_contains_archetype_field(self) -> None:
+        """The last line of ART_DIRECTION_SYSTEM_PROMPT must include '\"archetype\"'."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        last_line = ART_DIRECTION_SYSTEM_PROMPT.strip().splitlines()[-1]
+        assert '"archetype"' in last_line, (
+            f"Last line of ART_DIRECTION_SYSTEM_PROMPT must contain '\"archetype\"', got: {last_line!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T-08 / T-09 — _coerce_archetype unit tests (RED until GREEN)
+# ---------------------------------------------------------------------------
+
+
+class TestCoerceArchetype:
+    """Pure unit tests for the _coerce_archetype helper.
+
+    T-08: valid tokens pass through (case/whitespace normalized).
+    T-09: invalid/missing inputs → 'generico'.
+
+    All start RED (_coerce_archetype doesn't exist yet).
+    """
+
+    # T-08
+    def test_each_valid_token_returns_itself(self) -> None:
+        """Each member of _ARCHETYPES must pass through _coerce_archetype unchanged."""
+        from congress_videos.modules.thumbnail_generation import (
+            _ARCHETYPES,
+            _coerce_archetype,
+        )
+
+        for token in _ARCHETYPES:
+            assert _coerce_archetype(token) == token, (
+                f"_coerce_archetype('{token}') must return '{token}'"
+            )
+
+    def test_case_and_whitespace_normalized(self) -> None:
+        """_coerce_archetype must strip whitespace and lowercase before matching."""
+        from congress_videos.modules.thumbnail_generation import _coerce_archetype
+
+        assert _coerce_archetype(" CAREO ") == "careo"
+        assert _coerce_archetype("Denuncia") == "denuncia"
+        assert _coerce_archetype("  MONOLOGO  ") == "monologo"
+
+    # T-09
+    def test_none_coerces_to_generico(self) -> None:
+        """_coerce_archetype(None) must return 'generico'."""
+        from congress_videos.modules.thumbnail_generation import _coerce_archetype
+
+        assert _coerce_archetype(None) == "generico"
+
+    def test_empty_string_coerces_to_generico(self) -> None:
+        """_coerce_archetype('') must return 'generico'."""
+        from congress_videos.modules.thumbnail_generation import _coerce_archetype
+
+        assert _coerce_archetype("") == "generico"
+
+    def test_unknown_string_coerces_to_generico(self) -> None:
+        """_coerce_archetype('foo') must return 'generico'."""
+        from congress_videos.modules.thumbnail_generation import _coerce_archetype
+
+        assert _coerce_archetype("foo") == "generico"
+
+    def test_non_string_coerces_to_generico(self) -> None:
+        """_coerce_archetype(123) and _coerce_archetype({}) must return 'generico'."""
+        from congress_videos.modules.thumbnail_generation import _coerce_archetype
+
+        assert _coerce_archetype(123) == "generico"
+        assert _coerce_archetype({}) == "generico"
+
+
+# ---------------------------------------------------------------------------
+# T-10 — _DEFAULT_ART_BRIEF carries archetype="generico" (RED until GREEN)
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultArtBriefArchetype:
+    """T-10: _DEFAULT_ART_BRIEF must carry archetype='generico'."""
+
+    def test_default_art_brief_has_archetype_generico(self) -> None:
+        """_DEFAULT_ART_BRIEF must include archetype='generico'."""
+        from congress_videos.modules.thumbnail_generation import _DEFAULT_ART_BRIEF
+
+        assert "archetype" in _DEFAULT_ART_BRIEF, (
+            "_DEFAULT_ART_BRIEF must contain an 'archetype' key"
+        )
+        assert _DEFAULT_ART_BRIEF["archetype"] == "generico", (
+            "_DEFAULT_ART_BRIEF['archetype'] must be 'generico'"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T-11 / T-12 / T-13 / T-14 — art_direct wiring (RED until GREEN)
+# ---------------------------------------------------------------------------
+
+
+def _make_art_direct_cfg() -> dict:
+    """Minimal domain config for art_direct wiring tests."""
+    return {
+        "styles": [
+            {"label": "option_a", "layout": "A"},
+            {"label": "option_b", "layout": "B"},
+        ],
+        "participants_lookup": lambda slug: None,
+        "party_logo_map": None,
+    }
+
+
+class TestArtDirectArchetypeWiring:
+    """Tests for art_direct archetype coercion wiring.
+
+    T-11: valid archetype from API passes through.
+    T-12: missing archetype key → 'generico', no raise.
+    T-13: invalid archetype string → 'generico', no raise.
+    T-14: fallback brief path carries archetype='generico'.
+
+    All start RED (wiring code doesn't exist yet).
+    """
+
+    _VALID_BRIEF_BASE = {
+        "text": "DEBATE CLAVE",
+        "background": "una calle española",
+        "person": "un ciudadano preocupado",
+        "mood": "urgencia",
+    }
+
+    # T-11
+    def test_valid_archetype_from_api_passes_through(self, mocker) -> None:
+        """A valid archetype value returned by the API must appear unchanged in the brief."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        data = {**self._VALID_BRIEF_BASE, "archetype": "careo"}
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value={"data": data, "error": None},
+        )
+        result = art_direct("resumen del debate", _make_art_direct_cfg())
+
+        assert result["archetype"] == "careo", (
+            "art_direct must preserve a valid 'careo' archetype from the API response"
+        )
+
+    def test_valid_archetype_is_not_stripped_by_http_filter(self, mocker) -> None:
+        """The http-strip dict-comprehension must not alter a valid archetype value."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        data = {**self._VALID_BRIEF_BASE, "archetype": "denuncia"}
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value={"data": data, "error": None},
+        )
+        result = art_direct("resumen del debate", _make_art_direct_cfg())
+
+        assert result["archetype"] == "denuncia", (
+            "The http-strip filter must not alter a valid archetype value"
+        )
+
+    # T-12
+    def test_missing_archetype_key_coerces_to_generico(self, mocker) -> None:
+        """When the API response has no 'archetype' key, art_direct must supply 'generico'."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        # 4-key brief — no archetype key
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value={"data": dict(self._VALID_BRIEF_BASE), "error": None},
+        )
+        result = art_direct("resumen del debate", _make_art_direct_cfg())
+
+        assert "archetype" in result, (
+            "art_direct must always return a brief with an 'archetype' key"
+        )
+        assert result["archetype"] == "generico", (
+            "Missing 'archetype' key must coerce to 'generico'"
+        )
+
+    # T-13
+    def test_invalid_archetype_string_coerces_to_generico(self, mocker) -> None:
+        """When the API returns an unrecognised archetype string, art_direct must coerce to 'generico'."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        data = {**self._VALID_BRIEF_BASE, "archetype": "invalid_value"}
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value={"data": data, "error": None},
+        )
+        result = art_direct("resumen del debate", _make_art_direct_cfg())
+
+        assert result["archetype"] == "generico", (
+            "Unrecognised archetype string must coerce to 'generico'"
+        )
+
+    # T-14
+    def test_fallback_brief_carries_archetype_generico(self, mocker) -> None:
+        """When both OpenAI attempts fail, the fallback _DEFAULT_ART_BRIEF must carry archetype='generico'."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        # Both attempts return error to force fallback
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value={"data": None, "error": "API failure"},
+        )
+        result = art_direct("resumen del debate", _make_art_direct_cfg())
+
+        assert "archetype" in result, (
+            "Fallback brief must always contain an 'archetype' key"
+        )
+        assert result["archetype"] == "generico", (
+            "Fallback brief archetype must be 'generico'"
+        )

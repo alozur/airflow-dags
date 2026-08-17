@@ -884,3 +884,216 @@ class TestPrepareThumbnailConfigKeySpeakers:
         assert result.get("key_speakers") == [], (
             "key_speakers must be [] when chapter.key_speakers is None"
         )
+
+
+# ---------------------------------------------------------------------------
+# SRT fragment threading (Phase 4 — issue #57)
+# ---------------------------------------------------------------------------
+
+
+def _make_srt_chapter(
+    *,
+    chapter_id: int = 42,
+    video_id: str = "vid001",
+    start_time: str = "00:01:00,000",
+    end_time: str = "00:02:00,000",
+) -> dict:
+    """Minimal chapter dict with time-window fields for SRT tests."""
+    base = _make_chapter(chapter_id=chapter_id)
+    base["video_id"] = video_id
+    base["start_time"] = start_time
+    base["end_time"] = end_time
+    return base
+
+
+class TestPrepareThumbnailConfigSrtFragment:
+    """_prepare_thumbnail_config must resolve and thread the SRT fragment."""
+
+    def test_srt_present_adds_srt_fragment_to_config(self):
+        """When SRT resolves, config[srt_fragment] equals the joined block text."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_srt_chapter(
+            start_time="00:01:00,000",
+            end_time="00:02:00,000",
+        )
+
+        blocks = [
+            {"start_secs": 60.0, "end_secs": 70.0, "text": "primera frase del debate"},
+            {"start_secs": 75.0, "end_secs": 85.0, "text": "segunda frase importante"},
+            # block outside window — must be excluded
+            {"start_secs": 200.0, "end_secs": 210.0, "text": "fuera de ventana"},
+        ]
+
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+                return_value={"slug": "garcia-ana"},
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag.find_srt_for_chapter",
+                return_value="/fake/path.srt",
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag._parse_srt_blocks",
+                return_value=blocks,
+            ),
+        ):
+            result = _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert "srt_fragment" in result
+        assert "primera frase del debate" in result["srt_fragment"]
+        assert "segunda frase importante" in result["srt_fragment"]
+        assert "fuera de ventana" not in result["srt_fragment"]
+
+    def test_srt_text_capped_at_10000_chars(self):
+        """When joined block text exceeds 10,000 chars, srt_fragment is truncated."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_srt_chapter(
+            start_time="00:00:00,000",
+            end_time="01:00:00,000",
+        )
+
+        # Build a block whose text is over 10,000 chars
+        long_text = "a " * 5001  # 10,002 chars
+        blocks = [
+            {"start_secs": 10.0, "end_secs": 20.0, "text": long_text},
+        ]
+
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+                return_value={"slug": "garcia-ana"},
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag.find_srt_for_chapter",
+                return_value="/fake/path.srt",
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag._parse_srt_blocks",
+                return_value=blocks,
+            ),
+        ):
+            result = _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert len(result["srt_fragment"]) == 10_000
+
+    def test_srt_absent_omits_srt_fragment_key(self):
+        """When no SRT resolves, the srt_fragment key must be absent from config."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_srt_chapter()
+
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+                return_value={"slug": "garcia-ana"},
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag.find_srt_for_chapter",
+                return_value=None,
+            ),
+        ):
+            result = _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert "srt_fragment" not in result
+
+
+class TestTriggerThumbnailGenerationForwardsSrt:
+    """trigger_thumbnail_generation must forward srt_fragment in child_conf."""
+
+    def test_srt_fragment_forwarded_when_present(self, mocker):
+        """When thumbnail_config contains srt_fragment, child_conf must include it."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        captured_confs = []
+
+        mock_run = MagicMock()
+        mock_run.run_id = "thumb_run_001"
+        mock_run.state = "success"
+        mock_run.refresh_from_db = MagicMock()
+
+        def _fake_trigger(dag_id, conf, run_id):
+            captured_confs.append(conf)
+            return mock_run
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.trigger_dag_api",
+            side_effect=_fake_trigger,
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.XCom.get_one",
+            return_value={
+                "success": True,
+                "chapter_id": 42,
+                "output_path": "/some/path.png",
+                "title": "Un título",
+            },
+        )
+
+        ti = _make_ti(
+            {
+                "thumbnail_config": {
+                    "chapter_id": 42,
+                    "debate_summary": "un resumen",
+                    "session": "Sesión 80",
+                    "domain": "congreso",
+                    "slug": None,
+                    "srt_fragment": "vamos a votar ya",
+                }
+            }
+        )
+
+        trigger_thumbnail_generation(ti, run_id="test_run")
+
+        assert len(captured_confs) == 1
+        assert captured_confs[0].get("srt_fragment") == "vamos a votar ya"
+
+    def test_srt_fragment_absent_does_not_add_key(self, mocker):
+        """When thumbnail_config lacks srt_fragment, child_conf must not have the key."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        captured_confs = []
+
+        mock_run = MagicMock()
+        mock_run.run_id = "thumb_run_002"
+        mock_run.state = "success"
+        mock_run.refresh_from_db = MagicMock()
+
+        def _fake_trigger(dag_id, conf, run_id):
+            captured_confs.append(conf)
+            return mock_run
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.trigger_dag_api",
+            side_effect=_fake_trigger,
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.XCom.get_one",
+            return_value={
+                "success": True,
+                "chapter_id": 42,
+                "output_path": "/some/path.png",
+                "title": "Un título",
+            },
+        )
+
+        ti = _make_ti(
+            {
+                "thumbnail_config": {
+                    "chapter_id": 42,
+                    "debate_summary": "un resumen",
+                    "session": "Sesión 80",
+                    "domain": "congreso",
+                    "slug": None,
+                    # No srt_fragment key
+                }
+            }
+        )
+
+        trigger_thumbnail_generation(ti, run_id="test_run")
+
+        assert "srt_fragment" not in captured_confs[0]

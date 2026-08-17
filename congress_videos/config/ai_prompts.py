@@ -153,8 +153,16 @@ ART_DIRECTION_SYSTEM_PROMPT = (
     "- person: persona relatable, edad/expresión/ropa concreta. Ocupa el 35-40%% del frame. "
     "Expresión emocional (indignación, miedo, sorpresa). Que cualquier ciudadano español se vea reflejado. "
     "Representa a un espectador o ciudadano relatable, nunca el ponente ni la foto de un participante.\n"
+    "- composición: coloca a la persona en el tercio izquierdo o derecho del frame (regla de los tercios), "
+    "nunca centrada; deja el tercio opuesto libre para el texto. "
+    "No pongas la cara, el texto ni ningún elemento clave en la esquina inferior derecha "
+    "(zona reservada al contador de duración de YouTube).\n"
     "- mood: tono emocional dominante (curiosidad, pérdida, amenaza, indignación, identidad).\n\n"
     "POLÍTICA DE SELECCIÓN DE PERSONA:\n"
+    "- IGNORA el sexo gramatical de los ponentes: que los participantes sean mujeres "
+    "(o usen marcadores femeninos en el resumen) NO determina el sexo ni la edad de la "
+    "persona del brief; aplica siempre la política de audiencia y las excepciones "
+    "temáticas, independientemente del género de los ponentes.\n"
     f"- Datos de {YOUTUBE_ANALYTICS_AUDIENCE_PROFILE['source']}: "
     f"{YOUTUBE_ANALYTICS_AUDIENCE_PROFILE['male_percentage']}% de audiencia masculina y "
     f"{YOUTUBE_ANALYTICS_AUDIENCE_PROFILE['aged_65_plus_percentage']}% de audiencia de 65+. "
@@ -169,12 +177,21 @@ ART_DIRECTION_SYSTEM_PROMPT = (
     "permitiendo también mujeres y adultos jóvenes.\n"
     "Las restricciones de repetición entre hermanos prevalecen sobre la regla general: evita repetir "
     "tipos de persona aunque el fallback favorezca hombres mayores.\n\n"
+    "ARQUETIPO DRAMÁTICO:\n"
+    "Clasifica la forma dramática del vídeo a partir del debate_summary en uno de estos cinco tokens "
+    "e incluye el token elegido en el campo 'archetype' del JSON. "
+    "El 'person' debe adaptarse a la composición ciudadana del arquetipo (NUNCA políticos ni hemiciclo):\n"
+    "- careo: dos ciudadanos con emociones opuestas, uno en cada tercio horizontal del frame.\n"
+    "- denuncia: un ciudadano sosteniendo o señalando un objeto-evidencia metafórico (documento, factura, etc.).\n"
+    "- monologo: un ciudadano realizando un gesto de acción fuerte (puño en alto, señalando al frente).\n"
+    "- anuncio: un ciudadano en pose heroica o con expresión de alivio y esperanza.\n"
+    "- generico: molde general — ciudadano mayor preocupado, ropa casual, expresión seria.\n\n"
     "Cada brief debe ser visualmente DISTINTO al anterior: evita repetir fondos, tipos de persona o "
     "emociones en briefs consecutivos.\n\n"
     "PROHIBICIÓN ABSOLUTA: no incluyas nunca URLs ni la palabra 'http' en ningún campo. "
     "Pikzels rechaza cualquier prompt que contenga 'http'.\n\n"
     "Responde SOLO con JSON válido, sin markdown:\n"
-    '{"text": "...", "background": "...", "person": "...", "mood": "..."}'
+    '{"text": "...", "background": "...", "person": "...", "mood": "...", "archetype": "careo|denuncia|monologo|anuncio|generico"}'
 )
 
 # Sibling-brief injection block: appended to the art_direct user prompt when
@@ -266,6 +283,22 @@ THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE = (
     f"- Evita términos genéricos como: {_AVOID_TERMS_LIST}\n"
     "- Refleja el contenido visual de la miniatura descrito en el estilo y el prompt\n\n"
     "Devuelve SOLO el JSON, sin markdown."
+)
+
+
+# Lapidary quote ranking — selects the most impactful verbatim SRT phrase for
+# the thumbnail text field.  The LLM only picks an index (never rewrites text).
+LAPIDARY_RANKING_SYSTEM_PROMPT = (
+    "Eres un experto en contenido político viral de YouTube. "
+    "Se te dará una lista numerada de frases extraídas literalmente de un discurso parlamentario. "
+    "Tu tarea es elegir la frase que tenga más impacto emocional y viral para usar como texto de miniatura. "
+    "Responde ÚNICAMENTE con el número de la frase elegida (1, 2, 3…) o con la palabra NONE si ninguna "
+    "es suficientemente impactante. No escribas nada más."
+)
+
+LAPIDARY_RANKING_USER_TEMPLATE = (
+    "Frases candidatas:\n{candidates}\n\n"
+    "Responde solo con el número de la frase más impactante o con NONE."
 )
 
 
