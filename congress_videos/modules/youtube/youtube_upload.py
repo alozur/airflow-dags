@@ -7,7 +7,7 @@ YouTube uploader DAG.
 
 import logging
 
-from congress_videos.config.paths import YOUTUBE_TOKEN_FILE
+from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
 
 
 def prepare_chapter_upload_config(
@@ -179,7 +179,7 @@ def prepare_chapter_upload_config(
 
     # Configuration for generic uploader
     config = {
-        'token_file': YOUTUBE_TOKEN_FILE,
+        'token_file': resolve_token_path(DEFAULT_CHANNEL, 'upload'),
         'videos': videos
     }
 
