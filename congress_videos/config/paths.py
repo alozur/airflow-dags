@@ -49,8 +49,14 @@ FONTS_DIR = f"{ASSETS_DIR}/fonts"
 # -------------------------
 # Authentication & Tokens
 # -------------------------
-# YouTube API authentication token
+# Legacy single YouTube token (pre per-channel/per-purpose split).
+# Kept for backward compatibility; see congress_videos/config/youtube_channels.py
+# and resolve_token_path() for the current per-channel layout.
 YOUTUBE_TOKEN_FILE = f"{PROJECT_DATA_DIR}/congress_youtube_token.pickle"
+
+# Root directory for per-channel, per-purpose OAuth token pickles.
+# Layout: {YOUTUBE_TOKENS_DIR}/{channel}/{purpose}.pickle
+YOUTUBE_TOKENS_DIR = f"{PROJECT_DATA_DIR}/youtube_tokens"
 
 # -------------------------
 # Asset Files

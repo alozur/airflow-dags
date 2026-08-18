@@ -20,7 +20,7 @@ from airflow.operators.python import PythonOperator
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 
 from congress_videos.modules.database import CongressionalVideoDB
-from congress_videos.config.paths import YOUTUBE_TOKEN_FILE
+from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
 from congress_videos.config.ai_prompts import (
     SHORTS_METADATA_SYSTEM_PROMPT,
     SHORTS_METADATA_USER_PROMPT_TEMPLATE,
@@ -304,7 +304,7 @@ with DAG(
             videos.append(video_config)
 
         config = {
-            "token_file": YOUTUBE_TOKEN_FILE,
+            "token_file": resolve_token_path(DEFAULT_CHANNEL, "upload"),
             "videos": videos,
         }
 
