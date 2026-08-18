@@ -4,6 +4,7 @@ networks:
 
 volumes:
   hf_home:
+  yamnet_model_cache:
 
 services:
   diarize-api:
@@ -31,3 +32,27 @@ services:
       timeout: 10s
       retries: 3
       start_period: 120s
+
+  yamnet-api:
+    build:
+      context: benchmarks/yamnet_applause
+      dockerfile: Dockerfile
+    image: yamnet-api:latest
+    container_name: yamnet-api
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      MODEL_CACHE_DIR: /model-cache
+      YAMNET_API_PORT: "8081"
+    volumes:
+      - yamnet_model_cache:/model-cache
+    networks:
+      - ml_api_network
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

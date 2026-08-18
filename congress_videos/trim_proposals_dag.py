@@ -21,7 +21,7 @@ Pipeline::
       → generate_proposals (per turn, graceful skip)
           _find_source_video → extract_audio_wav (turn-window WAV slice)
             → generate_trim_proposals(vad_fn=webrtc_vad_fn,
-                                       yamnet_fn=docker_yamnet_fn)
+                                       yamnet_fn=api_yamnet_fn)
               → _upsert_proposals (idempotent, ON CONFLICT DO UPDATE)
 """
 from __future__ import annotations
@@ -39,7 +39,7 @@ from congress_videos.modules.trim_proposals import (
     _upsert_proposals,
     generate_trim_proposals,
 )
-from congress_videos.modules.trim_proposals_docker import docker_yamnet_fn
+from congress_videos.modules.trim_proposals_api import api_yamnet_fn
 from congress_videos.modules.vad_helpers import extract_audio_wav
 from utils.postgres_helpers import PostgresConnection
 
@@ -145,7 +145,7 @@ def run_turn_proposals(
     cursor,
     *,
     vad_fn=_webrtc_vad_fn,
-    yamnet_fn=docker_yamnet_fn,
+    yamnet_fn=api_yamnet_fn,
 ) -> dict:
     """Generate and persist trim proposals for a single speaker turn.
 
