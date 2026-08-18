@@ -197,6 +197,27 @@ def get_short_file_path(chapter_id: int, clip_id: str) -> str:
     return f"{get_shorts_dir(chapter_id)}/{clip_id}.mp4"
 
 
+def get_turn_video_path(date: str, video_id: str, turn_id: int) -> str:
+    """Return the canonical output path for a materialized speaker-turn video.
+
+    The path follows the convention::
+
+        {DOWNLOADS_DIR}/{date}/{video_id}/turns/{turn_id}/turn_video.mp4
+
+    The directory is not created by this function; callers are responsible
+    for creating it (e.g. via ``Path.mkdir(parents=True, exist_ok=True)``).
+
+    Args:
+        date:     Recording date in YYYY-MM-DD format (e.g. ``"2025-10-08"``).
+        video_id: YouTube video identifier (e.g. ``"hy1cnx-0Oww"``).
+        turn_id:  Database ``turn_id`` from ``speaker_turns``.
+
+    Returns:
+        Absolute path string to the turn video MP4 file.
+    """
+    return f"{get_download_video_path(date, video_id)}/turns/{turn_id}/turn_video.mp4"
+
+
 # -------------------------
 # Path Validation
 # -------------------------

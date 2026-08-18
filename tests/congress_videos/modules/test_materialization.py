@@ -1,0 +1,405 @@
+"""[RED] Tests for congress_videos.modules.materialization — pure planning module.
+
+Covers:
+- KeepInterval frozen dataclass.
+- MaterializationPlan frozen dataclass.
+- plan_turn_materialization: long-turn/no-trims, long-turn/with-trims,
+  unapproved trims ignored, is_voice_free=False trims ignored,
+  short-turn grouping, cross-chapter isolation, gap-beyond-tolerance split,
+  long-turn interrupts group, trim at start boundary, trim at end boundary.
+
+All tests are pure: no ffmpeg, no DB, no Airflow imports.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+
+import pytest
+
+from congress_videos.modules.materialization import (
+    GROUP_GAP_TOLERANCE_SECS,
+    MIN_LONG_INTERVENTION_SECS,
+    KeepInterval,
+    MaterializationPlan,
+    plan_turn_materialization,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _turn(
+    turn_id: int,
+    chapter_id: int,
+    start: float,
+    end: float,
+) -> dict:
+    """Minimal turn dict for plan_turn_materialization."""
+    return {
+        "turn_id": turn_id,
+        "chapter_id": chapter_id,
+        "start_seconds": start,
+        "end_seconds": end,
+    }
+
+
+def _trim(
+    turn_id: int,
+    start: float,
+    end: float,
+    is_approved: bool = True,
+    is_voice_free: bool = True,
+) -> dict:
+    """Minimal approved trim proposal dict."""
+    return {
+        "turn_id": turn_id,
+        "start_seconds": start,
+        "end_seconds": end,
+        "is_approved": is_approved,
+        "is_voice_free": is_voice_free,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Dataclass sanity
+# ---------------------------------------------------------------------------
+
+
+class TestKeepInterval:
+
+    def test_frozen(self):
+        """KeepInterval must be immutable."""
+        ki = KeepInterval(start=0.0, end=10.0)
+        with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
+            ki.start = 5.0  # type: ignore[misc]
+
+    def test_fields(self):
+        """KeepInterval must expose start and end floats."""
+        ki = KeepInterval(start=1.5, end=3.5)
+        assert ki.start == 1.5
+        assert ki.end == 3.5
+
+
+class TestMaterializationPlan:
+
+    def test_frozen(self):
+        """MaterializationPlan must be immutable."""
+        plan = MaterializationPlan(
+            turn_ids=(1,),
+            chapter_id=10,
+            keep_intervals=(KeepInterval(0.0, 300.0),),
+            output_turn_id=1,
+            needs_reencode=False,
+        )
+        with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
+            plan.needs_reencode = True  # type: ignore[misc]
+
+    def test_fields(self):
+        """MaterializationPlan must expose all required fields."""
+        ki = KeepInterval(0.0, 300.0)
+        plan = MaterializationPlan(
+            turn_ids=(1,),
+            chapter_id=7,
+            keep_intervals=(ki,),
+            output_turn_id=1,
+            needs_reencode=False,
+        )
+        assert plan.turn_ids == (1,)
+        assert plan.chapter_id == 7
+        assert plan.keep_intervals == (ki,)
+        assert plan.output_turn_id == 1
+        assert plan.needs_reencode is False
+
+
+# ---------------------------------------------------------------------------
+# Task 1.8: Long turn, no trims → single keep = full window, needs_reencode=False
+# ---------------------------------------------------------------------------
+
+
+class TestLongTurnNoTrims:
+
+    def test_single_plan_returned(self):
+        """A lone long turn with no trims must produce exactly one plan."""
+        turn = _turn(turn_id=1, chapter_id=5, start=0.0, end=600.0)
+        plans = plan_turn_materialization([turn], approved_trims=[])
+        assert len(plans) == 1
+
+    def test_turn_ids_contains_the_turn(self):
+        """Plan turn_ids must contain the single long turn's id."""
+        turn = _turn(turn_id=1, chapter_id=5, start=0.0, end=600.0)
+        plans = plan_turn_materialization([turn], approved_trims=[])
+        assert plans[0].turn_ids == (1,)
+
+    def test_keep_interval_is_full_window(self):
+        """Single keep interval must span the full turn [start, end]."""
+        turn = _turn(turn_id=1, chapter_id=5, start=100.0, end=700.0)
+        plans = plan_turn_materialization([turn], approved_trims=[])
+        assert plans[0].keep_intervals == (KeepInterval(100.0, 700.0),)
+
+    def test_needs_reencode_false(self):
+        """No trims → no excision → needs_reencode must be False."""
+        turn = _turn(turn_id=1, chapter_id=5, start=0.0, end=600.0)
+        plans = plan_turn_materialization([turn], approved_trims=[])
+        assert plans[0].needs_reencode is False
+
+
+# ---------------------------------------------------------------------------
+# Task 1.9: Long turn with two approved trims → multiple keeps, needs_reencode=True
+# ---------------------------------------------------------------------------
+
+
+class TestLongTurnWithApprovedTrims:
+
+    def _make_plans(self):
+        # 600s turn, two non-overlapping trims at [120,150] and [300,360]
+        turn = _turn(turn_id=2, chapter_id=1, start=0.0, end=600.0)
+        trims = [
+            _trim(turn_id=2, start=120.0, end=150.0),
+            _trim(turn_id=2, start=300.0, end=360.0),
+        ]
+        return plan_turn_materialization([turn], approved_trims=trims)
+
+    def test_one_plan(self):
+        """Long turn with two trims produces exactly one plan."""
+        assert len(self._make_plans()) == 1
+
+    def test_three_keep_intervals(self):
+        """Two trims excise two intervals → three keeper segments."""
+        plan = self._make_plans()[0]
+        assert len(plan.keep_intervals) == 3
+
+    def test_keep_intervals_values(self):
+        """Keep intervals must be the gaps between trim regions."""
+        plan = self._make_plans()[0]
+        assert plan.keep_intervals[0] == KeepInterval(0.0, 120.0)
+        assert plan.keep_intervals[1] == KeepInterval(150.0, 300.0)
+        assert plan.keep_intervals[2] == KeepInterval(360.0, 600.0)
+
+    def test_needs_reencode_true(self):
+        """Multiple keep intervals (excision) forces needs_reencode=True."""
+        plan = self._make_plans()[0]
+        assert plan.needs_reencode is True
+
+
+# ---------------------------------------------------------------------------
+# Task 1.10: Unapproved trims are ignored (caller filters, but function treats
+#             passed trims as the approved set — unapproved trims in the list
+#             must NOT be applied)
+# ---------------------------------------------------------------------------
+
+
+class TestUnapprovedTrimsIgnored:
+
+    def test_unapproved_trim_produces_full_window(self):
+        """A trim with is_approved=False in the input list must not be applied."""
+        turn = _turn(turn_id=3, chapter_id=1, start=0.0, end=600.0)
+        trims = [_trim(turn_id=3, start=100.0, end=200.0, is_approved=False)]
+        plans = plan_turn_materialization([turn], approved_trims=trims)
+        # Only the approved+voice_free subset counts; unapproved → full window
+        assert plans[0].keep_intervals == (KeepInterval(0.0, 600.0),)
+        assert plans[0].needs_reencode is False
+
+
+# ---------------------------------------------------------------------------
+# Task 1.11: is_voice_free=False trims are ignored
+# ---------------------------------------------------------------------------
+
+
+class TestVoiceFreeFilterApplied:
+
+    def test_not_voice_free_trim_is_dropped(self):
+        """A trim with is_voice_free=False must not be excised even if approved."""
+        turn = _turn(turn_id=4, chapter_id=1, start=0.0, end=600.0)
+        trims = [
+            _trim(turn_id=4, start=100.0, end=200.0, is_approved=True, is_voice_free=False),
+            _trim(turn_id=4, start=300.0, end=400.0, is_approved=True, is_voice_free=True),
+        ]
+        plans = plan_turn_materialization([turn], approved_trims=trims)
+        # Only the voice-free+approved one is applied → two keep intervals
+        assert len(plans[0].keep_intervals) == 2
+        assert plans[0].keep_intervals[0] == KeepInterval(0.0, 300.0)
+        assert plans[0].keep_intervals[1] == KeepInterval(400.0, 600.0)
+
+
+# ---------------------------------------------------------------------------
+# Task 1.12: Short-turn grouping (2 consecutive same-chapter turns)
+# ---------------------------------------------------------------------------
+
+
+class TestShortTurnGrouping:
+
+    def test_two_adjacent_short_turns_become_one_plan(self):
+        """Two consecutive short same-chapter turns must produce one plan."""
+        # Each turn is 60s, well below 300s threshold
+        t_a = _turn(turn_id=10, chapter_id=2, start=0.0, end=60.0)
+        t_b = _turn(turn_id=11, chapter_id=2, start=60.0, end=120.0)
+        plans = plan_turn_materialization([t_a, t_b], approved_trims=[])
+        assert len(plans) == 1
+
+    def test_grouped_turn_ids(self):
+        """Grouped plan must contain both turn_ids."""
+        t_a = _turn(turn_id=10, chapter_id=2, start=0.0, end=60.0)
+        t_b = _turn(turn_id=11, chapter_id=2, start=60.0, end=120.0)
+        plans = plan_turn_materialization([t_a, t_b], approved_trims=[])
+        assert set(plans[0].turn_ids) == {10, 11}
+
+    def test_grouped_keep_interval_spans_both(self):
+        """Grouped keep interval must span [first.start, last.end]."""
+        t_a = _turn(turn_id=10, chapter_id=2, start=0.0, end=60.0)
+        t_b = _turn(turn_id=11, chapter_id=2, start=60.0, end=120.0)
+        plans = plan_turn_materialization([t_a, t_b], approved_trims=[])
+        assert plans[0].keep_intervals == (KeepInterval(0.0, 120.0),)
+
+    def test_grouped_needs_reencode_false(self):
+        """Grouped short-turn plan has no excision → needs_reencode=False."""
+        t_a = _turn(turn_id=10, chapter_id=2, start=0.0, end=60.0)
+        t_b = _turn(turn_id=11, chapter_id=2, start=60.0, end=120.0)
+        plans = plan_turn_materialization([t_a, t_b], approved_trims=[])
+        assert plans[0].needs_reencode is False
+
+
+# ---------------------------------------------------------------------------
+# Task 1.13: Cross-chapter short turns are NOT grouped
+# ---------------------------------------------------------------------------
+
+
+class TestCrossChapterNotGrouped:
+
+    def test_different_chapters_produce_separate_plans(self):
+        """Short turns in different chapters must each produce their own plan."""
+        t_a = _turn(turn_id=20, chapter_id=3, start=0.0, end=60.0)
+        t_b = _turn(turn_id=21, chapter_id=4, start=60.0, end=120.0)
+        plans = plan_turn_materialization([t_a, t_b], approved_trims=[])
+        assert len(plans) == 2
+
+    def test_each_plan_has_own_turn_id(self):
+        """Each separate-chapter plan must contain only its own turn_id."""
+        t_a = _turn(turn_id=20, chapter_id=3, start=0.0, end=60.0)
+        t_b = _turn(turn_id=21, chapter_id=4, start=60.0, end=120.0)
+        plans = plan_turn_materialization([t_a, t_b], approved_trims=[])
+        turn_id_sets = [set(p.turn_ids) for p in plans]
+        assert {20} in turn_id_sets
+        assert {21} in turn_id_sets
+
+
+# ---------------------------------------------------------------------------
+# Task 1.14: Gap beyond tolerance breaks grouping (gap=0.6 > 0.5 → two plans)
+# ---------------------------------------------------------------------------
+
+
+class TestGapBeyondToleranceSplitsGroup:
+
+    def test_gap_exceeds_tolerance(self):
+        """Short turns with a gap > GROUP_GAP_TOLERANCE_SECS must not be grouped."""
+        t_a = _turn(turn_id=30, chapter_id=5, start=0.0, end=60.0)
+        # 0.6s gap > 0.5 tolerance
+        t_b = _turn(turn_id=31, chapter_id=5, start=60.6, end=120.0)
+        plans = plan_turn_materialization([t_a, t_b], approved_trims=[])
+        assert len(plans) == 2
+
+    def test_gap_within_tolerance_still_groups(self):
+        """Short turns with a gap <= GROUP_GAP_TOLERANCE_SECS must be grouped."""
+        t_a = _turn(turn_id=32, chapter_id=5, start=0.0, end=60.0)
+        # 0.4s gap < 0.5 tolerance → grouped
+        t_b = _turn(turn_id=33, chapter_id=5, start=60.4, end=120.0)
+        plans = plan_turn_materialization([t_a, t_b], approved_trims=[])
+        assert len(plans) == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 1.15: Long turn interrupts a short-turn group (three separate plans)
+# ---------------------------------------------------------------------------
+
+
+class TestLongTurnInterruptsGroup:
+
+    def test_three_plans_for_short_long_short(self):
+        """[short_A, long_B, short_C] in same chapter → 3 separate plans."""
+        t_a = _turn(turn_id=40, chapter_id=6, start=0.0, end=60.0)     # short
+        t_b = _turn(turn_id=41, chapter_id=6, start=60.0, end=400.0)   # long (340s)
+        t_c = _turn(turn_id=42, chapter_id=6, start=400.0, end=460.0)  # short
+        plans = plan_turn_materialization([t_a, t_b, t_c], approved_trims=[])
+        assert len(plans) == 3
+
+    def test_each_plan_contains_single_turn_id(self):
+        """Each of the three plans must contain a single turn_id."""
+        t_a = _turn(turn_id=40, chapter_id=6, start=0.0, end=60.0)
+        t_b = _turn(turn_id=41, chapter_id=6, start=60.0, end=400.0)
+        t_c = _turn(turn_id=42, chapter_id=6, start=400.0, end=460.0)
+        plans = plan_turn_materialization([t_a, t_b, t_c], approved_trims=[])
+        for p in plans:
+            assert len(p.turn_ids) == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 1.16: Approved trim at turn start boundary (trim.start == turn.start)
+# ---------------------------------------------------------------------------
+
+
+class TestTrimAtStartBoundary:
+
+    def test_no_zero_duration_leading_segment(self):
+        """Trim starting at turn start must not produce a [start, start] interval."""
+        turn = _turn(turn_id=50, chapter_id=7, start=0.0, end=600.0)
+        trims = [_trim(turn_id=50, start=0.0, end=60.0)]  # trim from very beginning
+        plans = plan_turn_materialization([turn], approved_trims=trims)
+        ki = plans[0].keep_intervals
+        # First keep must start at 60.0, not 0.0
+        assert all(interval.end > interval.start for interval in ki), (
+            "No zero-duration keep interval must be produced"
+        )
+        assert ki[0].start == 60.0
+
+    def test_single_keep_after_start_trim(self):
+        """Trim at turn start → one keep interval covering [trim.end, turn.end]."""
+        turn = _turn(turn_id=50, chapter_id=7, start=0.0, end=600.0)
+        trims = [_trim(turn_id=50, start=0.0, end=60.0)]
+        plans = plan_turn_materialization([turn], approved_trims=trims)
+        assert len(plans[0].keep_intervals) == 1
+        assert plans[0].keep_intervals[0] == KeepInterval(60.0, 600.0)
+
+
+# ---------------------------------------------------------------------------
+# Task 1.17: Approved trim at turn end boundary (trim.end == turn.end)
+# ---------------------------------------------------------------------------
+
+
+class TestTrimAtEndBoundary:
+
+    def test_no_zero_duration_trailing_segment(self):
+        """Trim ending at turn end must not produce a [end, end] interval."""
+        turn = _turn(turn_id=51, chapter_id=7, start=0.0, end=600.0)
+        trims = [_trim(turn_id=51, start=540.0, end=600.0)]  # trim at very end
+        plans = plan_turn_materialization([turn], approved_trims=trims)
+        ki = plans[0].keep_intervals
+        assert all(interval.end > interval.start for interval in ki), (
+            "No zero-duration keep interval must be produced"
+        )
+        assert ki[-1].end == 540.0
+
+    def test_single_keep_before_end_trim(self):
+        """Trim at turn end → one keep interval covering [turn.start, trim.start]."""
+        turn = _turn(turn_id=51, chapter_id=7, start=0.0, end=600.0)
+        trims = [_trim(turn_id=51, start=540.0, end=600.0)]
+        plans = plan_turn_materialization([turn], approved_trims=trims)
+        assert len(plans[0].keep_intervals) == 1
+        assert plans[0].keep_intervals[0] == KeepInterval(0.0, 540.0)
+
+
+# ---------------------------------------------------------------------------
+# Module constant assertions (triangulation guard)
+# ---------------------------------------------------------------------------
+
+
+class TestModuleConstants:
+
+    def test_min_long_intervention_secs_value(self):
+        """MIN_LONG_INTERVENTION_SECS must be 300.0."""
+        assert MIN_LONG_INTERVENTION_SECS == 300.0
+
+    def test_group_gap_tolerance_secs_value(self):
+        """GROUP_GAP_TOLERANCE_SECS must be 0.5."""
+        assert GROUP_GAP_TOLERANCE_SECS == 0.5
