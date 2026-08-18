@@ -122,8 +122,8 @@ def _select_task(**context) -> list[dict]:
                 )
             else:
                 cur.execute(f"{base} ORDER BY st.turn_id LIMIT 10")
-            names = [d[0] for d in cur.description]
-            turns = [dict(zip(names, row)) for row in cur.fetchall()]
+            # PostgresConnection uses RealDictCursor: rows are dict-like.
+            turns = [dict(row) for row in cur.fetchall()]
 
             # Idempotency: exclude turns already in speaker_turn_videos
             if turns:
@@ -131,7 +131,7 @@ def _select_task(**context) -> list[dict]:
                     f"SELECT turn_id FROM {stv_table} WHERE turn_id = ANY(%s)",
                     ([t["turn_id"] for t in turns],),
                 )
-                already_done = {row[0] for row in cur.fetchall()}
+                already_done = {row["turn_id"] for row in cur.fetchall()}
                 turns = [t for t in turns if t["turn_id"] not in already_done]
 
     logger.info("speaker_turn_videos: selected %d turn(s) for materialization", len(turns))
@@ -175,8 +175,8 @@ def _materialize_task(**context) -> dict:
                 f"WHERE turn_id = ANY(%s) AND is_approved = TRUE AND is_voice_free = TRUE",
                 (turn_ids,),
             )
-            trim_names = [d[0] for d in cur.description]
-            approved_trims = [dict(zip(trim_names, row)) for row in cur.fetchall()]
+            # RealDictCursor rows are dict-like.
+            approved_trims = [dict(row) for row in cur.fetchall()]
 
         plans = plan_turn_materialization(turns, approved_trims)
 

@@ -71,8 +71,8 @@ def select_chapters(limit: int = DEFAULT_LIMIT, chapter_ids: list[int] | None = 
                     f"SELECT {cols} FROM {view} ORDER BY chapter_id LIMIT %s",
                     (limit,),
                 )
-            names = [d[0] for d in cur.description]
-            return [dict(zip(names, row)) for row in cur.fetchall()]
+            # PostgresConnection uses RealDictCursor: rows are dict-like.
+            return [dict(row) for row in cur.fetchall()]
 
 
 def run_chapter_turns(

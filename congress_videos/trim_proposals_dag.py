@@ -34,18 +34,40 @@ from datetime import datetime, timedelta, timezone
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
+from congress_videos.config.paths import DOWNLOADS_DIR
 from congress_videos.modules.trim_proposals import (
     _upsert_proposals,
     generate_trim_proposals,
 )
 from congress_videos.modules.trim_proposals_docker import docker_yamnet_fn
-from congress_videos.modules.vad_helpers import _find_source_video, extract_audio_wav
+from congress_videos.modules.vad_helpers import extract_audio_wav
 from utils.postgres_helpers import PostgresConnection
 
 logger = logging.getLogger(__name__)
 
 DAG_ID = "trim_proposals"
 DEFAULT_LIMIT = 10
+
+_MEDIA_SUFFIXES = (".mp4", ".mkv", ".webm")
+
+
+def _find_source_video_any_date(video_id: str) -> str | None:
+    """Locate the source media for a video without knowing its session date.
+
+    ``speaker_turns`` carries no recording date, so scan every date folder
+    under ``DOWNLOADS_DIR`` for ``downloads/{date}/{video_id}/`` and return the
+    first real media file (mirrors ``reap_clip_preparer``'s date-less lookup).
+    """
+    if not os.path.isdir(DOWNLOADS_DIR):
+        return None
+    for date_folder in sorted(os.listdir(DOWNLOADS_DIR)):
+        video_dir = os.path.join(DOWNLOADS_DIR, date_folder, str(video_id))
+        if not os.path.isdir(video_dir):
+            continue
+        for filename in sorted(os.listdir(video_dir)):
+            if filename.endswith(_MEDIA_SUFFIXES) and "chapter_video" not in filename:
+                return os.path.join(video_dir, filename)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -95,22 +117,27 @@ def select_turns(
     """
     pg = PostgresConnection()
     table = pg.get_qualified_table("speaker_turns")
-    cols = "turn_id, chapter_id, video_id, session_date, start_seconds, end_seconds"
+    chapters_table = pg.get_qualified_table("video_chapters")
+    # video_id lives on video_chapters, not speaker_turns; join to resolve it.
+    cols = "st.turn_id, st.chapter_id, vc.video_id, st.start_seconds, st.end_seconds"
+    base = (
+        f"SELECT {cols} FROM {table} st "
+        f"JOIN {chapters_table} vc ON vc.chapter_id = st.chapter_id"
+    )
     with pg.get_connection() as conn:
         with conn.cursor() as cur:
             if turn_ids:
                 cur.execute(
-                    f"SELECT {cols} FROM {table} WHERE turn_id = ANY(%s) "
-                    f"ORDER BY turn_id",
+                    f"{base} WHERE st.turn_id = ANY(%s) ORDER BY st.turn_id",
                     (list(turn_ids),),
                 )
             else:
                 cur.execute(
-                    f"SELECT {cols} FROM {table} ORDER BY turn_id LIMIT %s",
+                    f"{base} ORDER BY st.turn_id LIMIT %s",
                     (limit,),
                 )
-            names = [d[0] for d in cur.description]
-            return [dict(zip(names, row)) for row in cur.fetchall()]
+            # PostgresConnection uses RealDictCursor: rows are dict-like.
+            return [dict(row) for row in cur.fetchall()]
 
 
 def run_turn_proposals(
@@ -138,16 +165,15 @@ def run_turn_proposals(
     """
     turn_id = turn["turn_id"]
     video_id = turn["video_id"]
-    session_date = str(turn.get("session_date"))
     start_secs = float(turn["start_seconds"])
     end_secs = float(turn["end_seconds"])
     duration = max(0.0, end_secs - start_secs)
 
-    video_path = _find_source_video(session_date, video_id)
+    video_path = _find_source_video_any_date(video_id)
     if not video_path:
         logger.warning(
-            "turn %s: no source video for %s/%s — skipping",
-            turn_id, session_date, video_id,
+            "turn %s: no source video for video_id=%s — skipping",
+            turn_id, video_id,
         )
         return {"status": "skipped_no_video", "turn_id": turn_id, "proposals": 0}
 
