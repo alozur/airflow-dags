@@ -214,8 +214,9 @@ congreso_youtube/examples/*
 **/youtube_token.pickle
 *youtube_token*.pickle
 *_youtube_token.pickle
-# Per-channel/per-purpose token pickles (youtube_tokens/{channel}/{purpose}.pickle).
-# Keep the folder scaffold (.gitkeep) but never commit the token pickles.
+# Per-channel/per-purpose tokens (youtube_tokens/{channel}/{purpose}.json).
+# Keep the folder scaffold (.gitkeep + README) but never commit the tokens.
+**/youtube_tokens/**/*.json
 **/youtube_tokens/**/*.pickle
 client_secret*.json
 youtube_cookies.txt

@@ -1,15 +1,18 @@
 # YouTube OAuth tokens
 
-Per-channel, per-purpose OAuth token pickles. **Token pickles are secrets and
-are never committed** (see `.gitignore`); only this scaffold is tracked.
+Per-channel, per-purpose OAuth tokens, stored as portable JSON
+(`Credentials.to_json()`) so they load across google-auth versions — unlike
+pickle, which breaks when writer and reader run different google-auth majors.
+**Tokens are secrets and are never committed** (see `.gitignore`); only this
+scaffold is tracked.
 
 ## Layout
 
 ```
 youtube_tokens/
   {channel}/
-    upload.pickle       # scopes: youtube.upload + youtube + youtube.force-ssl
-    analytics.pickle    # scope:  yt-analytics.readonly  (read-only)
+    upload.json       # scopes: youtube.upload + youtube + youtube.force-ssl
+    analytics.json    # scope:  yt-analytics.readonly  (read-only)
 ```
 
 Channels and the scopes for each purpose are declared in

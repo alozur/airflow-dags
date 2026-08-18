@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from airflow import DAG
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
+from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
 from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from utils.env_loader import load_env_if_local
 
@@ -28,9 +29,11 @@ STALE_RUN_TOLERANCE_MINUTES = int(
     os.getenv("ANALYTICS_STALE_RUN_TOLERANCE_MINUTES", "30")
 )
 
+# Read-only analytics token for the default channel. An explicit
+# YOUTUBE_TOKEN_FILE env var still overrides for ad-hoc/testing use.
 _TOKEN_FILE = os.getenv(
     "YOUTUBE_TOKEN_FILE",
-    os.path.join(os.path.dirname(__file__), "..", "congress_youtube_token.pickle"),
+    resolve_token_path(DEFAULT_CHANNEL, "analytics"),
 )
 
 
