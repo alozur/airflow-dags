@@ -294,15 +294,19 @@ def generate_trim_proposals(
 # ---------------------------------------------------------------------------
 
 
-def _upsert_proposals(conn, proposals: list[TrimProposal]) -> int:
+def _upsert_proposals(cursor, proposals: list[TrimProposal]) -> int:
     """Upsert TrimProposal records into the speaker_turn_trim_proposals table.
 
     Uses ``ON CONFLICT (turn_id, start_seconds, tipo) DO UPDATE`` to update
     ``score``, ``source``, and ``updated_at`` on re-runs. Never commits —
     the DAG controls transactions.
 
+    Follows the same cursor-based contract as ``speaker_turns._upsert_turns``:
+    the caller is responsible for opening the cursor and controlling the
+    transaction; this function only calls ``cursor.execute()``.
+
     Args:
-        conn:      DB connection with a cursor() context manager.
+        cursor:    An open DB cursor (psycopg2-compatible, ``execute()`` method).
         proposals: Proposals to persist.
 
     Returns:
@@ -323,16 +327,15 @@ def _upsert_proposals(conn, proposals: list[TrimProposal]) -> int:
             updated_at    = NOW()
     """
 
-    with conn.cursor() as cursor:
-        for proposal in proposals:
-            cursor.execute(sql, (
-                proposal.turn_id,
-                proposal.start_seconds,
-                proposal.end_seconds,
-                proposal.kind,   # SQL col: tipo
-                proposal.score,
-                proposal.source,
-                proposal.is_voice_free,
-            ))
+    for proposal in proposals:
+        cursor.execute(sql, (
+            proposal.turn_id,
+            proposal.start_seconds,
+            proposal.end_seconds,
+            proposal.kind,   # SQL col: tipo
+            proposal.score,
+            proposal.source,
+            proposal.is_voice_free,
+        ))
 
     return len(proposals)

@@ -399,12 +399,9 @@ class TestUpsertProposals:
     def test_first_run_inserts_n_rows(self):
         """First call with N proposals executes N INSERT statements."""
         proposals = [self._make_proposal(start=float(i * 20)) for i in range(3)]
-        conn = MagicMock()
         cursor = MagicMock()
-        conn.cursor.return_value.__enter__ = MagicMock(return_value=cursor)
-        conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        count = _upsert_proposals(conn, proposals)
+        count = _upsert_proposals(cursor, proposals)
 
         assert count == 3
         assert cursor.execute.call_count == 3
@@ -412,15 +409,12 @@ class TestUpsertProposals:
     def test_re_run_same_proposals_executes_n_statements(self):
         """Second call (ON CONFLICT path) still executes N statements (upsert)."""
         proposals = [self._make_proposal(start=10.0)]
-        conn = MagicMock()
         cursor = MagicMock()
-        conn.cursor.return_value.__enter__ = MagicMock(return_value=cursor)
-        conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
         # First run
-        count1 = _upsert_proposals(conn, proposals)
+        count1 = _upsert_proposals(cursor, proposals)
         # Second run (same proposals — ON CONFLICT DO UPDATE)
-        count2 = _upsert_proposals(conn, proposals)
+        count2 = _upsert_proposals(cursor, proposals)
 
         assert count1 == 1
         assert count2 == 1
@@ -429,12 +423,9 @@ class TestUpsertProposals:
 
     def test_empty_list_returns_zero_no_db_call(self):
         """Empty proposals list returns 0 and makes no DB calls."""
-        conn = MagicMock()
         cursor = MagicMock()
-        conn.cursor.return_value.__enter__ = MagicMock(return_value=cursor)
-        conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        count = _upsert_proposals(conn, [])
+        count = _upsert_proposals(cursor, [])
 
         assert count == 0
         cursor.execute.assert_not_called()
@@ -442,12 +433,9 @@ class TestUpsertProposals:
     def test_upsert_sql_uses_on_conflict(self):
         """SQL passed to cursor must contain ON CONFLICT clause."""
         proposals = [self._make_proposal()]
-        conn = MagicMock()
         cursor = MagicMock()
-        conn.cursor.return_value.__enter__ = MagicMock(return_value=cursor)
-        conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        _upsert_proposals(conn, proposals)
+        _upsert_proposals(cursor, proposals)
 
         # Extract the SQL string from the first execute call
         call_args = cursor.execute.call_args
@@ -459,12 +447,9 @@ class TestUpsertProposals:
     def test_upsert_sql_updates_score_and_source(self):
         """ON CONFLICT branch must update score and source (and updated_at)."""
         proposals = [self._make_proposal()]
-        conn = MagicMock()
         cursor = MagicMock()
-        conn.cursor.return_value.__enter__ = MagicMock(return_value=cursor)
-        conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        _upsert_proposals(conn, proposals)
+        _upsert_proposals(cursor, proposals)
 
         sql_arg = cursor.execute.call_args[0][0].upper()
         assert "DO UPDATE" in sql_arg
@@ -506,3 +491,131 @@ class TestGenerateTrimProposalsExceptionHandling:
         proposals = generate_trim_proposals(turn, "/fake/audio.wav", vad_fn, failing_yamnet)
         applause_props = [p for p in proposals if p.kind == "applause"]
         assert applause_props == []
+
+
+# ---------------------------------------------------------------------------
+# _upsert_proposals cursor contract (regression guard for DAG wiring)
+# ---------------------------------------------------------------------------
+
+
+class TestUpsertProposalsCursorContract:
+    """Verify _upsert_proposals accepts a plain DB cursor, not a connection.
+
+    The DAG (_process_task) opens a connection, then opens a cursor inside a
+    with-block and passes THAT CURSOR to run_turn_proposals → _upsert_proposals.
+    If _upsert_proposals called cursor.cursor() internally it would raise
+    AttributeError at the first real production trigger.
+
+    These tests use a CursorDouble that deliberately lacks a .cursor() method
+    so any call to it immediately raises AttributeError — matching the real
+    production failure mode.
+    """
+
+    class CursorDouble:
+        """Minimal cursor double — has execute() but no cursor() method."""
+
+        def __init__(self):
+            self.executed: list[tuple] = []
+
+        def execute(self, sql: str, params: tuple) -> None:
+            self.executed.append((sql, params))
+
+    def _make_proposal(self, turn_id: int = 1, start: float = 10.0) -> TrimProposal:
+        return TrimProposal(
+            turn_id=turn_id,
+            start_seconds=start,
+            end_seconds=start + 10.0,
+            kind="silence",
+            score=None,
+            source="vad_webrtc",
+            is_voice_free=True,
+        )
+
+    def test_upsert_accepts_cursor_not_conn(self):
+        """_upsert_proposals must accept a plain cursor, not call cursor.cursor().
+
+        If it calls cursor.cursor(), AttributeError is raised — the same crash
+        that would occur in production when the DAG passes its open cursor.
+        """
+        cursor = self.CursorDouble()
+        proposals = [self._make_proposal()]
+
+        # Must not raise AttributeError from cursor.cursor()
+        count = _upsert_proposals(cursor, proposals)
+
+        assert count == 1
+        assert len(cursor.executed) == 1
+
+    def test_upsert_cursor_executes_n_statements(self):
+        """Each proposal in the list maps to exactly one cursor.execute() call."""
+        cursor = self.CursorDouble()
+        proposals = [self._make_proposal(start=float(i * 20)) for i in range(3)]
+
+        count = _upsert_proposals(cursor, proposals)
+
+        assert count == 3
+        assert len(cursor.executed) == 3
+
+    def test_upsert_empty_list_no_execute_calls(self):
+        """Empty proposals list: no execute() calls, returns 0."""
+        cursor = self.CursorDouble()
+
+        count = _upsert_proposals(cursor, [])
+
+        assert count == 0
+        assert cursor.executed == []
+
+    def test_upsert_sql_contains_on_conflict(self):
+        """SQL passed to cursor.execute() must contain ON CONFLICT clause."""
+        cursor = self.CursorDouble()
+        proposals = [self._make_proposal()]
+
+        _upsert_proposals(cursor, proposals)
+
+        sql, _ = cursor.executed[0]
+        assert "ON CONFLICT" in sql.upper()
+
+    def test_dag_wiring_run_turn_proposals_passes_cursor(self, monkeypatch):
+        """run_turn_proposals in the DAG must pass its cursor arg to _upsert_proposals.
+
+        This test exercises the REAL DAG wiring without monkeypatching _upsert_proposals.
+        It verifies that when run_turn_proposals is called with a CursorDouble,
+        the cursor reaches _upsert_proposals directly (no .cursor() indirection).
+        """
+        import importlib
+        import sys
+
+        module_name = "congress_videos.trim_proposals_dag"
+        if module_name in sys.modules:
+            del sys.modules[module_name]
+        mod = importlib.import_module(module_name)
+
+        cursor = self.CursorDouble()
+        turn = {
+            "turn_id": 99,
+            "chapter_id": 1,
+            "video_id": "vid99",
+            "session_date": "2026-06-10",
+            "start_seconds": 100.0,
+            "end_seconds": 130.0,
+        }
+
+        monkeypatch.setattr(mod, "_find_source_video", lambda *a, **k: "/v/src.mp4")
+        monkeypatch.setattr(mod, "extract_audio_wav", lambda *a, **k: None)
+
+        # Return one real proposal so _upsert_proposals is actually called
+        from congress_videos.modules.trim_proposals import TrimProposal
+        proposal = TrimProposal(
+            turn_id=99, start_seconds=110.0, end_seconds=120.0,
+            kind="silence", score=None, source="vad_webrtc", is_voice_free=True,
+        )
+        monkeypatch.setattr(mod, "generate_trim_proposals", lambda *a, **k: [proposal])
+        # Do NOT monkeypatch _upsert_proposals — exercise real wiring
+
+        # Must not raise AttributeError (cursor has no .cursor() method)
+        result = mod.run_turn_proposals(turn, cursor)
+
+        assert result["status"] == "ok"
+        assert result["proposals"] == 1
+        # The cursor was used directly — exactly one execute call
+        assert len(cursor.executed) == 1
