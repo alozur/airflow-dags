@@ -385,6 +385,33 @@ class TestApplyTextGate:
         assert turns[0].confidence == pytest.approx(0.80)
         assert turns[0].resolved_name is None
 
+    def test_named_phrase_but_unresolvable_name_gives_text_confirmed(self):
+        """Phrase carries a name but the resolver can't map it → text_confirmed, 0.80.
+
+        Distinct from the 'su señoría' path: here ``extract_announcement`` DOES
+        return a name, but ``name_resolver`` returns None (unknown participant).
+        """
+        from congress_videos.modules.speaker_turns import _apply_text_gate
+        t = 100.0
+        segments = [
+            {
+                "start_seconds": t,
+                "end_seconds": t + 30.0,
+                "speaker_label": "SPEAKER_01",
+                "from_speaker": "SPEAKER_00",
+                "to_speaker": "SPEAKER_01",
+                "confirmed_block_duration_seconds": 30.0,
+            }
+        ]
+        srt_blocks = _make_srt_blocks(
+            (80.0, 90.0, "Tiene la palabra el señor Desconocido"),
+        )
+        turns = _apply_text_gate(segments, srt_blocks, _null_resolver)
+        assert len(turns) == 1
+        assert turns[0].source == "text_confirmed"
+        assert turns[0].confidence == pytest.approx(0.80)
+        assert turns[0].resolved_name is None
+
     def test_no_phrase_same_speaker_noise_rejected(self):
         """No phrase + same from/to speaker label → segment dropped (noise rejection)."""
         from congress_videos.modules.speaker_turns import _apply_text_gate
