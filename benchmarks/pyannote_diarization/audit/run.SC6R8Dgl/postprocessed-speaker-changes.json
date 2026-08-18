@@ -1,0 +1,238 @@
+{
+  "source": "/volume1/docker/airflow/pyannote_diarization_benchmark/output/run.SC6R8Dgl/summary.json",
+  "rules": {
+    "min_track_seconds": 0.5,
+    "same_speaker_gap_seconds": 1.0,
+    "min_change_block_seconds": 1.5,
+    "overlap_policy": "preserve the currently active speaker; otherwise choose the longest active track"
+  },
+  "raw_turn_count": 125,
+  "tracks_after_min_duration_filter": 117,
+  "speaker_change_count": 32,
+  "speaker_changes": [
+    {
+      "timestamp": "00:03.473",
+      "start_seconds": 3.473,
+      "from_speaker": "SPEAKER_00",
+      "to_speaker": "SPEAKER_01",
+      "confirmed_block_duration_seconds": 17.129
+    },
+    {
+      "timestamp": "00:20.973",
+      "start_seconds": 20.973,
+      "from_speaker": "SPEAKER_01",
+      "to_speaker": "SPEAKER_02",
+      "confirmed_block_duration_seconds": 3.004
+    },
+    {
+      "timestamp": "00:24.567",
+      "start_seconds": 24.567,
+      "from_speaker": "SPEAKER_02",
+      "to_speaker": "SPEAKER_01",
+      "confirmed_block_duration_seconds": 8.066
+    },
+    {
+      "timestamp": "02:32.429",
+      "start_seconds": 152.429,
+      "from_speaker": "SPEAKER_01",
+      "to_speaker": "SPEAKER_00",
+      "confirmed_block_duration_seconds": 2.312
+    },
+    {
+      "timestamp": "02:35.078",
+      "start_seconds": 155.078,
+      "from_speaker": "SPEAKER_00",
+      "to_speaker": "SPEAKER_02",
+      "confirmed_block_duration_seconds": 10.75
+    },
+    {
+      "timestamp": "02:59.682",
+      "start_seconds": 179.682,
+      "from_speaker": "SPEAKER_02",
+      "to_speaker": "SPEAKER_00",
+      "confirmed_block_duration_seconds": 2.261
+    },
+    {
+      "timestamp": "03:01.943",
+      "start_seconds": 181.943,
+      "from_speaker": "SPEAKER_00",
+      "to_speaker": "SPEAKER_01",
+      "confirmed_block_duration_seconds": 11.509
+    },
+    {
+      "timestamp": "03:21.907",
+      "start_seconds": 201.907,
+      "from_speaker": "SPEAKER_01",
+      "to_speaker": "SPEAKER_00",
+      "confirmed_block_duration_seconds": 6.378
+    },
+    {
+      "timestamp": "03:31.846",
+      "start_seconds": 211.846,
+      "from_speaker": "SPEAKER_00",
+      "to_speaker": "SPEAKER_03",
+      "confirmed_block_duration_seconds": 1.822
+    },
+    {
+      "timestamp": "03:35.423",
+      "start_seconds": 215.423,
+      "from_speaker": "SPEAKER_03",
+      "to_speaker": "SPEAKER_00",
+      "confirmed_block_duration_seconds": 3.055
+    },
+    {
+      "timestamp": "03:39.490",
+      "start_seconds": 219.49,
+      "from_speaker": "SPEAKER_00",
+      "to_speaker": "SPEAKER_01",
+      "confirmed_block_duration_seconds": 15.66
+    },
+    {
+      "timestamp": "04:02.812",
+      "start_seconds": 242.812,
+      "from_speaker": "SPEAKER_01",
+      "to_speaker": "SPEAKER_00",
+      "confirmed_block_duration_seconds": 2.666
+    },
+    {
+      "timestamp": "04:05.680",
+      "start_seconds": 245.68,
+      "from_speaker": "SPEAKER_00",
+      "to_speaker": "SPEAKER_03",
+      "confirmed_block_duration_seconds": 133.33
+    },
+    {
+      "timestamp": "06:35.986",
+      "start_seconds": 395.986,
+      "from_speaker": "SPEAKER_03",
+      "to_speaker": "SPEAKER_00",
+      "confirmed_block_duration_seconds": 16.014
+    },
+    {
+      "timestamp": "06:52.810",
+      "start_seconds": 412.81,
+      "from_speaker": "SPEAKER_00",
+      "to_speaker": "SPEAKER_01",
+      "confirmed_block_duration_seconds": 73.44
+    },
+    {
+      "timestamp": "09:23.825",
+      "start_seconds": 563.825,
+      "from_speaker": "SPEAKER_01",
+      "to_speaker": "SPEAKER_00",
+      "confirmed_block_duration_seconds": 7.593
+    },
+    {
+      "timestamp": "09:32.971",
+      "start_seconds": 572.971,
+      "from_speaker": "SPEAKER_00",
+      "to_speaker": "SPEAKER_04",
+      "confirmed_block_duration_seconds": 34.408
+    },
+    {
+      "timestamp": "10:14.146",
+      "start_seconds": 614.146,
+      "from_speaker": "SPEAKER_04",
+      "to_speaker": "SPEAKER_00",
+      "confirmed_block_duration_seconds": 3.156
+    },
+    {
+      "timestamp": "10:17.504",
+      "start_seconds": 617.504,
+      "from_speaker": "SPEAKER_00",
+      "to_speaker": "SPEAKER_01",
+      "confirmed_block_duration_seconds": 87.986
+    },
+    {
+      "timestamp": "11:46.368",
+      "start_seconds": 706.368,
+      "from_speaker": "SPEAKER_01",
+      "to_speaker": "SPEAKER_04",
+      "confirmed_block_duration_seconds": 92.019
+    },
+    {
+      "timestamp": "13:25.002",
+      "start_seconds": 805.002,
+      "from_speaker": "SPEAKER_04",
+      "to_speaker": "SPEAKER_00",
+      "confirmed_block_duration_seconds": 3.139
+    },
+    {
+      "timestamp": "13:28.225",
+      "start_seconds": 808.225,
+      "from_speaker": "SPEAKER_00",
+      "to_speaker": "SPEAKER_01",
+      "confirmed_block_duration_seconds": 73.407
+    },
+    {
+      "timestamp": "14:50.322",
+      "start_seconds": 890.322,
+      "from_speaker": "SPEAKER_01",
+      "to_speaker": "SPEAKER_00",
+      "confirmed_block_duration_seconds": 8.218
+    },
+    {
+      "timestamp": "15:01.190",
+      "start_seconds": 901.19,
+      "from_speaker": "SPEAKER_00",
+      "to_speaker": "SPEAKER_05",
+      "confirmed_block_duration_seconds": 40.348
+    },
+    {
+      "timestamp": "15:43.478",
+      "start_seconds": 943.478,
+      "from_speaker": "SPEAKER_05",
+      "to_speaker": "SPEAKER_00",
+      "confirmed_block_duration_seconds": 2.11
+    },
+    {
+      "timestamp": "15:48.322",
+      "start_seconds": 948.322,
+      "from_speaker": "SPEAKER_00",
+      "to_speaker": "SPEAKER_06",
+      "confirmed_block_duration_seconds": 108.675
+    },
+    {
+      "timestamp": "17:45.063",
+      "start_seconds": 1065.063,
+      "from_speaker": "SPEAKER_06",
+      "to_speaker": "SPEAKER_00",
+      "confirmed_block_duration_seconds": 2.329
+    },
+    {
+      "timestamp": "17:48.202",
+      "start_seconds": 1068.202,
+      "from_speaker": "SPEAKER_00",
+      "to_speaker": "SPEAKER_05",
+      "confirmed_block_duration_seconds": 64.614
+    },
+    {
+      "timestamp": "18:58.418",
+      "start_seconds": 1138.418,
+      "from_speaker": "SPEAKER_05",
+      "to_speaker": "SPEAKER_00",
+      "confirmed_block_duration_seconds": 2.346
+    },
+    {
+      "timestamp": "19:00.764",
+      "start_seconds": 1140.764,
+      "from_speaker": "SPEAKER_00",
+      "to_speaker": "SPEAKER_06",
+      "confirmed_block_duration_seconds": 44.668
+    },
+    {
+      "timestamp": "19:55.608",
+      "start_seconds": 1195.608,
+      "from_speaker": "SPEAKER_06",
+      "to_speaker": "SPEAKER_00",
+      "confirmed_block_duration_seconds": 8.42
+    },
+    {
+      "timestamp": "20:04.484",
+      "start_seconds": 1204.484,
+      "from_speaker": "SPEAKER_00",
+      "to_speaker": "SPEAKER_07",
+      "confirmed_block_duration_seconds": 86.113
+    }
+  ]
+}
