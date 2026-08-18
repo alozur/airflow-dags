@@ -70,10 +70,13 @@ class TestSelectTurns:
             ("turn_id",), ("chapter_id",), ("video_id",),
             ("start_seconds",), ("end_seconds",),
         ]
-        # First fetchall returns speaker_turns rows
-        # Second fetchall returns [(turn_id,)] for already-materialized
-        already_rows = [(tid,) for tid in already_materialized_ids]
-        cur.fetchall.side_effect = [turns_rows, already_rows]
+        # PostgresConnection uses RealDictCursor, so real rows are dict-like.
+        # Convert the tuple fixtures into dict rows so the mock matches prod and
+        # the old dict(zip(names,row)) bug would surface (keys as values).
+        col_names = [d[0] for d in cur.description]
+        turns_dicts = [dict(zip(col_names, r)) for r in turns_rows]
+        already_rows = [{"turn_id": tid} for tid in already_materialized_ids]
+        cur.fetchall.side_effect = [turns_dicts, already_rows]
         conn = MagicMock()
         conn.cursor.return_value.__enter__.return_value = cur
         pg = MagicMock()
@@ -106,6 +109,11 @@ class TestSelectTurns:
         returned_ids = [t["turn_id"] for t in turns_out]
         assert 1 not in returned_ids, "Already-materialized turn_id 1 must be excluded"
         assert 2 in returned_ids, "Non-materialized turn_id 2 must be included"
+        # RealDictCursor regression: values must be real data, not column names.
+        assert turns_out[0]["video_id"] == "vid1"
+        assert not any(k == v for t in turns_out for k, v in t.items()), (
+            "row values must be real data, not their own column names"
+        )
 
     def test_select_joins_video_chapters_and_omits_session_date(self, monkeypatch):
         """Regression: speaker_turns has no video_id/session_date columns.

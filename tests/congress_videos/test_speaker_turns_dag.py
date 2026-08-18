@@ -111,7 +111,11 @@ class TestSelectChapters:
         cur = MagicMock()
         cur.description = [("chapter_id",), ("video_id",), ("session_date",),
                            ("start_time",), ("end_time",)]
-        cur.fetchall.return_value = [(7, "abc", "2026-06-10", "00:10:00,000", "00:40:00,000")]
+        # PostgresConnection uses RealDictCursor, so rows are dict-like, not tuples.
+        cur.fetchall.return_value = [{"chapter_id": 7, "video_id": "abc",
+                                      "session_date": "2026-06-10",
+                                      "start_time": "00:10:00,000",
+                                      "end_time": "00:40:00,000"}]
         conn = MagicMock()
         conn.cursor.return_value.__enter__.return_value = cur
         pg = MagicMock()
