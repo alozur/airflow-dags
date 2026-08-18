@@ -82,13 +82,31 @@ def _fetch_analytics(ti, **context) -> list:
         ti.xcom_push(key="collected", value=[])
         return []
 
-    # We do not yet have the existing snapshots set from DB in this thin DAG
-    # (the pending query returns ALL uploaded chapters within 90 days;
-    # pair-level exclusion is handled by ON CONFLICT DO NOTHING at insert time
-    # and by the UNIQUE constraint — see design.md).
-    # For the pure-function call we pass an empty set; idempotency is DB-enforced.
+    # Query already-collected (youtube_video_id, checkpoint) pairs so we skip
+    # re-fetching data we already have, saving Analytics API daily quota.
+    from congress_videos.modules.database import CongressionalVideoDB
+
+    youtube_video_ids = list(
+        {row["youtube_video_id"] for row in candidate_rows if row.get("youtube_video_id")}
+    )
+    already_collected: set[tuple[str, str]] = set()
+    try:
+        db = CongressionalVideoDB()
+        already_collected = db.get_collected_analytics_pairs(youtube_video_ids)
+        logging.info(
+            "video_analytics: %d already-collected pairs found for %d video ids",
+            len(already_collected),
+            len(youtube_video_ids),
+        )
+    except Exception as exc:
+        logging.warning(
+            "video_analytics: could not load collected pairs from DB, "
+            "proceeding with empty set (idempotency still DB-enforced): %s",
+            exc,
+        )
+
     now = datetime.now(timezone.utc)
-    pending = pending_checkpoints(now, candidate_rows, collected=set())
+    pending = pending_checkpoints(now, candidate_rows, collected=already_collected)
 
     if not pending:
         logging.info("video_analytics: no pending checkpoints after expansion")

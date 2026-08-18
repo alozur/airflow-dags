@@ -1438,6 +1438,45 @@ class CongressionalVideoDB:
                 )
                 return list(rows)
 
+    def get_collected_analytics_pairs(
+        self, youtube_video_ids: list[str]
+    ) -> set[tuple[str, str]]:
+        """Return already-collected (youtube_video_id, checkpoint) pairs.
+
+        Used by the hourly analytics DAG to skip re-fetching data already
+        persisted in video_analytics_snapshots, saving Analytics API quota.
+
+        Args:
+            youtube_video_ids: List of YouTube video IDs to check. An empty
+                list returns an empty set immediately without hitting the DB.
+
+        Returns:
+            Set of (youtube_video_id, checkpoint) tuples for which a snapshot
+            row already exists.
+        """
+        if not youtube_video_ids:
+            return set()
+
+        snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT youtube_video_id, checkpoint
+                    FROM {snapshots_table}
+                    WHERE youtube_video_id = ANY(%s)
+                    """,
+                    (youtube_video_ids,),
+                )
+                rows = cur.fetchall()
+                logger.info(
+                    "get_collected_analytics_pairs: %d already-collected pairs "
+                    "for %d video ids",
+                    len(rows),
+                    len(youtube_video_ids),
+                )
+                return {(row["youtube_video_id"], row["checkpoint"]) for row in rows}
+
     def record_analytics_snapshot(
         self,
         chapter_id: int,

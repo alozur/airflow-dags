@@ -533,3 +533,88 @@ class TestRecordAnalyticsSnapshot:
         assert 42 in all_params
         assert "xyz999" in all_params
         assert "7d" in all_params
+
+
+# ---------------------------------------------------------------------------
+# Tests: CongressionalVideoDB.get_collected_analytics_pairs
+# ---------------------------------------------------------------------------
+
+
+class TestGetCollectedAnalyticsPairs:
+    """Spec: Quota-saving optimization — query already-collected pairs before
+    calling the Analytics API, so pending_checkpoints() can exclude them and
+    avoid re-fetching data we already have.
+
+    Contract:
+    - Empty youtube_video_ids input → return empty set WITHOUT hitting the DB.
+    - Non-empty input → SELECT (youtube_video_id, checkpoint) WHERE
+      youtube_video_id = ANY(%s) and return as set of tuples.
+    - SQL must reference 'video_analytics_snapshots' table.
+    - SQL must use 'youtube_video_id = ANY' for batch lookup.
+    """
+
+    def test_empty_input_returns_empty_set_without_db_call(self):
+        """GIVEN an empty list of youtube_video_ids
+        WHEN get_collected_analytics_pairs is called
+        THEN an empty set is returned and the DB cursor is never queried."""
+        cur = _make_cursor()
+        db, _ = _make_db(cur)
+
+        result = db.get_collected_analytics_pairs([])
+
+        assert result == set()
+        # DB must NOT be hit for empty input (idempotent fast-path)
+        cur.execute.assert_not_called()
+
+    def test_returns_set_of_tuples(self):
+        """GIVEN a list with one youtube_video_id and DB returns two rows
+        WHEN get_collected_analytics_pairs is called
+        THEN a set of (youtube_video_id, checkpoint) tuples is returned."""
+        cur = _make_cursor()
+        cur.fetchall.return_value = [
+            {"youtube_video_id": "abc123", "checkpoint": "24h"},
+            {"youtube_video_id": "abc123", "checkpoint": "48h"},
+        ]
+        db, _ = _make_db(cur)
+
+        result = db.get_collected_analytics_pairs(["abc123"])
+
+        assert isinstance(result, set)
+        assert ("abc123", "24h") in result
+        assert ("abc123", "48h") in result
+        assert len(result) == 2
+
+    def test_sql_queries_video_analytics_snapshots(self):
+        """SQL must target the video_analytics_snapshots table."""
+        cur = _make_cursor()
+        db, _ = _make_db(cur)
+
+        db.get_collected_analytics_pairs(["vid1", "vid2"])
+
+        sql_calls = _executed_sql(cur)
+        assert len(sql_calls) >= 1
+        assert "video_analytics_snapshots" in sql_calls[0]
+
+    def test_sql_uses_any_for_batch_lookup(self):
+        """SQL must use ANY(%s) for an efficient batch lookup."""
+        cur = _make_cursor()
+        db, _ = _make_db(cur)
+
+        db.get_collected_analytics_pairs(["vid1", "vid2"])
+
+        sql_calls = _executed_sql(cur)
+        combined = " ".join(sql_calls)
+        assert "ANY" in combined.upper()
+
+    def test_multiple_ids_and_no_existing_rows_returns_empty_set(self):
+        """GIVEN multiple ids and DB returns no rows
+        WHEN get_collected_analytics_pairs is called
+        THEN an empty set is returned (not an empty list)."""
+        cur = _make_cursor()
+        cur.fetchall.return_value = []
+        db, _ = _make_db(cur)
+
+        result = db.get_collected_analytics_pairs(["x1", "x2", "x3"])
+
+        assert result == set()
+        assert isinstance(result, set)

@@ -104,3 +104,94 @@ class TestVideoAnalyticsDagGraph:
 
         downstream_ids = {t.task_id for t in t2.downstream_list}
         assert t3.task_id in downstream_ids
+
+
+# ---------------------------------------------------------------------------
+# _fetch_analytics wiring: collected pairs from DB
+# ---------------------------------------------------------------------------
+
+
+class TestFetchAnalyticsUsesCollectedPairs:
+    """_fetch_analytics must query the DB for already-collected pairs and pass
+    them to pending_checkpoints() instead of using an always-empty set.
+
+    This saves Analytics API quota by skipping pairs we already have.
+    """
+
+    def test_fetch_analytics_calls_get_collected_pairs(self, monkeypatch):
+        """GIVEN candidate rows with youtube_video_ids
+        WHEN _fetch_analytics executes
+        THEN get_collected_analytics_pairs is called with those ids."""
+        from unittest.mock import MagicMock, patch
+
+        from congress_videos.video_analytics_dag import _fetch_analytics
+
+        candidate_rows = [
+            {
+                "chapter_id": 1,
+                "youtube_video_id": "abc123",
+                "youtube_upload_date": None,
+            }
+        ]
+
+        mock_ti = MagicMock()
+        mock_ti.xcom_pull.return_value = candidate_rows
+
+        get_collected_calls = []
+
+        def fake_get_collected(ids):
+            get_collected_calls.append(ids)
+            return {("abc123", "24h")}  # pretend 24h already collected
+
+        with patch(
+            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+            side_effect=fake_get_collected,
+        ), patch(
+            "congress_videos.modules.video_analytics.pending_checkpoints",
+            return_value=[],
+        ) as mock_pending:
+            _fetch_analytics(ti=mock_ti)
+
+        # get_collected_analytics_pairs must have been called
+        assert len(get_collected_calls) == 1
+        assert "abc123" in get_collected_calls[0]
+
+    def test_fetch_analytics_passes_collected_set_to_pending_checkpoints(
+        self, monkeypatch
+    ):
+        """The collected set from DB must be forwarded as the 'collected'
+        argument to pending_checkpoints(), NOT an empty set."""
+        from unittest.mock import MagicMock, call, patch
+
+        from congress_videos.video_analytics_dag import _fetch_analytics
+
+        candidate_rows = [
+            {
+                "chapter_id": 2,
+                "youtube_video_id": "xyz999",
+                "youtube_upload_date": None,
+            }
+        ]
+        already_collected = {("xyz999", "24h"), ("xyz999", "48h")}
+
+        mock_ti = MagicMock()
+        mock_ti.xcom_pull.return_value = candidate_rows
+
+        captured_pending_calls = []
+
+        def fake_pending(now, videos, collected):
+            captured_pending_calls.append(collected)
+            return []
+
+        with patch(
+            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+            return_value=already_collected,
+        ), patch(
+            "congress_videos.modules.video_analytics.pending_checkpoints",
+            side_effect=fake_pending,
+        ):
+            _fetch_analytics(ti=mock_ti)
+
+        # pending_checkpoints must have received the real collected set, not set()
+        assert len(captured_pending_calls) == 1
+        assert captured_pending_calls[0] == already_collected
