@@ -1,0 +1,4 @@
+# Heavy/binary audit artifacts — do not commit
+*.wav
+*.mp3
+clips/
