@@ -50,7 +50,7 @@ class TestRunTurnProposals:
 
     def test_missing_source_video_skips(self, monkeypatch):
         mod = _fresh()
-        monkeypatch.setattr(mod, "_find_source_video", lambda *a, **k: None)
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda *a, **k: None)
         generate = MagicMock()
         monkeypatch.setattr(mod, "generate_trim_proposals", generate)
         cursor = MagicMock()
@@ -64,7 +64,7 @@ class TestRunTurnProposals:
         from congress_videos.modules.trim_proposals import TrimProposal
 
         mod = _fresh()
-        monkeypatch.setattr(mod, "_find_source_video", lambda *a, **k: "/v/src.mp4")
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda *a, **k: "/v/src.mp4")
         monkeypatch.setattr(mod, "extract_audio_wav", lambda *a, **k: None)
 
         proposals = [
@@ -90,7 +90,7 @@ class TestRunTurnProposals:
 
     def test_wav_is_cleaned_up_after_processing(self, monkeypatch, tmp_path):
         mod = _fresh()
-        monkeypatch.setattr(mod, "_find_source_video", lambda *a, **k: "/v/src.mp4")
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda *a, **k: "/v/src.mp4")
         wav_file = tmp_path / "turn_7.wav"
         wav_file.write_bytes(b"RIFF")
 
@@ -119,7 +119,7 @@ class TestRunTurnProposals:
     def test_yamnet_fn_injected_into_generate(self, monkeypatch):
         """The yamnet_fn from trim_proposals_docker is wired into generate_trim_proposals."""
         mod = _fresh()
-        monkeypatch.setattr(mod, "_find_source_video", lambda *a, **k: "/v/src.mp4")
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda *a, **k: "/v/src.mp4")
         monkeypatch.setattr(mod, "extract_audio_wav", lambda *a, **k: None)
 
         captured_kwargs: dict = {}
@@ -139,17 +139,17 @@ class TestSelectTurns:
     def test_maps_view_rows_to_dicts(self, monkeypatch):
         mod = _fresh()
         cur = MagicMock()
-        cur.description = [
-            ("turn_id",), ("chapter_id",), ("video_id",),
-            ("session_date",), ("start_seconds",), ("end_seconds",),
-        ]
+        # PostgresConnection uses RealDictCursor, so rows are dict-like, not tuples.
+        # video_id comes from the JOIN to video_chapters; speaker_turns has no
+        # video_id or session_date column, so neither is selected here.
         cur.fetchall.return_value = [
-            (7, 3, "abc123", "2026-06-10", 600.0, 700.0)
+            {"turn_id": 7, "chapter_id": 3, "video_id": "abc123",
+             "start_seconds": 600.0, "end_seconds": 700.0}
         ]
         conn = MagicMock()
         conn.cursor.return_value.__enter__.return_value = cur
         pg = MagicMock()
-        pg.get_qualified_table.return_value = "development.speaker_turns"
+        pg.get_qualified_table.side_effect = lambda name: f"development.{name}"
         pg.get_connection.return_value.__enter__.return_value = conn
         monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
 
@@ -157,8 +157,12 @@ class TestSelectTurns:
 
         assert rows == [{
             "turn_id": 7, "chapter_id": 3, "video_id": "abc123",
-            "session_date": "2026-06-10", "start_seconds": 600.0, "end_seconds": 700.0,
+            "start_seconds": 600.0, "end_seconds": 700.0,
         }]
+        # Regression: video_id resolved via JOIN, session_date never selected.
+        select_sql = cur.execute.call_args_list[0].args[0].lower()
+        assert "join" in select_sql and "video_chapters" in select_sql
+        assert "session_date" not in select_sql
 
 
 class TestProcessTask:

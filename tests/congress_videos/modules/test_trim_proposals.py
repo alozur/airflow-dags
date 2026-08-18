@@ -600,7 +600,7 @@ class TestUpsertProposalsCursorContract:
             "end_seconds": 130.0,
         }
 
-        monkeypatch.setattr(mod, "_find_source_video", lambda *a, **k: "/v/src.mp4")
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda *a, **k: "/v/src.mp4")
         monkeypatch.setattr(mod, "extract_audio_wav", lambda *a, **k: None)
 
         # Return one real proposal so _upsert_proposals is actually called
