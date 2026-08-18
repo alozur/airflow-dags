@@ -188,6 +188,37 @@ class TestSingleIntervalAV1Reencode:
             assert cmd[c_idx + 1] != "copy"
 
 
+class TestSingleIntervalNonH264Reencode:
+    """Conservative policy: only h264 stream-copies; every other non-AV1 codec
+    (e.g. h265) still re-encodes rather than risking an invalid stream copy."""
+
+    def test_h265_forces_reencode_not_copy(self, monkeypatch):
+        plan = _plan([_ki(0.0, 600.0)], needs_reencode=False)
+        captured_cmds = []
+
+        def fake_run(cmd, **kwargs):
+            captured_cmds.append(list(cmd))
+            result = MagicMock()
+            result.returncode = 0
+            return result
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            "congress_videos.modules.materialization_executor.get_cached_codec",
+            lambda path, cache: "h265",
+        )
+        _patch_makedirs(monkeypatch)
+
+        execute_plan(plan, _SRC, _OUT, codec="h265")
+
+        cmd = captured_cmds[0]
+        # Re-encode path: libx264 present, no bare -c copy.
+        assert "libx264" in cmd
+        if "-c" in cmd:
+            c_idx = cmd.index("-c")
+            assert cmd[c_idx + 1] != "copy"
+
+
 # ---------------------------------------------------------------------------
 # 2.3 Multi-interval (excision): N segments + 1 concat join
 # ---------------------------------------------------------------------------

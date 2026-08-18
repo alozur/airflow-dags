@@ -46,7 +46,7 @@ from congress_videos.modules.video_splitter import (
     build_ffmpeg_cut_cmd,
     compute_ffmpeg_timeout,
 )
-from utils.codec_detection import get_cached_codec, reencode_for_codec
+from utils.codec_detection import get_cached_codec
 
 __all__ = [
     "execute_plan",
@@ -144,12 +144,13 @@ def _execute_single_interval(
 ) -> None:
     """Run a single-interval cut (stream-copy or re-encode depending on codec).
 
-    Design rule: only h264 sources use stream-copy (``-c copy``); AV1 and
-    unknown sources must re-encode via libx264/aac to produce a valid moov atom.
-    ``reencode_for_codec`` returns ``True`` only for h264; we invert that to
-    decide the ``reencode`` flag for ``build_ffmpeg_cut_cmd``:
+    Design rule: only h264 sources use stream-copy (``-c copy``). AV1, unknown,
+    and every other codec (h265, vp9, …) re-encode via libx264/aac. This is a
+    deliberately conservative policy: stream-copy is enabled only for the codec
+    proven safe in this pipeline, so a valid moov atom is always produced. The
+    ``reencode`` flag passed to ``build_ffmpeg_cut_cmd`` is therefore:
     - h264, no trims → ``reencode=False`` → stream-copy (fast, keyframe-snapped).
-    - AV1/unknown    → ``reencode=True``  → libx264/aac (safe, frame-accurate).
+    - anything else  → ``reencode=True``  → libx264/aac (safe, frame-accurate).
     """
     force_reencode = (codec != "h264")
 
