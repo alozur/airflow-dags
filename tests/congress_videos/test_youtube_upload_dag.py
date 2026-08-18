@@ -658,7 +658,7 @@ class TestTriggerThumbnailGeneration:
 
         trigger.assert_called_once_with(
             dag_id="generic_thumbnail_generator",
-            conf={"youtube_video_id": "42", **self.THUMBNAIL_CONFIG},
+            conf={"youtube_video_id": "42", **self.THUMBNAIL_CONFIG, "key_speakers": []},
             run_id="chapter_thumbnail_test_run",
         )
 
@@ -688,7 +688,7 @@ class TestTriggerThumbnailGeneration:
 
         trigger.assert_called_once_with(
             dag_id="generic_thumbnail_generator",
-            conf={"youtube_video_id": "42", **config_without_speaker},
+            conf={"youtube_video_id": "42", **config_without_speaker, "key_speakers": []},
             run_id="chapter_thumbnail_test_run",
         )
 
@@ -1097,3 +1097,89 @@ class TestTriggerThumbnailGenerationForwardsSrt:
         trigger_thumbnail_generation(ti, run_id="test_run")
 
         assert "srt_fragment" not in captured_confs[0]
+
+
+# ---------------------------------------------------------------------------
+# issue #91: title-speaker-attribution — key_speakers forwarding (T-05, T-06)
+# ---------------------------------------------------------------------------
+
+
+class TestTriggerThumbnailGenerationForwardsKeySpeakers:
+    """trigger_thumbnail_generation must forward key_speakers into child_conf."""
+
+    def _make_mock_run(self, mocker, captured_confs):
+        mock_run = MagicMock()
+        mock_run.run_id = "thumb_run_speakers"
+        mock_run.state = "success"
+        mock_run.refresh_from_db = MagicMock()
+
+        def _fake_trigger(dag_id, conf, run_id):
+            captured_confs.append(conf)
+            return mock_run
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.trigger_dag_api",
+            side_effect=_fake_trigger,
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.XCom.get_one",
+            return_value={
+                "success": True,
+                "chapter_id": 42,
+                "output_path": "/some/path.png",
+                "title": "Un título",
+            },
+        )
+        return mock_run
+
+    def test_key_speakers_forwarded_when_present(self, mocker):
+        """When thumbnail_config has key_speakers, child_conf must include the list."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        captured_confs = []
+        self._make_mock_run(mocker, captured_confs)
+
+        ti = _make_ti(
+            {
+                "thumbnail_config": {
+                    "chapter_id": 42,
+                    "debate_summary": "un resumen",
+                    "session": "Sesión 80",
+                    "domain": "congreso",
+                    "slug": None,
+                    "key_speakers": ["Cervera Pinar"],
+                }
+            }
+        )
+
+        trigger_thumbnail_generation(ti, run_id="test_run")
+
+        assert len(captured_confs) == 1
+        assert captured_confs[0].get("key_speakers") == ["Cervera Pinar"]
+
+    def test_key_speakers_forwarded_as_empty_list_when_absent(self, mocker):
+        """When thumbnail_config lacks key_speakers, child_conf must have key_speakers=[]."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        captured_confs = []
+        self._make_mock_run(mocker, captured_confs)
+
+        ti = _make_ti(
+            {
+                "thumbnail_config": {
+                    "chapter_id": 42,
+                    "debate_summary": "un resumen",
+                    "session": "Sesión 80",
+                    "domain": "congreso",
+                    "slug": None,
+                    # No key_speakers key
+                }
+            }
+        )
+
+        trigger_thumbnail_generation(ti, run_id="test_run")
+
+        assert len(captured_confs) == 1
+        assert "key_speakers" in captured_confs[0]
+        assert captured_confs[0]["key_speakers"] == []

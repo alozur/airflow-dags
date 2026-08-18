@@ -2949,3 +2949,239 @@ class TestArtDirectArchetypeWiring:
         assert result["archetype"] == "generico", (
             "Fallback brief archetype must be 'generico'"
         )
+
+
+# ---------------------------------------------------------------------------
+# issue #91: title-speaker-attribution Phase A — ai_prompts constants
+# ---------------------------------------------------------------------------
+
+
+class TestKeywordTupleContainsNoPoliticianNames:
+    """T-01 RED: TITLE_PRIORITY_KEYWORDS must not contain politician proper names."""
+
+    def test_keyword_tuple_contains_no_politician_names(self) -> None:
+        """TITLE_PRIORITY_KEYWORDS must not include Sánchez, Feijóo, or Yolanda Díaz."""
+        from congress_videos.config.ai_prompts import TITLE_PRIORITY_KEYWORDS
+
+        assert "Sánchez" not in TITLE_PRIORITY_KEYWORDS, (
+            "TITLE_PRIORITY_KEYWORDS must not contain 'Sánchez'"
+        )
+        assert "Feijóo" not in TITLE_PRIORITY_KEYWORDS, (
+            "TITLE_PRIORITY_KEYWORDS must not contain 'Feijóo'"
+        )
+        assert "Yolanda Díaz" not in TITLE_PRIORITY_KEYWORDS, (
+            "TITLE_PRIORITY_KEYWORDS must not contain 'Yolanda Díaz'"
+        )
+        assert "corrupción" in TITLE_PRIORITY_KEYWORDS, (
+            "TITLE_PRIORITY_KEYWORDS must still contain 'corrupción'"
+        )
+
+
+class TestSystemPromptPrizacausaClauseNoPoliticians:
+    """T-02 RED: THUMBNAIL_TITLE_SYSTEM_PROMPT PRIORIZA clause must name no politicians."""
+
+    def test_system_prompt_prioriza_clause_names_no_politicians(self) -> None:
+        """THUMBNAIL_TITLE_SYSTEM_PROMPT must not contain politician names Sánchez/Feijóo/Yolanda Díaz."""
+        from congress_videos.config.ai_prompts import THUMBNAIL_TITLE_SYSTEM_PROMPT
+
+        assert "Sánchez" not in THUMBNAIL_TITLE_SYSTEM_PROMPT, (
+            "THUMBNAIL_TITLE_SYSTEM_PROMPT must not contain 'Sánchez'"
+        )
+        assert "Feijóo" not in THUMBNAIL_TITLE_SYSTEM_PROMPT, (
+            "THUMBNAIL_TITLE_SYSTEM_PROMPT must not contain 'Feijóo'"
+        )
+        assert "Yolanda Díaz" not in THUMBNAIL_TITLE_SYSTEM_PROMPT, (
+            "THUMBNAIL_TITLE_SYSTEM_PROMPT must not contain 'Yolanda Díaz'"
+        )
+        assert any(
+            kw in THUMBNAIL_TITLE_SYSTEM_PROMPT
+            for kw in ("corrupción", "PRIORIZA", "prioriza")
+        ), (
+            "THUMBNAIL_TITLE_SYSTEM_PROMPT must still contain a retained topic word"
+        )
+
+
+class TestSpeakersInstructionIsProhibition:
+    """T-03 RED: THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION must be a hard prohibition."""
+
+    def test_speakers_instruction_is_hard_prohibition(self) -> None:
+        """THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION must contain hard-prohibition language, not soft hint."""
+        from congress_videos.config.ai_prompts import THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION
+
+        prohibition_phrases = ("SOLO puedes nombrar", "SOLO puedes", "solo puedes nombrar")
+        assert any(p in THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION for p in prohibition_phrases), (
+            "THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION must contain hard prohibition "
+            f"(one of {prohibition_phrases})"
+        )
+        soft_phrases = ("Si es natural", "menciona a alguno")
+        assert not any(p in THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION for p in soft_phrases), (
+            "THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION must NOT contain soft suggestion text"
+        )
+
+
+# ---------------------------------------------------------------------------
+# issue #91: title-speaker-attribution Phase C — _real_speakers helper
+# ---------------------------------------------------------------------------
+
+
+class TestRealSpeakersHelper:
+    """T-08 RED: _real_speakers pure helper — various input scenarios."""
+
+    def test_none_returns_empty_list(self) -> None:
+        """_real_speakers(None) must return []."""
+        from congress_videos.modules.thumbnail_generation import _real_speakers
+
+        assert _real_speakers(None) == []
+
+    def test_empty_list_returns_empty_list(self) -> None:
+        """_real_speakers([]) must return []."""
+        from congress_videos.modules.thumbnail_generation import _real_speakers
+
+        assert _real_speakers([]) == []
+
+    def test_empty_string_entry_dropped(self) -> None:
+        """_real_speakers(['']) must return [] (empty string is not a real name)."""
+        from congress_videos.modules.thumbnail_generation import _real_speakers
+
+        assert _real_speakers([""]) == []
+
+    def test_real_name_string_returned(self) -> None:
+        """_real_speakers(['Cervera Pinar']) must return ['Cervera Pinar']."""
+        from congress_videos.modules.thumbnail_generation import _real_speakers
+
+        assert _real_speakers(["Cervera Pinar"]) == ["Cervera Pinar"]
+
+    def test_dict_entry_extracts_name(self) -> None:
+        """_real_speakers([{'name': 'Ana Pastor'}]) must return ['Ana Pastor']."""
+        from congress_videos.modules.thumbnail_generation import _real_speakers
+
+        assert _real_speakers([{"name": "Ana Pastor"}]) == ["Ana Pastor"]
+
+    def test_placeholder_interviniente_no_identificado_filtered(self) -> None:
+        """_real_speakers(['Interviniente no identificado']) must return []."""
+        from congress_videos.modules.thumbnail_generation import _real_speakers
+
+        assert _real_speakers(["Interviniente no identificado"]) == []
+
+    def test_placeholder_uppercase_filtered(self) -> None:
+        """_real_speakers(['INTERVINIENTE NO IDENTIFICADO']) must return [] (case-insensitive)."""
+        from congress_videos.modules.thumbnail_generation import _real_speakers
+
+        assert _real_speakers(["INTERVINIENTE NO IDENTIFICADO"]) == []
+
+    def test_mixed_placeholder_and_real_returns_real_only(self) -> None:
+        """_real_speakers(['Interviniente no identificado', 'Cervera Pinar']) → ['Cervera Pinar']."""
+        from congress_videos.modules.thumbnail_generation import _real_speakers
+
+        result = _real_speakers(["Interviniente no identificado", "Cervera Pinar"])
+        assert result == ["Cervera Pinar"]
+
+    def test_ponente_desconocido_filtered(self) -> None:
+        """_real_speakers(['Ponente desconocido']) must return []."""
+        from congress_videos.modules.thumbnail_generation import _real_speakers
+
+        assert _real_speakers(["Ponente desconocido"]) == []
+
+    def test_orador_desconocido_filtered(self) -> None:
+        """_real_speakers(['Orador desconocido']) must return []."""
+        from congress_videos.modules.thumbnail_generation import _real_speakers
+
+        assert _real_speakers(["Orador desconocido"]) == []
+
+
+# ---------------------------------------------------------------------------
+# issue #91: title-speaker-attribution Phase C — generate_title 3-state branch
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateTitlePromptInjection:
+    """T-09 RED: generate_title injects correct speaker block based on 3-state logic."""
+
+    def _make_best(self) -> dict:
+        return {"style": "A", "prompt": "debate parlamentario"}
+
+    def _make_cfg(self) -> dict:
+        return {
+            "styles": [],
+            "participants_lookup": lambda slug: None,
+            "party_logo_map": None,
+        }
+
+    def _capture_prompt(self, mocker, key_speakers):
+        """Helper: call generate_title and return the first captured user_prompt."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        captured: list[str] = []
+
+        def _side(system_prompt, user_prompt, **kw):
+            captured.append(user_prompt)
+            return {"data": {"title": "Un título válido"}, "error": None}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side,
+        )
+        generate_title(
+            "Debate summary",
+            self._make_best(),
+            self._make_cfg(),
+            key_speakers=key_speakers,
+        )
+        return captured[0] if captured else ""
+
+    def test_real_speaker_injects_prohibition_not_nameless(self, mocker) -> None:
+        """key_speakers=['Cervera Pinar'] → user_prompt has prohibition + name, no nameless block."""
+        prompt = self._capture_prompt(mocker, ["Cervera Pinar"])
+
+        assert "SOLO puedes nombrar" in prompt or "solo puedes nombrar" in prompt.lower(), (
+            "Prompt must contain hard prohibition phrase when real speaker present"
+        )
+        assert "Cervera Pinar" in prompt, "Prompt must name the real speaker"
+        assert "no hay ponentes identificados" not in prompt.lower(), (
+            "Nameless instruction must NOT appear when real speaker is present"
+        )
+
+    def test_all_placeholder_injects_nameless_not_prohibition(self, mocker) -> None:
+        """key_speakers=['Interviniente no identificado'] → prompt has nameless instruction, no name."""
+        prompt = self._capture_prompt(mocker, ["Interviniente no identificado"])
+
+        assert "no hay ponentes identificados" in prompt.lower(), (
+            "Nameless instruction must appear when all speakers are placeholders"
+        )
+        assert "Interviniente no identificado" not in prompt or (
+            "SOLO puedes nombrar" not in prompt
+        ), (
+            "Placeholder name must not be listed in a speaker prohibition block"
+        )
+
+    def test_mixed_list_uses_real_name_prohibition(self, mocker) -> None:
+        """key_speakers=['Interviniente no identificado', 'Cervera Pinar'] → prohibition with real name only."""
+        prompt = self._capture_prompt(
+            mocker, ["Interviniente no identificado", "Cervera Pinar"]
+        )
+
+        assert "Cervera Pinar" in prompt, "Real name must appear in prohibition"
+        assert "no hay ponentes identificados" not in prompt.lower(), (
+            "Nameless instruction must NOT appear when real speaker exists"
+        )
+        assert "Interviniente no identificado" not in prompt or (
+            "SOLO puedes nombrar" in prompt
+        ), (
+            "Placeholder must not appear in the speaker list sent to the model"
+        )
+
+    def test_none_key_speakers_injects_nameless(self, mocker) -> None:
+        """key_speakers=None → user_prompt MUST contain nameless instruction (same as empty list)."""
+        prompt = self._capture_prompt(mocker, None)
+
+        assert "no hay ponentes identificados" in prompt.lower(), (
+            "Nameless instruction must appear when key_speakers=None"
+        )
+
+    def test_empty_key_speakers_injects_nameless(self, mocker) -> None:
+        """key_speakers=[] → user_prompt MUST contain nameless instruction (same as None)."""
+        prompt = self._capture_prompt(mocker, [])
+
+        assert "no hay ponentes identificados" in prompt.lower(), (
+            "Nameless instruction must appear when key_speakers=[]"
+        )
