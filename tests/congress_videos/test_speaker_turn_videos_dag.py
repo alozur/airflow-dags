@@ -63,9 +63,11 @@ class TestSelectTurns:
     def _make_pg_mock(self, monkeypatch, mod, turns_rows, already_materialized_ids):
         """Wire a mock PostgresConnection that returns turns_rows and already_materialized_ids."""
         cur = MagicMock()
-        # Two queries: one for turns, one for already-materialized ids
+        # Two queries: one for turns, one for already-materialized ids.
+        # video_id comes from the JOIN to video_chapters; speaker_turns has no
+        # video_id or session_date column.
         cur.description = [
-            ("turn_id",), ("chapter_id",), ("video_id",), ("session_date",),
+            ("turn_id",), ("chapter_id",), ("video_id",),
             ("start_seconds",), ("end_seconds",),
         ]
         # First fetchall returns speaker_turns rows
@@ -83,8 +85,8 @@ class TestSelectTurns:
     def test_already_materialized_turns_excluded(self, monkeypatch):
         mod = _fresh()
         turns_rows = [
-            (1, 10, "vid1", "2026-01-01", 0.0, 100.0),
-            (2, 10, "vid1", "2026-01-01", 100.0, 200.0),
+            (1, 10, "vid1", 0.0, 100.0),
+            (2, 10, "vid1", 100.0, 200.0),
         ]
         self._make_pg_mock(monkeypatch, mod, turns_rows, already_materialized_ids=[1])
 
@@ -105,10 +107,36 @@ class TestSelectTurns:
         assert 1 not in returned_ids, "Already-materialized turn_id 1 must be excluded"
         assert 2 in returned_ids, "Non-materialized turn_id 2 must be included"
 
+    def test_select_joins_video_chapters_and_omits_session_date(self, monkeypatch):
+        """Regression: speaker_turns has no video_id/session_date columns.
+
+        video_id must be resolved via a JOIN to video_chapters, and
+        session_date must never be selected (it does not exist anywhere).
+        A prod run failed with UndefinedColumn before this fix.
+        """
+        mod = _fresh()
+        cur = self._make_pg_mock(
+            monkeypatch, mod,
+            turns_rows=[(1, 10, "vid1", 0.0, 100.0)],
+            already_materialized_ids=[],
+        )
+
+        ti = MagicMock()
+        ti.xcom_push.side_effect = lambda key, value: None
+        mod._select_task(ti=ti, dag_run=MagicMock(conf={"chapter_id": 10}))
+
+        select_sql = cur.execute.call_args_list[0].args[0].lower()
+        assert "join" in select_sql and "video_chapters" in select_sql, (
+            f"select must JOIN video_chapters to resolve video_id; got: {select_sql}"
+        )
+        assert "session_date" not in select_sql, (
+            f"session_date is not a real column and must not be selected; got: {select_sql}"
+        )
+
     def test_no_turns_when_all_already_materialized(self, monkeypatch):
         mod = _fresh()
         turns_rows = [
-            (5, 10, "vid1", "2026-01-01", 0.0, 100.0),
+            (5, 10, "vid1", 0.0, 100.0),
         ]
         self._make_pg_mock(monkeypatch, mod, turns_rows, already_materialized_ids=[5])
 
@@ -133,19 +161,18 @@ class TestSelectTurns:
 
 class TestMaterializeTurns:
     def _turn(self, turn_id=7, chapter_id=3, video_id="vid1",
-              session_date="2026-01-01", start=600.0, end=700.0):
+              start=600.0, end=700.0):
         return {
             "turn_id": turn_id,
             "chapter_id": chapter_id,
             "video_id": video_id,
-            "session_date": session_date,
             "start_seconds": start,
             "end_seconds": end,
         }
 
     def test_missing_source_video_skips_without_ffmpeg(self, monkeypatch):
         mod = _fresh()
-        monkeypatch.setattr(mod, "_find_source_video", lambda date, vid: None)
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: None)
         execute_plan = MagicMock()
         monkeypatch.setattr(mod, "execute_plan", execute_plan)
 
@@ -167,7 +194,7 @@ class TestMaterializeTurns:
 
     def test_inserts_row_on_success(self, monkeypatch):
         mod = _fresh()
-        monkeypatch.setattr(mod, "_find_source_video", lambda date, vid: "/data/src.mp4")
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: "/data/src.mp4")
 
         plan_mock = MagicMock()
         plan_mock.turn_ids = (7,)
@@ -209,7 +236,7 @@ class TestMaterializeTurns:
 
     def test_no_insert_on_execute_plan_failure(self, monkeypatch):
         mod = _fresh()
-        monkeypatch.setattr(mod, "_find_source_video", lambda date, vid: "/data/src.mp4")
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: "/data/src.mp4")
 
         plan_mock = MagicMock()
         plan_mock.turn_ids = (7,)

@@ -36,21 +36,48 @@ Pipeline::
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-from congress_videos.config.paths import get_turn_video_path
+from congress_videos.config.paths import DOWNLOADS_DIR, get_turn_video_path
 from congress_videos.modules.materialization import plan_turn_materialization
 from congress_videos.modules.materialization_executor import execute_plan
-from congress_videos.modules.vad_helpers import _find_source_video
 from utils.codec_detection import get_cached_codec
 from utils.postgres_helpers import PostgresConnection
 
 logger = logging.getLogger(__name__)
 
 DAG_ID = "speaker_turn_videos"
+
+_MEDIA_SUFFIXES = (".mp4", ".mkv", ".webm")
+
+
+def _find_source_video_any_date(video_id: str) -> str | None:
+    """Locate the source media for a video without knowing its session date.
+
+    ``speaker_turns`` carries no recording date, so scan every date folder
+    under ``DOWNLOADS_DIR`` for ``downloads/{date}/{video_id}/`` and return the
+    first real media file (mirrors ``reap_clip_preparer``'s date-less lookup).
+    """
+    if not os.path.isdir(DOWNLOADS_DIR):
+        return None
+    for date_folder in sorted(os.listdir(DOWNLOADS_DIR)):
+        video_dir = os.path.join(DOWNLOADS_DIR, date_folder, str(video_id))
+        if not os.path.isdir(video_dir):
+            continue
+        for filename in sorted(os.listdir(video_dir)):
+            if filename.endswith(_MEDIA_SUFFIXES) and "chapter_video" not in filename:
+                return os.path.join(video_dir, filename)
+    return None
+
+
+def _date_from_source_path(source_path: str) -> str:
+    """Extract the ``{date}`` segment from ``{DOWNLOADS_DIR}/{date}/{video_id}/...``."""
+    rel = os.path.relpath(source_path, DOWNLOADS_DIR)
+    return rel.split(os.sep)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -72,25 +99,29 @@ def _select_task(**context) -> list[dict]:
 
     pg = PostgresConnection()
     turns_table = pg.get_qualified_table("speaker_turns")
+    chapters_table = pg.get_qualified_table("video_chapters")
     stv_table = pg.get_qualified_table("speaker_turn_videos")
-    cols = "turn_id, chapter_id, video_id, session_date, start_seconds, end_seconds"
+    # video_id lives on video_chapters, not speaker_turns; join to resolve it.
+    cols = "st.turn_id, st.chapter_id, vc.video_id, st.start_seconds, st.end_seconds"
+    base = (
+        f"SELECT {cols} FROM {turns_table} st "
+        f"JOIN {chapters_table} vc ON vc.chapter_id = st.chapter_id"
+    )
 
     with pg.get_connection() as conn:
         with conn.cursor() as cur:
             if chapter_id is not None:
                 cur.execute(
-                    f"SELECT {cols} FROM {turns_table} WHERE chapter_id = %s ORDER BY turn_id",
+                    f"{base} WHERE st.chapter_id = %s ORDER BY st.turn_id",
                     (chapter_id,),
                 )
             elif video_id is not None:
                 cur.execute(
-                    f"SELECT {cols} FROM {turns_table} WHERE video_id = %s ORDER BY turn_id",
+                    f"{base} WHERE vc.video_id = %s ORDER BY st.turn_id",
                     (str(video_id),),
                 )
             else:
-                cur.execute(
-                    f"SELECT {cols} FROM {turns_table} ORDER BY turn_id LIMIT 10"
-                )
+                cur.execute(f"{base} ORDER BY st.turn_id LIMIT 10")
             names = [d[0] for d in cur.description]
             turns = [dict(zip(names, row)) for row in cur.fetchall()]
 
@@ -154,17 +185,20 @@ def _materialize_task(**context) -> dict:
             first_turn = next(
                 t for t in turns if t["turn_id"] == plan.turn_ids[0]
             )
-            session_date = str(first_turn.get("session_date"))
             video_id = str(first_turn["video_id"])
 
-            source_path = _find_source_video(session_date, video_id)
+            source_path = _find_source_video_any_date(video_id)
             if not source_path:
                 logger.warning(
-                    "speaker_turn_videos: no source video for date=%s video_id=%s — skipping plan turn_ids=%s",
-                    session_date, video_id, plan.turn_ids,
+                    "speaker_turn_videos: no source video for video_id=%s — skipping plan turn_ids=%s",
+                    video_id, plan.turn_ids,
                 )
                 summary["skipped"] += len(plan.turn_ids)
                 continue
+
+            # Recording date is not stored in the DB; derive it from the folder
+            # the source video was found in, for the canonical output path.
+            session_date = _date_from_source_path(source_path)
 
             # Derive output path using first (naming) turn_id
             output_path = get_turn_video_path(
