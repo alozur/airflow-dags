@@ -235,6 +235,7 @@ def trigger_thumbnail_generation(ti, **context) -> str | None:
         "youtube_video_id": str(chapter_id),
         **{key: thumbnail_config[key] for key in required_values},
         "slug": thumbnail_config.get("slug"),
+        "key_speakers": thumbnail_config.get("key_speakers") or [],
     }
     if "srt_fragment" in thumbnail_config:
         child_conf["srt_fragment"] = thumbnail_config["srt_fragment"]

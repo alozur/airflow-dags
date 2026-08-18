@@ -223,12 +223,11 @@ ART_DIRECTION_RETRY_INSTRUCTION = (
 # Thumbnail Title Generation (Pikzels + OpenAI pipeline)
 
 # Editorial keyword lists — edit these to steer LLM word choice at the persona level.
-# Source: issue #60 verbatim.
+# Source: issue #60 verbatim. IMPORTANT: keep topic/register words only — NO proper
+# politician names. Proper names are constrained via key_speakers injection at
+# prompt time (see generate_title + THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION below).
 TITLE_PRIORITY_KEYWORDS: tuple[str, ...] = (
     "corrupción",
-    "Sánchez",
-    "Feijóo",
-    "Yolanda Díaz",
 )
 
 TITLE_WORDS_TO_AVOID: tuple[str, ...] = (
@@ -238,15 +237,33 @@ TITLE_WORDS_TO_AVOID: tuple[str, ...] = (
     "eutanasia",
 )
 
-# Soft speaker hint injected into the user prompt when key_speakers is truthy.
+# Known placeholder tokens for unidentified speakers. Match case-insensitively on
+# .strip().lower(). Extend this set if new tokens surface in production data.
+SPEAKER_PLACEHOLDERS: frozenset[str] = frozenset({
+    "interviniente no identificado",
+    "ponente desconocido",
+    "orador desconocido",
+})
+
+# Hard prohibition injected into the user prompt when real speakers (non-placeholder)
+# are present. ONLY names from this list may appear in the title.
 THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION = (
-    "Si es natural, menciona a alguno de estos protagonistas del debate:\n{speaker_list}"
+    "SOLO puedes nombrar a personas de esta lista de ponentes del debate. "
+    "No atribuyas la frase a nadie que no aparezca aquí:\n{speaker_list}"
+)
+
+# Injected into the user prompt when key_speakers is non-empty but ALL entries are
+# placeholder tokens (or key_speakers is falsy). The title must not name any person.
+THUMBNAIL_TITLE_NAMELESS_INSTRUCTION = (
+    "INSTRUCCIÓN CRÍTICA: no hay ponentes identificados en este debate. "
+    "El título NO puede empezar con el nombre de una persona; "
+    "usa formato sin nombre ([Verbo] + complemento)."
 )
 
 THUMBNAIL_TITLE_SYSTEM_PROMPT = (
     "Eres un redactor político experto en titulares de alto impacto para YouTube. "
     "Escribe titulares declarativos en formato de noticias: [Nombre] + verbo de acción + complemento o cita. "
-    "Ejemplos correctos: «Sánchez anuncia recortes en pensiones», «Feijóo acusa al Gobierno de corrupción». "
+    "Ejemplos correctos: «El portavoz anuncia recortes en pensiones», «El líder de la oposición acusa al Gobierno de corrupción». "
     "NUNCA uses signos de interrogación (¿?): ningún titular puede ser una pregunta. "
     "Los títulos deben generar urgencia y curiosidad sin perder rigor informativo. "
     "Varía el registro emocional entre títulos consecutivos: alterna entre urgencia, pérdida, "
