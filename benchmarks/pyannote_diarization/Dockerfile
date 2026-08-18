@@ -33,12 +33,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/model-cache \
     MODEL_CACHE_DIR=/model-cache \
     HOME=/tmp \
-    DIARIZE_API_PORT=8080
+    DIARIZE_API_PORT=8080 \
+    IDLE_TIMEOUT_SECONDS=900
 
 WORKDIR /app
 USER benchmark
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:${DIARIZE_API_PORT:-8080}/health || exit 1
 
 ENTRYPOINT ["sh", "-c", "exec uvicorn server:app --host 0.0.0.0 --port ${DIARIZE_API_PORT:-8080}"]

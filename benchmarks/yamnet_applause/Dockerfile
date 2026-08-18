@@ -29,12 +29,13 @@ RUN chmod 0555 /app/yamnet_applause.py /app/server.py
 ENV PYTHONDONTWRITEBYTECODE=1 \
     MODEL_CACHE_DIR=/model-cache \
     HOME=/tmp \
-    YAMNET_API_PORT=8081
+    YAMNET_API_PORT=8081 \
+    IDLE_TIMEOUT_SECONDS=900
 
 WORKDIR /app
 USER benchmark
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:${YAMNET_API_PORT:-8081}/health || exit 1
 
 ENTRYPOINT ["sh", "-c", "exec uvicorn server:app --host 0.0.0.0 --port ${YAMNET_API_PORT:-8081}"]

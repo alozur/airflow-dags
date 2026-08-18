@@ -21,6 +21,7 @@ services:
       HF_HOME: /model-cache
       MODEL_CACHE_DIR: /model-cache
       DIARIZE_API_PORT: "8080"
+      IDLE_TIMEOUT_SECONDS: "${IDLE_TIMEOUT_SECONDS:-900}"
     volumes:
       - hf_home:/model-cache
     networks:
@@ -31,7 +32,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 120s
+      start_period: 30s
 
   yamnet-api:
     build:
@@ -45,6 +46,7 @@ services:
     environment:
       MODEL_CACHE_DIR: /model-cache
       YAMNET_API_PORT: "8081"
+      IDLE_TIMEOUT_SECONDS: "${IDLE_TIMEOUT_SECONDS:-900}"
     volumes:
       - yamnet_model_cache:/model-cache
     networks:
@@ -55,4 +57,4 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 15s
