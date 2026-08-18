@@ -4,14 +4,18 @@ Tokens are organized per channel and per purpose so each purpose holds only
 the OAuth scopes it needs (least privilege). The ``analytics`` purpose is
 read-only, so an analytics token cannot upload, edit, or delete anything.
 
+Tokens are stored as portable JSON (``Credentials.to_json()``), which is
+stable across google-auth versions — unlike pickle, which breaks when the
+writer and reader run different google-auth majors.
+
 On-disk layout (runtime, under the Airflow data dir)::
 
-    {YOUTUBE_TOKENS_DIR}/{channel}/{purpose}.pickle
+    {YOUTUBE_TOKENS_DIR}/{channel}/{purpose}.json
 
 Examples::
 
-    .../youtube_tokens/congreso/upload.pickle      # upload + manage scopes
-    .../youtube_tokens/congreso/analytics.pickle    # yt-analytics.readonly
+    .../youtube_tokens/congreso-es-tv/upload.json      # upload + manage scopes
+    .../youtube_tokens/congreso-es-tv/analytics.json    # yt-analytics.readonly
 
 Onboard a new channel by adding an entry to ``CHANNELS``; add a new token
 purpose by adding an entry to ``TOKEN_SCOPES``.
@@ -94,7 +98,7 @@ def get_token_path(
     *,
     tokens_dir: str = YOUTUBE_TOKENS_DIR,
 ) -> str:
-    """Return the on-disk path for a channel+purpose token pickle.
+    """Return the on-disk path for a channel+purpose token (JSON).
 
     This does not check for existence. Use :func:`resolve_token_path` when a
     backward-compatible fallback to the legacy single-token file is wanted.
@@ -104,7 +108,7 @@ def get_token_path(
     """
     _validate_channel(channel)
     _validate_purpose(purpose)
-    return f"{tokens_dir}/{channel}/{purpose}.pickle"
+    return f"{tokens_dir}/{channel}/{purpose}.json"
 
 
 def resolve_token_path(

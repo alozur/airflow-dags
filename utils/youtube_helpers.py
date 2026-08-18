@@ -9,6 +9,7 @@ Can be used across multiple projects and YouTube channels by providing
 different token files.
 """
 
+import json
 import logging
 import os
 import pickle
@@ -25,12 +26,63 @@ from googleapiclient.http import MediaFileUpload
 # =============================================================================
 
 
+def _save_credentials(credentials: Credentials, token_file: str) -> None:
+    """Persist credentials, choosing format by extension.
+
+    ``.json`` tokens are written with ``Credentials.to_json()`` (portable
+    across google-auth versions); any other extension is treated as the
+    legacy pickle format.
+    """
+    if token_file.endswith(".json"):
+        with open(token_file, "w") as fh:
+            fh.write(credentials.to_json())
+    else:
+        with open(token_file, "wb") as fh:
+            pickle.dump(credentials, fh)
+
+
+def _load_credentials(token_file: str) -> Credentials:
+    """Load OAuth credentials from a token file, refreshing if expired.
+
+    Supports both the portable ``.json`` format (preferred) and the legacy
+    ``.pickle`` format, chosen by file extension. When the token is expired
+    and refreshable, it is refreshed and saved back in the SAME format.
+
+    Raises:
+        FileNotFoundError: If the token file does not exist.
+    """
+    if not os.path.exists(token_file):
+        raise FileNotFoundError(
+            f"Token file not found: {token_file}. "
+            "Please authenticate first using generate_youtube_token.py."
+        )
+
+    logging.info(f"Loading YouTube credentials from {token_file}")
+
+    if token_file.endswith(".json"):
+        with open(token_file) as fh:
+            info = json.load(fh)
+        credentials = Credentials.from_authorized_user_info(info, info.get("scopes"))
+    else:
+        with open(token_file, "rb") as token:
+            credentials = pickle.load(token)
+
+    if credentials.expired and credentials.refresh_token:
+        logging.info("Token expired. Refreshing...")
+        credentials.refresh(Request())
+        _save_credentials(credentials, token_file)
+        logging.info("Token refreshed and saved")
+
+    return credentials
+
+
 def get_authenticated_youtube_service(token_file: str):
     """
-    Get authenticated YouTube API service using saved token.
+    Get authenticated YouTube API service using a saved token.
 
     Args:
-        token_file: Path to the token pickle file
+        token_file: Path to the token file (``.json`` preferred, ``.pickle``
+            legacy). Chosen by extension.
 
     Returns:
         Resource: Authenticated YouTube API service object
@@ -39,47 +91,24 @@ def get_authenticated_youtube_service(token_file: str):
         FileNotFoundError: If token file doesn't exist
         Exception: If authentication fails
     """
-    if not os.path.exists(token_file):
-        raise FileNotFoundError(
-            f"Token file not found: {token_file}. "
-            "Please authenticate first using the test script."
-        )
-
-    logging.info(f"Loading YouTube credentials from {token_file}")
-
-    # Load credentials from token file
-    with open(token_file, 'rb') as token:
-        credentials = pickle.load(token)
-
-    # Refresh token if expired
-    if credentials.expired and credentials.refresh_token:
-        logging.info("Token expired. Refreshing...")
-        credentials.refresh(Request())
-
-        # Save refreshed token
-        with open(token_file, 'wb') as token:
-            pickle.dump(credentials, token)
-        logging.info("Token refreshed and saved")
-
-    # Build and return YouTube service
+    credentials = _load_credentials(token_file)
     youtube = build('youtube', 'v3', credentials=credentials)
     logging.info("YouTube service authenticated successfully")
-
     return youtube
 
 
 def get_youtube_analytics_service(token_file: str):
     """
-    Get authenticated YouTube Analytics API service using saved OAuth token.
+    Get authenticated YouTube Analytics API service using a saved OAuth token.
 
-    Reuses the same pickle-load and token-refresh path as
+    Reuses the same load-and-refresh path as
     ``get_authenticated_youtube_service`` but targets the
     ``youtubeAnalytics v2`` API with ``yt-analytics.readonly`` scope.
 
     Args:
-        token_file: Path to the OAuth token pickle file.  The token must
-            have been generated with the ``yt-analytics.readonly`` scope
-            (see ``generate_youtube_token.py``).
+        token_file: Path to the OAuth token file (``.json`` preferred,
+            ``.pickle`` legacy). The token must have been generated with the
+            ``yt-analytics.readonly`` scope (see ``generate_youtube_token.py``).
 
     Returns:
         Resource: Authenticated YouTube Analytics API service object.
@@ -88,28 +117,9 @@ def get_youtube_analytics_service(token_file: str):
         FileNotFoundError: If the token file does not exist.
         Exception: If authentication or service construction fails.
     """
-    if not os.path.exists(token_file):
-        raise FileNotFoundError(
-            f"Token file not found: {token_file}. "
-            "Please authenticate first using the token generation script."
-        )
-
-    logging.info(f"Loading YouTube Analytics credentials from {token_file}")
-
-    with open(token_file, 'rb') as token:
-        credentials = pickle.load(token)
-
-    if credentials.expired and credentials.refresh_token:
-        logging.info("Token expired. Refreshing...")
-        credentials.refresh(Request())
-
-        with open(token_file, 'wb') as token:
-            pickle.dump(credentials, token)
-        logging.info("Token refreshed and saved")
-
+    credentials = _load_credentials(token_file)
     service = build('youtubeAnalytics', 'v2', credentials=credentials)
     logging.info("YouTube Analytics service authenticated successfully")
-
     return service
 
 

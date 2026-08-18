@@ -47,9 +47,9 @@ class TestParseArgs:
 
 
 class TestLocalTokenPath:
-    def test_builds_channel_purpose_pickle(self):
+    def test_builds_channel_purpose_json(self):
         path = gen.local_token_path("congreso-es-tv", "analytics")
-        assert path.name == "analytics.pickle"
+        assert path.name == "analytics.json"
         assert path.parent.name == "congreso-es-tv"
         assert path.parent.parent.name == "youtube_tokens"
 

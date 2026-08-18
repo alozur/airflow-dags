@@ -26,11 +26,11 @@ Prerequisites:
 """
 
 import argparse
-import pickle
 import sys
 from pathlib import Path
 
 from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 # Make the project importable when run as a standalone script.
@@ -54,8 +54,13 @@ LOCAL_TOKENS_DIR = PROJECT_ROOT / "youtube_tokens"
 
 
 def local_token_path(channel: str, purpose: str) -> Path:
-    """Return the local pickle path for a channel+purpose token."""
-    return LOCAL_TOKENS_DIR / channel / f"{purpose}.pickle"
+    """Return the local JSON path for a channel+purpose token."""
+    return LOCAL_TOKENS_DIR / channel / f"{purpose}.json"
+
+
+def _save(credentials: Credentials, token_file: Path) -> None:
+    """Write credentials as portable JSON (google-auth version independent)."""
+    token_file.write_text(credentials.to_json())
 
 
 def generate_token(channel: str, purpose: str):
@@ -72,8 +77,7 @@ def generate_token(channel: str, purpose: str):
     credentials = None
     if token_file.exists():
         print(f"Loading existing token from {token_file}")
-        with open(token_file, "rb") as fh:
-            credentials = pickle.load(fh)
+        credentials = Credentials.from_authorized_user_file(str(token_file), scopes)
 
     if credentials and credentials.valid:
         print("Existing token is still valid!")
@@ -83,8 +87,7 @@ def generate_token(channel: str, purpose: str):
         print("Token expired. Attempting to refresh...")
         try:
             credentials.refresh(Request())
-            with open(token_file, "wb") as fh:
-                pickle.dump(credentials, fh)
+            _save(credentials, token_file)
             print(f"Refreshed token saved to {token_file}")
             return credentials, token_file
         except Exception as e:  # noqa: BLE001 - surface any refresh failure and re-auth
@@ -111,8 +114,7 @@ def generate_token(channel: str, purpose: str):
         access_type="offline",  # required for a refresh token
     )
 
-    with open(token_file, "wb") as fh:
-        pickle.dump(credentials, fh)
+    _save(credentials, token_file)
     print(f"\nNew token saved to {token_file}")
     return credentials, token_file
 
