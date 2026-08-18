@@ -85,18 +85,11 @@ class TestDockerDiarizeFn:
         wav.parent.mkdir(parents=True)
         wav.write_bytes(b"RIFF")
         captured = {}
+        base = self._fake_runner([])
 
         def runner(cmd, **kwargs):
             captured.update(kwargs)
-            Path(cmd[cmd.index("-v", cmd.index("-v") + 1) + 1].split(":")[0]
-                 if False else
-                 [c.split(":")[0] for c in cmd if c.endswith(":/out")][0],
-                 "changes.json").write_text(json.dumps({"speaker_changes": []}))
-
-            class R:
-                returncode = 0
-
-            return R()
+            return base(cmd, **kwargs)
 
         std.docker_diarize_fn(str(wav), 0.0, runner=runner)
         assert captured.get("shell", False) is False

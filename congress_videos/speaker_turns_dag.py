@@ -137,7 +137,8 @@ def run_chapter_turns(
 
 
 def _select_task(**context) -> list[dict]:
-    conf = (context.get("dag_run").conf or {}) if context.get("dag_run") else {}
+    dag_run = context.get("dag_run")
+    conf = (dag_run.conf or {}) if dag_run else {}
     chapters = select_chapters(
         limit=conf.get("limit", DEFAULT_LIMIT),
         chapter_ids=conf.get("chapter_ids"),
