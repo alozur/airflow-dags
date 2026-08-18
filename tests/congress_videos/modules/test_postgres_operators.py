@@ -517,3 +517,114 @@ class TestGetUploadableChaptersQuotaLimit:
         op.execute(ctx)
 
         mock_db.get_uploadable_chapters.assert_called_once_with(limit=1, min_relevance_score=2)
+
+
+# --------------------------------------------------------------------------- #
+# execute — analytics dispatch operations
+# --------------------------------------------------------------------------- #
+
+class TestExecuteGetPendingAnalyticsCheckpoints:
+    """op='get_pending_analytics_checkpoints' routes to db.get_pending_analytics_checkpoints()."""
+
+    def test_routes_to_db_method(self, mock_db, mock_task_instance, make_context):
+        """Executing 'get_pending_analytics_checkpoints' calls the DB method."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db.get_pending_analytics_checkpoints.return_value = [
+            {"chapter_id": 1, "youtube_video_id": "abc", "youtube_upload_date": None}
+        ]
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="get_pending_analytics_checkpoints",
+            output_xcom_key="pending_checkpoints",
+        )
+        ctx = make_context(ti=mock_task_instance)
+        result = op.execute(ctx)
+
+        mock_db.get_pending_analytics_checkpoints.assert_called_once()
+        assert isinstance(result, list)
+
+    def test_pushes_result_to_xcom(self, mock_db, mock_task_instance, make_context):
+        """Result is pushed to XCom under the configured output_xcom_key."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        rows = [{"chapter_id": 2, "youtube_video_id": "xyz", "youtube_upload_date": None}]
+        mock_db.get_pending_analytics_checkpoints.return_value = rows
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="get_pending_analytics_checkpoints",
+            output_xcom_key="pending_checkpoints",
+        )
+        ctx = make_context(ti=mock_task_instance)
+        op.execute(ctx)
+
+        assert mock_task_instance.xcom_store.get("pending_checkpoints") == rows
+
+
+class TestExecuteRecordAnalyticsSnapshots:
+    """op='record_analytics_snapshots' routes to db.record_analytics_snapshot() per item."""
+
+    def test_routes_to_db_method_for_each_collected_item(
+        self, mock_db, mock_task_instance, make_context
+    ):
+        """Each item in 'collected' XCom triggers one record_analytics_snapshot call."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        collected = [
+            {
+                "chapter_id": 1,
+                "youtube_video_id": "abc",
+                "checkpoint": "24h",
+                "metrics": {"views": 100, "impressions": 400,
+                            "impressionClickThroughRate": 0.04,
+                            "averageViewDuration": 30.0,
+                            "watchTimeMinutes": 50.0},
+            }
+        ]
+        mock_task_instance.xcom_store["collected"] = collected
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="record_analytics_snapshots",
+            xcom_keys={"collected": "collected"},
+        )
+        ctx = make_context(ti=mock_task_instance)
+        op.execute(ctx)
+
+        mock_db.record_analytics_snapshot.assert_called_once_with(
+            chapter_id=1,
+            youtube_video_id="abc",
+            checkpoint="24h",
+            metrics=collected[0]["metrics"],
+        )
+
+    def test_action_taken_never_written(
+        self, mock_db, mock_task_instance, make_context
+    ):
+        """record_analytics_snapshot must NOT receive an action_taken argument."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_task_instance.xcom_store["collected"] = [
+            {
+                "chapter_id": 5,
+                "youtube_video_id": "zzz",
+                "checkpoint": "7d",
+                "metrics": {"views": 1, "impressions": 1,
+                            "impressionClickThroughRate": 0.0,
+                            "averageViewDuration": 0.0,
+                            "watchTimeMinutes": 0.1},
+            }
+        ]
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="record_analytics_snapshots",
+            xcom_keys={"collected": "collected"},
+        )
+        ctx = make_context(ti=mock_task_instance)
+        op.execute(ctx)
+
+        call_kwargs = mock_db.record_analytics_snapshot.call_args.kwargs
+        assert "action_taken" not in call_kwargs

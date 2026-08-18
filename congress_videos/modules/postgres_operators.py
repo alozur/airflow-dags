@@ -532,6 +532,33 @@ class PostgreSQLOperator(BaseOperator):
                 }
                 print(f"✅ Updated {updated_count} shorts, {failed_count} failed")
 
+        elif self.operation == 'get_pending_analytics_checkpoints':
+            """Return candidate video chapters for analytics collection."""
+            result = db.get_pending_analytics_checkpoints()
+            print(f"✅ Retrieved {len(result)} candidate chapters for analytics")
+
+        elif self.operation == 'record_analytics_snapshots':
+            """Persist each collected (chapter, checkpoint, metrics) snapshot."""
+            collected = ti.xcom_pull(
+                key=self.xcom_keys.get('collected', 'collected')
+            ) or []
+
+            print(f"DEBUG: recording {len(collected)} analytics snapshots")
+
+            for item in collected:
+                db.record_analytics_snapshot(
+                    chapter_id=item['chapter_id'],
+                    youtube_video_id=item['youtube_video_id'],
+                    checkpoint=item['checkpoint'],
+                    metrics=item['metrics'],
+                )
+                print(
+                    f"✅ Recorded snapshot: chapter_id={item['chapter_id']} "
+                    f"yt_id={item['youtube_video_id']} checkpoint={item['checkpoint']}"
+                )
+
+            result = {'recorded_snapshots': len(collected)}
+
         else:
             raise ValueError(f"Unknown operation: {self.operation}")
 

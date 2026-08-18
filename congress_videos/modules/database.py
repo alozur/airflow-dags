@@ -1400,3 +1400,78 @@ class CongressionalVideoDB:
                     (video_ids,),
                 )
                 return {row['video_id'] for row in cur.fetchall()}
+
+    # ==================== Video Analytics ====================
+
+    def get_pending_analytics_checkpoints(self) -> list:
+        """Return candidate video_chapters rows for analytics collection.
+
+        Returns chapters that:
+        - have a non-null youtube_video_id
+        - are marked as uploaded to YouTube
+        - were uploaded within the last 90 days
+
+        The pure function pending_checkpoints() in video_analytics.py expands
+        these rows into (youtube_video_id, checkpoint) pairs and excludes
+        already-collected pairs, so this query stays simple.
+
+        Returns:
+            List of row dicts: {chapter_id, youtube_video_id, youtube_upload_date}
+        """
+        chapters_table = self.pg_conn.get_qualified_table("video_chapters")
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT chapter_id, youtube_video_id, youtube_upload_date
+                    FROM {chapters_table}
+                    WHERE youtube_video_id IS NOT NULL
+                      AND is_uploaded_to_youtube = TRUE
+                      AND youtube_upload_date >= NOW() - INTERVAL '90 days'
+                    ORDER BY youtube_upload_date DESC
+                    """,
+                )
+                rows = cur.fetchall()
+                logger.info(
+                    "get_pending_analytics_checkpoints: %d candidate chapters found",
+                    len(rows),
+                )
+                return list(rows)
+
+    def record_analytics_snapshot(
+        self,
+        chapter_id: int,
+        youtube_video_id: str,
+        checkpoint: str,
+        metrics: dict,
+    ) -> None:
+        """Persist one analytics snapshot row (ON CONFLICT DO NOTHING).
+
+        Writes exactly the five JSONB metric fields. Does NOT write action_taken
+        (reserved NULL placeholder for issue #102).
+
+        Args:
+            chapter_id: FK to video_chapters.chapter_id.
+            youtube_video_id: YouTube video ID string.
+            checkpoint: One of '24h','48h','7d','30d','90d'.
+            metrics: Dict with keys views, impressions, impressionClickThroughRate,
+                averageViewDuration, watchTimeMinutes.
+        """
+        snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO {snapshots_table}
+                        (chapter_id, youtube_video_id, checkpoint, metrics)
+                    VALUES (%s, %s, %s, %s::jsonb)
+                    ON CONFLICT (youtube_video_id, checkpoint) DO NOTHING
+                    """,
+                    (chapter_id, youtube_video_id, checkpoint, json.dumps(metrics)),
+                )
+                logger.info(
+                    "record_analytics_snapshot: chapter_id=%d yt_id=%s checkpoint=%s",
+                    chapter_id,
+                    youtube_video_id,
+                    checkpoint,
+                )
