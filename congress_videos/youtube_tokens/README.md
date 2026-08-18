@@ -20,8 +20,8 @@ Channels and the scopes for each purpose are declared in
 Run locally (opens a browser for OAuth consent):
 
 ```bash
-uv run python congress_videos/scripts/generate_youtube_token.py --channel congreso --purpose upload
-uv run python congress_videos/scripts/generate_youtube_token.py --channel congreso --purpose analytics
+uv run python congress_videos/scripts/generate_youtube_token.py --channel congreso-es-tv --purpose upload
+uv run python congress_videos/scripts/generate_youtube_token.py --channel congreso-es-tv --purpose analytics
 ```
 
 Then copy the whole `youtube_tokens/` tree to the Airflow data directory

@@ -36,15 +36,16 @@ class ChannelConfig:
 
 # Registered channels, keyed by slug. Add an entry to onboard a channel.
 CHANNELS: dict[str, ChannelConfig] = {
-    "congreso": ChannelConfig(
-        slug="congreso",
-        display_name="Congreso",
+    "congreso-es-tv": ChannelConfig(
+        slug="congreso-es-tv",
+        display_name="Congreso ES TV",
         channel_id=None,  # populate once known
     ),
 }
 
-# Channel assumed when a caller does not specify one (the original channel).
-DEFAULT_CHANNEL = "congreso"
+# Channel assumed when a caller does not specify one (the original channel;
+# the legacy congress_youtube_token.pickle belongs to it).
+DEFAULT_CHANNEL = "congreso-es-tv"
 
 # OAuth scopes per token purpose. Least privilege: analytics is read-only and
 # deliberately excludes every write/upload scope.

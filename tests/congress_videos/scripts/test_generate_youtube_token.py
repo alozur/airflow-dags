@@ -28,13 +28,13 @@ gen = _load_script()
 
 
 class TestParseArgs:
-    def test_defaults_to_congreso_upload(self):
+    def test_defaults_to_congreso_es_tv_upload(self):
         args = gen.parse_args([])
-        assert args.channel == "congreso"
+        assert args.channel == "congreso-es-tv"
         assert args.purpose == "upload"
 
     def test_accepts_analytics_purpose(self):
-        args = gen.parse_args(["--channel", "congreso", "--purpose", "analytics"])
+        args = gen.parse_args(["--channel", "congreso-es-tv", "--purpose", "analytics"])
         assert args.purpose == "analytics"
 
     def test_rejects_unknown_purpose(self):
@@ -48,9 +48,9 @@ class TestParseArgs:
 
 class TestLocalTokenPath:
     def test_builds_channel_purpose_pickle(self):
-        path = gen.local_token_path("congreso", "analytics")
+        path = gen.local_token_path("congreso-es-tv", "analytics")
         assert path.name == "analytics.pickle"
-        assert path.parent.name == "congreso"
+        assert path.parent.name == "congreso-es-tv"
         assert path.parent.parent.name == "youtube_tokens"
 
 
