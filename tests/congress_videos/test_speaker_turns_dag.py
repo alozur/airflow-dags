@@ -80,7 +80,9 @@ class TestRunChapterTurns:
         assert result["status"] == "ok"
         assert result["turns"] == 2
         detect.assert_called_once()
-        upsert.assert_called_once_with(cursor, 7, turns)
+        # Default table name flows through when no qualified name is supplied;
+        # _process_task passes pg.get_qualified_table("speaker_turns") in prod.
+        upsert.assert_called_once_with(cursor, 7, turns, table="speaker_turns")
 
     def test_missing_srt_runs_acoustic_only(self, monkeypatch):
         mod = _fresh()

@@ -464,7 +464,9 @@ def detect_turns(
 # ---------------------------------------------------------------------------
 
 
-def _upsert_turns(cursor, chapter_id: int, turns: list[Turn]) -> None:
+def _upsert_turns(
+    cursor, chapter_id: int, turns: list[Turn], table: str = "speaker_turns"
+) -> None:
     """Upsert Turn records into the speaker_turns table.
 
     Each Turn is inserted; conflicts on (chapter_id, start_seconds) update
@@ -475,12 +477,18 @@ def _upsert_turns(cursor, chapter_id: int, turns: list[Turn]) -> None:
         cursor: DB cursor with an execute() method.
         chapter_id: chapter_id FK value for all turns.
         turns: Turns to persist.
+        table: Target table name. Callers with a live connection MUST pass the
+            schema-qualified name (``pg.get_qualified_table("speaker_turns")``)
+            because the app does not set a search_path — an unqualified name
+            only resolves when the role's default schema happens to match
+            (works in dev, fails in prod). Defaults to the bare name so pure
+            unit tests need no connection.
     """
     if not turns:
         return
 
-    sql = """
-        INSERT INTO speaker_turns
+    sql = f"""
+        INSERT INTO {table}
             (chapter_id, start_seconds, end_seconds, speaker_label, resolved_name,
              confidence, source, updated_at)
         VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
