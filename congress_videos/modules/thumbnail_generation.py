@@ -29,6 +29,8 @@ from congress_videos.config.ai_prompts import (
     ART_DIRECTION_USER_PROMPT_TEMPLATE,
     LAPIDARY_RANKING_SYSTEM_PROMPT,
     LAPIDARY_RANKING_USER_TEMPLATE,
+    SPEAKER_PLACEHOLDERS,
+    THUMBNAIL_TITLE_NAMELESS_INSTRUCTION,
     THUMBNAIL_TITLE_SIBLING_INSTRUCTION,
     THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION,
     THUMBNAIL_TITLE_SYSTEM_PROMPT,
@@ -200,6 +202,34 @@ def extract_lapidary_quote(
         return None
 
     return candidates[idx]
+
+
+def _real_speakers(key_speakers: list | None) -> list[str]:
+    """Return the subset of key_speakers that are real (non-placeholder) names.
+
+    Normalizes each entry (dict → name string), strips whitespace, drops empty
+    strings, and filters out any entry whose lowercased form appears in
+    SPEAKER_PLACEHOLDERS (case-insensitive comparison).
+
+    Args:
+        key_speakers: List of speaker entries (strings or dicts with a ``name`` key),
+            or None.
+
+    Returns:
+        A list of real speaker name strings; empty list when none survive.
+    """
+    if not key_speakers:
+        return []
+    result: list[str] = []
+    for entry in key_speakers:
+        name = entry.get("name", "") if isinstance(entry, dict) else str(entry)
+        name = name.strip()
+        if not name:
+            continue
+        if name.lower() in SPEAKER_PLACEHOLDERS:
+            continue
+        result.append(name)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -482,14 +512,17 @@ def generate_title(
                 sibling_list=sibling_list
             )
             user_prompt += f"\n\n{sibling_block}"
-        if key_speakers:
-            speaker_list = ", ".join(
-                s["name"] if isinstance(s, dict) else s for s in key_speakers
+        real = _real_speakers(key_speakers)
+        if real:
+            user_prompt += "\n\n" + THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION.format(
+                speaker_list=", ".join(real)
             )
-            speaker_block = THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION.format(
-                speaker_list=speaker_list
-            )
-            user_prompt += f"\n\n{speaker_block}"
+        else:
+            # Falsy key_speakers (None / []) and all-placeholder lists both map
+            # to the nameless format — this is the hard guarantee that prevents
+            # the model from hallucinating politician names when no real speaker
+            # is identified.
+            user_prompt += f"\n\n{THUMBNAIL_TITLE_NAMELESS_INSTRUCTION}"
         if extra_instruction:
             user_prompt += f"\n\nINSTRUCCIÓN ADICIONAL: {extra_instruction}"
 

@@ -14,6 +14,9 @@ El objetivo es automatizar el procesamiento completo de sesiones parlamentarias:
 4. Puntuar cada fragmento por relevancia política (escala 0-5).
 5. Subir los fragmentos más relevantes a YouTube con título, descripción y miniatura generados por IA.
 
+El flujo completo por fases (ingesta, subida, refinamiento por orador, shorts y
+analítica) está documentado en [PIPELINE.md](PIPELINE.md).
+
 ---
 
 ## Estructura de carpetas

@@ -1,0 +1,3 @@
+# Deliberate direct pins for the isolated CPU-only benchmark image.
+chonkie==1.7.0
+sentence-transformers==5.1.2

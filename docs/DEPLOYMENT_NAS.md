@@ -557,4 +557,29 @@ docker exec airflow-scheduler-prod airflow dags list-import-errors
 
 # Generar Fernet Key
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+---
+
+## Airflow Pools — prerequisitos de operaciones
+
+Algunos DAGs requieren pools de Airflow preconfigurados. Los pools **no** se
+crean automáticamente en código; deben ser provistos por un administrador antes
+de la primera ejecución del DAG correspondiente.
+
+### `nas_ffmpeg` — pool para `speaker_turn_videos` (issue #88)
+
+Limita la concurrencia de tareas ffmpeg a 1 proceso simultáneo para proteger
+el I/O del NAS.
+
+```bash
+# Crear el pool (ejecutar una sola vez)
+docker exec airflow-scheduler-prod \
+  airflow pools set nas_ffmpeg 1 "NAS ffmpeg execution slot"
+
+# Verificar
+docker exec airflow-scheduler-prod airflow pools list
+```
+
+Sin este pool el DAG `speaker_turn_videos` encola indefinidamente.
+Ver también el docstring del DAG en `congress_videos/speaker_turn_videos_dag.py`.
 ```
