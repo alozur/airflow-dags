@@ -66,7 +66,7 @@ def _default_model_loader() -> Callable[[str], list[dict]]:
     from pyannote.audio import Pipeline
 
     model_id = "pyannote/speaker-diarization-community-1"
-    pipeline = Pipeline.from_pretrained(model_id, use_auth_token=token)
+    pipeline = Pipeline.from_pretrained(model_id, token=token)
     pipeline.to(torch.device("cpu"))
 
     def _infer(wav_path: str) -> list[dict]:
