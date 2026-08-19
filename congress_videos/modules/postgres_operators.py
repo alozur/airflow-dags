@@ -366,16 +366,20 @@ class PostgreSQLOperator(BaseOperator):
         elif self.operation == 'check_upload_quota':
             min_relevance_score = context["params"].get("min_relevance_score", 2)
 
-            uploads_today = db.count_chapters_uploaded_today()
-            queue_size = db.count_pending_uploadable_chapters(min_relevance_score)
+            chapters_uploaded_today = db.count_chapters_uploaded_today()
+            turns_uploaded_today = db.count_turns_uploaded_today()
+            uploads_today = chapters_uploaded_today + turns_uploaded_today
+
+            chapters_pending = db.count_pending_uploadable_chapters(min_relevance_score)
             turns_pending = db.count_pending_uploadable_turns()
+            queue_size = chapters_pending + turns_pending
 
             result = {
                 "uploads_today": uploads_today,
                 "queue_size": queue_size,
                 "turns_pending": turns_pending,
             }
-            print(f"✅ Upload quota: {uploads_today} today, {queue_size} chapters in queue, {turns_pending} turns pending")
+            print(f"✅ Upload quota: {uploads_today} today ({chapters_uploaded_today} chapters + {turns_uploaded_today} turns), {chapters_pending} chapters + {turns_pending} turns in queue")
 
         elif self.operation == 'get_uploadable_chapters':
             min_relevance_score = context["params"].get("min_relevance_score", 2)

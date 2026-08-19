@@ -26,6 +26,9 @@ def set_pg_env(monkeypatch):
 @pytest.fixture
 def mock_db(mocker):
     mock_instance = MagicMock()
+    # Default turn-related counts to 0 so combined arithmetic stays valid
+    mock_instance.count_turns_uploaded_today.return_value = 0
+    mock_instance.count_pending_uploadable_turns.return_value = 0
     mocker.patch(
         "congress_videos.modules.postgres_operators.CongressionalVideoDB",
         return_value=mock_instance,
@@ -205,12 +208,18 @@ class TestCheckUploadQuotaExtended:
 
         mock_db.count_pending_uploadable_turns.assert_called_once()
 
-    def test_uploads_today_still_from_count_chapters_uploaded_today(
+    def test_uploads_today_combines_chapters_and_turns(
         self, mock_db, mock_task_instance
     ):
+        """uploads_today must equal chapters_uploaded_today + turns_uploaded_today (CRITICAL-2).
+
+        When only chapters were uploaded (turns=0), uploads_today must equal the chapter count.
+        Both count methods must be called.
+        """
         from congress_videos.modules.postgres_operators import PostgreSQLOperator
 
         mock_db.count_chapters_uploaded_today.return_value = 1
+        mock_db.count_turns_uploaded_today.return_value = 0
         mock_db.count_pending_uploadable_chapters.return_value = 5
         mock_db.count_pending_uploadable_turns.return_value = 0
 
@@ -223,3 +232,4 @@ class TestCheckUploadQuotaExtended:
 
         assert result["uploads_today"] == 1
         mock_db.count_chapters_uploaded_today.assert_called_once()
+        mock_db.count_turns_uploaded_today.assert_called_once()

@@ -1281,6 +1281,12 @@ class CongressionalVideoDB:
         logger.info(f"Chapters uploaded today: {count}")
         return count
 
+    def count_turns_uploaded_today(self) -> int:
+        """Returns the number of speaker turn videos uploaded to YouTube today (UTC date)."""
+        count = self._count_records('speaker_turn_videos', 'youtube_upload_date >= CURRENT_DATE')
+        logger.info(f"Turns uploaded today: {count}")
+        return count
+
     def count_pending_uploadable_chapters(self, min_relevance_score: int = 2) -> int:
         """Returns the number of chapters pending upload in the uploadable queue."""
         count = self._count_records('uploadable_chapters', 'relevance_score >= %s', (min_relevance_score,))

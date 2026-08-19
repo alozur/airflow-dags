@@ -449,34 +449,48 @@ with (
         python_callable=should_upload,
     )
 
-    # Step 2: Get uploadable chapters (limit=1 per run)
-    # Ordered by: session_date DESC, relevance_score DESC, created_at DESC
-    t1_db = PostgreSQLOperator(
-        task_id="get_uploadable_chapters",
-        operation="get_uploadable_chapters",
-        output_xcom_key="uploadable_chapters",
-    )
+    # Step 2: Dual-queue item selection — turns first, chapters as fallback (limit=1 per run)
+    def _run_get_uploadable_item_task(ti):
+        """Select upload item from turn queue first; fall back to chapter queue.
+
+        Pushes 'uploadable_item' XCom key with dict:
+          {'item': <row dict>, 'item_type': 'turn' | 'chapter'}
+        or {'item': None, 'item_type': None} when both queues are empty.
+        """
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        db = CongressionalVideoDB()
+        result = _run_get_uploadable_item(db)
+        if result is None:
+            result = {"item": None, "item_type": None}
+        ti.xcom_push(key="uploadable_item", value=result)
+        logging.info(
+            "Selected uploadable item: item_type=%s, item=%s",
+            result.get("item_type"),
+            result.get("item", {}).get("chapter_id") if result.get("item") else None,
+        )
 
     def _generate_youtube_metadata(ti):
         from congress_videos.modules.youtube import youtube_ai
 
+        uploadable = ti.xcom_pull(key="uploadable_item") or {}
+        item = uploadable.get("item") or {}
+        # Pass a single-item list matching the chapter-list contract expected by youtube_ai
+        items = [item] if item else []
         return xcom_task(
             ti,
-            lambda: youtube_ai.generate_youtube_metadata_for_selected_videos(
-                ti.xcom_pull(key="uploadable_chapters")
-            ),
+            lambda: youtube_ai.generate_youtube_metadata_for_selected_videos(items),
             "youtube_metadata_results",
         )
 
     def _run_prepare_thumbnail_config(ti):
-        """Resolve speaker name and build thumbnail config struct for the chapter."""
+        """Resolve speaker name and build thumbnail config struct for the item (turn or chapter)."""
         from congress_videos.modules.database import CongressionalVideoDB
 
-        chapters = ti.xcom_pull(key="uploadable_chapters") or []
-        # Uploader processes exactly 1 chapter per run
-        chapter = chapters[0] if chapters else {}
+        uploadable = ti.xcom_pull(key="uploadable_item") or {}
+        item = uploadable.get("item") or {}
         db = CongressionalVideoDB()
-        result = _prepare_thumbnail_config(chapter, db)
+        result = _prepare_thumbnail_config(item, db)
         ti.xcom_push(key="thumbnail_config", value=result)
 
     def _run_generate_thumbnail(ti):
@@ -484,16 +498,47 @@ with (
         return trigger_thumbnail_generation(ti, run_id=ti.run_id)
 
     def _extract_chapter_videos(ti):
+        """Extract chapter video via ffmpeg, or use the pre-materialized turn video path."""
         from congress_videos.modules import video_splitter
 
-        return xcom_task(
-            ti,
-            lambda: video_splitter.extract_chapters_from_video(
-                ti.xcom_pull(key="uploadable_chapters"),
-                ti.xcom_pull(key="data_directory_path"),
-            ),
-            "chapter_extraction_results",
-        )
+        uploadable = ti.xcom_pull(key="uploadable_item") or {}
+        item = uploadable.get("item") or {}
+        item_type = uploadable.get("item_type")
+
+        if item_type == "turn":
+            # Turn video already exists at output_path — no ffmpeg extraction needed.
+            output_path = item.get("output_path")
+            success = bool(output_path)
+            result = {
+                "total_chapters": 1,
+                "successful_extractions": 1 if success else 0,
+                "failed_extractions": 0 if success else 1,
+                "results": [
+                    {
+                        "chapter_id": item.get("chapter_id"),
+                        "turn_id": item.get("turn_id"),
+                        "video_id": item.get("video_id"),
+                        "success": success,
+                        "output_path": output_path,
+                        "file_size_mb": None,
+                        "duration_seconds": None,
+                        "error": None if success else "turn output_path missing",
+                    }
+                ],
+            }
+            ti.xcom_push(key="chapter_extraction_results", value=result)
+            return result
+        else:
+            # Chapter: call video_splitter (ffmpeg-based extraction)
+            chapters = [item] if item else []
+            return xcom_task(
+                ti,
+                lambda: video_splitter.extract_chapters_from_video(
+                    chapters,
+                    ti.xcom_pull(key="data_directory_path"),
+                ),
+                "chapter_extraction_results",
+            )
 
     def _prepare_upload_config(ti, **context):
         from congress_videos.modules.youtube import prepare_chapter_upload_config
@@ -513,7 +558,12 @@ with (
         """Back-fill youtube_video_id in video_thumbnails after upload completes."""
         _backfill_thumbnail_video_id(ti)
 
-    # Step 2: Generate YouTube metadata for chapters
+    t1_item = PythonOperator(
+        task_id="get_uploadable_item",
+        python_callable=_run_get_uploadable_item_task,
+    )
+
+    # Step 2: Generate YouTube metadata for the selected item (turn or chapter)
     t2 = PythonOperator(
         task_id="generate_youtube_metadata",
         python_callable=_generate_youtube_metadata,
@@ -531,7 +581,7 @@ with (
         python_callable=_run_generate_thumbnail,
     )
 
-    # Step 5: Extract chapter videos from source YouTube videos using ffmpeg
+    # Step 5: Extract video — turn path reused directly; chapter extracted via ffmpeg
     t5 = PythonOperator(
         task_id="extract_chapter_videos",
         python_callable=_extract_chapter_videos,
@@ -655,6 +705,14 @@ with (
         output_xcom_key="chapter_upload_updates",
     )
 
+    # Step 8c: Mark turn videos as uploaded (runs in parallel with mark_chapters_uploaded)
+    t8_turns = PostgreSQLOperator(
+        task_id="mark_turns_uploaded",
+        operation="mark_turns_uploaded",
+        xcom_keys={"upload_results": "upload_results"},
+        output_xcom_key="turn_upload_updates",
+    )
+
     # Step 8b: Back-fill youtube_video_id in video_thumbnails
     t8_backfill = PythonOperator(
         task_id="backfill_thumbnail_video_id",
@@ -667,20 +725,20 @@ with (
         python_callable=_check_upload_failures,
     )
 
-    # Task dependencies (13 tasks total)
-    # t0 > t1_quota > t1_skip > t1_db > t2 > t3_prepare > t4_generate > t5 > t6 > t7 > t8_db > t8_backfill > t9
+    # Task dependencies (14 tasks total)
+    # t0 > t1_quota > t1_skip > t1_item > t2 > t3_prepare > t4_generate > t5 > t6 > t7 > [t8_db, t8_turns] > t8_backfill > t9
     (
         t0
         >> t1_quota
         >> t1_skip
-        >> t1_db
+        >> t1_item
         >> t2
         >> t3_prepare
         >> t4_generate
         >> t5
         >> t6
         >> t7
-        >> t8_db
+        >> [t8_db, t8_turns]
         >> t8_backfill
         >> t9
     )
