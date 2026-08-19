@@ -432,11 +432,8 @@ class TestExecuteCheckUploadQuota:
     def test_result_contains_queue_size_and_uploads_today(
         self, mock_db, mock_task_instance, make_context
     ):
-        """check_upload_quota result must contain at least queue_size and uploads_today (REQ-QUOTA-01).
-
-        turns_pending is also included in the result dict as an informational field.
-        uploads_today = chapters_uploaded_today + turns_uploaded_today (combined cap).
-        queue_size = chapters_pending + turns_pending (combined queue).
+        """check_upload_quota result contains queue_size, uploads_today, and turns_pending
+        (REQ-QUOTA-01; combined cap: uploads_today = chapters + turns; queue_size = chapters + turns).
         """
         from congress_videos.modules.postgres_operators import PostgreSQLOperator
 
@@ -451,9 +448,8 @@ class TestExecuteCheckUploadQuota:
 
         assert result["uploads_today"] == 2
         assert result["queue_size"] == 30
-        # turns_pending is now included as an informational key alongside queue_size/uploads_today
-        assert "queue_size" in result
-        assert "uploads_today" in result
+        assert "turns_pending" in result
+        assert {"uploads_today", "queue_size", "turns_pending"}.issubset(result.keys())
 
 
 # --------------------------------------------------------------------------- #
