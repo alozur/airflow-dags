@@ -456,6 +456,32 @@ class TestUpsertProposals:
         assert "SCORE" in sql_arg
         assert "SOURCE" in sql_arg
 
+    def test_upsert_uses_qualified_table_when_provided(self):
+        """A schema-qualified table name must land in the INSERT target.
+
+        Regression: the app sets no search_path, so an unqualified name only
+        resolves when the role's default schema matches (works in dev, fails
+        in prod with 'relation "speaker_turn_trim_proposals" does not exist').
+        """
+        cursor = MagicMock()
+
+        _upsert_proposals(
+            cursor, [self._make_proposal()],
+            table="production.speaker_turn_trim_proposals",
+        )
+
+        sql_arg = cursor.execute.call_args[0][0]
+        assert "INSERT INTO production.speaker_turn_trim_proposals" in sql_arg
+
+    def test_upsert_defaults_to_bare_table_name(self):
+        """Default keeps the bare name so pure unit tests need no connection."""
+        cursor = MagicMock()
+
+        _upsert_proposals(cursor, [self._make_proposal()])
+
+        sql_arg = cursor.execute.call_args[0][0]
+        assert "INSERT INTO speaker_turn_trim_proposals" in sql_arg
+
 
 # ---------------------------------------------------------------------------
 # generate_trim_proposals — exception handling (coverage for warning paths)

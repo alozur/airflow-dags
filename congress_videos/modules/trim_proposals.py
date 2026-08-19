@@ -294,7 +294,11 @@ def generate_trim_proposals(
 # ---------------------------------------------------------------------------
 
 
-def _upsert_proposals(cursor, proposals: list[TrimProposal]) -> int:
+def _upsert_proposals(
+    cursor,
+    proposals: list[TrimProposal],
+    table: str = "speaker_turn_trim_proposals",
+) -> int:
     """Upsert TrimProposal records into the speaker_turn_trim_proposals table.
 
     Uses ``ON CONFLICT (turn_id, start_seconds, tipo) DO UPDATE`` to update
@@ -308,6 +312,12 @@ def _upsert_proposals(cursor, proposals: list[TrimProposal]) -> int:
     Args:
         cursor:    An open DB cursor (psycopg2-compatible, ``execute()`` method).
         proposals: Proposals to persist.
+        table:     Target table name. Callers with a live connection MUST pass
+            the schema-qualified name
+            (``pg.get_qualified_table("speaker_turn_trim_proposals")``) — the
+            app sets no search_path, so an unqualified name only resolves when
+            the role's default schema matches (works in dev, fails in prod).
+            Defaults to the bare name so pure unit tests need no connection.
 
     Returns:
         Number of proposals processed (same as len(proposals)).
@@ -315,8 +325,8 @@ def _upsert_proposals(cursor, proposals: list[TrimProposal]) -> int:
     if not proposals:
         return 0
 
-    sql = """
-        INSERT INTO speaker_turn_trim_proposals
+    sql = f"""
+        INSERT INTO {table}
             (turn_id, start_seconds, end_seconds, tipo, score, source, is_voice_free, updated_at)
         VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
         ON CONFLICT (turn_id, start_seconds, tipo) DO UPDATE SET
