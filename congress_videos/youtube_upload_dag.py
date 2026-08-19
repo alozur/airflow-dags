@@ -129,20 +129,25 @@ def _resolve_speaker_name(chapter: dict) -> str | None:
 
 
 def _prepare_thumbnail_config(chapter: dict, db) -> dict:
-    """Build the thumbnail-generation config dict for a single chapter.
+    """Build the thumbnail-generation config dict for a single chapter or turn.
 
-    Resolves the raw speaker at the boundary and stores the participant slug
-    before assembling the fields
-    expected by the generic thumbnail pipeline.
+    Handles two row types:
+    - Chapter rows (from uploadable_chapters view): use key_speakers list, resolved_participant_slug,
+      and SRT window from start_time/end_time strings.
+    - Turn rows (from uploadable_turns view, identified by presence of 'turn_id'): anchor
+      key_speakers to [resolved_name], use resolved_name for slug lookup, and use start_seconds/
+      end_seconds (float seconds) for the SRT window.
 
     Args:
-        chapter: Chapter row from the uploadable_chapters view.
+        chapter: Chapter or turn row from the database view.
         db: CongressionalVideoDB instance (kept for task-call compatibility).
 
     Returns:
         Dict with keys: chapter_id, debate_summary, domain, session,
-        slug (may be None on fallback).
+        slug (may be None on fallback), key_speakers, optionally srt_fragment.
     """
+    is_turn = "turn_id" in chapter
+
     chapter_id = chapter.get("chapter_id")
     title = chapter.get("chapter_title", "")
     description = chapter.get("description", "")
@@ -158,24 +163,46 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
     else:
         session = str(session_date) if session_date else None
 
-    # Prefer the authoritative slug written by speaker normalization (fuzzy or
-    # institutional-role resolution). Fall back to a raw-speaker fuzzy match only
-    # when the chapter was never resolved. Fuzzy matching stays confined to this
-    # boundary; downstream thumbnail code receives only the stable slug.
-    slug = chapter.get("resolved_participant_slug") or None
-    if not slug:
-        try:
-            raw_speaker = _resolve_speaker_name(chapter)
-            participant = lookup_participant_fuzzy(raw_speaker) if raw_speaker else None
-            slug = participant.get("slug") if participant else None
-        except Exception as exc:
-            logging.warning(
-                "_prepare_thumbnail_config: speaker resolution failed for "
-                "chapter_id=%s: %s — setting slug=None",
-                chapter_id,
-                exc,
-            )
-            slug = None
+    if is_turn:
+        # Turn path: anchor key_speakers to the turn's own speaker (resolved_name).
+        # Use resolved_name directly for the fuzzy slug lookup.
+        resolved_name = chapter.get("resolved_name") or ""
+        key_speakers = [resolved_name] if resolved_name else []
+        slug = None
+        if resolved_name:
+            try:
+                participant = lookup_participant_fuzzy(resolved_name)
+                slug = participant.get("slug") if participant else None
+            except Exception as exc:
+                logging.warning(
+                    "_prepare_thumbnail_config: turn speaker resolution failed for "
+                    "turn_id=%s resolved_name=%r: %s — setting slug=None",
+                    chapter.get("turn_id"),
+                    resolved_name,
+                    exc,
+                )
+                slug = None
+    else:
+        # Chapter path: preserve existing behaviour.
+        # Prefer the authoritative slug written by speaker normalization (fuzzy or
+        # institutional-role resolution). Fall back to a raw-speaker fuzzy match only
+        # when the chapter was never resolved. Fuzzy matching stays confined to this
+        # boundary; downstream thumbnail code receives only the stable slug.
+        key_speakers = chapter.get("key_speakers") or []
+        slug = chapter.get("resolved_participant_slug") or None
+        if not slug:
+            try:
+                raw_speaker = _resolve_speaker_name(chapter)
+                participant = lookup_participant_fuzzy(raw_speaker) if raw_speaker else None
+                slug = participant.get("slug") if participant else None
+            except Exception as exc:
+                logging.warning(
+                    "_prepare_thumbnail_config: speaker resolution failed for "
+                    "chapter_id=%s: %s — setting slug=None",
+                    chapter_id,
+                    exc,
+                )
+                slug = None
 
     config = {
         "chapter_id": chapter_id,
@@ -183,7 +210,7 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
         "domain": "congreso",
         "session": session,
         "slug": slug,
-        "key_speakers": chapter.get("key_speakers") or [],
+        "key_speakers": key_speakers,
     }
 
     # Resolve SRT fragment for lapidary quote extraction (issue #57).
@@ -195,18 +222,42 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
     )
     if srt_path is not None:
         blocks = _parse_srt_blocks(srt_path)
-        # Convert chapter time-window boundaries (SRT-format strings) to seconds.
-        chapter_start_secs = _srt_timestamp_to_seconds(chapter.get("start_time", "00:00:00,000"))
-        chapter_end_secs = _srt_timestamp_to_seconds(chapter.get("end_time", "99:59:59,999"))
+        if is_turn:
+            # Turn: use integer seconds directly from the turn row.
+            window_start_secs = float(chapter.get("start_seconds", 0))
+            window_end_secs = float(chapter.get("end_seconds", 99 * 3600))
+        else:
+            # Chapter: convert SRT-format timestamp strings to seconds.
+            window_start_secs = _srt_timestamp_to_seconds(chapter.get("start_time", "00:00:00,000"))
+            window_end_secs = _srt_timestamp_to_seconds(chapter.get("end_time", "99:59:59,999"))
         window_texts = [
             b["text"]
             for b in blocks
-            if b["start_secs"] >= chapter_start_secs and b["end_secs"] <= chapter_end_secs
+            if b["start_secs"] >= window_start_secs and b["end_secs"] <= window_end_secs
         ]
         joined = " ".join(window_texts)
         config["srt_fragment"] = joined[:10_000]
 
     return config
+
+
+def _run_get_uploadable_item(db) -> dict | None:
+    """Try the turn queue first; fall back to the chapter queue.
+
+    Returns a dict with keys:
+      - 'item': the row dict (turn or chapter)
+      - 'item_type': 'turn' or 'chapter'
+    Returns None when both queues are empty.
+    """
+    turns = db.get_uploadable_turns(limit=1)
+    if turns:
+        return {"item": turns[0], "item_type": "turn"}
+
+    chapters = db.get_uploadable_chapters(limit=1, min_relevance_score=2)
+    if chapters:
+        return {"item": chapters[0], "item_type": "chapter"}
+
+    return None
 
 
 def _thumbnail_failure(chapter_id: int | None) -> dict:

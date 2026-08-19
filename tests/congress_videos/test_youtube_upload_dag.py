@@ -1183,3 +1183,212 @@ class TestTriggerThumbnailGenerationForwardsKeySpeakers:
         assert len(captured_confs) == 1
         assert "key_speakers" in captured_confs[0]
         assert captured_confs[0]["key_speakers"] == []
+
+
+# ---------------------------------------------------------------------------
+# Dual-queue: turn queue tried first, chapter fallback when turns empty
+# ---------------------------------------------------------------------------
+
+
+def _make_turn_row(
+    turn_id: int = 1,
+    output_path: str = "/data/turn1.mp4",
+    resolved_name: str = "Ana García",
+    start_seconds: float = 120.0,
+    end_seconds: float = 240.0,
+    chapter_id: int = 42,
+    key_speakers: list | None = None,
+    session_number: int = 80,
+    session_date: str = "2025-06-10",
+) -> dict:
+    return {
+        "turn_id": turn_id,
+        "output_path": output_path,
+        "resolved_name": resolved_name,
+        "start_seconds": start_seconds,
+        "end_seconds": end_seconds,
+        "chapter_id": chapter_id,
+        "key_speakers": key_speakers if key_speakers is not None else ["Ana García", "Pedro López"],
+        "session_number": session_number,
+        "session_date": session_date,
+        "chapter_title": "Un capítulo de prueba",
+        "description": "Descripción del capítulo",
+        "relevance_score": 4,
+    }
+
+
+class TestPrepareThumbnailConfigForTurn:
+    """_prepare_thumbnail_config anchors key_speakers to turn speaker and uses SRT window."""
+
+    def test_key_speakers_anchored_to_resolved_name(self):
+        """Turn config: key_speakers must be [resolved_name] ignoring chapter's key_speakers."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(
+            turn_id=1,
+            resolved_name="Ana García",
+        )
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "garcia-ana"},
+        ):
+            result = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert result["key_speakers"] == ["Ana García"]
+
+    def test_slug_resolved_from_resolved_name_not_key_speakers(self):
+        """Turn config: slug is derived from resolved_name (turn speaker), not chapter's speakers."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(
+            resolved_name="Pedro López",
+        )
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "lopez-pedro"},
+        ) as lookup:
+            result = _prepare_thumbnail_config(turn, MagicMock())
+
+        lookup.assert_called_once_with("Pedro López")
+        assert result["slug"] == "lopez-pedro"
+
+    def test_srt_fragment_bounded_by_start_end_seconds(self, tmp_path, mocker):
+        """Turn config: SRT fragment must be limited to [start_seconds, end_seconds]."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        # SRT content: block 1 within window, block 2 after window
+        srt_content = (
+            "1\n00:01:00,000 --> 00:02:00,000\nDentro del turno.\n\n"
+            "2\n00:04:00,000 --> 00:05:00,000\nFuera del turno.\n\n"
+        )
+        srt_path = tmp_path / "test.srt"
+        srt_path.write_text(srt_content, encoding="utf-8")
+
+        turn = _make_turn_row(
+            turn_id=1,
+            start_seconds=60.0,   # 00:01:00
+            end_seconds=180.0,    # 00:03:00 — block 2 is at 240s, outside window
+        )
+        turn["video_id"] = "video123"
+        turn["session_date"] = "2025-06-10"
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.find_srt_for_chapter",
+            return_value=str(srt_path),
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "garcia-ana"},
+        )
+
+        result = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert "srt_fragment" in result
+        assert "Dentro del turno" in result["srt_fragment"]
+        assert "Fuera del turno" not in result["srt_fragment"]
+
+    def test_chapter_id_preserved_in_config(self):
+        """Turn config: chapter_id must be preserved for thumbnail identity."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(turn_id=5, chapter_id=42)
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value=None,
+        ):
+            result = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert result["chapter_id"] == 42
+
+    def test_session_derived_from_session_number(self):
+        """Turn config: session label derived from session_number."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(session_number=80)
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value=None,
+        ):
+            result = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert "80" in result["session"]
+
+
+class TestDualQueueBehavior:
+    """Dual-queue: turn queue has priority; chapter fallback used when turns empty."""
+
+    def test_uploader_selects_turn_when_available(self, mocker):
+        """When get_uploadable_turns returns a turn, _run_get_uploadable_item returns it."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        fake_turn = _make_turn_row()
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = [fake_turn]
+        mock_db.get_uploadable_chapters.return_value = []
+
+        result = _run_get_uploadable_item(mock_db)
+
+        assert result["item"] == fake_turn
+        assert result["item_type"] == "turn"
+        mock_db.get_uploadable_chapters.assert_not_called()
+
+    def test_uploader_falls_back_to_chapter_when_turns_empty(self, mocker):
+        """When turns empty, _run_get_uploadable_item falls back to chapters."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        fake_chapter = {"chapter_id": 99, "title": "Cap 99"}
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = []
+        mock_db.get_uploadable_chapters.return_value = [fake_chapter]
+
+        result = _run_get_uploadable_item(mock_db)
+
+        assert result["item"] == fake_chapter
+        assert result["item_type"] == "chapter"
+        mock_db.get_uploadable_chapters.assert_called_once()
+
+    def test_uploader_returns_none_when_both_queues_empty(self):
+        """When both queues empty, _run_get_uploadable_item returns None."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = []
+        mock_db.get_uploadable_chapters.return_value = []
+
+        result = _run_get_uploadable_item(mock_db)
+
+        assert result is None
+
+
+class TestGuardAAndGuardB:
+    """View-level guards: Guard A (chapter excluded when turn uploaded),
+    Guard B (turn excluded when chapter uploaded). Both enforced in the SQL
+    view — these tests verify the uploader passes the right rows through."""
+
+    def test_guard_b_turn_excluded_by_empty_view(self):
+        """Guard B: when uploadable_turns is empty (chapter already uploaded),
+        uploader falls back to chapter queue."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = []  # Guard B filtered them out
+        mock_db.get_uploadable_chapters.return_value = []
+
+        result = _run_get_uploadable_item(mock_db)
+        assert result is None
+
+    def test_guard_a_chapter_excluded_by_empty_view(self):
+        """Guard A: when chapter fallback returns empty (turn already uploaded),
+        uploader has nothing to upload."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = []
+        mock_db.get_uploadable_chapters.return_value = []  # Guard A filtered chapter out
+
+        result = _run_get_uploadable_item(mock_db)
+        assert result is None
