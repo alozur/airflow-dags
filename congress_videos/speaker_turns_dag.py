@@ -35,7 +35,7 @@ from airflow.operators.python import PythonOperator
 
 from congress_videos.modules.participants_db import lookup_participant_fuzzy
 from congress_videos.modules.speaker_turns import detect_turns, _upsert_turns
-from congress_videos.modules.speaker_turns_docker import docker_diarize_fn
+from congress_videos.modules.speaker_turns_api import api_diarize_fn
 from congress_videos.modules.vad_helpers import _find_source_video, extract_audio_wav
 from congress_videos.srt_helpers import _parse_srt_blocks, find_srt_for_chapter
 from utils.postgres_helpers import PostgresConnection
@@ -79,7 +79,7 @@ def run_chapter_turns(
     chapter: dict,
     cursor,
     *,
-    diarize_fn=docker_diarize_fn,
+    diarize_fn=api_diarize_fn,
     name_resolver=lookup_participant_fuzzy,
 ) -> dict:
     """Detect and persist speaker turns for a single chapter.

@@ -9,6 +9,8 @@ networks:
           gateway: 172.24.0.1
   whisper_network:
     external: true
+  ml_api_network:
+    external: true
 
 volumes:
   airflow_logs_prod:
@@ -76,6 +78,7 @@ x-airflow-common:
     - postgres_infra_network
     - airflow_network
     - whisper_network
+    - ml_api_network
   mem_limit: 2g
   mem_reservation: 1.5g
 
