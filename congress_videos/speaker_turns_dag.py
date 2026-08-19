@@ -81,6 +81,7 @@ def run_chapter_turns(
     *,
     diarize_fn=api_diarize_fn,
     name_resolver=lookup_participant_fuzzy,
+    turns_table: str = "speaker_turns",
 ) -> dict:
     """Detect and persist speaker turns for a single chapter.
 
@@ -88,6 +89,9 @@ def run_chapter_turns(
     run), extracts the chapter-window WAV, loads the window's SRT blocks (or
     runs acoustic-only when the SRT is missing), detects turns, and upserts
     them via the caller-provided cursor. Returns a status dict.
+
+    ``turns_table`` is forwarded to :func:`_upsert_turns`; the DAG passes the
+    schema-qualified name so persistence targets the right schema in prod.
     """
     chapter_id = chapter["chapter_id"]
     video_id = chapter["video_id"]
@@ -129,7 +133,7 @@ def run_chapter_turns(
         chapter["_chapter_offset_seconds"] = start_secs
 
         turns = detect_turns(chapter, srt_blocks, diarize_fn, name_resolver)
-        _upsert_turns(cursor, chapter_id, turns)
+        _upsert_turns(cursor, chapter_id, turns, table=turns_table)
         return {"status": "ok", "chapter_id": chapter_id, "turns": len(turns)}
     finally:
         if os.path.exists(wav_path):
@@ -152,11 +156,12 @@ def _process_task(**context) -> dict:
     chapters = context["ti"].xcom_pull(key="chapters", task_ids="select_chapters") or []
     summary = {"processed": 0, "skipped": 0, "turns": 0}
     pg = PostgresConnection()
+    turns_table = pg.get_qualified_table("speaker_turns")
     with pg.get_connection() as conn:
         with conn.cursor() as cur:
             for chapter in chapters:
                 try:
-                    result = run_chapter_turns(chapter, cur)
+                    result = run_chapter_turns(chapter, cur, turns_table=turns_table)
                 except Exception:  # noqa: BLE001 — one bad chapter must not sink the run
                     logger.exception(
                         "chapter %s failed — skipping", chapter.get("chapter_id")

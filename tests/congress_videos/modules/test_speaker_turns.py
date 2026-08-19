@@ -672,3 +672,27 @@ class TestUpsertTurns:
         cursor = MagicMock()
         _upsert_turns(cursor, chapter_id=42, turns=[])
         cursor.execute.assert_not_called()
+
+    def test_upsert_uses_qualified_table_when_provided(self):
+        """A schema-qualified table name must land in the INSERT target.
+
+        Regression: the app sets no search_path, so an unqualified name only
+        resolves when the role's default schema matches (works in dev, fails
+        in prod with 'relation "speaker_turns" does not exist').
+        """
+        from congress_videos.modules.speaker_turns import _upsert_turns
+        cursor = MagicMock()
+        _upsert_turns(
+            cursor, chapter_id=42, turns=self._make_turns(1),
+            table="production.speaker_turns",
+        )
+        sql_arg = cursor.execute.call_args[0][0]
+        assert "INSERT INTO production.speaker_turns" in sql_arg
+
+    def test_upsert_defaults_to_bare_table_name(self):
+        """Default keeps the bare name so pure unit tests need no connection."""
+        from congress_videos.modules.speaker_turns import _upsert_turns
+        cursor = MagicMock()
+        _upsert_turns(cursor, chapter_id=42, turns=self._make_turns(1))
+        sql_arg = cursor.execute.call_args[0][0]
+        assert "INSERT INTO speaker_turns" in sql_arg
