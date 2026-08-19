@@ -1486,15 +1486,17 @@ class CongressionalVideoDB:
     ) -> None:
         """Persist one analytics snapshot row (ON CONFLICT DO NOTHING).
 
-        Writes exactly the five JSONB metric fields. Does NOT write action_taken
-        (reserved NULL placeholder for issue #102).
+        Writes the METRIC_FIELDS metrics as a JSONB blob. Does NOT write
+        action_taken (reserved NULL placeholder for issue #102).
 
         Args:
             chapter_id: FK to video_chapters.chapter_id.
             youtube_video_id: YouTube video ID string.
             checkpoint: One of '24h','48h','7d','30d','90d'.
-            metrics: Dict with keys views, impressions, impressionClickThroughRate,
-                averageViewDuration, watchTimeMinutes.
+            metrics: Dict keyed by config.analytics_config.METRIC_FIELDS (views,
+                estimatedMinutesWatched, averageViewDuration,
+                averageViewPercentage, likes, dislikes, comments, shares,
+                subscribersGained, subscribersLost).
         """
         snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
         with self.pg_conn.get_connection() as conn:

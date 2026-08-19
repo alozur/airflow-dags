@@ -22,10 +22,28 @@ MAX_WINDOW_HOURS: int = 2160
 
 # Ordered list of metric field names expected in every snapshot JSONB payload.
 # Matches the columnHeaders returned by the YouTube Analytics API reports.query.
+#
+# Every name below is a metric the YouTube Analytics API actually supports for a
+# per-video channel report (ids=channel==MINE, filters=video==ID, no dimensions,
+# read-only scope). They can all be requested in a single query.
+#
+# Deliberately NOT included, because the YouTube Analytics API does not expose
+# them for channel reports and adding them makes the whole query fail with
+# "Unknown identifier ... given in field parameters.metrics":
+#   - impressions / impressionClickThroughRate: thumbnail impressions and CTR
+#     live only in the YouTube Studio UI; there is no public API for them.
+#     (adImpressions is AD impressions — a different metric, monetary-scope only.)
+#   - watchTimeMinutes: not a real metric name; watch time is estimatedMinutesWatched.
+#   - revenue/ad metrics (estimatedRevenue, cpm, ...): unsupported in channel reports.
 METRIC_FIELDS: list[str] = [
     "views",
-    "impressions",
-    "impressionClickThroughRate",
+    "estimatedMinutesWatched",
     "averageViewDuration",
-    "watchTimeMinutes",
+    "averageViewPercentage",
+    "likes",
+    "dislikes",
+    "comments",
+    "shares",
+    "subscribersGained",
+    "subscribersLost",
 ]

@@ -69,7 +69,7 @@ def _fetch_analytics(ti, **context) -> list:
 
     Returns the list of collected items (also pushed to XCom 'collected').
     """
-    from congress_videos.config.analytics_config import CHECKPOINTS
+    from congress_videos.config.analytics_config import CHECKPOINTS, METRIC_FIELDS
     from congress_videos.modules.video_analytics import (
         parse_analytics_response,
         pending_checkpoints,
@@ -151,15 +151,7 @@ def _fetch_analytics(ti, **context) -> list:
                     ids=f"channel==MINE",
                     startDate=start_date,
                     endDate=end_date,
-                    metrics=",".join(
-                        [
-                            "views",
-                            "impressions",
-                            "impressionClickThroughRate",
-                            "averageViewDuration",
-                            "watchTimeMinutes",
-                        ]
-                    ),
+                    metrics=",".join(METRIC_FIELDS),
                     filters=f"video=={yt_id}",
                 )
                 .execute()

@@ -577,10 +577,8 @@ class TestExecuteRecordAnalyticsSnapshots:
                 "chapter_id": 1,
                 "youtube_video_id": "abc",
                 "checkpoint": "24h",
-                "metrics": {"views": 100, "impressions": 400,
-                            "impressionClickThroughRate": 0.04,
-                            "averageViewDuration": 30.0,
-                            "watchTimeMinutes": 50.0},
+                "metrics": {"views": 100, "estimatedMinutesWatched": 50.0,
+                            "averageViewDuration": 30.0, "likes": 12},
             }
         ]
         mock_task_instance.xcom_store["collected"] = collected
@@ -611,10 +609,8 @@ class TestExecuteRecordAnalyticsSnapshots:
                 "chapter_id": 5,
                 "youtube_video_id": "zzz",
                 "checkpoint": "7d",
-                "metrics": {"views": 1, "impressions": 1,
-                            "impressionClickThroughRate": 0.0,
-                            "averageViewDuration": 0.0,
-                            "watchTimeMinutes": 0.1},
+                "metrics": {"views": 1, "estimatedMinutesWatched": 0.1,
+                            "averageViewDuration": 0.0, "likes": 0},
             }
         ]
 
