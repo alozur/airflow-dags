@@ -23,6 +23,7 @@ import os
 from datetime import datetime, timedelta
 
 from airflow import DAG
+from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 from airflow.operators.python import BranchPythonOperator, PythonOperator, ShortCircuitOperator
 
 from congress_videos.config.constants import (
@@ -55,6 +56,42 @@ default_args = {
     'retries': 2,
     'retry_delay': timedelta(minutes=5),
 }
+
+def _trigger_refinement(ti, **_context) -> None:
+    """Fire-and-forget trigger for speaker_turns_dag after successful chapter save.
+
+    Reads db_save_results XCom from save_chapters_to_db to determine whether any
+    chapters were actually saved. When total_chapters_saved == 0 or the XCom is
+    absent, the trigger is skipped. Any exception from trigger_dag_api is caught
+    and logged — it must never fail the monitor DAG run.
+    """
+    db_save_results = ti.xcom_pull(key="db_save_results") or {}
+    total_chapters_saved = db_save_results.get("total_chapters_saved", 0)
+
+    if not total_chapters_saved:
+        logging.info(
+            "_trigger_refinement: 0 chapters saved — skipping speaker_turns_dag trigger"
+        )
+        return
+
+    try:
+        trigger_dag_api(
+            dag_id="speaker_turns_dag",
+            conf={},
+            run_id=f"monitor_trigger_{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}",
+        )
+        logging.info(
+            "_trigger_refinement: triggered speaker_turns_dag "
+            "(total_chapters_saved=%d)",
+            total_chapters_saved,
+        )
+    except Exception as exc:
+        logging.warning(
+            "_trigger_refinement: could not trigger speaker_turns_dag: %s — "
+            "continuing (fire-and-forget)",
+            exc,
+        )
+
 
 with DAG(
     'congress_youtube_channel_monitor',
@@ -637,6 +674,16 @@ with DAG(
         trigger_rule="all_done",
     )
 
+    # Step 11: Fire-and-forget trigger for speaker_turns_dag.
+    # Runs after normalize_speakers (all_done so it fires even when normalization
+    # short-circuits). Exception from trigger_dag_api is caught inside the callable
+    # and never propagates — the monitor DAG always succeeds.
+    t_trigger_refinement = PythonOperator(
+        task_id="trigger_refinement",
+        python_callable=_trigger_refinement,
+        trigger_rule="all_done",
+    )
+
     # Task dependencies
 
     # Start: Branch based on test mode
@@ -717,3 +764,7 @@ with DAG(
     # After saving chapters, normalize speaker names (best-effort; all_done so a
     # partial save never blocks normalization)
     t9_db >> t_normalize_speakers
+
+    # After normalization, fire-and-forget trigger for speaker_turns_dag.
+    # all_done: runs even when normalize_speakers short-circuits.
+    t_normalize_speakers >> t_trigger_refinement
