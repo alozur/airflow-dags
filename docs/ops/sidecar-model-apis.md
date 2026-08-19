@@ -153,25 +153,35 @@ Each PR is independently revertible:
 - PR3 (idle-exit): revert this commit; servers return to eager-resident behavior
   (#109 state), independently revertible without affecting PR1 or PR2.
 
-## Synology NAS deployment note (network override)
+## Synology NAS deployment note (firewall + dedicated bridge)
 
 On the NAS, newly created Docker bridge networks do not pass container-to-container
-traffic: the DSM firewall only has rules for bridge interfaces that existed at its
-last reload, so any fresh bridge (regardless of subnet — verified with both
-`192.168.64.0/20` and `10.42.40.0/24`) silently drops TCP between containers on the
-same network. Long-lived bridges such as `whisper_network` (`172.21.0.0/16`) work.
+traffic by default: the DSM firewall only has rules for bridge interfaces that
+existed at its last reload, so any fresh bridge silently drops TCP between
+containers on the same network (verified with two different subnets; long-lived
+bridges such as `whisper_network` keep working).
 
-The deployed compose at `/volume1/docker/ml-apis/docker-compose-ml-apis.yml`
-therefore overrides the `ml_api_network` definition to reuse the existing network:
+**Resolution in place**: a manual DSM firewall rule (Control Panel → Security →
+Firewall) allows traffic sourced from `10.42.40.0/24`, and the compose pins
+`ml_api_network` to exactly that subnet, so the rule survives network
+recreations. With the rule active, the dedicated bridge works and the sidecars
+run isolated on their own network as designed.
+
+**Airflow side**: the scheduler must join the sidecar network. The immediate
+join is `docker network connect ml-apis_ml_api_network airflow-scheduler-dev`,
+but that does not survive container recreation — the Container Manager project
+for the Airflow stack is the source of truth and must declare it:
 
 ```yaml
 networks:
   ml_api_network:
     external: true
-    name: whisper_network
+    name: ml-apis_ml_api_network
+# and add `ml_api_network` to the scheduler service's networks list
 ```
 
-The Airflow schedulers already join `whisper_network`, so no Airflow-side change is
-needed. If the DSM firewall is ever reloaded/rules regenerated (Control Panel →
-Security → Firewall, or a reboot), a dedicated bridge can be retried by restoring
-the in-repo network definition.
+Fallback if the firewall rule is ever lost: point `ml_api_network` at an
+existing long-lived bridge in the deployed compose
+(`external: true` + `name: whisper_network`) — the schedulers already join
+`whisper_network`, so it works with zero Airflow-side changes at the cost of
+sharing the network with whisper-api.
