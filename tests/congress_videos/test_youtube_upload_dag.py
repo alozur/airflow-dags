@@ -38,11 +38,12 @@ class TestYoutubeUploadDagLoads:
         assert dag is not None
         assert dag.dag_id == "congress_youtube_chapter_uploader"
 
-    def test_dag_has_thirteen_tasks(self):
-        """DAG must have 13 tasks after replacing t3/t4 with 3 new tasks (net +1)."""
+    def test_dag_has_fourteen_tasks(self):
+        """DAG must have 14 tasks: 13 original (t1_db replaced by get_uploadable_item PythonOperator)
+        plus mark_turns_uploaded task."""
         from congress_videos.youtube_upload_dag import dag
 
-        assert len(dag.tasks) == 13
+        assert len(dag.tasks) == 14
 
     def test_expected_task_ids_present(self):
         """New task IDs present; legacy Pillow task IDs absent."""
@@ -1183,3 +1184,501 @@ class TestTriggerThumbnailGenerationForwardsKeySpeakers:
         assert len(captured_confs) == 1
         assert "key_speakers" in captured_confs[0]
         assert captured_confs[0]["key_speakers"] == []
+
+
+# ---------------------------------------------------------------------------
+# Dual-queue: turn queue tried first, chapter fallback when turns empty
+# ---------------------------------------------------------------------------
+
+
+def _make_turn_row(
+    turn_id: int = 1,
+    output_path: str = "/data/turn1.mp4",
+    resolved_name: str = "Ana García",
+    start_seconds: float = 120.0,
+    end_seconds: float = 240.0,
+    chapter_id: int = 42,
+    key_speakers: list | None = None,
+    session_number: int = 80,
+    session_date: str = "2025-06-10",
+) -> dict:
+    return {
+        "turn_id": turn_id,
+        "output_path": output_path,
+        "resolved_name": resolved_name,
+        "start_seconds": start_seconds,
+        "end_seconds": end_seconds,
+        "chapter_id": chapter_id,
+        "key_speakers": key_speakers if key_speakers is not None else ["Ana García", "Pedro López"],
+        "session_number": session_number,
+        "session_date": session_date,
+        "chapter_title": "Un capítulo de prueba",
+        "description": "Descripción del capítulo",
+        "relevance_score": 4,
+    }
+
+
+class TestPrepareThumbnailConfigForTurn:
+    """_prepare_thumbnail_config anchors key_speakers to turn speaker and uses SRT window."""
+
+    def test_key_speakers_anchored_to_resolved_name(self):
+        """Turn config: key_speakers must be [resolved_name] ignoring chapter's key_speakers."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(
+            turn_id=1,
+            resolved_name="Ana García",
+        )
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "garcia-ana"},
+        ):
+            result = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert result["key_speakers"] == ["Ana García"]
+
+    def test_slug_resolved_from_resolved_name_not_key_speakers(self):
+        """Turn config: slug is derived from resolved_name (turn speaker), not chapter's speakers."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(
+            resolved_name="Pedro López",
+        )
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "lopez-pedro"},
+        ) as lookup:
+            result = _prepare_thumbnail_config(turn, MagicMock())
+
+        lookup.assert_called_once_with("Pedro López")
+        assert result["slug"] == "lopez-pedro"
+
+    def test_srt_fragment_bounded_by_start_end_seconds(self, tmp_path, mocker):
+        """Turn config: SRT fragment must be limited to [start_seconds, end_seconds]."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        # SRT content: block 1 within window, block 2 after window
+        srt_content = (
+            "1\n00:01:00,000 --> 00:02:00,000\nDentro del turno.\n\n"
+            "2\n00:04:00,000 --> 00:05:00,000\nFuera del turno.\n\n"
+        )
+        srt_path = tmp_path / "test.srt"
+        srt_path.write_text(srt_content, encoding="utf-8")
+
+        turn = _make_turn_row(
+            turn_id=1,
+            start_seconds=60.0,   # 00:01:00
+            end_seconds=180.0,    # 00:03:00 — block 2 is at 240s, outside window
+        )
+        turn["video_id"] = "video123"
+        turn["session_date"] = "2025-06-10"
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.find_srt_for_chapter",
+            return_value=str(srt_path),
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "garcia-ana"},
+        )
+
+        result = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert "srt_fragment" in result
+        assert "Dentro del turno" in result["srt_fragment"]
+        assert "Fuera del turno" not in result["srt_fragment"]
+
+    def test_chapter_id_preserved_in_config(self):
+        """Turn config: chapter_id must be preserved for thumbnail identity."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(turn_id=5, chapter_id=42)
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value=None,
+        ):
+            result = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert result["chapter_id"] == 42
+
+    def test_session_derived_from_session_number(self):
+        """Turn config: session label derived from session_number."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(session_number=80)
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value=None,
+        ):
+            result = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert "80" in result["session"]
+
+
+class TestDualQueueBehavior:
+    """Dual-queue: turn queue has priority; chapter fallback used when turns empty."""
+
+    def test_uploader_selects_turn_when_available(self, mocker):
+        """When get_uploadable_turns returns a turn, _run_get_uploadable_item returns it."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        fake_turn = _make_turn_row()
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = [fake_turn]
+        mock_db.get_uploadable_chapters.return_value = []
+
+        result = _run_get_uploadable_item(mock_db)
+
+        assert result["item"] == fake_turn
+        assert result["item_type"] == "turn"
+        mock_db.get_uploadable_chapters.assert_not_called()
+
+    def test_uploader_falls_back_to_chapter_when_turns_empty(self, mocker):
+        """When turns empty, _run_get_uploadable_item falls back to chapters."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        fake_chapter = {"chapter_id": 99, "title": "Cap 99"}
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = []
+        mock_db.get_uploadable_chapters.return_value = [fake_chapter]
+
+        result = _run_get_uploadable_item(mock_db)
+
+        assert result["item"] == fake_chapter
+        assert result["item_type"] == "chapter"
+        mock_db.get_uploadable_chapters.assert_called_once()
+
+    def test_uploader_returns_none_when_both_queues_empty(self):
+        """When both queues empty, _run_get_uploadable_item returns None."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = []
+        mock_db.get_uploadable_chapters.return_value = []
+
+        result = _run_get_uploadable_item(mock_db)
+
+        assert result is None
+
+
+class TestGuardAAndGuardB:
+    """View-level guards: Guard A (chapter excluded when turn uploaded),
+    Guard B (turn excluded when chapter uploaded). Both enforced in the SQL
+    view — these tests verify the uploader passes the right rows through."""
+
+    def test_guard_b_turn_excluded_by_empty_view(self):
+        """Guard B: when uploadable_turns is empty (chapter already uploaded),
+        uploader falls back to chapter queue."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = []  # Guard B filtered them out
+        mock_db.get_uploadable_chapters.return_value = []
+
+        result = _run_get_uploadable_item(mock_db)
+        assert result is None
+
+    def test_guard_a_chapter_excluded_by_empty_view(self):
+        """Guard A: when chapter fallback returns empty (turn already uploaded),
+        uploader has nothing to upload."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = []
+        mock_db.get_uploadable_chapters.return_value = []  # Guard A filtered chapter out
+
+        result = _run_get_uploadable_item(mock_db)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL-1: Dual-queue wired into DAG task graph (not dead code)
+# ---------------------------------------------------------------------------
+
+
+class TestDualQueueWiredIntoDag:
+    """Verify that the DAG task graph actually invokes dual-queue logic
+    rather than calling get_uploadable_chapters directly."""
+
+    def test_dag_has_get_uploadable_item_task_not_static_chapters_op(self):
+        """DAG must have a 'get_uploadable_item' task (PythonOperator), not a
+        PostgreSQLOperator with operation='get_uploadable_chapters'."""
+        from congress_videos.youtube_upload_dag import dag
+
+        task_ids = {t.task_id for t in dag.tasks}
+        # The wired task must exist
+        assert "get_uploadable_item" in task_ids, (
+            "DAG must have a get_uploadable_item task (dual-queue wired)"
+        )
+
+    def test_get_uploadable_item_task_is_python_operator(self):
+        """The get_uploadable_item task must be a PythonOperator (not PostgreSQLOperator)."""
+        from airflow.operators.python import PythonOperator
+        from congress_videos.youtube_upload_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        task = tasks_by_id.get("get_uploadable_item")
+        assert task is not None, "get_uploadable_item task must exist"
+        assert isinstance(task, PythonOperator), (
+            "get_uploadable_item must be a PythonOperator, not a PostgreSQLOperator"
+        )
+
+    def test_get_uploadable_item_is_downstream_of_skip_if_quota_reached(self):
+        """get_uploadable_item must be downstream of skip_if_quota_reached."""
+        from congress_videos.youtube_upload_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        skip_task = tasks_by_id["skip_if_quota_reached"]
+        item_task = tasks_by_id.get("get_uploadable_item")
+        assert item_task is not None, "get_uploadable_item task must exist"
+        downstream_ids = {t.task_id for t in skip_task.downstream_list}
+        assert item_task.task_id in downstream_ids, (
+            "get_uploadable_item must be downstream of skip_if_quota_reached"
+        )
+
+    def test_generate_metadata_is_downstream_of_get_uploadable_item(self):
+        """generate_youtube_metadata must be downstream of get_uploadable_item."""
+        from congress_videos.youtube_upload_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        item_task = tasks_by_id.get("get_uploadable_item")
+        meta_task = tasks_by_id["generate_youtube_metadata"]
+        assert item_task is not None, "get_uploadable_item task must exist"
+        upstream_ids = {t.task_id for t in meta_task.upstream_list}
+        assert item_task.task_id in upstream_ids, (
+            "generate_youtube_metadata must be downstream of get_uploadable_item"
+        )
+
+    def test_dag_task_count_updated_for_wired_dual_queue(self):
+        """DAG must have 14 tasks after replacing t1_db with get_uploadable_item and adding mark_turns_uploaded."""
+        from congress_videos.youtube_upload_dag import dag
+
+        assert len(dag.tasks) == 14, (
+            f"Expected 14 tasks (13 original tasks, t1_db replaced by get_uploadable_item PythonOperator, "
+            f"plus mark_turns_uploaded), got {len(dag.tasks)}"
+        )
+
+    def test_mark_turns_uploaded_task_exists(self):
+        """DAG must have a mark_turns_uploaded task (CRITICAL-3)."""
+        from congress_videos.youtube_upload_dag import dag
+
+        task_ids = {t.task_id for t in dag.tasks}
+        assert "mark_turns_uploaded" in task_ids, (
+            "DAG must have a mark_turns_uploaded task after upload"
+        )
+
+    def test_mark_turns_uploaded_is_downstream_of_trigger_youtube_upload(self):
+        """mark_turns_uploaded must be downstream of trigger_youtube_upload."""
+        from congress_videos.youtube_upload_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        upload_task = tasks_by_id["trigger_youtube_upload"]
+        mark_turns = tasks_by_id.get("mark_turns_uploaded")
+        assert mark_turns is not None, "mark_turns_uploaded task must exist"
+        downstream_ids = {t.task_id for t in upload_task.downstream_list}
+        assert mark_turns.task_id in downstream_ids, (
+            "mark_turns_uploaded must be downstream of trigger_youtube_upload"
+        )
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL-2: Combined daily cap (turns + chapters in uploads_today)
+# ---------------------------------------------------------------------------
+
+
+class TestCombinedDailyCap:
+    """check_upload_quota must count turns uploaded today + chapters uploaded today."""
+
+    def test_uploads_today_includes_turns_and_chapters(self, mocker):
+        """When 1 turn and 1 chapter were uploaded today, uploads_today must be 2."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db = MagicMock()
+        mock_db.count_chapters_uploaded_today.return_value = 1
+        mock_db.count_turns_uploaded_today.return_value = 1
+        mock_db.count_pending_uploadable_chapters.return_value = 3
+        mock_db.count_pending_uploadable_turns.return_value = 2
+
+        mocker.patch(
+            "congress_videos.modules.postgres_operators.CongressionalVideoDB",
+            return_value=mock_db,
+        )
+        mocker.patch.dict(
+            "os.environ",
+            {
+                "POSTGRES_HOST": "localhost",
+                "POSTGRES_PORT": "5432",
+                "POSTGRES_DB": "testdb",
+                "POSTGRES_USER": "testuser",
+                "POSTGRES_PASSWORD": "testpass",
+                "POSTGRES_SCHEMA": "public",
+            },
+        )
+
+        op = PostgreSQLOperator(
+            task_id="check_upload_quota",
+            operation="check_upload_quota",
+            output_xcom_key="upload_quota",
+        )
+        ti = MagicMock()
+        ti.xcom_store = {}
+        ti.xcom_push.side_effect = lambda key, value, **kw: ti.xcom_store.update({key: value})
+        context = {"params": {}, "ti": ti}
+
+        op.execute(context)
+
+        result = ti.xcom_store.get("upload_quota")
+        assert result is not None, "upload_quota must be pushed to XCom"
+        assert result["uploads_today"] == 2, (
+            f"uploads_today must be turns (1) + chapters (1) = 2, got {result['uploads_today']}"
+        )
+
+    def test_uploads_today_zero_when_nothing_uploaded(self, mocker):
+        """When no turns and no chapters uploaded today, uploads_today must be 0."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db = MagicMock()
+        mock_db.count_chapters_uploaded_today.return_value = 0
+        mock_db.count_turns_uploaded_today.return_value = 0
+        mock_db.count_pending_uploadable_chapters.return_value = 5
+        mock_db.count_pending_uploadable_turns.return_value = 2
+
+        mocker.patch(
+            "congress_videos.modules.postgres_operators.CongressionalVideoDB",
+            return_value=mock_db,
+        )
+        mocker.patch.dict(
+            "os.environ",
+            {
+                "POSTGRES_HOST": "localhost",
+                "POSTGRES_PORT": "5432",
+                "POSTGRES_DB": "testdb",
+                "POSTGRES_USER": "testuser",
+                "POSTGRES_PASSWORD": "testpass",
+                "POSTGRES_SCHEMA": "public",
+            },
+        )
+
+        op = PostgreSQLOperator(
+            task_id="check_upload_quota",
+            operation="check_upload_quota",
+            output_xcom_key="upload_quota",
+        )
+        ti = MagicMock()
+        ti.xcom_store = {}
+        ti.xcom_push.side_effect = lambda key, value, **kw: ti.xcom_store.update({key: value})
+        context = {"params": {}, "ti": ti}
+
+        op.execute(context)
+
+        result = ti.xcom_store.get("upload_quota")
+        assert result["uploads_today"] == 0
+
+    def test_uploads_today_chapter_only_when_no_turns_uploaded(self, mocker):
+        """When only chapters uploaded today, uploads_today = chapter count."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db = MagicMock()
+        mock_db.count_chapters_uploaded_today.return_value = 1
+        mock_db.count_turns_uploaded_today.return_value = 0
+        mock_db.count_pending_uploadable_chapters.return_value = 2
+        mock_db.count_pending_uploadable_turns.return_value = 0
+
+        mocker.patch(
+            "congress_videos.modules.postgres_operators.CongressionalVideoDB",
+            return_value=mock_db,
+        )
+        mocker.patch.dict(
+            "os.environ",
+            {
+                "POSTGRES_HOST": "localhost",
+                "POSTGRES_PORT": "5432",
+                "POSTGRES_DB": "testdb",
+                "POSTGRES_USER": "testuser",
+                "POSTGRES_PASSWORD": "testpass",
+                "POSTGRES_SCHEMA": "public",
+            },
+        )
+
+        op = PostgreSQLOperator(
+            task_id="check_upload_quota",
+            operation="check_upload_quota",
+            output_xcom_key="upload_quota",
+        )
+        ti = MagicMock()
+        ti.xcom_store = {}
+        ti.xcom_push.side_effect = lambda key, value, **kw: ti.xcom_store.update({key: value})
+        context = {"params": {}, "ti": ti}
+
+        op.execute(context)
+
+        result = ti.xcom_store.get("upload_quota")
+        assert result["uploads_today"] == 1
+
+
+# ---------------------------------------------------------------------------
+# WARNING-1: queue_size includes turns_pending in should_upload gate
+# ---------------------------------------------------------------------------
+
+
+class TestQueueSizeIncludesTurns:
+    """should_upload must gate on combined queue size (turns + chapters)."""
+
+    def test_queue_size_with_only_turns_pending_allows_upload(self):
+        """When only turns are pending (queue_size=0 for chapters), gate on combined."""
+        from congress_videos.youtube_upload_dag import should_upload
+
+        # Simulate quota xcom: chapter queue empty but turns pending
+        # queue_size must already include turns for the gate to work.
+        # This test verifies the combined queue_size is what should_upload sees.
+        ctx = _make_context_for_should_upload(queue_size=1, hour=19, uploads_today=0)
+        # queue_size=1 represents turns_pending=1 counted in combined queue_size
+        assert should_upload(**ctx) is True
+
+    def test_combined_queue_size_in_check_upload_quota(self, mocker):
+        """check_upload_quota queue_size must include turns_pending + chapters pending."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db = MagicMock()
+        mock_db.count_chapters_uploaded_today.return_value = 0
+        mock_db.count_turns_uploaded_today.return_value = 0
+        mock_db.count_pending_uploadable_chapters.return_value = 2
+        mock_db.count_pending_uploadable_turns.return_value = 3  # 3 turns pending
+
+        mocker.patch(
+            "congress_videos.modules.postgres_operators.CongressionalVideoDB",
+            return_value=mock_db,
+        )
+        mocker.patch.dict(
+            "os.environ",
+            {
+                "POSTGRES_HOST": "localhost",
+                "POSTGRES_PORT": "5432",
+                "POSTGRES_DB": "testdb",
+                "POSTGRES_USER": "testuser",
+                "POSTGRES_PASSWORD": "testpass",
+                "POSTGRES_SCHEMA": "public",
+            },
+        )
+
+        op = PostgreSQLOperator(
+            task_id="check_upload_quota",
+            operation="check_upload_quota",
+            output_xcom_key="upload_quota",
+        )
+        ti = MagicMock()
+        ti.xcom_store = {}
+        ti.xcom_push.side_effect = lambda key, value, **kw: ti.xcom_store.update({key: value})
+        context = {"params": {}, "ti": ti}
+
+        op.execute(context)
+
+        result = ti.xcom_store.get("upload_quota")
+        # queue_size must be chapters(2) + turns(3) = 5
+        assert result["queue_size"] == 5, (
+            f"queue_size must be chapters_pending(2) + turns_pending(3) = 5, got {result['queue_size']}"
+        )

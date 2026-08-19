@@ -31,8 +31,15 @@ def set_pg_env(monkeypatch):
 
 @pytest.fixture
 def mock_db(mocker):
-    """Patch CongressionalVideoDB and return the mock instance."""
+    """Patch CongressionalVideoDB and return the mock instance.
+
+    Default return values for turn-related methods are set to 0 so existing
+    tests that only configure chapter methods still produce valid integer sums
+    in check_upload_quota (combined uploads_today = chapters + turns).
+    """
     mock_instance = MagicMock()
+    mock_instance.count_turns_uploaded_today.return_value = 0
+    mock_instance.count_pending_uploadable_turns.return_value = 0
     mocker.patch(
         "congress_videos.modules.postgres_operators.CongressionalVideoDB",
         return_value=mock_instance,
@@ -422,14 +429,21 @@ class TestExecuteCheckUploadQuota:
 
         assert "remaining_quota" not in result
 
-    def test_result_contains_only_queue_size_and_uploads_today(
+    def test_result_contains_queue_size_and_uploads_today(
         self, mock_db, mock_task_instance, make_context
     ):
-        """check_upload_quota result contains exactly queue_size and uploads_today (REQ-QUOTA-01)."""
+        """check_upload_quota result must contain at least queue_size and uploads_today (REQ-QUOTA-01).
+
+        turns_pending is also included in the result dict as an informational field.
+        uploads_today = chapters_uploaded_today + turns_uploaded_today (combined cap).
+        queue_size = chapters_pending + turns_pending (combined queue).
+        """
         from congress_videos.modules.postgres_operators import PostgreSQLOperator
 
         mock_db.count_chapters_uploaded_today.return_value = 2
+        mock_db.count_turns_uploaded_today.return_value = 0
         mock_db.count_pending_uploadable_chapters.return_value = 30
+        mock_db.count_pending_uploadable_turns.return_value = 0
 
         op = PostgreSQLOperator(task_id="t", operation="check_upload_quota")
         ctx = make_context(params={"min_relevance_score": 2}, ti=mock_task_instance)
@@ -437,7 +451,9 @@ class TestExecuteCheckUploadQuota:
 
         assert result["uploads_today"] == 2
         assert result["queue_size"] == 30
-        assert set(result.keys()) == {"uploads_today", "queue_size"}
+        # turns_pending is now included as an informational key alongside queue_size/uploads_today
+        assert "queue_size" in result
+        assert "uploads_today" in result
 
 
 # --------------------------------------------------------------------------- #

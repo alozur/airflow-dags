@@ -1220,10 +1220,71 @@ class CongressionalVideoDB:
                 result = cur.fetchone()
                 return result['count'] if result else 0
 
+    def get_uploadable_turns(self, limit: int = 1) -> List[Dict]:
+        """Get speaker turn videos eligible for YouTube upload.
+
+        Args:
+            limit: Maximum number of turns to return (default: 1).
+
+        Returns:
+            List of turn records from the uploadable_turns view.
+        """
+        uploadable_turns_view = self.pg_conn.get_qualified_table('uploadable_turns')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT * FROM {uploadable_turns_view} LIMIT %s",
+                    (limit,),
+                )
+                turns = cur.fetchall()
+                logger.info(f"Retrieved {len(turns)} uploadable turns (limit={limit})")
+                return turns
+
+    def mark_turns_uploaded(self, turn_id: int, youtube_video_id: str) -> None:
+        """Mark a speaker turn video as uploaded to YouTube.
+
+        Sets is_uploaded_to_youtube=TRUE, youtube_video_id, and
+        youtube_upload_date=NOW() for the given turn_id.
+
+        Args:
+            turn_id: Database ID of the speaker turn.
+            youtube_video_id: YouTube video ID of the uploaded turn video.
+        """
+        stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {stv_table} SET
+                        is_uploaded_to_youtube = TRUE,
+                        youtube_video_id = %s,
+                        youtube_upload_date = NOW()
+                    WHERE turn_id = %s
+                    """,
+                    (youtube_video_id, turn_id),
+                )
+                logger.info(
+                    f"Marked turn {turn_id} as uploaded to YouTube: {youtube_video_id}"
+                )
+
+    def count_pending_uploadable_turns(self) -> int:
+        """Returns the count of speaker turn videos pending upload."""
+        count = self._count_records('uploadable_turns')
+        logger.info(f"Pending uploadable turns: {count}")
+        return count
+
     def count_chapters_uploaded_today(self) -> int:
         """Returns the number of chapters uploaded to YouTube today (UTC date)."""
         count = self._count_records('video_chapters', 'youtube_upload_date >= CURRENT_DATE')
         logger.info(f"Chapters uploaded today: {count}")
+        return count
+
+    def count_turns_uploaded_today(self) -> int:
+        """Returns the number of speaker turn videos uploaded to YouTube today (UTC date)."""
+        count = self._count_records('speaker_turn_videos', 'youtube_upload_date >= CURRENT_DATE')
+        logger.info(f"Turns uploaded today: {count}")
         return count
 
     def count_pending_uploadable_chapters(self, min_relevance_score: int = 2) -> int:
