@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS video_analytics_snapshots (
     chapter_id        INTEGER      NOT NULL REFERENCES video_chapters(chapter_id) ON DELETE CASCADE,
     youtube_video_id  VARCHAR(50)  NOT NULL,
     checkpoint        TEXT         NOT NULL,          -- '24h'|'48h'|'7d'|'30d'|'90d'
-    metrics           JSONB        NOT NULL,          -- {views, impressions, impressionClickThroughRate, averageViewDuration, watchTimeMinutes}
+    metrics           JSONB        NOT NULL,          -- config.analytics_config.METRIC_FIELDS: {views, estimatedMinutesWatched, averageViewDuration, averageViewPercentage, likes, dislikes, comments, shares, subscribersGained, subscribersLost}
     action_taken      TEXT,                           -- reserved NULL placeholder for #102; never written by this change
     collected_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_video_analytics_snapshot UNIQUE (youtube_video_id, checkpoint)

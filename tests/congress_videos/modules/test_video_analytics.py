@@ -191,37 +191,32 @@ class TestParseAnalyticsResponse:
     """Spec: Snapshot Persistence Shape."""
 
     def _sample_response(self, values: list) -> dict:
-        """Build a minimal Analytics API response with the five standard fields."""
+        """Build a minimal Analytics API response covering all METRIC_FIELDS."""
+        from congress_videos.config.analytics_config import METRIC_FIELDS
+
         return {
-            "columnHeaders": [
-                {"name": "views"},
-                {"name": "impressions"},
-                {"name": "impressionClickThroughRate"},
-                {"name": "averageViewDuration"},
-                {"name": "watchTimeMinutes"},
-            ],
+            "columnHeaders": [{"name": name} for name in METRIC_FIELDS],
             "rows": [values],
         }
 
-    def test_five_fields_are_mapped(self):
+    def test_all_fields_are_mapped(self):
         """GIVEN a full Analytics response with one row
         WHEN parse_analytics_response is called
-        THEN a dict with all five metric keys is returned."""
+        THEN each METRIC_FIELDS key maps to its column value."""
+        from congress_videos.config.analytics_config import METRIC_FIELDS
         from congress_videos.modules.video_analytics import parse_analytics_response
 
-        resp = self._sample_response([120, 500, 0.05, 45.3, 90.6])
-        result = parse_analytics_response(resp)
+        values = list(range(len(METRIC_FIELDS)))
+        result = parse_analytics_response(self._sample_response(values))
 
-        assert result["views"] == 120
-        assert result["impressions"] == 500
-        assert result["impressionClickThroughRate"] == 0.05
-        assert result["averageViewDuration"] == 45.3
-        assert result["watchTimeMinutes"] == 90.6
+        for field, value in zip(METRIC_FIELDS, values):
+            assert result[field] == value
 
     def test_missing_column_returns_none(self):
         """GIVEN a response that lacks some columns
         WHEN parse_analytics_response is called
         THEN missing columns map to None."""
+        from congress_videos.config.analytics_config import METRIC_FIELDS
         from congress_videos.modules.video_analytics import parse_analytics_response
 
         # Only 'views' present
@@ -232,49 +227,34 @@ class TestParseAnalyticsResponse:
         result = parse_analytics_response(resp)
 
         assert result["views"] == 42
-        assert result["impressions"] is None
-        assert result["impressionClickThroughRate"] is None
-        assert result["averageViewDuration"] is None
-        assert result["watchTimeMinutes"] is None
+        for field in METRIC_FIELDS:
+            if field != "views":
+                assert result[field] is None
 
     def test_empty_rows_returns_all_none(self):
         """GIVEN an Analytics response with no rows
         WHEN parse_analytics_response is called
-        THEN all five fields are None."""
+        THEN every metric field is None."""
+        from congress_videos.config.analytics_config import METRIC_FIELDS
         from congress_videos.modules.video_analytics import parse_analytics_response
 
         resp = {
-            "columnHeaders": [
-                {"name": "views"},
-                {"name": "impressions"},
-                {"name": "impressionClickThroughRate"},
-                {"name": "averageViewDuration"},
-                {"name": "watchTimeMinutes"},
-            ],
+            "columnHeaders": [{"name": name} for name in METRIC_FIELDS],
             "rows": [],
         }
         result = parse_analytics_response(resp)
 
-        assert result["views"] is None
-        assert result["impressions"] is None
-        assert result["impressionClickThroughRate"] is None
-        assert result["averageViewDuration"] is None
-        assert result["watchTimeMinutes"] is None
+        assert all(result[field] is None for field in METRIC_FIELDS)
 
-    def test_result_has_exactly_five_keys(self):
-        """Result dict must contain exactly the five METRIC_FIELDS keys."""
+    def test_result_keys_match_metric_fields(self):
+        """Result dict must contain exactly the METRIC_FIELDS keys."""
+        from congress_videos.config.analytics_config import METRIC_FIELDS
         from congress_videos.modules.video_analytics import parse_analytics_response
 
-        resp = self._sample_response([1, 2, 3.0, 4.0, 5.0])
-        result = parse_analytics_response(resp)
+        values = list(range(len(METRIC_FIELDS)))
+        result = parse_analytics_response(self._sample_response(values))
 
-        assert set(result.keys()) == {
-            "views",
-            "impressions",
-            "impressionClickThroughRate",
-            "averageViewDuration",
-            "watchTimeMinutes",
-        }
+        assert set(result.keys()) == set(METRIC_FIELDS)
 
 
 # ---------------------------------------------------------------------------
@@ -289,60 +269,42 @@ class TestShouldPersist:
         """GIVEN all metrics are None
         WHEN should_persist is called
         THEN it returns False (skip-and-retry)."""
+        from congress_videos.config.analytics_config import METRIC_FIELDS
         from congress_videos.modules.video_analytics import should_persist
 
-        metrics = {
-            "views": None,
-            "impressions": None,
-            "impressionClickThroughRate": None,
-            "averageViewDuration": None,
-            "watchTimeMinutes": None,
-        }
+        metrics = {field: None for field in METRIC_FIELDS}
         assert should_persist(metrics) is False
 
     def test_all_zero_returns_false(self):
         """GIVEN all metrics are 0 / 0.0
         WHEN should_persist is called
         THEN it returns False (analytics lag, retry next hour)."""
+        from congress_videos.config.analytics_config import METRIC_FIELDS
         from congress_videos.modules.video_analytics import should_persist
 
-        metrics = {
-            "views": 0,
-            "impressions": 0,
-            "impressionClickThroughRate": 0.0,
-            "averageViewDuration": 0.0,
-            "watchTimeMinutes": 0.0,
-        }
+        metrics = {field: 0 for field in METRIC_FIELDS}
         assert should_persist(metrics) is False
 
     def test_one_nonzero_returns_true(self):
         """GIVEN at least one nonzero metric
         WHEN should_persist is called
         THEN it returns True."""
+        from congress_videos.config.analytics_config import METRIC_FIELDS
         from congress_videos.modules.video_analytics import should_persist
 
-        metrics = {
-            "views": 1,
-            "impressions": 0,
-            "impressionClickThroughRate": 0.0,
-            "averageViewDuration": 0.0,
-            "watchTimeMinutes": 0.0,
-        }
+        metrics = {field: 0 for field in METRIC_FIELDS}
+        metrics["views"] = 1
         assert should_persist(metrics) is True
 
     def test_mixed_none_and_nonzero_returns_true(self):
         """GIVEN some None values but at least one nonzero value
         WHEN should_persist is called
         THEN it returns True."""
+        from congress_videos.config.analytics_config import METRIC_FIELDS
         from congress_videos.modules.video_analytics import should_persist
 
-        metrics = {
-            "views": None,
-            "impressions": None,
-            "impressionClickThroughRate": None,
-            "averageViewDuration": None,
-            "watchTimeMinutes": 90.6,
-        }
+        metrics = {field: None for field in METRIC_FIELDS}
+        metrics["estimatedMinutesWatched"] = 90.6
         assert should_persist(metrics) is True
 
 
@@ -450,10 +412,15 @@ class TestRecordAnalyticsSnapshot:
     def _metrics(self) -> dict:
         return {
             "views": 120,
-            "impressions": 500,
-            "impressionClickThroughRate": 0.05,
+            "estimatedMinutesWatched": 90.6,
             "averageViewDuration": 45.3,
-            "watchTimeMinutes": 90.6,
+            "averageViewPercentage": 52.1,
+            "likes": 40,
+            "dislikes": 2,
+            "comments": 8,
+            "shares": 5,
+            "subscribersGained": 3,
+            "subscribersLost": 1,
         }
 
     def test_insert_uses_on_conflict_do_nothing(self):

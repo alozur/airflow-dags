@@ -3,7 +3,7 @@
 Verifies:
 - CHECKPOINTS is a plain dict with exactly five keys and the correct hour values
 - MAX_WINDOW_HOURS equals 2160 (90 days in hours)
-- METRIC_FIELDS is a list of exactly five field names
+- METRIC_FIELDS is a list of the ten API-supported metric names
 - No Airflow imports leak into this module (import succeeds in isolation)
 """
 
@@ -74,29 +74,38 @@ class TestMaxWindowHours:
 
 class TestMetricFields:
 
-    def test_metric_fields_has_exactly_five_entries(self):
-        cfg = _load()
-        assert len(cfg.METRIC_FIELDS) == 5
+    # Every name here must be a metric the YouTube Analytics API accepts for a
+    # per-video channel report; impressions/impressionClickThroughRate/
+    # watchTimeMinutes are intentionally absent (unsupported by the API).
+    _EXPECTED_METRICS = [
+        "views",
+        "estimatedMinutesWatched",
+        "averageViewDuration",
+        "averageViewPercentage",
+        "likes",
+        "dislikes",
+        "comments",
+        "shares",
+        "subscribersGained",
+        "subscribersLost",
+    ]
 
-    def test_metric_fields_contains_views(self):
+    def test_metric_fields_matches_supported_set(self):
         cfg = _load()
-        assert "views" in cfg.METRIC_FIELDS
+        assert cfg.METRIC_FIELDS == self._EXPECTED_METRICS
 
-    def test_metric_fields_contains_impressions(self):
+    def test_metric_fields_has_ten_entries(self):
         cfg = _load()
-        assert "impressions" in cfg.METRIC_FIELDS
+        assert len(cfg.METRIC_FIELDS) == 10
 
-    def test_metric_fields_contains_impression_ctr(self):
+    def test_metric_fields_excludes_unsupported_metrics(self):
         cfg = _load()
-        assert "impressionClickThroughRate" in cfg.METRIC_FIELDS
-
-    def test_metric_fields_contains_average_view_duration(self):
-        cfg = _load()
-        assert "averageViewDuration" in cfg.METRIC_FIELDS
-
-    def test_metric_fields_contains_watch_time_minutes(self):
-        cfg = _load()
-        assert "watchTimeMinutes" in cfg.METRIC_FIELDS
+        for unsupported in (
+            "impressions",
+            "impressionClickThroughRate",
+            "watchTimeMinutes",
+        ):
+            assert unsupported not in cfg.METRIC_FIELDS
 
     def test_metric_fields_is_a_list(self):
         cfg = _load()

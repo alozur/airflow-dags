@@ -79,16 +79,18 @@ def parse_analytics_response(resp: dict[str, Any]) -> dict[str, Any | None]:
     """Map a YouTube Analytics API response to a flat metrics dict.
 
     Reads 'columnHeaders' and 'rows' from the API response. Returns a dict
-    with exactly the five METRIC_FIELDS keys. Missing columns or an empty
+    with exactly the METRIC_FIELDS keys. Missing columns or an empty
     rows list yield None for the missing field.
 
     Args:
         resp: Raw dict from ``reports.query().execute()``.
 
     Returns:
-        Dict with keys: views, impressions, impressionClickThroughRate,
-        averageViewDuration, watchTimeMinutes. Value is None when the API
-        did not return that column or returned no rows.
+        Dict keyed by every name in ``METRIC_FIELDS`` (views,
+        estimatedMinutesWatched, averageViewDuration, averageViewPercentage,
+        likes, dislikes, comments, shares, subscribersGained,
+        subscribersLost). Value is None when the API did not return that
+        column or returned no rows.
     """
     headers = [h["name"] for h in resp.get("columnHeaders", [])]
     rows = resp.get("rows", [])
