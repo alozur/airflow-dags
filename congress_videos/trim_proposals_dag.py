@@ -146,6 +146,7 @@ def run_turn_proposals(
     *,
     vad_fn=_webrtc_vad_fn,
     yamnet_fn=api_yamnet_fn,
+    proposals_table: str = "speaker_turn_trim_proposals",
 ) -> dict:
     """Generate and persist trim proposals for a single speaker turn.
 
@@ -190,7 +191,7 @@ def run_turn_proposals(
         proposals = generate_trim_proposals(
             turn, wav_path, vad_fn, yamnet_fn
         )
-        count = _upsert_proposals(cursor, proposals)
+        count = _upsert_proposals(cursor, proposals, table=proposals_table)
         logger.info(
             "turn %s: %d proposal(s) upserted", turn_id, count
         )
@@ -221,11 +222,14 @@ def _process_task(**context) -> dict:
     turns = context["ti"].xcom_pull(key="turns", task_ids="select_turns") or []
     summary = {"processed": 0, "skipped": 0, "proposals": 0}
     pg = PostgresConnection()
+    proposals_table = pg.get_qualified_table("speaker_turn_trim_proposals")
     with pg.get_connection() as conn:
         with conn.cursor() as cur:
             for turn in turns:
                 try:
-                    result = run_turn_proposals(turn, cur)
+                    result = run_turn_proposals(
+                        turn, cur, proposals_table=proposals_table
+                    )
                 except Exception:  # noqa: BLE001 — one bad turn must not sink the run
                     logger.exception(
                         "turn %s failed — skipping", turn.get("turn_id")

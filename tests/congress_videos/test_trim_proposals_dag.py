@@ -86,7 +86,11 @@ class TestRunTurnProposals:
         assert result["status"] == "ok"
         assert result["proposals"] == 2
         generate.assert_called_once()
-        upsert.assert_called_once_with(cursor, proposals)
+        # Default table name flows through when no qualified name is supplied;
+        # _process_task passes pg.get_qualified_table(...) in prod.
+        upsert.assert_called_once_with(
+            cursor, proposals, table="speaker_turn_trim_proposals"
+        )
 
     def test_wav_is_cleaned_up_after_processing(self, monkeypatch, tmp_path):
         mod = _fresh()
