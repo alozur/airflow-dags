@@ -1,6 +1,11 @@
 networks:
   ml_api_network:
     driver: bridge
+    ipam:
+      config:
+        # Pinned so the NAS DSM firewall allow-rule for this subnet stays
+        # valid across network recreations (see docs/ops/sidecar-model-apis.md).
+        - subnet: 10.42.40.0/24
 
 volumes:
   hf_home:
