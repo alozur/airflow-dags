@@ -152,3 +152,26 @@ Each PR is independently revertible:
   `trim_proposals_docker.py`; remove yamnet-api from `docker-compose-ml-apis.yml`.
 - PR3 (idle-exit): revert this commit; servers return to eager-resident behavior
   (#109 state), independently revertible without affecting PR1 or PR2.
+
+## Synology NAS deployment note (network override)
+
+On the NAS, newly created Docker bridge networks do not pass container-to-container
+traffic: the DSM firewall only has rules for bridge interfaces that existed at its
+last reload, so any fresh bridge (regardless of subnet — verified with both
+`192.168.64.0/20` and `10.42.40.0/24`) silently drops TCP between containers on the
+same network. Long-lived bridges such as `whisper_network` (`172.21.0.0/16`) work.
+
+The deployed compose at `/volume1/docker/ml-apis/docker-compose-ml-apis.yml`
+therefore overrides the `ml_api_network` definition to reuse the existing network:
+
+```yaml
+networks:
+  ml_api_network:
+    external: true
+    name: whisper_network
+```
+
+The Airflow schedulers already join `whisper_network`, so no Airflow-side change is
+needed. If the DSM firewall is ever reloaded/rules regenerated (Control Panel →
+Security → Firewall, or a reboot), a dedicated bridge can be retried by restoring
+the in-repo network definition.
