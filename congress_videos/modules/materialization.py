@@ -90,6 +90,19 @@ class MaterializationPlan:
 # ---------------------------------------------------------------------------
 
 
+def _with_float_seconds(row: dict) -> dict:
+    """Return a copy of ``row`` with second fields coerced to float.
+
+    Postgres NUMERIC columns are delivered as ``decimal.Decimal`` by
+    psycopg2; mixing them with float tolerances raises TypeError.
+    """
+    return {
+        **row,
+        "start_seconds": float(row["start_seconds"]),
+        "end_seconds": float(row["end_seconds"]),
+    }
+
+
 def _compute_keep_intervals(
     turn_start: float,
     turn_end: float,
@@ -173,6 +186,11 @@ def plan_turn_materialization(
     Returns:
         Ordered list of ``MaterializationPlan`` records, one per output video.
     """
+    # Postgres NUMERIC columns arrive as decimal.Decimal; coerce every
+    # second field to float on copies so interval math never mixes types.
+    turns = [_with_float_seconds(t) for t in turns]
+    approved_trims = [_with_float_seconds(t) for t in approved_trims]
+
     # Filter to only approved + voice-free proposals, indexed by turn_id
     effective_trims: dict[int, list[dict]] = {}
     for trim in approved_trims:
