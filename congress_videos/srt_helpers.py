@@ -11,6 +11,21 @@ from utils.time_utils import parse_timestamp
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Interest scoring constants
+# ---------------------------------------------------------------------------
+
+INTEREST_SCALE_MIN: int = 0
+INTEREST_SCALE_MAX: int = 10
+# Threshold below which a turn is soft-excluded from the upload queue.
+# Matches the COALESCE neutral value so unscored turns clear the filter
+# but sort last among genuinely interesting turns.
+# Also documented in migration 029 SQL header comment.
+INTEREST_FILTER_THRESHOLD: int = 1
+# Neutral COALESCE value: passes the >= INTEREST_FILTER_THRESHOLD filter
+# but sorts last among all turns with a real score.
+INTEREST_NEUTRAL: int = 1
+
 _TIMESTAMP_RE = re.compile(r'\d{2}:\d{2}:\d{2}')
 _TIMESTAMP_STRIP_RE = re.compile(r',\d+')
 _SRT_TIMESTAMP_ARROW_RE = re.compile(
@@ -234,6 +249,87 @@ def _find_phrase_in_blocks(blocks: list[dict], phrase: str) -> Optional[dict]:
             if search in normalized:
                 return block
     return None
+
+
+def _window_srt_text(video_id: str, start_seconds: float, end_seconds: float) -> str:
+    """Return joined text of SRT blocks overlapping [start_seconds, end_seconds].
+
+    Uses ``find_srt_for_chapter`` (date-agnostic probe) to locate the merged
+    SRT file, then filters ``_parse_srt_blocks`` output to only blocks that
+    overlap the given window.  Blocks are included when their interval intersects
+    [start_seconds, end_seconds] (i.e. block.start < end and block.end > start).
+
+    Returns ``""`` when the SRT file is absent, the window yields no blocks,
+    or any I/O error occurs.  Never raises.
+
+    Args:
+        video_id:      Source video identifier.
+        start_seconds: Window start in seconds (inclusive).
+        end_seconds:   Window end in seconds (exclusive).
+
+    Returns:
+        Space-joined text of all matching blocks, or ``""``.
+    """
+    srt_path = find_srt_for_chapter(video_id, 0)  # chapter_id unused in probe
+    if srt_path is None:
+        return ""
+
+    blocks = _parse_srt_blocks(srt_path)
+    texts = [
+        b["text"]
+        for b in blocks
+        if b["start_secs"] < end_seconds and b["end_secs"] > start_seconds
+    ]
+    return " ".join(texts)
+
+
+def score_turn_interest(window_text: str, completion_fn=None) -> Optional[int]:
+    """Score a turn's SRT window 0–10 for YouTube newsworthiness.
+
+    Mirrors the robustness pattern of ``extract_lapidary_quote``:
+    - Returns ``None`` on empty/whitespace input (no LLM call).
+    - Returns ``None`` on any LLM error, non-parseable output, or missing API key.
+    - Clamps the returned integer to [INTEREST_SCALE_MIN, INTEREST_SCALE_MAX].
+    - NEVER raises; all exceptions are caught and logged at WARNING.
+
+    Args:
+        window_text:   Windowed SRT text for the turn (joined subtitle blocks).
+        completion_fn: Injectable callable with the same signature as
+            ``generate_chat_completion`` (for unit-test isolation).  Defaults to
+            the real ``generate_chat_completion`` when ``None``.
+
+    Returns:
+        Integer 0–10, or ``None`` on any failure.
+    """
+    if not window_text.strip():
+        return None
+
+    if completion_fn is None:
+        from utils.ai_helpers import generate_chat_completion as completion_fn  # type: ignore[assignment]
+
+    from congress_videos.config.ai_prompts import INTEREST_SCORING_SYSTEM_PROMPT
+
+    try:
+        resp = completion_fn(
+            system_prompt=INTEREST_SCORING_SYSTEM_PROMPT,
+            user_prompt=window_text[:8000],
+            model="gpt-4o-mini",
+            temperature=0.0,
+            max_tokens=3,
+        )
+        content = ((resp or {}).get("content") or "").strip()
+        m = re.search(r"-?\d+", content)
+        if not m:
+            return None
+        val = int(m.group())
+        return max(INTEREST_SCALE_MIN, min(INTEREST_SCALE_MAX, val))
+    except Exception:
+        logger.warning(
+            "score_turn_interest: unexpected error scoring window (len=%d)",
+            len(window_text),
+            exc_info=True,
+        )
+        return None
 
 
 def select_pretrim_window(
