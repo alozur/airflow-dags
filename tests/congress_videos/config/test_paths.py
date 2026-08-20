@@ -17,7 +17,6 @@ from congress_videos.config.paths import (
     FONT_REGULAR,
     FONTS_DIR,
     PROJECT_DATA_DIR,
-    VIDEOS_DIR,
     YOUTUBE_TOKEN_FILE,
     ensure_directory_exists,
     get_chapter_short_file_path,
@@ -27,9 +26,6 @@ from congress_videos.config.paths import (
     get_download_video_path,
     get_orador_artifact_path,
     get_orador_video_dir,
-    get_session_path,
-    get_topic_path,
-    get_video_path,
     get_video_chapter_dir,
 )
 
@@ -46,9 +42,6 @@ class TestModuleConstants:
 
     def test_project_data_dir_ends_with_congress_videos(self):
         assert PROJECT_DATA_DIR.endswith("congress_videos")
-
-    def test_videos_dir_ends_with_videos(self):
-        assert VIDEOS_DIR.endswith("videos")
 
     def test_downloads_dir_ends_with_downloads(self):
         assert DOWNLOADS_DIR.endswith("downloads")
@@ -77,86 +70,8 @@ class TestModuleConstants:
     def test_project_data_dir_contains_base_data_dir(self):
         assert PROJECT_DATA_DIR.startswith(BASE_DATA_DIR)
 
-    def test_videos_dir_contains_project_data_dir(self):
-        assert VIDEOS_DIR.startswith(PROJECT_DATA_DIR)
-
     def test_downloads_dir_contains_project_data_dir(self):
         assert DOWNLOADS_DIR.startswith(PROJECT_DATA_DIR)
-
-
-# ---------------------------------------------------------------------------
-# get_session_path
-# ---------------------------------------------------------------------------
-
-class TestGetSessionPath:
-    def test_returns_string(self):
-        result = get_session_path("PL_115_001")
-        assert isinstance(result, str)
-
-    def test_path_ends_with_session_number(self):
-        result = get_session_path("PL_115_001")
-        assert result.endswith("PL_115_001")
-
-    def test_path_starts_with_videos_dir(self):
-        result = get_session_path("PL_115_001")
-        assert result.startswith(VIDEOS_DIR)
-
-    def test_path_separator(self):
-        result = get_session_path("MY_SESSION")
-        assert result == f"{VIDEOS_DIR}/MY_SESSION"
-
-    @pytest.mark.parametrize("session", ["PL_115_001", "PL_001", "SESSION-2025", "123"])
-    def test_various_session_numbers(self, session: str):
-        result = get_session_path(session)
-        assert result.endswith(session)
-        assert VIDEOS_DIR in result
-
-
-# ---------------------------------------------------------------------------
-# get_topic_path
-# ---------------------------------------------------------------------------
-
-class TestGetTopicPath:
-    def test_returns_correct_path(self):
-        result = get_topic_path("PL_115_001", "20250101_01")
-        assert result == f"{VIDEOS_DIR}/PL_115_001/20250101_01"
-
-    def test_ends_with_topic_entry_id(self):
-        result = get_topic_path("PL_115_001", "20250101_01")
-        assert result.endswith("20250101_01")
-
-    def test_contains_session_number(self):
-        result = get_topic_path("PL_115_001", "20250101_01")
-        assert "PL_115_001" in result
-
-    def test_path_depth_is_correct(self):
-        result = get_topic_path("S1", "T1")
-        assert result == f"{VIDEOS_DIR}/S1/T1"
-
-
-# ---------------------------------------------------------------------------
-# get_video_path
-# ---------------------------------------------------------------------------
-
-class TestGetVideoPath:
-    def test_returns_correct_path(self):
-        result = get_video_path("PL_115_001", "20250101_01", "video.mp4")
-        assert result == f"{VIDEOS_DIR}/PL_115_001/20250101_01/video.mp4"
-
-    def test_ends_with_filename(self):
-        result = get_video_path("PL_115_001", "20250101_01", "clip.mp4")
-        assert result.endswith("clip.mp4")
-
-    def test_contains_all_segments(self):
-        result = get_video_path("PL_115_001", "20250101_01", "video.mp4")
-        assert "PL_115_001" in result
-        assert "20250101_01" in result
-        assert "video.mp4" in result
-
-    @pytest.mark.parametrize("filename", ["video.mp4", "audio.mp3", "thumbnail.png", "subtitles.srt"])
-    def test_various_filenames(self, filename: str):
-        result = get_video_path("S1", "T1", filename)
-        assert result.endswith(filename)
 
 
 # ---------------------------------------------------------------------------
