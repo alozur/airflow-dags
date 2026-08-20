@@ -20,6 +20,8 @@ from congress_videos.config.paths import (
     VIDEOS_DIR,
     YOUTUBE_TOKEN_FILE,
     ensure_directory_exists,
+    get_chapter_short_file_path,
+    get_chapter_shorts_dir,
     get_download_date_path,
     get_download_file_path,
     get_download_video_path,
@@ -28,6 +30,7 @@ from congress_videos.config.paths import (
     get_session_path,
     get_topic_path,
     get_video_path,
+    get_video_chapter_dir,
 )
 
 
@@ -356,3 +359,46 @@ class TestOradorHelpersImportPurity:
         )
         assert callable(_v)
         assert callable(_a)
+
+
+# ---------------------------------------------------------------------------
+# TestChapterShortPathHelpers — Slice 6 (#133)
+# ---------------------------------------------------------------------------
+
+class TestChapterShortPathHelpers:
+    """Unit tests for chapter-level short-clip path helpers (Slice 6)."""
+
+    @pytest.mark.parametrize("source_video_id,chapter_id,clip_id,expected_suffix", [
+        ("abc123", 7, "clip01", "congreso-es-tv/abc123/video_chapters/7/shorts/clip01.mp4"),
+        ("xyz999", 42, "clip99", "congreso-es-tv/xyz999/video_chapters/42/shorts/clip99.mp4"),
+    ])
+    def test_canonical_segment_order(self, source_video_id, chapter_id, clip_id, expected_suffix):
+        result = get_chapter_short_file_path(source_video_id, chapter_id, clip_id)
+        assert str(result).endswith(expected_suffix)
+
+    def test_explicit_channel_slug_overrides_default(self):
+        result = get_chapter_short_file_path("abc123", 7, "clip01", channel_slug="custom-channel")
+        assert "custom-channel/" in str(result)
+        assert "congreso-es-tv" not in str(result)
+
+    def test_integer_chapter_id_coerces_to_string_segment(self):
+        result = get_video_chapter_dir("abc", 42)
+        parts = result.parts
+        assert "42" in parts
+
+    def test_file_path_is_strict_child_of_shorts_dir(self):
+        src, ch, clip = "vid1", 5, "c01"
+        file_path = get_chapter_short_file_path(src, ch, clip)
+        shorts_dir = get_chapter_shorts_dir(src, ch)
+        assert file_path.parent == shorts_dir
+
+    def test_shorts_dir_is_strict_child_of_chapter_dir(self):
+        src, ch = "vid1", 5
+        shorts_dir = get_chapter_shorts_dir(src, ch)
+        chapter_dir = get_video_chapter_dir(src, ch)
+        assert shorts_dir.parent == chapter_dir
+
+    def test_return_types_are_path(self):
+        assert isinstance(get_video_chapter_dir("v", 1), Path)
+        assert isinstance(get_chapter_shorts_dir("v", 1), Path)
+        assert isinstance(get_chapter_short_file_path("v", 1, "c"), Path)

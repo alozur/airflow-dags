@@ -1008,6 +1008,26 @@ class CongressionalVideoDB:
                     f"for project {reap_project_id}"
                 )
 
+    def get_source_video_id_for_chapter(self, chapter_id: int) -> str | None:
+        """Return the source YouTube video_id for a chapter row.
+
+        Args:
+            chapter_id: Database chapter ID to look up.
+
+        Returns:
+            The ``video_id`` string when the chapter exists and has a non-NULL
+            ``video_id``; ``None`` otherwise (no row or NULL value).
+        """
+        table = self.pg_conn.get_qualified_table('video_chapters')
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT video_id FROM {table} WHERE chapter_id = %s",
+                    (chapter_id,),
+                )
+                row = cur.fetchone()
+                return row['video_id'] if row and row['video_id'] else None
+
     def claim_pending_clip(self) -> dict | None:
         """
         Atomically claim one pending clip from the queue, ordered by priority.
