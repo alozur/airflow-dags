@@ -32,6 +32,7 @@ from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from congress_videos.modules.participants_db import lookup_participant_fuzzy
 from congress_videos.srt_helpers import (
     _parse_srt_blocks,
+    _serialize_srt_blocks,
     _srt_timestamp_to_seconds,
     find_srt_for_chapter,
 )
@@ -235,13 +236,26 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
             # Chapter: convert SRT-format timestamp strings to seconds.
             window_start_secs = _srt_timestamp_to_seconds(chapter.get("start_time", "00:00:00,000"))
             window_end_secs = _srt_timestamp_to_seconds(chapter.get("end_time", "99:59:59,999"))
-        window_texts = [
-            b["text"]
+        windowed = [
+            b
             for b in blocks
             if b["start_secs"] >= window_start_secs and b["end_secs"] <= window_end_secs
         ]
-        joined = " ".join(window_texts)
-        config["srt_fragment"] = joined[:10_000]
+        config["srt_fragment"] = " ".join(b["text"] for b in windowed)[:10_000]
+
+        # Best-effort canonical sidecar write for turn items (Slice 5).
+        # Mirror 4b _write_orador_sidecars convention: swallow errors, log warning.
+        if is_turn and config.get("output_path") and windowed:
+            try:
+                srt_out = os.path.join(os.path.dirname(config["output_path"]), "subtitles.srt")
+                with open(srt_out, "w", encoding="utf-8") as _f:
+                    _f.write(_serialize_srt_blocks(windowed))
+            except Exception as exc:
+                logging.warning(
+                    "Failed to write orador subtitles.srt for %s: %s",
+                    config.get("output_path"),
+                    exc,
+                )
 
     return config
 
