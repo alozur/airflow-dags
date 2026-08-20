@@ -74,12 +74,6 @@ def _find_source_video_any_date(video_id: str) -> str | None:
     return None
 
 
-def _date_from_source_path(source_path: str) -> str:
-    """Extract the ``{date}`` segment from ``{DOWNLOADS_DIR}/{date}/{video_id}/...``."""
-    rel = os.path.relpath(source_path, DOWNLOADS_DIR)
-    return rel.split(os.sep)[0]
-
-
 # ---------------------------------------------------------------------------
 # Airflow task callables
 # ---------------------------------------------------------------------------
