@@ -1184,3 +1184,194 @@ class TestTaskGenerateTitleKeySpeakers:
         # Must not raise KeyError
         dag_mod._task_generate_title(ti)
         mock_generate_title.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# thumbnail-canonical-path (Slice 4a): canonical download path + reconciliation
+# ---------------------------------------------------------------------------
+
+
+class TestTaskDownloadOptionCanonicalPath:
+    """_task_download_option must write to dirname(output_path) for turn-type items,
+    fall back to get_thumbnail_dir for chapter/standalone items.
+
+    Reconciliation: _task_thumbnail_result must return output_path ending in
+    'thumbnail.png' when the canonical write was used.
+    """
+
+    def test_turn_conf_writes_to_dirname_of_output_path(self, mocker) -> None:
+        """output_path in conf → _pkz.download called with path in dirname(output_path)."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        conf_with_output_path = {
+            **_FAKE_CONF,
+            "output_path": "/data/oradores/42/video.mp4",
+        }
+        gen_result = {
+            "output": "https://pikzels.com/generated.png",
+            "label": "option_a",
+            "style": "A",
+            "prompt": "A thick gold border...",
+        }
+        ti = _make_fake_ti(
+            {
+                "validate_input": conf_with_output_path,
+                "generate_thumbnail_option_a": gen_result,
+            }
+        )
+
+        mock_pkz = mocker.patch.object(dag_mod, "_pkz")
+        mock_get_thumbnail_dir = mocker.patch(
+            "congress_videos.generic_thumbnail_generator_dag.get_thumbnail_dir"
+        )
+
+        result = dag_mod._task_download_option("option_a", ti=ti)
+
+        # Must use canonical dir, not get_thumbnail_dir
+        mock_get_thumbnail_dir.assert_not_called()
+        # Must write to dirname(output_path)/option_a.png
+        mock_pkz.download.assert_called_once()
+        _, local_path_str = mock_pkz.download.call_args[0]
+        assert local_path_str.startswith("/data/oradores/42/"), (
+            f"Expected path under /data/oradores/42/, got {local_path_str!r}"
+        )
+        assert local_path_str.endswith("option_a.png"), (
+            f"Expected filename option_a.png, got {local_path_str!r}"
+        )
+
+    def test_chapter_conf_falls_back_to_get_thumbnail_dir(self, mocker) -> None:
+        """No output_path in conf → legacy get_thumbnail_dir is used."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        gen_result = {
+            "output": "https://pikzels.com/generated.png",
+            "label": "option_a",
+            "style": "A",
+            "prompt": "A thick gold border...",
+        }
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,  # no output_path
+                "generate_thumbnail_option_a": gen_result,
+            }
+        )
+
+        mock_pkz = mocker.patch.object(dag_mod, "_pkz")
+        mock_get_thumbnail_dir = mocker.patch(
+            "congress_videos.generic_thumbnail_generator_dag.get_thumbnail_dir",
+            side_effect=lambda vid_id: __import__("pathlib").Path(f"/thumbnails/{vid_id}"),
+        )
+
+        result = dag_mod._task_download_option("option_a", ti=ti)
+
+        mock_get_thumbnail_dir.assert_called_once_with(_FAKE_CONF["youtube_video_id"])
+        _, local_path_str = mock_pkz.download.call_args[0]
+        assert local_path_str.startswith("/thumbnails/"), (
+            f"Expected legacy path under /thumbnails/, got {local_path_str!r}"
+        )
+
+    def test_standalone_trigger_without_output_path_completes(self, mocker) -> None:
+        """Conf with only required keys and no output_path → calls get_thumbnail_dir."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        standalone_conf = {
+            "youtube_video_id": "abc123",
+            "chapter_id": 7,
+            "debate_summary": "El debate ...",
+            "session": "Pleno 2026-06-10",
+            "domain": "congreso",
+            # No output_path
+        }
+        gen_result = {
+            "output": "https://pikzels.com/generated.png",
+            "label": "option_a",
+            "style": "A",
+            "prompt": "A gold border...",
+        }
+        ti = _make_fake_ti(
+            {
+                "validate_input": standalone_conf,
+                "generate_thumbnail_option_a": gen_result,
+            }
+        )
+
+        mocker.patch.object(dag_mod, "_pkz")
+        mock_get_thumbnail_dir = mocker.patch(
+            "congress_videos.generic_thumbnail_generator_dag.get_thumbnail_dir",
+            side_effect=lambda vid_id: __import__("pathlib").Path(f"/thumbnails/{vid_id}"),
+        )
+
+        dag_mod._task_download_option("option_a", ti=ti)
+
+        mock_get_thumbnail_dir.assert_called_once_with("abc123")
+
+    def test_grouped_turn_both_write_to_same_anchor_dir(self, mocker) -> None:
+        """Two turns with same output_path → both write to the same anchor directory."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        shared_output_path = "/data/oradores/7/video.mp4"
+        conf_turn1 = {**_FAKE_CONF, "output_path": shared_output_path}
+        conf_turn2 = {**_FAKE_CONF, "output_path": shared_output_path}
+
+        gen_result = {
+            "output": "https://pikzels.com/generated.png",
+            "label": "option_a",
+            "style": "A",
+            "prompt": "A gold border...",
+        }
+
+        paths_written = []
+
+        def _fake_download(url, path_str):
+            paths_written.append(path_str)
+
+        for conf in [conf_turn1, conf_turn2]:
+            ti = _make_fake_ti(
+                {
+                    "validate_input": conf,
+                    "generate_thumbnail_option_a": gen_result,
+                }
+            )
+            mock_pkz = mocker.patch.object(dag_mod, "_pkz")
+            mock_pkz.download.side_effect = _fake_download
+            dag_mod._task_download_option("option_a", ti=ti)
+
+        assert len(paths_written) == 2
+        for p in paths_written:
+            assert p.startswith("/data/oradores/7/"), (
+                f"Both turns must write to /data/oradores/7/, got {p!r}"
+            )
+
+    def test_turn_conf_thumbnail_result_basename_is_thumbnail_png(self, mocker) -> None:
+        """Reconciliation: when canonical path used, _task_thumbnail_result.output_path ends with thumbnail.png."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        conf_with_output_path = {
+            **_FAKE_CONF,
+            "output_path": "/data/oradores/42/video.mp4",
+        }
+        # Simulate what _task_download_option returns for the canonical path:
+        # local_path = /data/oradores/42/option_a.png
+        ti = _make_fake_ti(
+            {
+                "validate_input": conf_with_output_path,
+                "choose_best_option": {"local_path": "/data/oradores/42/option_a.png"},
+                "generate_title": "Un título canónico",
+            }
+        )
+
+        # Patch the file-copy helper so we don't need a real filesystem
+        mocker.patch.object(
+            dag_mod,
+            "_persist_canonical_thumbnail",
+            side_effect=lambda best_path, canonical_dir: str(canonical_dir / "thumbnail.png"),
+        )
+
+        result = dag_mod._task_thumbnail_result(ti)
+
+        assert result["output_path"].endswith("thumbnail.png"), (
+            f"output_path must end with thumbnail.png for turn-type items, got {result['output_path']!r}"
+        )
+        assert result["output_path"] == "/data/oradores/42/thumbnail.png", (
+            f"output_path must be /data/oradores/42/thumbnail.png, got {result['output_path']!r}"
+        )

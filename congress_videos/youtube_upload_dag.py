@@ -213,6 +213,11 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
         "key_speakers": key_speakers,
     }
 
+    # Thread the canonical output_path for turn-type items (Slice 4a).
+    # Chapter-type items never have output_path — key is absent by design.
+    if is_turn:
+        config["output_path"] = chapter.get("output_path")
+
     # Resolve SRT fragment for lapidary quote extraction (issue #57).
     video_id = chapter.get("video_id")
     srt_path = (
@@ -290,6 +295,8 @@ def trigger_thumbnail_generation(ti, **context) -> str | None:
     }
     if "srt_fragment" in thumbnail_config:
         child_conf["srt_fragment"] = thumbnail_config["srt_fragment"]
+    if thumbnail_config.get("output_path"):
+        child_conf["output_path"] = thumbnail_config["output_path"]
     try:
         dag_run = trigger_dag_api(
             dag_id=_THUMBNAIL_DAG_ID,
