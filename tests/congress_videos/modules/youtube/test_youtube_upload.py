@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
-from congress_videos.modules.youtube.youtube_upload import prepare_chapter_upload_config
+from congress_videos.modules.youtube.youtube_upload import (
+    _write_orador_sidecars,
+    prepare_chapter_upload_config,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -21,8 +26,9 @@ def _make_extraction_results(chapters: list[dict]) -> dict:
 
 
 def _make_chapter(chapter_id: int, video_id: str = "vid1", success: bool = True,
-                  output_path: str | None = None) -> dict:
-    return {
+                  output_path: str | None = None,
+                  turn_id: int | None = None) -> dict:
+    result = {
         "chapter_id": chapter_id,
         "video_id": video_id,
         "success": success,
@@ -31,6 +37,9 @@ def _make_chapter(chapter_id: int, video_id: str = "vid1", success: bool = True,
         "duration_seconds": 300.0,
         "error": None if success else "Extraction error",
     }
+    if turn_id is not None:
+        result["turn_id"] = turn_id
+    return result
 
 
 def _make_metadata_results(topic_metadata: list[dict]) -> dict:
@@ -230,3 +239,86 @@ class TestPrepareChapterUploadConfigThumbnailResult:
         video = result["videos"][0]
         assert "thumbnail_file" not in video or video.get("thumbnail_file") is None
         assert video["title"] == "Original Title"
+
+
+# ---------------------------------------------------------------------------
+# TestWriteOradorSidecars — Slice 4b: best-effort title/description sidecars
+# ---------------------------------------------------------------------------
+
+class TestWriteOradorSidecars:
+
+    def test_turn_writes_both_sidecars_exact_content(self, tmp_path):
+        video_dir = tmp_path / "oradores" / "42"
+        video_dir.mkdir(parents=True)
+        video_file = str(video_dir / "video.mp4")
+
+        _write_orador_sidecars(video_file, "TÍTULO FINAL", "Una descripción.")
+
+        assert (video_dir / "title.txt").read_text(encoding="utf-8") == "TÍTULO FINAL"
+        assert (video_dir / "description.txt").read_text(encoding="utf-8") == "Una descripción."
+
+    @pytest.mark.parametrize("anchor_id", [1, 999])
+    def test_sidecars_land_in_dirname_video_file(self, tmp_path, anchor_id):
+        video_dir = tmp_path / "oradores" / str(anchor_id)
+        video_dir.mkdir(parents=True)
+        video_file = str(video_dir / "video.mp4")
+
+        _write_orador_sidecars(video_file, "T", "D")
+
+        assert (video_dir / "title.txt").exists()
+        assert (video_dir / "description.txt").exists()
+
+    def test_write_failure_swallowed_no_exception(self, tmp_path, monkeypatch, caplog):
+        import builtins
+
+        video_dir = tmp_path / "oradores" / "42"
+        video_dir.mkdir(parents=True)
+        video_file = str(video_dir / "video.mp4")
+        monkeypatch.setattr(builtins, "open", lambda *a, **kw: (_ for _ in ()).throw(PermissionError("disk full")))
+
+        with caplog.at_level(logging.WARNING):
+            _write_orador_sidecars(video_file, "T", "D")  # must not raise
+
+        assert any("disk full" in r.message for r in caplog.records)
+
+    def test_prepare_config_turn_writes_sidecars(self, tmp_path):
+        video_file = str(tmp_path / "video.mp4")
+        chapter_id = 42
+        extraction = _make_extraction_results([
+            _make_chapter(chapter_id, output_path=video_file, turn_id=chapter_id)
+        ])
+        metadata = _make_metadata_results([
+            _make_topic_metadata(chapter_id, "TÍTULO ESPERADO", "Una descripción.")
+        ])
+
+        prepare_chapter_upload_config(extraction, metadata, dry_run=False)
+
+        assert (tmp_path / "title.txt").read_text(encoding="utf-8") == "TÍTULO ESPERADO"
+
+    def test_prepare_config_chapter_no_sidecars(self, tmp_path):
+        video_file = str(tmp_path / "video.mp4")
+        chapter_id = 1
+        extraction = _make_extraction_results([
+            _make_chapter(chapter_id, output_path=video_file)  # no turn_id
+        ])
+        metadata = _make_metadata_results([
+            _make_topic_metadata(chapter_id, "T", "D")
+        ])
+
+        prepare_chapter_upload_config(extraction, metadata, dry_run=False)
+
+        assert not (tmp_path / "title.txt").exists()
+
+    def test_prepare_config_dry_run_no_sidecars(self, tmp_path):
+        video_file = str(tmp_path / "video.mp4")
+        chapter_id = 42
+        extraction = _make_extraction_results([
+            _make_chapter(chapter_id, output_path=video_file, turn_id=chapter_id)
+        ])
+        metadata = _make_metadata_results([
+            _make_topic_metadata(chapter_id, "T", "D")
+        ])
+
+        prepare_chapter_upload_config(extraction, metadata, dry_run=True)
+
+        assert not (tmp_path / "title.txt").exists()
