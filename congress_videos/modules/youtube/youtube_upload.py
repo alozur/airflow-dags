@@ -6,8 +6,23 @@ YouTube uploader DAG.
 """
 
 import logging
+import os
 
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
+
+
+def _write_orador_sidecars(video_file: str, title: str, description: str) -> None:
+    """Best-effort: co-locate title.txt + description.txt with the turn video.
+    Errors are logged and swallowed; never raises.
+    """
+    try:
+        d = os.path.dirname(video_file)
+        with open(os.path.join(d, "title.txt"), "w", encoding="utf-8") as f:
+            f.write(title or "")
+        with open(os.path.join(d, "description.txt"), "w", encoding="utf-8") as f:
+            f.write(description or "")
+    except Exception as exc:
+        logging.warning("Failed to write orador sidecars for %s: %s", video_file, exc)
 
 
 def prepare_chapter_upload_config(
@@ -15,7 +30,8 @@ def prepare_chapter_upload_config(
     youtube_metadata_results,
     thumbnail_results=None,
     thumbnail_result=None,
-    is_testing=False
+    is_testing=False,
+    dry_run=False,
 ):
     """
     Prepare configuration for the generic YouTube uploader DAG (chapter videos).
@@ -170,6 +186,9 @@ def prepare_chapter_upload_config(
         # Add thumbnail if available
         if thumbnail_file:
             video_config['thumbnail_file'] = thumbnail_file
+
+        if not dry_run and extraction_result.get('turn_id'):
+            _write_orador_sidecars(video_config['video_file'], title, description)
 
         videos.append(video_config)
 

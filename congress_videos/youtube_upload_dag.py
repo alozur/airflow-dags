@@ -550,6 +550,7 @@ with (
     def _prepare_upload_config(ti, **context):
         from congress_videos.modules.youtube import prepare_chapter_upload_config
 
+        dry_run = context.get("params", {}).get("dry_run", False)
         return xcom_task(
             ti,
             lambda: prepare_chapter_upload_config(
@@ -557,6 +558,7 @@ with (
                 ti.xcom_pull(key="youtube_metadata_results"),
                 thumbnail_result=ti.xcom_pull(key="thumbnail_result"),
                 is_testing=context["params"].get("isTesting", False),
+                dry_run=dry_run,
             ),
             "upload_config",
         )
