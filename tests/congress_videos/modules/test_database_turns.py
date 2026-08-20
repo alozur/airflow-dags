@@ -215,6 +215,76 @@ class TestCountPendingUploadableTurns:
         assert "uploadable_turns" in query
 
 
+class TestMarkTurnsUploadedSiblingMarking:
+    """mark_turns_uploaded must mark ALL siblings sharing output_path, not just turn_id."""
+
+    def test_where_clause_uses_output_path_subquery(self):
+        """UPDATE WHERE must use output_path = (SELECT output_path ...) not WHERE turn_id = %s."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_turns_uploaded(turn_id=1, youtube_video_id="vid1")
+
+        call_args = cursor.execute.call_args
+        query = call_args[0][0].upper()
+        assert "WHERE OUTPUT_PATH = (" in query, (
+            "UPDATE must filter by output_path = (subquery), not by turn_id directly"
+        )
+
+    def test_inner_subquery_selects_output_path(self):
+        """Inner subquery must SELECT output_path FROM the same table."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_turns_uploaded(turn_id=1, youtube_video_id="vid1")
+
+        call_args = cursor.execute.call_args
+        query = call_args[0][0].upper()
+        assert "SELECT OUTPUT_PATH FROM" in query, (
+            "SQL must contain inner SELECT output_path FROM <table> WHERE turn_id = %s"
+        )
+
+    def test_qualified_table_name_appears_twice(self):
+        """Qualified table name must appear in both the outer UPDATE and the inner subquery."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        pg_mock.get_qualified_table.side_effect = lambda t: f"development.{t}"
+
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_turns_uploaded(turn_id=5, youtube_video_id="vidX")
+
+        call_args = cursor.execute.call_args
+        query = call_args[0][0]
+        count = query.count("development.speaker_turn_videos")
+        assert count >= 2, (
+            f"Qualified table name must appear at least twice (outer + subquery), got {count}"
+        )
+
+    def test_params_tuple_is_youtube_video_id_then_turn_id(self):
+        """Params must be (youtube_video_id, turn_id) — youtube_video_id for SET, turn_id for subquery WHERE."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_turns_uploaded(turn_id=7, youtube_video_id="vid_abc")
+
+        call_args = cursor.execute.call_args
+        params = call_args[0][1]
+        assert params == ("vid_abc", 7), (
+            f"Params must be (youtube_video_id, turn_id) = ('vid_abc', 7), got {params}"
+        )
+
+
 class TestCountChaptersUploadedTodayUnchanged:
     """count_chapters_uploaded_today must still count chapters only (not turns)."""
 
