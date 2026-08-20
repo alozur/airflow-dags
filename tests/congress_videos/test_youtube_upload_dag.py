@@ -1682,3 +1682,161 @@ class TestQueueSizeIncludesTurns:
         assert result["queue_size"] == 5, (
             f"queue_size must be chapters_pending(2) + turns_pending(3) = 5, got {result['queue_size']}"
         )
+
+
+# ---------------------------------------------------------------------------
+# thumbnail-canonical-path (Slice 4a): output_path threading
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareThumbnailConfigThreadsOutputPath:
+    """_prepare_thumbnail_config must include output_path for turn items, absent for chapters."""
+
+    def test_turn_item_includes_output_path(self):
+        """Turn row with output_path → config['output_path'] equals the row value."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(output_path="/data/oradores/42/video.mp4")
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value=None,
+        ):
+            config = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert config["output_path"] == "/data/oradores/42/video.mp4"
+
+    def test_chapter_item_omits_output_path(self):
+        """Chapter row (no turn_id) → config.get('output_path') is None."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_chapter()
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value=None,
+        ):
+            config = _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert config.get("output_path") is None
+
+    def test_turn_item_with_none_output_path_is_set_to_none(self):
+        """Turn row whose output_path column is NULL → config['output_path'] is None (not absent)."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(output_path=None)  # type: ignore[arg-type]
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value=None,
+        ):
+            config = _prepare_thumbnail_config(turn, MagicMock())
+
+        # Key must be present (set by is_turn branch) even if value is None
+        assert "output_path" in config
+        assert config["output_path"] is None
+
+
+class TestTriggerThumbnailGenerationForwardsOutputPath:
+    """trigger_thumbnail_generation must forward output_path into child_conf only when truthy."""
+
+    def _make_mock_run(self, mocker, captured_confs):
+        mock_run = MagicMock()
+        mock_run.run_id = "thumb_run_output_path"
+        mock_run.state = "success"
+        mock_run.refresh_from_db = MagicMock()
+
+        def _fake_trigger(dag_id, conf, run_id):
+            captured_confs.append(conf)
+            return mock_run
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.trigger_dag_api",
+            side_effect=_fake_trigger,
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.XCom.get_one",
+            return_value={
+                "success": True,
+                "chapter_id": 42,
+                "output_path": "/data/oradores/42/thumbnail.png",
+                "title": "Un título",
+            },
+        )
+        return mock_run
+
+    def test_forwards_output_path_when_present(self, mocker):
+        """When thumbnail_config has a truthy output_path, child_conf must include it."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        captured_confs: list = []
+        self._make_mock_run(mocker, captured_confs)
+
+        ti = _make_ti(
+            {
+                "thumbnail_config": {
+                    "chapter_id": 42,
+                    "debate_summary": "un resumen",
+                    "session": "Sesión 80",
+                    "domain": "congreso",
+                    "slug": None,
+                    "output_path": "/data/oradores/42/video.mp4",
+                }
+            }
+        )
+
+        trigger_thumbnail_generation(ti, run_id="test_run")
+
+        assert len(captured_confs) == 1
+        assert captured_confs[0].get("output_path") == "/data/oradores/42/video.mp4"
+
+    def test_omits_output_path_when_absent(self, mocker):
+        """When thumbnail_config lacks output_path, child_conf must NOT contain the key."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        captured_confs: list = []
+        self._make_mock_run(mocker, captured_confs)
+
+        ti = _make_ti(
+            {
+                "thumbnail_config": {
+                    "chapter_id": 42,
+                    "debate_summary": "un resumen",
+                    "session": "Sesión 80",
+                    "domain": "congreso",
+                    "slug": None,
+                    # No output_path key
+                }
+            }
+        )
+
+        trigger_thumbnail_generation(ti, run_id="test_run")
+
+        assert len(captured_confs) == 1
+        assert "output_path" not in captured_confs[0]
+
+    def test_omits_output_path_when_none(self, mocker):
+        """When thumbnail_config has output_path=None, child_conf must NOT contain the key."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        captured_confs: list = []
+        self._make_mock_run(mocker, captured_confs)
+
+        ti = _make_ti(
+            {
+                "thumbnail_config": {
+                    "chapter_id": 42,
+                    "debate_summary": "un resumen",
+                    "session": "Sesión 80",
+                    "domain": "congreso",
+                    "slug": None,
+                    "output_path": None,
+                }
+            }
+        )
+
+        trigger_thumbnail_generation(ti, run_id="test_run")
+
+        assert len(captured_confs) == 1
+        assert "output_path" not in captured_confs[0]
