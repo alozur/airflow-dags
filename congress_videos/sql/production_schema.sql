@@ -217,28 +217,31 @@ COMMENT ON VIEW production.chapter_statistics IS 'Provides aggregate statistics 
 
 DROP VIEW IF EXISTS production.uploadable_turns;
 CREATE VIEW production.uploadable_turns AS
-SELECT
-    stv.turn_id,
-    stv.output_path,
-    st.chapter_id,
-    st.resolved_name,
-    st.start_seconds,
-    st.end_seconds,
-    vc.video_id,
-    vc.title AS chapter_title,
-    vc.description,
-    vc.relevance_score,
-    vc.key_speakers,
-    ysv.session_number,
-    ysv.session_date,
-    stv.materialized_at
-FROM production.speaker_turn_videos stv
-JOIN production.speaker_turns st ON stv.turn_id = st.turn_id
-JOIN production.video_chapters vc ON st.chapter_id = vc.chapter_id
-JOIN production.youtube_source_videos ysv ON vc.video_id = ysv.video_id
-WHERE stv.is_uploaded_to_youtube = FALSE
-  AND vc.is_uploaded_to_youtube = FALSE
-  AND vc.relevance_score >= 2
-ORDER BY vc.relevance_score DESC, ysv.session_date DESC;
+SELECT * FROM (
+    SELECT DISTINCT ON (stv.output_path)
+        stv.turn_id,
+        stv.output_path,
+        st.chapter_id,
+        st.resolved_name,
+        st.start_seconds,
+        st.end_seconds,
+        vc.video_id,
+        vc.title AS chapter_title,
+        vc.description,
+        vc.relevance_score,
+        vc.key_speakers,
+        ysv.session_number,
+        ysv.session_date,
+        stv.materialized_at
+    FROM production.speaker_turn_videos stv
+    JOIN production.speaker_turns st ON stv.turn_id = st.turn_id
+    JOIN production.video_chapters vc ON st.chapter_id = vc.chapter_id
+    JOIN production.youtube_source_videos ysv ON vc.video_id = ysv.video_id
+    WHERE stv.is_uploaded_to_youtube = FALSE
+      AND vc.is_uploaded_to_youtube = FALSE
+      AND vc.relevance_score >= 2
+    ORDER BY stv.output_path, stv.turn_id
+) dedup
+ORDER BY dedup.relevance_score DESC, dedup.session_date DESC;
 
 COMMENT ON VIEW production.uploadable_turns IS 'Speaker turn videos eligible for YouTube upload (turn queue, tried before chapter fallback)';

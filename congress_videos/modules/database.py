@@ -1261,7 +1261,9 @@ class CongressionalVideoDB:
                         is_uploaded_to_youtube = TRUE,
                         youtube_video_id = %s,
                         youtube_upload_date = NOW()
-                    WHERE turn_id = %s
+                    WHERE output_path = (
+                        SELECT output_path FROM {stv_table} WHERE turn_id = %s
+                    )
                     """,
                     (youtube_video_id, turn_id),
                 )
