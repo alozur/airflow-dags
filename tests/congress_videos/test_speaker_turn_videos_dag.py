@@ -12,6 +12,7 @@ Test organisation:
 from __future__ import annotations
 
 import importlib
+import re
 import sys
 from datetime import date
 from unittest.mock import MagicMock, call
@@ -178,6 +179,79 @@ class TestMaterializeTurns:
             "end_seconds": end,
         }
 
+    def test_canonical_path_in_insert(self, monkeypatch):
+        """TDD RED→GREEN: _materialize_task must store a canonical date-free path.
+
+        Asserts:
+        1. The INSERT output_path contains the canonical layout
+           /congreso-es-tv/{video_id}/video_chapters/{chapter_id}/oradores/{output_turn_id}/video.mp4
+        2. output_path does NOT contain '/turns/'
+        3. output_path does NOT contain a YYYY-MM-DD date segment
+        4. The same output_path value is passed to execute_plan (wiring assertion)
+        """
+        mod = _fresh()
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: "/data/src.mp4")
+
+        plan_mock = MagicMock()
+        plan_mock.turn_ids = (7,)
+        plan_mock.keep_intervals = (MagicMock(start=600.0, end=700.0),)
+        plan_mock.needs_reencode = False
+        plan_mock.output_turn_id = 7
+        plan_mock.chapter_id = 3
+
+        execute_plan_mock = MagicMock()
+        monkeypatch.setattr(mod, "plan_turn_materialization", lambda turns, trims: [plan_mock])
+        monkeypatch.setattr(mod, "execute_plan", execute_plan_mock)
+        monkeypatch.setattr(mod, "get_cached_codec", lambda *a, **k: "h264")
+
+        pg = MagicMock()
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+        cur.description = [("turn_id",), ("start_seconds",), ("end_seconds",),
+                           ("is_approved",), ("is_voice_free",)]
+        conn.cursor.return_value.__enter__.return_value = cur
+        pg.get_connection.return_value.__enter__.return_value = conn
+        pg.get_qualified_table.side_effect = lambda n: f"test.{n}"
+        monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
+
+        ti = MagicMock()
+        ti.xcom_pull.return_value = [self._turn(video_id="abc123", chapter_id=3)]
+
+        mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        # Capture INSERT call args
+        all_calls = cur.execute.call_args_list
+        insert_calls = [c for c in all_calls if "INSERT" in str(c).upper()]
+        assert len(insert_calls) >= 1, f"Expected INSERT call; got: {all_calls}"
+
+        # The second positional arg in the INSERT VALUES tuple is output_path
+        insert_args = insert_calls[0].args
+        # args[1] is the params tuple: (tid, output_path)
+        output_path = insert_args[1][1]
+
+        # Assertion 1: canonical path shape
+        assert "/congreso-es-tv/abc123/video_chapters/3/oradores/7/video.mp4" in output_path, (
+            f"Expected canonical path in INSERT output_path; got: {output_path}"
+        )
+
+        # Assertion 2: no legacy /turns/ segment
+        assert "/turns/" not in output_path, (
+            f"output_path must not contain '/turns/'; got: {output_path}"
+        )
+
+        # Assertion 3: no date segment
+        assert re.search(r"\d{4}-\d{2}-\d{2}", output_path) is None, (
+            f"output_path must not contain a date segment; got: {output_path}"
+        )
+
+        # Assertion 4: wiring — same value passed to execute_plan
+        execute_plan_positional_output_path = execute_plan_mock.call_args.args[2]
+        assert execute_plan_positional_output_path == output_path, (
+            f"execute_plan received different output_path than INSERT: "
+            f"execute_plan={execute_plan_positional_output_path!r} vs INSERT={output_path!r}"
+        )
+
     def test_missing_source_video_skips_without_ffmpeg(self, monkeypatch):
         mod = _fresh()
         monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: None)
@@ -209,6 +283,7 @@ class TestMaterializeTurns:
         plan_mock.keep_intervals = (MagicMock(start=600.0, end=700.0),)
         plan_mock.needs_reencode = False
         plan_mock.output_turn_id = 7
+        plan_mock.chapter_id = 3
 
         monkeypatch.setattr(mod, "plan_turn_materialization", lambda turns, trims: [plan_mock])
         monkeypatch.setattr(mod, "execute_plan", lambda *a, **kw: None)
@@ -216,7 +291,8 @@ class TestMaterializeTurns:
             "congress_videos.modules.materialization_executor.get_cached_codec",
             lambda path, cache: "h264",
         )
-        monkeypatch.setattr(mod, "get_turn_video_path", lambda date, vid, tid: f"/out/{tid}.mp4")
+        from pathlib import Path
+        monkeypatch.setattr(mod, "get_orador_video_dir", lambda vid, chid, tid: Path(f"/out/{tid}"))
         monkeypatch.setattr(mod, "get_cached_codec", lambda *a, **k: "h264")
 
         pg = MagicMock()
@@ -251,10 +327,12 @@ class TestMaterializeTurns:
         plan_mock.keep_intervals = (MagicMock(start=600.0, end=700.0),)
         plan_mock.needs_reencode = False
         plan_mock.output_turn_id = 7
+        plan_mock.chapter_id = 3
 
         monkeypatch.setattr(mod, "plan_turn_materialization", lambda turns, trims: [plan_mock])
         monkeypatch.setattr(mod, "execute_plan", MagicMock(side_effect=RuntimeError("ffmpeg boom")))
-        monkeypatch.setattr(mod, "get_turn_video_path", lambda date, vid, tid: f"/out/{tid}.mp4")
+        from pathlib import Path
+        monkeypatch.setattr(mod, "get_orador_video_dir", lambda vid, chid, tid: Path(f"/out/{tid}"))
         monkeypatch.setattr(mod, "get_cached_codec", lambda *a, **k: "h264")
 
         pg = MagicMock()

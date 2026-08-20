@@ -42,7 +42,7 @@ from datetime import datetime, timedelta, timezone
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-from congress_videos.config.paths import DOWNLOADS_DIR, get_turn_video_path
+from congress_videos.config.paths import DOWNLOADS_DIR, get_orador_video_dir
 from congress_videos.modules.materialization import plan_turn_materialization
 from congress_videos.modules.materialization_executor import execute_plan
 from utils.codec_detection import get_cached_codec
@@ -196,13 +196,13 @@ def _materialize_task(**context) -> dict:
                 summary["skipped"] += len(plan.turn_ids)
                 continue
 
-            # Recording date is not stored in the DB; derive it from the folder
-            # the source video was found in, for the canonical output path.
-            session_date = _date_from_source_path(source_path)
-
-            # Derive output path using first (naming) turn_id
-            output_path = get_turn_video_path(
-                session_date, video_id, plan.output_turn_id
+            # Canonical date-free output path keyed on stable DB identifiers.
+            # chapter_id is typed int (non-optional dataclass field) and is
+            # always populated by plan_turn_materialization from the DB column;
+            # no None guard is needed.
+            output_path = str(
+                get_orador_video_dir(video_id, plan.chapter_id, plan.output_turn_id)
+                / "video.mp4"
             )
 
             try:
