@@ -211,9 +211,10 @@ COMMENT ON COLUMN production.video_chapters.last_upload_error IS 'Last recorded 
 COMMENT ON VIEW production.uploadable_chapters IS 'Shows chapters eligible for YouTube upload (relevance_score >= 2)';
 COMMENT ON VIEW production.chapter_statistics IS 'Provides aggregate statistics about chapters by source video';
 
--- View: uploadable_turns (migration 027)
+-- View: uploadable_turns (migration 029)
 -- Shows speaker_turn_videos rows not yet uploaded, enriched with parent metadata.
 -- Turn queue is tried before the chapter fallback queue in youtube_upload_dag.
+-- interest_score added by migration 029; COALESCE rescues unscored legacy turns.
 
 DROP VIEW IF EXISTS production.uploadable_turns;
 CREATE VIEW production.uploadable_turns AS
@@ -225,6 +226,7 @@ SELECT * FROM (
         st.resolved_name,
         st.start_seconds,
         st.end_seconds,
+        st.interest_score,
         vc.video_id,
         vc.title AS chapter_title,
         vc.description,
@@ -240,8 +242,10 @@ SELECT * FROM (
     WHERE stv.is_uploaded_to_youtube = FALSE
       AND vc.is_uploaded_to_youtube = FALSE
       AND vc.relevance_score >= 2
+      AND COALESCE(st.interest_score, 1) >= 1    -- INTEREST_FILTER_THRESHOLD, soft-exclude score 0
     ORDER BY stv.output_path, stv.turn_id
 ) dedup
-ORDER BY dedup.relevance_score DESC, dedup.session_date DESC;
+ORDER BY COALESCE(dedup.interest_score, 1) DESC,  -- PRIMARY: interest score (NULL → INTEREST_NEUTRAL=1)
+         dedup.relevance_score DESC, dedup.session_date DESC;
 
 COMMENT ON VIEW production.uploadable_turns IS 'Speaker turn videos eligible for YouTube upload (turn queue, tried before chapter fallback)';

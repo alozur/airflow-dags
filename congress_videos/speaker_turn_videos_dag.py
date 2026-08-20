@@ -45,6 +45,7 @@ from airflow.operators.python import PythonOperator
 from congress_videos.config.paths import DOWNLOADS_DIR, get_orador_video_dir
 from congress_videos.modules.materialization import plan_turn_materialization
 from congress_videos.modules.materialization_executor import execute_plan
+from congress_videos.srt_helpers import _window_srt_text, score_turn_interest
 from utils.codec_detection import get_cached_codec
 from utils.postgres_helpers import PostgresConnection
 
@@ -225,6 +226,37 @@ def _materialize_task(**context) -> dict:
                 "speaker_turn_videos: materialized turn_ids=%s -> %s",
                 plan.turn_ids, output_path,
             )
+
+            # Score each turn's SRT window for upload prioritisation.
+            # Failures are non-fatal: log at WARNING, leave interest_score NULL.
+            turns_table = pg.get_qualified_table("speaker_turns")
+            for tid in plan.turn_ids:
+                try:
+                    window_text = _window_srt_text(
+                        video_id,
+                        float(plan.keep_intervals[0].start),
+                        float(plan.keep_intervals[-1].end),
+                    )
+                    score = score_turn_interest(window_text)
+                    if score is not None:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                f"UPDATE {turns_table} "
+                                f"SET interest_score = %s WHERE turn_id = %s",
+                                (score, tid),
+                            )
+                        conn.commit()
+                        logger.info(
+                            "speaker_turn_videos: interest_score=%d for turn_id=%d",
+                            score, tid,
+                        )
+                except Exception:  # noqa: BLE001 — scoring must never crash materialization
+                    logger.warning(
+                        "speaker_turn_videos: interest scoring failed for turn_id=%d — "
+                        "leaving interest_score NULL",
+                        tid,
+                        exc_info=True,
+                    )
 
     context["ti"].xcom_push(key="summary", value=summary)
     logger.info("speaker_turn_videos: run complete summary=%s", summary)
