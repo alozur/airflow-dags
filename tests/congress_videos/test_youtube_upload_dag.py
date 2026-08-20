@@ -1840,3 +1840,150 @@ class TestTriggerThumbnailGenerationForwardsOutputPath:
 
         assert len(captured_confs) == 1
         assert "output_path" not in captured_confs[0]
+
+
+# ---------------------------------------------------------------------------
+# SRT sidecar write (Slice 5 — srt-sidecar-canonical-path)
+# ---------------------------------------------------------------------------
+
+class TestPrepareThumbnailConfigSrtSidecar:
+    """_prepare_thumbnail_config must write subtitles.srt for turn items."""
+
+    _WINDOWED_BLOCKS = [
+        {"start_secs": 60.0, "end_secs": 70.0, "text": "primera frase"},
+        {"start_secs": 75.0, "end_secs": 85.0, "text": "segunda frase"},
+        # outside window — must not appear in SRT
+        {"start_secs": 200.0, "end_secs": 210.0, "text": "fuera de ventana"},
+    ]
+
+    def _run_turn(self, tmp_path, blocks=None, output_path_override=None):
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        video_mp4 = tmp_path / "video.mp4"
+        video_mp4.write_bytes(b"")
+        out_path = output_path_override if output_path_override is not None else str(video_mp4)
+        turn = _make_turn_row(
+            output_path=out_path,
+            start_seconds=50.0,
+            end_seconds=100.0,
+        )
+        # video_id is required so find_srt_for_chapter is actually called
+        turn["video_id"] = "vid001"
+        if blocks is None:
+            blocks = self._WINDOWED_BLOCKS
+
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+                return_value={"slug": "garcia-ana"},
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag.find_srt_for_chapter",
+                return_value="/fake/session.srt",
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag._parse_srt_blocks",
+                return_value=blocks,
+            ),
+        ):
+            return _prepare_thumbnail_config(turn, MagicMock()), tmp_path
+
+    def test_turn_with_output_path_writes_subtitles_srt(self, tmp_path):
+        """Turn-type + output_path + windowed blocks -> subtitles.srt written at dirname."""
+        config, out_dir = self._run_turn(tmp_path)
+
+        srt_path = out_dir / "subtitles.srt"
+        assert srt_path.exists(), "subtitles.srt must be created at dirname(output_path)"
+        content = srt_path.read_text(encoding="utf-8")
+        assert "primera frase" in content
+        assert "segunda frase" in content
+        assert "fuera de ventana" not in content
+        assert "1\n" in content  # sequential 1-based index present
+        assert config.get("chapter_id") == 42  # config unaffected
+
+    def test_chapter_type_produces_no_subtitles_srt(self, tmp_path):
+        """Chapter row (no turn_id) -> no subtitles.srt written anywhere."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_srt_chapter(start_time="00:00:50,000", end_time="00:01:40,000")
+        blocks = [
+            {"start_secs": 60.0, "end_secs": 70.0, "text": "chapter text"},
+        ]
+
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+                return_value={"slug": "garcia-ana"},
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag.find_srt_for_chapter",
+                return_value="/fake/session.srt",
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag._parse_srt_blocks",
+                return_value=blocks,
+            ),
+        ):
+            _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert not any(tmp_path.rglob("subtitles.srt"))
+
+    def test_turn_with_none_output_path_produces_no_write(self, tmp_path):
+        """Turn row whose output_path is None -> no subtitles.srt written."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(output_path=None, start_seconds=50.0, end_seconds=100.0)  # type: ignore[arg-type]
+        turn["video_id"] = "vid001"
+        blocks = [{"start_secs": 60.0, "end_secs": 70.0, "text": "texto"}]
+
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+                return_value={"slug": "garcia-ana"},
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag.find_srt_for_chapter",
+                return_value="/fake/session.srt",
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag._parse_srt_blocks",
+                return_value=blocks,
+            ),
+        ):
+            config = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert not any(tmp_path.rglob("subtitles.srt"))
+        assert "chapter_id" in config  # config still returned
+
+    def test_write_failure_swallowed_config_returned(self, tmp_path):
+        """OSError on write -> warning logged, no exception, config returned intact."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        video_mp4 = tmp_path / "video.mp4"
+        video_mp4.write_bytes(b"")
+        turn = _make_turn_row(
+            output_path=str(video_mp4),
+            start_seconds=50.0,
+            end_seconds=100.0,
+        )
+        turn["video_id"] = "vid001"
+        blocks = [{"start_secs": 60.0, "end_secs": 70.0, "text": "texto"}]
+
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+                return_value={"slug": "garcia-ana"},
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag.find_srt_for_chapter",
+                return_value="/fake/session.srt",
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag._parse_srt_blocks",
+                return_value=blocks,
+            ),
+            patch("builtins.open", side_effect=OSError("disk full")),
+        ):
+            config = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert "chapter_id" in config

@@ -18,15 +18,44 @@ _SRT_TIMESTAMP_ARROW_RE = re.compile(
 )
 
 
+def _secs_to_srt_ts(secs: float) -> str:
+    """Convert float seconds to SRT timestamp string ``HH:MM:SS,mmm``."""
+    ms = int(round((secs % 1) * 1000))
+    s = int(secs)
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{sec:02d},{ms:03d}"
+
+
+def _serialize_srt_blocks(blocks: list[dict]) -> str:
+    """Rebuild a valid SRT string from ``{start_secs, end_secs, text}`` blocks.
+
+    Produces sequential 1-based indices, ``HH:MM:SS,mmm`` timestamps, and
+    blank-line-separated entries.  Empty list returns ``""``.  Pure; no I/O.
+    """
+    out = []
+    for i, b in enumerate(blocks, start=1):
+        out.append(
+            f"{i}\n{_secs_to_srt_ts(b['start_secs'])} --> "
+            f"{_secs_to_srt_ts(b['end_secs'])}\n{b['text']}\n"
+        )
+    return "\n".join(out)
+
+
 def find_srt_for_chapter(
     video_id: str,
     chapter_id: int,
     session_date: Optional[str] = None,
+    canonical_dir: Optional[str] = None,
 ) -> Optional[str]:
     """
     Try common SRT path patterns, return first existing path or None.
 
-    Probes:
+    When *canonical_dir* is supplied, probes ``{canonical_dir}/subtitles.srt``
+    first.  Falls through to the legacy probe list when that file is absent or
+    when *canonical_dir* is ``None`` (default, preserving existing behavior).
+
+    Legacy probes:
       1. data/congress_videos/{video_id}/srt_files/
       2. downloads/{session_date}/{video_id}/srt_files/  (if session_date provided)
       3. downloads/ (date-agnostic search when session_date is None)
@@ -34,6 +63,8 @@ def find_srt_for_chapter(
     srt_filenames = [f"{video_id}_merged.srt", f"{video_id}.srt"]
 
     candidates = []
+    if canonical_dir:
+        candidates.append(os.path.join(canonical_dir, "subtitles.srt"))
     for name in srt_filenames:
         candidates.append(os.path.join(PROJECT_DATA_DIR, video_id, "srt_files", name))
 

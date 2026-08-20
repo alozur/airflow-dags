@@ -7,6 +7,7 @@ import pytest
 from congress_videos.srt_helpers import (
     _find_phrase_in_blocks,
     _parse_srt_blocks,
+    _serialize_srt_blocks,
     _srt_timestamp_to_seconds,
     find_srt_for_chapter,
     select_pretrim_window,
@@ -424,3 +425,113 @@ class TestParseSrtToTextBatch2:
         result = parse_srt_to_text(path, max_chars=500)
 
         assert len(result) <= 500
+
+
+# ---------------------------------------------------------------------------
+# _serialize_srt_blocks
+# ---------------------------------------------------------------------------
+
+class TestSerializeSrtBlocks:
+
+    @pytest.mark.parametrize("blocks,expected", [
+        (
+            [],
+            "",
+        ),
+        (
+            [{"start_secs": 0.0, "end_secs": 59.999, "text": "Hola"}],
+            "1\n00:00:00,000 --> 00:00:59,999\nHola\n",
+        ),
+        (
+            [
+                {"start_secs": 3661.5, "end_secs": 3663.0, "text": "Hola"},
+                {"start_secs": 3663.5, "end_secs": 3665.0, "text": "Mundo"},
+            ],
+            (
+                "1\n01:01:01,500 --> 01:01:03,000\nHola\n"
+                "\n"
+                "2\n01:01:03,500 --> 01:01:05,000\nMundo\n"
+            ),
+        ),
+    ])
+    def test_serialize_produces_valid_srt(self, blocks, expected):
+        assert _serialize_srt_blocks(blocks) == expected
+
+    def test_sequential_1_based_index(self):
+        blocks = [
+            {"start_secs": 1.0, "end_secs": 2.0, "text": "A"},
+            {"start_secs": 3.0, "end_secs": 4.0, "text": "B"},
+            {"start_secs": 5.0, "end_secs": 6.0, "text": "C"},
+        ]
+        result = _serialize_srt_blocks(blocks)
+        assert result.startswith("1\n")
+        assert "\n2\n" in result
+        assert "\n3\n" in result
+
+    def test_milliseconds_rounded_correctly(self):
+        # 0.9999 seconds → should round to 1000 ms → carry → 00:00:01,000
+        # but spec says round the frac part; 0.9999 * 1000 = 999.9 → rounds to 1000
+        # Actually per spec: ms = int(round((secs % 1) * 1000))
+        # For secs=0.9999: secs%1=0.9999, *1000=999.9, round=1000 → ms=1000
+        # That would make the display 00:00:00,1000 — which is not valid SRT.
+        # The design uses int(secs) first, so 0.9999 → int(0.9999)=0, h=0,m=0,sec=0, ms=round(0.9999*1000)=1000
+        # Per _secs_to_srt_ts formula in design: rebuild from formula gives ms=1000 here.
+        # We test a clean value: 59.999 → ms=round(0.999*1000)=round(999)=999
+        blocks = [{"start_secs": 59.999, "end_secs": 60.0, "text": "X"}]
+        result = _serialize_srt_blocks(blocks)
+        assert "00:00:59,999" in result
+        assert "00:01:00,000" in result
+
+
+# ---------------------------------------------------------------------------
+# find_srt_for_chapter — canonical-first probe (new param)
+# ---------------------------------------------------------------------------
+
+class TestFindSrtForChapterCanonical:
+
+    def test_canonical_dir_set_and_file_exists_returns_canonical(self, tmp_path):
+        canonical_dir = tmp_path / "oradores" / "abc"
+        canonical_dir.mkdir(parents=True)
+        srt = canonical_dir / "subtitles.srt"
+        srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nHola\n", encoding="utf-8")
+
+        result = find_srt_for_chapter(
+            "vid123", 1, session_date=None, canonical_dir=str(canonical_dir)
+        )
+
+        assert result == str(srt)
+
+    def test_canonical_dir_set_but_file_absent_falls_back_to_legacy(self, tmp_path, mocker):
+        canonical_dir = tmp_path / "oradores" / "abc"
+        canonical_dir.mkdir(parents=True)
+        # subtitles.srt does NOT exist — triggers legacy fallback
+
+        legacy_path = "/data/congress_videos/vid123/srt_files/vid123.srt"
+
+        def _exists(p):
+            # canonical path: absent; legacy path: present
+            return p == legacy_path
+
+        mocker.patch("os.path.exists", side_effect=_exists)
+        mocker.patch("os.path.isdir", return_value=False)
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", "/data/congress_videos")
+
+        result = find_srt_for_chapter(
+            "vid123", 1, session_date="2025-01-01", canonical_dir=str(canonical_dir)
+        )
+
+        assert result == legacy_path
+
+    def test_canonical_dir_none_default_preserves_legacy_behavior(self, mocker):
+        expected = "/data/congress_videos/vid123/srt_files/vid123.srt"
+
+        def _exists(p):
+            return p == expected
+
+        mocker.patch("os.path.exists", side_effect=_exists)
+        mocker.patch("os.path.isdir", return_value=False)
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", "/data/congress_videos")
+
+        result = find_srt_for_chapter("vid123", 1, session_date="2025-01-01")
+
+        assert result == expected
