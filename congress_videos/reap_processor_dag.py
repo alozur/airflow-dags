@@ -15,7 +15,7 @@ from airflow.exceptions import AirflowException
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.sensors.base import BaseSensorOperator
 
-from congress_videos.config.paths import get_short_file_path
+from congress_videos.config.paths import get_chapter_short_file_path
 from congress_videos.modules.database import CongressionalVideoDB
 from congress_videos.reap_api import ReapApiClient, ReapCreditsExhausted
 from utils.env_loader import load_env_if_local
@@ -93,13 +93,24 @@ class ReapJobSensor(BaseSensorOperator):
 
             db.update_video_short_status(reap_project_id, 'done')
 
+            source_video_id = db.get_source_video_id_for_chapter(chapter_id)
+
             for clip in clips:
                 clip_id = clip['clip_id']
                 clip_url = clip['clip_url']
                 virality = float(clip['virality_score'])
 
-                dest_path = get_short_file_path(chapter_id, clip_id)
-                reap_client.download_clip(clip_url, dest_path)
+                if source_video_id is None:
+                    logging.warning(
+                        "ReapJobSensor: no source video_id for chapter %s — skipping clip %s",
+                        chapter_id,
+                        clip_id,
+                    )
+                    continue
+
+                dest_path = get_chapter_short_file_path(source_video_id, chapter_id, clip_id)
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                reap_client.download_clip(clip_url, str(dest_path))
 
                 db.insert_video_short_clip(
                     chapter_id=chapter_id,
@@ -107,7 +118,7 @@ class ReapJobSensor(BaseSensorOperator):
                     reap_clip_id=clip_id,
                     reap_virality_score=virality,
                     reap_clip_url=clip_url,
-                    local_file_path=dest_path,
+                    local_file_path=str(dest_path),
                 )
 
             return True

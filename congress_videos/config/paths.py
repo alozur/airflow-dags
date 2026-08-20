@@ -295,6 +295,75 @@ def get_orador_artifact_path(
     ) / filename
 
 
+# --- Chapter-level short clip paths ---
+
+def get_video_chapter_dir(
+    source_video_id: str,
+    chapter_id: int,
+    channel_slug: str | None = None,
+) -> Path:
+    """Return the chapter directory path (no side effects, no mkdir).
+
+    The directory is not created by this function; callers are responsible
+    for creating it (e.g. via ``Path.mkdir(parents=True, exist_ok=True)``).
+
+    Args:
+        source_video_id: YouTube video identifier (e.g. ``"abc123"``).
+        chapter_id:      Database chapter ID (e.g. ``7``).
+        channel_slug:    Channel slug (defaults to ``DEFAULT_CHANNEL``).
+
+    Returns:
+        ``Path`` to ``{PROJECT_DATA_DIR}/{channel_slug}/{source_video_id}/
+        video_chapters/{chapter_id}/``.
+    """
+    if channel_slug is None:
+        # Function-local import avoids paths <-> youtube_channels circular dependency.
+        from congress_videos.config.youtube_channels import DEFAULT_CHANNEL  # noqa: PLC0415
+        channel_slug = DEFAULT_CHANNEL
+    return Path(
+        f"{PROJECT_DATA_DIR}/{channel_slug}/{source_video_id}"
+        f"/video_chapters/{chapter_id}"
+    )
+
+
+def get_chapter_shorts_dir(
+    source_video_id: str,
+    chapter_id: int,
+    channel_slug: str | None = None,
+) -> Path:
+    """Return the shorts sub-directory for a chapter (no side effects, no mkdir).
+
+    Args:
+        source_video_id: YouTube video identifier.
+        chapter_id:      Database chapter ID.
+        channel_slug:    Channel slug (defaults to ``DEFAULT_CHANNEL``).
+
+    Returns:
+        ``Path`` to the ``shorts/`` directory inside the chapter directory.
+    """
+    return get_video_chapter_dir(source_video_id, chapter_id, channel_slug) / "shorts"
+
+
+def get_chapter_short_file_path(
+    source_video_id: str,
+    chapter_id: int,
+    clip_id: str,
+    channel_slug: str | None = None,
+) -> Path:
+    """Return the canonical path for a Reap short clip (no side effects, no mkdir).
+
+    Args:
+        source_video_id: YouTube source video identifier.
+        chapter_id:      Database chapter ID.
+        clip_id:         Reap clip identifier (used as filename stem).
+        channel_slug:    Channel slug (defaults to ``DEFAULT_CHANNEL``).
+
+    Returns:
+        ``Path`` to ``{shorts_dir}/{clip_id}.mp4``.
+    """
+    return get_chapter_shorts_dir(source_video_id, chapter_id, channel_slug) / f"{clip_id}.mp4"
+
+
 # -------------------------
 # Path Validation
 # -------------------------
