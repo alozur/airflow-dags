@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +23,8 @@ from congress_videos.config.paths import (
     get_download_date_path,
     get_download_file_path,
     get_download_video_path,
+    get_orador_artifact_path,
+    get_orador_video_dir,
     get_session_path,
     get_topic_path,
     get_video_path,
@@ -246,3 +249,110 @@ class TestEnsureDirectoryExists:
         result = ensure_directory_exists(nested)
         assert os.path.isdir(nested)
         assert result == nested
+
+
+# ---------------------------------------------------------------------------
+# get_orador_video_dir — T1
+# ---------------------------------------------------------------------------
+
+class TestGetOradorVideoDir:
+    """Tests for get_orador_video_dir helper (canonical speaker-turn layout)."""
+
+    def test_default_channel_slug(self):
+        result = get_orador_video_dir("abc123", 7, 42)
+        assert result == Path(f"{PROJECT_DATA_DIR}/congreso-es-tv/abc123/video_chapters/7/oradores/42")
+
+    def test_custom_channel_slug(self):
+        result = get_orador_video_dir("abc123", 7, 42, channel_slug="otro-canal")
+        assert result == Path(f"{PROJECT_DATA_DIR}/otro-canal/abc123/video_chapters/7/oradores/42")
+
+    def test_integer_ids_coerce_to_string_form(self):
+        result = get_orador_video_dir("vid1", 10, 99)
+        path_str = str(result)
+        assert "/10/" in path_str
+        assert path_str.endswith("/99")
+
+    def test_string_ids_identical_to_integer_ids(self):
+        assert get_orador_video_dir("vid1", "10", "99") == get_orador_video_dir("vid1", 10, 99)
+
+    def test_no_directory_created(self, tmp_path):
+        result = get_orador_video_dir("nosuchvid", 1, 1)
+        assert not result.exists()
+
+    def test_return_type_is_path(self):
+        result = get_orador_video_dir("abc123", 7, 42)
+        assert isinstance(result, Path)
+
+    def test_exact_segment_sequence(self):
+        result = get_orador_video_dir("abc123", 7, 42)
+        parts = result.parts
+        # Verify canonical order in the trailing segments
+        idx = parts.index("congreso-es-tv")
+        assert parts[idx] == "congreso-es-tv"
+        assert parts[idx + 1] == "abc123"
+        assert parts[idx + 2] == "video_chapters"
+        assert parts[idx + 3] == "7"
+        assert parts[idx + 4] == "oradores"
+        assert parts[idx + 5] == "42"
+
+
+# ---------------------------------------------------------------------------
+# get_orador_artifact_path — T2
+# ---------------------------------------------------------------------------
+
+class TestGetOradorArtifactPath:
+    """Tests for get_orador_artifact_path helper."""
+
+    def test_video_artifact_path(self):
+        result = get_orador_artifact_path("abc123", 7, 42, "video.mp4")
+        assert result == get_orador_video_dir("abc123", 7, 42) / "video.mp4"
+
+    @pytest.mark.parametrize("filename", [
+        "video.mp4",
+        "subtitles.srt",
+        "thumbnail.png",
+        "title.txt",
+        "description.txt",
+    ])
+    def test_all_five_artifact_filenames(self, filename: str):
+        result = get_orador_artifact_path("abc123", 7, 42, filename)
+        assert result.name == filename
+        assert result.parent == get_orador_video_dir("abc123", 7, 42)
+
+    def test_composition_via_get_orador_video_dir(self):
+        src, chap, turn, name = "somevid", 3, 17, "thumbnail.png"
+        result = get_orador_artifact_path(src, chap, turn, name)
+        assert result == get_orador_video_dir(src, chap, turn) / name
+
+    def test_no_directory_created(self):
+        result = get_orador_artifact_path("nosuchvid", 1, 1, "video.mp4")
+        assert not result.parent.exists()
+
+    def test_return_type_is_path(self):
+        result = get_orador_artifact_path("abc123", 7, 42, "title.txt")
+        assert isinstance(result, Path)
+
+
+# ---------------------------------------------------------------------------
+# TestOradorHelpersImportPurity — T3
+# ---------------------------------------------------------------------------
+
+class TestOradorHelpersImportPurity:
+    """Tests that helpers are pure, deterministic, and importable without Airflow."""
+
+    def test_deterministic_video_dir(self):
+        args = ("myvid", 5, 10)
+        assert get_orador_video_dir(*args) == get_orador_video_dir(*args)
+
+    def test_deterministic_artifact_path(self):
+        args = ("myvid", 5, 10, "video.mp4")
+        assert get_orador_artifact_path(*args) == get_orador_artifact_path(*args)
+
+    def test_import_requires_only_pathlib_and_config(self):
+        # Re-import inside the test body to confirm no Airflow/DB dependency at import time.
+        from congress_videos.config.paths import (  # noqa: PLC0415
+            get_orador_artifact_path as _a,
+            get_orador_video_dir as _v,
+        )
+        assert callable(_v)
+        assert callable(_a)

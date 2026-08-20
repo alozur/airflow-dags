@@ -224,6 +224,77 @@ def get_turn_video_path(date: str, video_id: str, turn_id: int) -> str:
     return f"{get_download_video_path(date, video_id)}/turns/{turn_id}/turn_video.mp4"
 
 
+# ---------------------------------------------------------------------------
+# Canonical per-channel speaker-turn artifact layout
+# {PROJECT_DATA_DIR}/{channel_slug}/{source_video_id}/video_chapters/{chapter_id}/oradores/{output_turn_id}/{artifact}
+# See epic #133 for storage layout specification.
+#
+# NOTE: DEFAULT_CHANNEL is resolved via a function-local import of
+# congress_videos.config.youtube_channels.DEFAULT_CHANNEL at call time.
+# A top-level import would create a circular dependency because
+# youtube_channels.py imports YOUTUBE_TOKEN_FILE and YOUTUBE_TOKENS_DIR
+# from this module (paths.py).
+# ---------------------------------------------------------------------------
+
+
+def get_orador_video_dir(
+    source_video_id: str,
+    chapter_id: int,
+    output_turn_id: int,
+    channel_slug: str | None = None,
+) -> Path:
+    """Return the oradores turn directory path (no side effects, no mkdir).
+
+    The directory is not created by this function; callers are responsible
+    for creating it (e.g. via ``Path.mkdir(parents=True, exist_ok=True)``).
+
+    Args:
+        source_video_id: YouTube video identifier (e.g. ``"abc123"``).
+        chapter_id:      Database chapter ID (e.g. ``7``).
+        output_turn_id:  Database turn ID for the output video (e.g. ``42``).
+        channel_slug:    Channel slug (defaults to ``DEFAULT_CHANNEL``).
+
+    Returns:
+        ``Path`` to ``{PROJECT_DATA_DIR}/{channel_slug}/{source_video_id}/
+        video_chapters/{chapter_id}/oradores/{output_turn_id}/``.
+    """
+    if channel_slug is None:
+        # Function-local import avoids paths <-> youtube_channels circular dependency.
+        from congress_videos.config.youtube_channels import DEFAULT_CHANNEL  # noqa: PLC0415
+        channel_slug = DEFAULT_CHANNEL
+    return Path(
+        f"{PROJECT_DATA_DIR}/{channel_slug}/{source_video_id}"
+        f"/video_chapters/{chapter_id}/oradores/{output_turn_id}"
+    )
+
+
+def get_orador_artifact_path(
+    source_video_id: str,
+    chapter_id: int,
+    output_turn_id: int,
+    filename: str,
+    channel_slug: str | None = None,
+) -> Path:
+    """Return the path to a named artifact inside the orador turn directory.
+
+    The directory is not created by this function; callers are responsible
+    for creating it (e.g. via ``Path.mkdir(parents=True, exist_ok=True)``).
+
+    Args:
+        source_video_id: YouTube video identifier (e.g. ``"abc123"``).
+        chapter_id:      Database chapter ID (e.g. ``7``).
+        output_turn_id:  Database turn ID for the output video (e.g. ``42``).
+        filename:        Artifact filename (e.g. ``"video.mp4"``).
+        channel_slug:    Channel slug (defaults to ``DEFAULT_CHANNEL``).
+
+    Returns:
+        ``Path`` to the artifact file inside the orador turn directory.
+    """
+    return get_orador_video_dir(
+        source_video_id, chapter_id, output_turn_id, channel_slug
+    ) / filename
+
+
 # -------------------------
 # Path Validation
 # -------------------------
