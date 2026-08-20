@@ -14,6 +14,7 @@ All tests are pure: no ffmpeg, no DB, no Airflow imports.
 from __future__ import annotations
 
 import dataclasses
+from decimal import Decimal
 
 import pytest
 
@@ -403,3 +404,49 @@ class TestModuleConstants:
     def test_group_gap_tolerance_secs_value(self):
         """GROUP_GAP_TOLERANCE_SECS must be 0.5."""
         assert GROUP_GAP_TOLERANCE_SECS == 0.5
+
+
+class TestDecimalInputs:
+    """Postgres NUMERIC columns arrive as decimal.Decimal via psycopg2.
+
+    Regression for the prod-shaped crash: consecutive short turns with
+    Decimal seconds hit ``Decimal + float`` in the group-gap comparison
+    (TypeError). All second fields must be coerced to float at the
+    function boundary without mutating caller dicts.
+    """
+
+    def test_short_turn_grouping_accepts_decimal_seconds(self):
+        """Consecutive short Decimal turns must group without TypeError."""
+        turns = [
+            _turn(1, 410, Decimal("21195.0"), Decimal("21196.0")),
+            _turn(2, 410, Decimal("21196.0"), Decimal("21197.0")),
+        ]
+
+        plans = plan_turn_materialization(turns, [])
+
+        assert len(plans) == 1
+        assert plans[0].turn_ids == (1, 2)
+
+    def test_long_turn_with_decimal_trim_yields_float_intervals(self):
+        """Decimal turn bounds and trims must produce float KeepIntervals."""
+        turns = [_turn(1, 410, Decimal("0"), Decimal("400.0"))]
+        trims = [_trim(1, Decimal("10.0"), Decimal("20.0"))]
+
+        plans = plan_turn_materialization(turns, trims)
+
+        assert len(plans) == 1
+        keep = plans[0].keep_intervals
+        assert keep == (KeepInterval(0.0, 10.0), KeepInterval(20.0, 400.0))
+        assert all(
+            isinstance(iv.start, float) and isinstance(iv.end, float)
+            for iv in keep
+        )
+
+    def test_input_dicts_are_not_mutated(self):
+        """Coercion must copy rows, never mutate the caller's dicts."""
+        turn = _turn(1, 410, Decimal("21195.0"), Decimal("21196.0"))
+
+        plan_turn_materialization([turn], [])
+
+        assert isinstance(turn["start_seconds"], Decimal)
+        assert isinstance(turn["end_seconds"], Decimal)
