@@ -145,10 +145,10 @@ class TestPrepareTurnsCallableSequentialLoop:
         mock_db.select_unprepared_turns.side_effect = fake_db_select
         mock_db.mark_turn_prepared.side_effect = fake_mark_prepared
 
-        def fake_trigger_thumbnail(turn, db):
+        def fake_trigger_thumbnail(turn):
             call_order.append(("thumbnail", turn["turn_id"]))
 
-        def fake_write_sidecars(turn, db):
+        def fake_write_sidecars(turn):
             call_order.append(("sidecars", turn["turn_id"]))
 
         with (
@@ -221,7 +221,7 @@ class TestPrepareTurnsCallableSequentialLoop:
         mock_db.select_unprepared_turns.return_value = turns
         mock_db.mark_turn_prepared.side_effect = lambda tid: call_order.append("mark_prepared")
 
-        def fake_write_sidecars(turn, db):
+        def fake_write_sidecars(turn):
             call_order.append("write_sidecars")
 
         with (
@@ -254,7 +254,7 @@ class TestPrepareTurnsCallableSequentialLoop:
 
         thumbnail_calls = []
 
-        def fake_trigger(turn, db):
+        def fake_trigger(turn):
             thumbnail_calls.append(turn["turn_id"])
 
         with (

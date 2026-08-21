@@ -65,12 +65,10 @@ def prepare_orador_upload_config(
                 f"{sidecar} (expected at {sidecar_path})"
             )
 
-    title = (
-        open(os.path.join(video_dir, "title.txt"), encoding="utf-8").read().strip()
-    )
-    description = (
-        open(os.path.join(video_dir, "description.txt"), encoding="utf-8").read().strip()
-    )
+    with open(os.path.join(video_dir, "title.txt"), encoding="utf-8") as f:
+        title = f.read().strip()
+    with open(os.path.join(video_dir, "description.txt"), encoding="utf-8") as f:
+        description = f.read().strip()
     thumbnail_file = os.path.join(video_dir, "thumbnail.png")
 
     logging.info(

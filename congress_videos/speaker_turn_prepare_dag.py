@@ -17,15 +17,19 @@ Design constraints (non-negotiable):
 import logging
 import os
 import subprocess
+import time
 from datetime import datetime, timedelta
 
 from airflow import DAG
+from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 from airflow.operators.python import PythonOperator
 
 from congress_videos.modules.database import CongressionalVideoDB
 from utils.env_loader import load_env_if_local
 
 load_env_if_local()
+
+logger = logging.getLogger(__name__)
 
 _THUMBNAIL_DAG_ID = "generic_thumbnail_generator"
 _THUMBNAIL_RESULT_TASK_ID = "thumbnail_result"
@@ -35,7 +39,7 @@ _THUMBNAIL_RESULT_TASK_ID = "thumbnail_result"
 # ---------------------------------------------------------------------------
 
 
-def _trigger_thumbnail_for_turn(turn: dict, db) -> None:
+def _trigger_thumbnail_for_turn(turn: dict) -> None:
     """Trigger generic_thumbnail_generator and poll until completion.
 
     Reuses the trigger+poll pattern from youtube_upload_dag.trigger_thumbnail_generation.
@@ -43,17 +47,11 @@ def _trigger_thumbnail_for_turn(turn: dict, db) -> None:
 
     Args:
         turn: Row dict from select_unprepared_turns (turn_id, output_path, …).
-        db: CongressionalVideoDB instance (unused here; kept for call-site symmetry).
 
     Raises:
         RuntimeError: when the thumbnail DAG fails (non-zero exit); prepare will
             NOT set prepared_at for this turn.
     """
-    import time
-
-    from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
-    from airflow.models import DagRun
-
     turn_id = turn["turn_id"]
     output_path = turn.get("output_path") or ""
 
@@ -88,7 +86,7 @@ def _trigger_thumbnail_for_turn(turn: dict, db) -> None:
             f"for turn_id={turn_id}: {exc}"
         ) from exc
 
-    logging.info(
+    logger.info(
         "_trigger_thumbnail_for_turn: triggered run %s for turn_id=%d",
         dag_run.run_id,
         turn_id,
@@ -106,19 +104,18 @@ def _trigger_thumbnail_for_turn(turn: dict, db) -> None:
             f"failed for turn_id={turn_id}"
         )
 
-    logging.info(
+    logger.info(
         "_trigger_thumbnail_for_turn: thumbnail ready for turn_id=%d (run=%s)",
         turn_id,
         dag_run.run_id,
     )
 
 
-def _write_turn_sidecars(turn: dict, db) -> None:
+def _write_turn_sidecars(turn: dict) -> None:
     """Generate and write title.txt, description.txt, and subtitles.srt for a turn.
 
     Args:
         turn: Row dict from select_unprepared_turns.
-        db: CongressionalVideoDB instance.
 
     Raises:
         Exception: Any sidecar write failure propagates so prepared_at is NOT set.
@@ -189,7 +186,7 @@ def _write_turn_sidecars(turn: dict, db) -> None:
     with open(srt_out, "w", encoding="utf-8") as f:
         f.write(_serialize_srt_blocks(windowed) if windowed else "")
 
-    logging.info(
+    logger.info(
         "_write_turn_sidecars: sidecars written for turn_id=%d at %s",
         turn.get("turn_id"),
         video_dir,
@@ -212,16 +209,16 @@ def _prepare_turns_callable() -> None:
     turns = db.select_unprepared_turns(limit=2)
 
     if not turns:
-        logging.info("_prepare_turns_callable: no unprepared turns; nothing to do")
+        logger.info("_prepare_turns_callable: no unprepared turns; nothing to do")
         return
 
-    logging.info("_prepare_turns_callable: %d turn(s) selected for preparation", len(turns))
+    logger.info("_prepare_turns_callable: %d turn(s) selected for preparation", len(turns))
 
     for turn in turns:
         turn_id = turn["turn_id"]
         output_path = turn.get("output_path") or ""
 
-        logging.info(
+        logger.info(
             "_prepare_turns_callable: preparing turn_id=%d output_path=%s",
             turn_id,
             output_path,
@@ -229,10 +226,10 @@ def _prepare_turns_callable() -> None:
 
         try:
             # Step 1: Generate thumbnail (may take 5–10 min).
-            _trigger_thumbnail_for_turn(turn, db)
+            _trigger_thumbnail_for_turn(turn)
 
             # Step 2: Write text sidecars.
-            _write_turn_sidecars(turn, db)
+            _write_turn_sidecars(turn)
 
             # Step 3: ffprobe integrity check.
             result = subprocess.run(
@@ -241,7 +238,7 @@ def _prepare_turns_callable() -> None:
                 stderr=subprocess.PIPE,
             )
             if result.returncode != 0:
-                logging.warning(
+                logger.warning(
                     "_prepare_turns_callable: ffprobe failed for turn_id=%d "
                     "(rc=%d) — prepared_at NOT set; will retry next night",
                     turn_id,
@@ -251,12 +248,12 @@ def _prepare_turns_callable() -> None:
 
             # Step 4: Atomic readiness flip — called LAST.
             db.mark_turn_prepared(turn_id)
-            logging.info(
+            logger.info(
                 "_prepare_turns_callable: turn_id=%d prepared successfully", turn_id
             )
 
         except Exception as exc:
-            logging.warning(
+            logger.warning(
                 "_prepare_turns_callable: turn_id=%d preparation failed (%s) "
                 "— prepared_at NOT set; will retry next night",
                 turn_id,
@@ -289,9 +286,6 @@ with DAG(
     start_date=datetime(2026, 8, 21),
     catchup=False,
     tags=["congress", "speaker-turns", "prepare"],
-    params={
-        "dry_run": False,
-    },
 ) as dag:
     prepare_turns = PythonOperator(
         task_id="prepare_turns",
