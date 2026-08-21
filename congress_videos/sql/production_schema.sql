@@ -211,10 +211,12 @@ COMMENT ON COLUMN production.video_chapters.last_upload_error IS 'Last recorded 
 COMMENT ON VIEW production.uploadable_chapters IS 'Shows chapters eligible for YouTube upload (relevance_score >= 2)';
 COMMENT ON VIEW production.chapter_statistics IS 'Provides aggregate statistics about chapters by source video';
 
--- View: uploadable_turns (migration 029)
--- Shows speaker_turn_videos rows not yet uploaded, enriched with parent metadata.
--- Turn queue is tried before the chapter fallback queue in youtube_upload_dag.
--- interest_score added by migration 029; COALESCE rescues unscored legacy turns.
+-- View: uploadable_turns (migration 030)
+-- Shows speaker_turn_videos rows that are PREPARED and not yet uploaded.
+-- prepared_at IS NOT NULL gate added by migration 030 (issue #146):
+--   turns are surfaced only after speaker_turn_prepare DAG writes all sidecars
+--   and ffprobe passes. interest_score added by migration 029.
+-- speaker_turn_videos.prepared_at TIMESTAMPTZ added by migration 030.
 
 DROP VIEW IF EXISTS production.uploadable_turns;
 CREATE VIEW production.uploadable_turns AS
@@ -234,12 +236,14 @@ SELECT * FROM (
         vc.key_speakers,
         ysv.session_number,
         ysv.session_date,
-        stv.materialized_at
+        stv.materialized_at,
+        stv.prepared_at
     FROM production.speaker_turn_videos stv
     JOIN production.speaker_turns st ON stv.turn_id = st.turn_id
     JOIN production.video_chapters vc ON st.chapter_id = vc.chapter_id
     JOIN production.youtube_source_videos ysv ON vc.video_id = ysv.video_id
     WHERE stv.is_uploaded_to_youtube = FALSE
+      AND stv.prepared_at IS NOT NULL             -- PREPARE readiness gate (issue #146)
       AND vc.is_uploaded_to_youtube = FALSE
       AND vc.relevance_score >= 2
       AND COALESCE(st.interest_score, 1) >= 1    -- INTEREST_FILTER_THRESHOLD, soft-exclude score 0
@@ -248,4 +252,4 @@ SELECT * FROM (
 ORDER BY COALESCE(dedup.interest_score, 1) DESC,  -- PRIMARY: interest score (NULL → INTEREST_NEUTRAL=1)
          dedup.relevance_score DESC, dedup.session_date DESC;
 
-COMMENT ON VIEW production.uploadable_turns IS 'Speaker turn videos eligible for YouTube upload (turn queue, tried before chapter fallback)';
+COMMENT ON VIEW production.uploadable_turns IS 'Speaker turn videos eligible for YouTube upload — prepared_at IS NOT NULL gate ensures sidecars are ready before upload (issue #146)';

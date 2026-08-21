@@ -32,7 +32,6 @@ from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from congress_videos.modules.participants_db import lookup_participant_fuzzy
 from congress_videos.srt_helpers import (
     _parse_srt_blocks,
-    _serialize_srt_blocks,
     _srt_timestamp_to_seconds,
     find_srt_for_chapter,
 )
@@ -242,20 +241,10 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
             if b["start_secs"] >= window_start_secs and b["end_secs"] <= window_end_secs
         ]
         config["srt_fragment"] = " ".join(b["text"] for b in windowed)[:10_000]
-
-        # Best-effort canonical sidecar write for turn items (Slice 5).
-        # Mirror 4b _write_orador_sidecars convention: swallow errors, log warning.
-        if is_turn and config.get("output_path") and windowed:
-            try:
-                srt_out = os.path.join(os.path.dirname(config["output_path"]), "subtitles.srt")
-                with open(srt_out, "w", encoding="utf-8") as _f:
-                    _f.write(_serialize_srt_blocks(windowed))
-            except Exception as exc:
-                logging.warning(
-                    "Failed to write orador subtitles.srt for %s: %s",
-                    config.get("output_path"),
-                    exc,
-                )
+        # Note (issue #146 Fix C): the turn subtitles.srt sidecar is now written
+        # exclusively by the nightly speaker_turn_prepare DAG. The upload path no
+        # longer writes it; srt_fragment above is still needed for the lapidary
+        # thumbnail quote (chapter path) and is harmless for turns.
 
     return config
 
@@ -515,7 +504,21 @@ with (
         ti.xcom_push(key="thumbnail_config", value=result)
 
     def _run_generate_thumbnail(ti):
-        """Trigger the generic thumbnail DAG and retain its completed result."""
+        """Trigger the generic thumbnail DAG for chapters; skip for turns (sidecars pre-written).
+
+        Turn items have already been prepared by the speaker_turn_prepare DAG which
+        triggers generic_thumbnail_generator and writes all sidecars. The upload DAG
+        must not duplicate that work. Skipping here is identified by item_type='turn'
+        from the uploadable_item XCom key.
+        """
+        uploadable = ti.xcom_pull(key="uploadable_item") or {}
+        if uploadable.get("item_type") == "turn":
+            # Thumbnail already written by PREPARE DAG — do nothing.
+            logging.info(
+                "_run_generate_thumbnail: skipping thumbnail trigger for turn item "
+                "(sidecars pre-written by speaker_turn_prepare)"
+            )
+            return None
         return trigger_thumbnail_generation(ti, run_id=ti.run_id)
 
     def _extract_chapter_videos(ti):
@@ -562,16 +565,76 @@ with (
             )
 
     def _prepare_upload_config(ti, **context):
+        """Build upload config for the selected item (turn or chapter).
+
+        Turn items: read pre-prepared sidecars via prepare_orador_upload_config.
+          - Zero AI calls, zero ffmpeg calls, zero thumbnail triggers.
+          - Validates sidecar presence; raises FileNotFoundError if any is missing.
+        Chapter items: unchanged path via prepare_chapter_upload_config + AI metadata.
+        """
         from congress_videos.modules.youtube import prepare_chapter_upload_config
+        from congress_videos.modules.youtube.youtube_upload import prepare_orador_upload_config
 
         dry_run = context.get("params", {}).get("dry_run", False)
+        is_testing = context.get("params", {}).get("isTesting", False)
+        uploadable = ti.xcom_pull(key="uploadable_item") or {}
+        item_type = uploadable.get("item_type")
+
+        if item_type == "turn":
+            # Turn path: read pre-written sidecars; build a minimal extraction_results
+            # wrapper so the generic uploader receives the same envelope shape.
+            extraction_results = ti.xcom_pull(key="chapter_extraction_results") or {}
+            results = extraction_results.get("results") or []
+            if not results or not results[0].get("success"):
+                logging.warning(
+                    "_prepare_upload_config: turn extraction result missing or failed — "
+                    "skipping upload config"
+                )
+                ti.xcom_push(key="upload_config", value=None)
+                return None
+
+            output_path = results[0].get("output_path") or ""
+            if not output_path:
+                logging.warning(
+                    "_prepare_upload_config: turn output_path missing — skipping"
+                )
+                ti.xcom_push(key="upload_config", value=None)
+                return None
+
+            turn_config = prepare_orador_upload_config(
+                output_path=output_path,
+                is_testing=is_testing,
+            )
+            # Add turn_id + chapter_id from extraction result for upload tracking
+            turn_config["chapter_id"] = results[0].get("chapter_id")
+            turn_config["turn_id"] = results[0].get("turn_id")
+            turn_config["video_id"] = results[0].get("video_id")
+
+            from congress_videos.config.youtube_channels import (
+                DEFAULT_CHANNEL,
+                resolve_token_path,
+            )
+
+            config = {
+                "token_file": resolve_token_path(DEFAULT_CHANNEL, "upload"),
+                "videos": [turn_config],
+            }
+            logging.info(
+                "_prepare_upload_config: turn path — sidecars read from %s, title=%r",
+                os.path.dirname(output_path),
+                turn_config.get("title", "")[:60],
+            )
+            ti.xcom_push(key="upload_config", value=config)
+            return config
+
+        # Chapter path (unchanged).
         return xcom_task(
             ti,
             lambda: prepare_chapter_upload_config(
                 ti.xcom_pull(key="chapter_extraction_results"),
                 ti.xcom_pull(key="youtube_metadata_results"),
                 thumbnail_result=ti.xcom_pull(key="thumbnail_result"),
-                is_testing=context["params"].get("isTesting", False),
+                is_testing=is_testing,
                 dry_run=dry_run,
             ),
             "upload_config",

@@ -1847,7 +1847,12 @@ class TestTriggerThumbnailGenerationForwardsOutputPath:
 # ---------------------------------------------------------------------------
 
 class TestPrepareThumbnailConfigSrtSidecar:
-    """_prepare_thumbnail_config must write subtitles.srt for turn items."""
+    """Upload path (issue #146 Fix C) no longer writes subtitles.srt for turns.
+
+    The nightly speaker_turn_prepare DAG now owns the turn subtitles.srt sidecar,
+    so _prepare_thumbnail_config must NOT write it at upload time. It still
+    computes config['srt_fragment'] for the lapidary thumbnail quote.
+    """
 
     _WINDOWED_BLOCKS = [
         {"start_secs": 60.0, "end_secs": 70.0, "text": "primera frase"},
@@ -1888,17 +1893,23 @@ class TestPrepareThumbnailConfigSrtSidecar:
         ):
             return _prepare_thumbnail_config(turn, MagicMock()), tmp_path
 
-    def test_turn_with_output_path_writes_subtitles_srt(self, tmp_path):
-        """Turn-type + output_path + windowed blocks -> subtitles.srt written at dirname."""
+    def test_turn_with_output_path_does_not_write_subtitles_srt(self, tmp_path):
+        """Turn-type + output_path -> upload path must NOT write subtitles.srt (PREPARE owns it).
+
+        Updated for issue #146 Fix C: PREPARE DAG now owns the turn srt sidecar.
+        srt_fragment is still computed for the lapidary quote.
+        """
         config, out_dir = self._run_turn(tmp_path)
 
         srt_path = out_dir / "subtitles.srt"
-        assert srt_path.exists(), "subtitles.srt must be created at dirname(output_path)"
-        content = srt_path.read_text(encoding="utf-8")
-        assert "primera frase" in content
-        assert "segunda frase" in content
-        assert "fuera de ventana" not in content
-        assert "1\n" in content  # sequential 1-based index present
+        assert not srt_path.exists(), (
+            "upload path must NOT write subtitles.srt for turns; PREPARE DAG owns it"
+        )
+        assert not any(out_dir.rglob("subtitles.srt"))
+        # srt_fragment still computed for the lapidary thumbnail quote.
+        assert "primera frase" in config.get("srt_fragment", "")
+        assert "segunda frase" in config.get("srt_fragment", "")
+        assert "fuera de ventana" not in config.get("srt_fragment", "")
         assert config.get("chapter_id") == 42  # config unaffected
 
     def test_chapter_type_produces_no_subtitles_srt(self, tmp_path):
@@ -1955,8 +1966,12 @@ class TestPrepareThumbnailConfigSrtSidecar:
         assert not any(tmp_path.rglob("subtitles.srt"))
         assert "chapter_id" in config  # config still returned
 
-    def test_write_failure_swallowed_config_returned(self, tmp_path):
-        """OSError on write -> warning logged, no exception, config returned intact."""
+    def test_turn_path_never_opens_a_file_for_writing(self, tmp_path):
+        """Upload path must not open the turn dir for writing (issue #146 Fix C).
+
+        Previously the upload path wrote subtitles.srt (and swallowed OSError). Now
+        that PREPARE owns the srt, no write occurs, so no subtitles.srt file exists.
+        """
         from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
 
         video_mp4 = tmp_path / "video.mp4"
@@ -1982,8 +1997,188 @@ class TestPrepareThumbnailConfigSrtSidecar:
                 "congress_videos.youtube_upload_dag._parse_srt_blocks",
                 return_value=blocks,
             ),
-            patch("builtins.open", side_effect=OSError("disk full")),
         ):
             config = _prepare_thumbnail_config(turn, MagicMock())
 
         assert "chapter_id" in config
+        assert not any(tmp_path.rglob("subtitles.srt")), (
+            "upload path must not write subtitles.srt for turns"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.3 — Upload DAG turn path (issue #146): no thumbnail trigger for turns
+# ---------------------------------------------------------------------------
+
+
+class TestUploadDagTurnPathRefactor:
+    """Verify the upload DAG turn branch reads pre-prepared sidecars (issue #146).
+
+    After the split, the upload DAG must NOT call trigger_thumbnail_generation
+    for turn items; instead it reads from canonical #133 path sidecars.
+    """
+
+    def test_run_generate_thumbnail_skipped_for_turns(self):
+        """When item_type=turn, _run_generate_thumbnail must not trigger the thumbnail DAG."""
+        from unittest.mock import patch
+        from congress_videos.youtube_upload_dag import _run_generate_thumbnail
+
+        store = {
+            "uploadable_item": {
+                "item": {"turn_id": 1, "output_path": "/data/v.mp4"},
+                "item_type": "turn",
+            }
+        }
+        ti = _make_ti(store)
+
+        with patch("congress_videos.youtube_upload_dag.trigger_thumbnail_generation") as mock_trig:
+            _run_generate_thumbnail(ti)
+
+        mock_trig.assert_not_called()
+
+    def test_prepare_upload_config_turn_reads_sidecars(self, tmp_path):
+        """_prepare_upload_config for a turn item must read pre-written sidecars."""
+        from congress_videos.youtube_upload_dag import _prepare_upload_config
+
+        turn_dir = tmp_path / "oradores" / "1"
+        turn_dir.mkdir(parents=True)
+        (turn_dir / "video.mp4").write_bytes(b"fake")
+        (turn_dir / "title.txt").write_text("TÍTULO SIDECAR", encoding="utf-8")
+        (turn_dir / "description.txt").write_text("Desc.", encoding="utf-8")
+        (turn_dir / "thumbnail.png").write_bytes(b"\x89PNG")
+        (turn_dir / "subtitles.srt").write_text("", encoding="utf-8")
+
+        extraction = {
+            "total_chapters": 1,
+            "successful_extractions": 1,
+            "results": [
+                {
+                    "chapter_id": None,
+                    "turn_id": 1,
+                    "video_id": "vidXYZ",
+                    "success": True,
+                    "output_path": str(turn_dir / "video.mp4"),
+                    "file_size_mb": None,
+                    "duration_seconds": None,
+                    "error": None,
+                }
+            ],
+        }
+
+        store = {
+            "uploadable_item": {
+                "item": {
+                    "turn_id": 1,
+                    "output_path": str(turn_dir / "video.mp4"),
+                    "chapter_id": 100,
+                },
+                "item_type": "turn",
+            },
+            "chapter_extraction_results": extraction,
+            "youtube_metadata_results": None,
+            "thumbnail_result": None,
+        }
+        ti = _make_ti(store)
+        context = {"params": {"isTesting": False, "dry_run": False}}
+
+        _prepare_upload_config(ti, **context)
+
+        config = ti.xcom_store.get("upload_config")
+        assert config is not None
+        videos = config.get("videos", [])
+        assert len(videos) == 1
+        assert videos[0]["title"] == "TÍTULO SIDECAR"
+
+    def test_prepare_upload_config_turn_no_ai_call(self, tmp_path):
+        """For turn items, _prepare_upload_config must not call youtube_ai."""
+        from unittest.mock import patch
+        from congress_videos.youtube_upload_dag import _prepare_upload_config
+
+        turn_dir = tmp_path / "oradores" / "1"
+        turn_dir.mkdir(parents=True)
+        (turn_dir / "video.mp4").write_bytes(b"fake")
+        (turn_dir / "title.txt").write_text("T", encoding="utf-8")
+        (turn_dir / "description.txt").write_text("D", encoding="utf-8")
+        (turn_dir / "thumbnail.png").write_bytes(b"\x89PNG")
+        (turn_dir / "subtitles.srt").write_text("", encoding="utf-8")
+
+        extraction = {
+            "total_chapters": 1,
+            "successful_extractions": 1,
+            "results": [
+                {
+                    "chapter_id": None,
+                    "turn_id": 1,
+                    "video_id": "vidXYZ",
+                    "success": True,
+                    "output_path": str(turn_dir / "video.mp4"),
+                    "file_size_mb": None,
+                    "duration_seconds": None,
+                    "error": None,
+                }
+            ],
+        }
+
+        store = {
+            "uploadable_item": {
+                "item": {"turn_id": 1, "output_path": str(turn_dir / "video.mp4")},
+                "item_type": "turn",
+            },
+            "chapter_extraction_results": extraction,
+            "youtube_metadata_results": None,
+            "thumbnail_result": None,
+        }
+        ti = _make_ti(store)
+        context = {"params": {"isTesting": False, "dry_run": False}}
+
+        with patch("congress_videos.modules.youtube.youtube_ai.generate_youtube_metadata_for_selected_videos") as mock_ai:
+            _prepare_upload_config(ti, **context)
+
+        mock_ai.assert_not_called()
+
+    def test_prepare_upload_config_chapter_unchanged(self):
+        """For chapter items, _prepare_upload_config must still use AI metadata (unchanged path)."""
+        from congress_videos.youtube_upload_dag import _prepare_upload_config
+
+        extraction = {
+            "total_chapters": 1,
+            "successful_extractions": 1,
+            "results": [
+                {
+                    "chapter_id": 999,
+                    "video_id": "vidABC",
+                    "success": True,
+                    "output_path": "/data/chapter_video.mp4",
+                    "file_size_mb": 50.0,
+                    "duration_seconds": 300.0,
+                    "error": None,
+                }
+            ],
+        }
+        metadata = {
+            "topic_metadata": [
+                {
+                    "chapter_id": 999,
+                    "video_id": "vidABC",
+                    "title": {"title": "Chapter Title"},
+                    "description": {"description": "Chapter desc"},
+                }
+            ]
+        }
+
+        store = {
+            "uploadable_item": {"item": {"chapter_id": 999}, "item_type": "chapter"},
+            "chapter_extraction_results": extraction,
+            "youtube_metadata_results": metadata,
+            "thumbnail_result": None,
+        }
+        ti = _make_ti(store)
+        context = {"params": {"isTesting": False, "dry_run": False}}
+
+        _prepare_upload_config(ti, **context)
+
+        config = ti.xcom_store.get("upload_config")
+        assert config is not None
+        videos = config.get("videos", [])
+        assert len(videos) == 1
+        assert videos[0]["title"] == "Chapter Title"
