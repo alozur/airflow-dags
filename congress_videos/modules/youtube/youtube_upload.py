@@ -11,6 +11,9 @@ import os
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
 
 
+_REQUIRED_SIDECARS = ("title.txt", "description.txt", "thumbnail.png", "subtitles.srt")
+
+
 def _write_orador_sidecars(video_file: str, title: str, description: str) -> None:
     """Best-effort: co-locate title.txt + description.txt with the turn video.
     Errors are logged and swallowed; never raises.
@@ -23,6 +26,69 @@ def _write_orador_sidecars(video_file: str, title: str, description: str) -> Non
             f.write(description or "")
     except Exception as exc:
         logging.warning("Failed to write orador sidecars for %s: %s", video_file, exc)
+
+
+def prepare_orador_upload_config(
+    output_path: str,
+    is_testing: bool = False,
+) -> dict:
+    """Build upload config for a TURN item by reading pre-prepared sidecars.
+
+    The PREPARE DAG (speaker_turn_prepare) must have already written all four
+    sidecars to the directory containing ``output_path``:
+    - ``title.txt``
+    - ``description.txt``
+    - ``thumbnail.png``
+    - ``subtitles.srt``
+
+    This function performs zero AI calls, zero ffmpeg calls, and zero
+    generic_thumbnail_generator triggers. It only reads files from disk.
+
+    Args:
+        output_path: Absolute path to the pre-materialized turn ``video.mp4``.
+        is_testing: When True, sets privacy_status='private'.
+
+    Returns:
+        Dict with all fields required by the generic_youtube_uploader DAG.
+
+    Raises:
+        FileNotFoundError: When any required sidecar is missing from disk.
+    """
+    video_dir = os.path.dirname(output_path)
+
+    # Presence-verify all required sidecars before reading any of them.
+    for sidecar in _REQUIRED_SIDECARS:
+        sidecar_path = os.path.join(video_dir, sidecar)
+        if not os.path.isfile(sidecar_path):
+            raise FileNotFoundError(
+                f"prepare_orador_upload_config: required sidecar missing: "
+                f"{sidecar} (expected at {sidecar_path})"
+            )
+
+    title = (
+        open(os.path.join(video_dir, "title.txt"), encoding="utf-8").read().strip()
+    )
+    description = (
+        open(os.path.join(video_dir, "description.txt"), encoding="utf-8").read().strip()
+    )
+    thumbnail_file = os.path.join(video_dir, "thumbnail.png")
+
+    logging.info(
+        "prepare_orador_upload_config: sidecars ready for %s — title=%r",
+        output_path,
+        title[:60],
+    )
+
+    return {
+        "video_file": output_path,
+        "title": title,
+        "description": description,
+        "thumbnail_file": thumbnail_file,
+        "category_id": "25",  # News & Politics
+        "privacy_status": "private" if is_testing else "public",
+        "tags": ["congress", "politics", "españa", "congreso", "debate", "parlamento"],
+        "made_for_kids": False,
+    }
 
 
 def prepare_chapter_upload_config(
