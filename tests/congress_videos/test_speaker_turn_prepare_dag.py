@@ -341,3 +341,85 @@ class TestPrepareTurnsCallableSequentialLoop:
             _prepare_turns_callable()
 
         mock_db.mark_turn_prepared.assert_called_once_with(1)
+
+
+# ---------------------------------------------------------------------------
+# 3.5 Thumbnail poll-loop timeout (issue #146 Fix B)
+# ---------------------------------------------------------------------------
+
+class TestTriggerThumbnailPollTimeout:
+    """_trigger_thumbnail_for_turn must bound the poll loop with a deadline."""
+
+    def test_timeout_raises_runtime_error(self):
+        """A dag_run stuck in 'running' past the deadline must raise RuntimeError."""
+        from congress_videos.speaker_turn_prepare_dag import _trigger_thumbnail_for_turn
+
+        dag_run = MagicMock()
+        dag_run.run_id = "prepare_turn_1_stuck"
+        dag_run.state = "running"  # never resolves
+
+        # monotonic advances well past the timeout on the second read.
+        monotonic_values = iter([0.0, 0.0, 100000.0, 100000.0, 100000.0])
+
+        with (
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.trigger_dag_api",
+                return_value=dag_run,
+            ),
+            patch("congress_videos.speaker_turn_prepare_dag.time.sleep"),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.time.monotonic",
+                side_effect=lambda: next(monotonic_values),
+            ),
+        ):
+            with pytest.raises(RuntimeError) as exc:
+                _trigger_thumbnail_for_turn(_make_turn(1, "/data/v1.mp4"))
+
+        # Error must name the turn_id and run_id so the operator can trace it.
+        msg = str(exc.value)
+        assert "1" in msg
+        assert "prepare_turn_1_stuck" in msg
+
+    def test_success_before_deadline_does_not_raise(self):
+        """A dag_run reaching 'success' before the deadline must not raise."""
+        from congress_videos.speaker_turn_prepare_dag import _trigger_thumbnail_for_turn
+
+        dag_run = MagicMock()
+        dag_run.run_id = "prepare_turn_1_ok"
+        dag_run.state = "success"
+
+        with (
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.trigger_dag_api",
+                return_value=dag_run,
+            ),
+            patch("congress_videos.speaker_turn_prepare_dag.time.sleep"),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.time.monotonic",
+                side_effect=[0.0, 1.0],
+            ),
+        ):
+            # Must not raise
+            _trigger_thumbnail_for_turn(_make_turn(1, "/data/v1.mp4"))
+
+    def test_failed_state_raises_runtime_error(self):
+        """A dag_run reaching 'failed' before the deadline must still raise RuntimeError."""
+        from congress_videos.speaker_turn_prepare_dag import _trigger_thumbnail_for_turn
+
+        dag_run = MagicMock()
+        dag_run.run_id = "prepare_turn_1_failed"
+        dag_run.state = "failed"
+
+        with (
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.trigger_dag_api",
+                return_value=dag_run,
+            ),
+            patch("congress_videos.speaker_turn_prepare_dag.time.sleep"),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.time.monotonic",
+                side_effect=[0.0, 1.0],
+            ),
+        ):
+            with pytest.raises(RuntimeError):
+                _trigger_thumbnail_for_turn(_make_turn(1, "/data/v1.mp4"))

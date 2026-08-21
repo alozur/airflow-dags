@@ -127,6 +127,50 @@ class TestSelectUnpreparedTurns:
 
         assert result == fake_rows
 
+    def test_sql_joins_video_chapters_and_youtube_source_videos(self):
+        """Query must JOIN video_chapters and youtube_source_videos (mirror uploadable_turns)."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn(rows=[])
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.select_unprepared_turns(limit=2)
+
+        query = cursor.execute.call_args[0][0].upper()
+        assert "VIDEO_CHAPTERS" in query, "Query must JOIN video_chapters"
+        assert "YOUTUBE_SOURCE_VIDEOS" in query, "Query must JOIN youtube_source_videos"
+
+    def test_sql_selects_video_id_chapter_title_session_date(self):
+        """Query must select video_id, vc.title AS chapter_title, and session_date."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn(rows=[])
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.select_unprepared_turns(limit=2)
+
+        query = cursor.execute.call_args[0][0]
+        upper = query.upper()
+        assert "VIDEO_ID" in upper, "Query must select video_id"
+        assert "AS CHAPTER_TITLE" in upper, "Query must expose vc.title AS chapter_title"
+        assert "SESSION_DATE" in upper, "Query must select session_date"
+
+    def test_sql_filters_relevance_score_and_both_upload_gates(self):
+        """Query must filter vc.relevance_score >= 2 and is_uploaded_to_youtube FALSE on stv and vc."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn(rows=[])
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.select_unprepared_turns(limit=2)
+
+        query = cursor.execute.call_args[0][0].upper()
+        assert "RELEVANCE_SCORE >= 2" in query, "Query must filter vc.relevance_score >= 2"
+        # Both stv.is_uploaded_to_youtube = FALSE and vc.is_uploaded_to_youtube = FALSE
+        assert query.count("IS_UPLOADED_TO_YOUTUBE = FALSE") == 2, (
+            "Query must gate both stv and vc on is_uploaded_to_youtube = FALSE"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 2.2 mark_turn_prepared

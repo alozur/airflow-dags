@@ -1847,7 +1847,12 @@ class TestTriggerThumbnailGenerationForwardsOutputPath:
 # ---------------------------------------------------------------------------
 
 class TestPrepareThumbnailConfigSrtSidecar:
-    """_prepare_thumbnail_config must write subtitles.srt for turn items."""
+    """Upload path (issue #146 Fix C) no longer writes subtitles.srt for turns.
+
+    The nightly speaker_turn_prepare DAG now owns the turn subtitles.srt sidecar,
+    so _prepare_thumbnail_config must NOT write it at upload time. It still
+    computes config['srt_fragment'] for the lapidary thumbnail quote.
+    """
 
     _WINDOWED_BLOCKS = [
         {"start_secs": 60.0, "end_secs": 70.0, "text": "primera frase"},
@@ -1888,17 +1893,23 @@ class TestPrepareThumbnailConfigSrtSidecar:
         ):
             return _prepare_thumbnail_config(turn, MagicMock()), tmp_path
 
-    def test_turn_with_output_path_writes_subtitles_srt(self, tmp_path):
-        """Turn-type + output_path + windowed blocks -> subtitles.srt written at dirname."""
+    def test_turn_with_output_path_does_not_write_subtitles_srt(self, tmp_path):
+        """Turn-type + output_path -> upload path must NOT write subtitles.srt (PREPARE owns it).
+
+        Updated for issue #146 Fix C: PREPARE DAG now owns the turn srt sidecar.
+        srt_fragment is still computed for the lapidary quote.
+        """
         config, out_dir = self._run_turn(tmp_path)
 
         srt_path = out_dir / "subtitles.srt"
-        assert srt_path.exists(), "subtitles.srt must be created at dirname(output_path)"
-        content = srt_path.read_text(encoding="utf-8")
-        assert "primera frase" in content
-        assert "segunda frase" in content
-        assert "fuera de ventana" not in content
-        assert "1\n" in content  # sequential 1-based index present
+        assert not srt_path.exists(), (
+            "upload path must NOT write subtitles.srt for turns; PREPARE DAG owns it"
+        )
+        assert not any(out_dir.rglob("subtitles.srt"))
+        # srt_fragment still computed for the lapidary thumbnail quote.
+        assert "primera frase" in config.get("srt_fragment", "")
+        assert "segunda frase" in config.get("srt_fragment", "")
+        assert "fuera de ventana" not in config.get("srt_fragment", "")
         assert config.get("chapter_id") == 42  # config unaffected
 
     def test_chapter_type_produces_no_subtitles_srt(self, tmp_path):
@@ -1955,8 +1966,12 @@ class TestPrepareThumbnailConfigSrtSidecar:
         assert not any(tmp_path.rglob("subtitles.srt"))
         assert "chapter_id" in config  # config still returned
 
-    def test_write_failure_swallowed_config_returned(self, tmp_path):
-        """OSError on write -> warning logged, no exception, config returned intact."""
+    def test_turn_path_never_opens_a_file_for_writing(self, tmp_path):
+        """Upload path must not open the turn dir for writing (issue #146 Fix C).
+
+        Previously the upload path wrote subtitles.srt (and swallowed OSError). Now
+        that PREPARE owns the srt, no write occurs, so no subtitles.srt file exists.
+        """
         from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
 
         video_mp4 = tmp_path / "video.mp4"
@@ -1982,11 +1997,13 @@ class TestPrepareThumbnailConfigSrtSidecar:
                 "congress_videos.youtube_upload_dag._parse_srt_blocks",
                 return_value=blocks,
             ),
-            patch("builtins.open", side_effect=OSError("disk full")),
         ):
             config = _prepare_thumbnail_config(turn, MagicMock())
 
         assert "chapter_id" in config
+        assert not any(tmp_path.rglob("subtitles.srt")), (
+            "upload path must not write subtitles.srt for turns"
+        )
 
 
 # ---------------------------------------------------------------------------

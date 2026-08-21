@@ -1306,19 +1306,33 @@ class CongressionalVideoDB:
         """
         stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
         st_table = self.pg_conn.get_qualified_table('speaker_turns')
+        vc_table = self.pg_conn.get_qualified_table('video_chapters')
+        ysv_table = self.pg_conn.get_qualified_table('youtube_source_videos')
 
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
-                    SELECT stv.turn_id, stv.output_path, stv.materialized_at,
-                           st.chapter_id, st.resolved_name,
-                           st.start_seconds, st.end_seconds, st.interest_score
-                    FROM {stv_table} stv
-                    JOIN {st_table} st ON stv.turn_id = st.turn_id
-                    WHERE stv.prepared_at IS NULL
-                      AND stv.is_uploaded_to_youtube = FALSE
-                    ORDER BY COALESCE(st.interest_score, 1) DESC
+                    SELECT * FROM (
+                        SELECT DISTINCT ON (stv.output_path)
+                            stv.turn_id, stv.output_path, st.chapter_id, st.resolved_name,
+                            st.start_seconds, st.end_seconds, st.interest_score,
+                            vc.video_id, vc.title AS chapter_title, vc.description,
+                            vc.relevance_score, vc.key_speakers,
+                            ysv.session_number, ysv.session_date, stv.materialized_at
+                        FROM {stv_table} stv
+                        JOIN {st_table} st ON stv.turn_id = st.turn_id
+                        JOIN {vc_table} vc ON st.chapter_id = vc.chapter_id
+                        JOIN {ysv_table} ysv ON vc.video_id = ysv.video_id
+                        WHERE stv.prepared_at IS NULL
+                          AND stv.is_uploaded_to_youtube = FALSE
+                          AND vc.is_uploaded_to_youtube = FALSE
+                          AND vc.relevance_score >= 2
+                          AND COALESCE(st.interest_score, 1) >= 1
+                        ORDER BY stv.output_path, stv.turn_id
+                    ) dedup
+                    ORDER BY COALESCE(dedup.interest_score, 1) DESC,
+                             dedup.relevance_score DESC, dedup.session_date DESC
                     LIMIT %s
                     """,
                     (limit,),

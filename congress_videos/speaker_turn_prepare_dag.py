@@ -34,6 +34,12 @@ logger = logging.getLogger(__name__)
 _THUMBNAIL_DAG_ID = "generic_thumbnail_generator"
 _THUMBNAIL_RESULT_TASK_ID = "thumbnail_result"
 
+# Poll cadence and hard deadline for the child thumbnail DAG. A bounded loop
+# guarantees the single nas_ffmpeg pool slot is released even if the child hangs;
+# leaving prepared_at unset lets the nightly loop self-heal on the next run.
+_THUMBNAIL_POLL_INTERVAL_SECS = 15
+_THUMBNAIL_POLL_TIMEOUT_SECS = 1800
+
 # ---------------------------------------------------------------------------
 # Internal helpers (testable pure functions)
 # ---------------------------------------------------------------------------
@@ -92,11 +98,18 @@ def _trigger_thumbnail_for_turn(turn: dict) -> None:
         turn_id,
     )
 
+    deadline = time.monotonic() + _THUMBNAIL_POLL_TIMEOUT_SECS
     while True:
-        time.sleep(10)
+        time.sleep(_THUMBNAIL_POLL_INTERVAL_SECS)
         dag_run.refresh_from_db()
         if dag_run.state in ("success", "failed"):
             break
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"_trigger_thumbnail_for_turn: thumbnail DAG run {dag_run.run_id} "
+                f"for turn_id={turn_id} did not complete within "
+                f"{_THUMBNAIL_POLL_TIMEOUT_SECS}s; leaving prepared_at unset for retry"
+            )
 
     if dag_run.state != "success":
         raise RuntimeError(
