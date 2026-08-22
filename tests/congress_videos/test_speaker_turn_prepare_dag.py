@@ -1,10 +1,13 @@
-"""Tests for speaker_turn_prepare DAG (issue #146).
+"""Tests for speaker_turn_prepare DAG (issue #146, #152).
 
 TDD cycle: RED tests written first; GREEN implementations follow.
 """
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
+from subprocess import PIPE
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -100,13 +103,11 @@ class TestSpeakerTurnPrepareDagLoads:
     def test_dag_has_no_expand_call(self):
         """DAG source must not use .expand() as a live method call (no dynamic task mapping)."""
         from congress_videos.speaker_turn_prepare_dag import dag
-        import inspect
         import ast
 
-        dag_source = Path(
-            "/home/alozur/src/github.com/alozur/airflow-dags-issue-146"
-            "/congress_videos/speaker_turn_prepare_dag.py"
-        )
+        # Resolve the DAG source relative to this test file so the test is
+        # portable across worktrees.
+        dag_source = Path(__file__).parent.parent.parent / "congress_videos" / "speaker_turn_prepare_dag.py"
         content = dag_source.read_text(encoding="utf-8")
         tree = ast.parse(content)
         # Find any call nodes whose function is an attribute named 'expand'
@@ -426,18 +427,58 @@ class TestTriggerThumbnailPollTimeout:
 
 
 # ---------------------------------------------------------------------------
-# 3.6 Integrity-check command must use ffmpeg (not ffprobe)
+# 3.6 Integrity-check helper: _run_ffmpeg_decode_check
 # ---------------------------------------------------------------------------
 
 class TestIntegrityCheckUsesFFmpeg:
-    """Step 3 must invoke ffmpeg -f null, NOT ffprobe which lacks the null muxer."""
+    """_run_ffmpeg_decode_check must invoke ffmpeg -f null, NOT ffprobe.
+
+    ffprobe does not support the -f null output muxer and always returns rc=1,
+    which means prepared_at is never set (live-confirmed on prod 2026-08-22).
+    """
+
+    def test_integrity_check_helper_calls_module_subprocess(self):
+        """_run_ffmpeg_decode_check must call the module-bound subprocess.run exactly once
+        with the correct argv and return its returncode.
+        """
+        from congress_videos.speaker_turn_prepare_dag import _run_ffmpeg_decode_check
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+
+        with patch(
+            "congress_videos.speaker_turn_prepare_dag.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            rc = _run_ffmpeg_decode_check("/data/v1.mp4")
+
+        mock_run.assert_called_once_with(
+            ["ffmpeg", "-v", "error", "-i", "/data/v1.mp4", "-f", "null", "-"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert rc == 0
+
+    def test_integrity_check_helper_propagates_nonzero(self):
+        """_run_ffmpeg_decode_check returns the non-zero rc without raising."""
+        from congress_videos.speaker_turn_prepare_dag import _run_ffmpeg_decode_check
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+
+        with patch(
+            "congress_videos.speaker_turn_prepare_dag.subprocess.run",
+            return_value=mock_result,
+        ):
+            rc = _run_ffmpeg_decode_check("/data/bad.mp4")
+
+        assert rc == 1
 
     def test_integrity_check_invokes_ffmpeg_decode(self):
-        """subprocess.run must be called with ['ffmpeg', '-v', 'error', '-i', <path>, '-f', 'null', '-'].
+        """_prepare_turns_callable must reach _run_ffmpeg_decode_check with ffmpeg argv.
 
-        ffprobe does not support the -f null output muxer and always returns rc=1,
-        which means prepared_at is never set (live-confirmed on prod 2026-08-22).
-        The correct decode-integrity check uses ffmpeg -f null -.
+        Regression guard: verifies cmd[0] == 'ffmpeg' (not 'ffprobe') at the
+        _prepare_turns_callable level via module-bound subprocess.run patch.
         """
         from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
 
@@ -455,7 +496,7 @@ class TestIntegrityCheckUsesFFmpeg:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._trigger_thumbnail_for_turn"),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
-            patch("subprocess.run", side_effect=fake_run),
+            patch("congress_videos.speaker_turn_prepare_dag.subprocess.run", side_effect=fake_run),
         ):
             _prepare_turns_callable()
 
@@ -468,3 +509,43 @@ class TestIntegrityCheckUsesFFmpeg:
         assert cmd == ["ffmpeg", "-v", "error", "-i", "/data/v1.mp4", "-f", "null", "-"], (
             f"Full command mismatch: {cmd}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Smoke tests: _run_ffmpeg_decode_check with a real ffmpeg binary
+# ---------------------------------------------------------------------------
+
+class TestDecodeCheckSmoke:
+    """Real ffmpeg smoke tests for _run_ffmpeg_decode_check (integration, slow)."""
+
+    @pytest.mark.integration
+    @pytest.mark.slow
+    def test_valid_clip_returns_zero(self, tmp_path):
+        """A valid libx264 clip must be accepted (rc == 0) by _run_ffmpeg_decode_check."""
+        shutil.which("ffmpeg") or pytest.skip("ffmpeg not on PATH")
+        from congress_videos.speaker_turn_prepare_dag import _run_ffmpeg_decode_check
+
+        out = tmp_path / "out.mp4"
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-f", "lavfi", "-i", "testsrc=duration=1:size=128x64:rate=25",
+                "-c:v", "libx264", "-preset", "ultrafast",
+                str(out),
+            ],
+            stdout=PIPE,
+            stderr=PIPE,
+            timeout=120,
+        )
+        assert _run_ffmpeg_decode_check(str(out)) == 0
+
+    @pytest.mark.integration
+    @pytest.mark.slow
+    def test_corrupt_file_returns_nonzero(self, tmp_path):
+        """A garbage file must be rejected (rc != 0) by _run_ffmpeg_decode_check."""
+        shutil.which("ffmpeg") or pytest.skip("ffmpeg not on PATH")
+        from congress_videos.speaker_turn_prepare_dag import _run_ffmpeg_decode_check
+
+        bad = tmp_path / "bad.mp4"
+        bad.write_bytes(b"not a real mp4 file\x00\x01" * 8)
+        assert _run_ffmpeg_decode_check(str(bad)) != 0
