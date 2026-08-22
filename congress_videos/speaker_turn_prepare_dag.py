@@ -138,6 +138,7 @@ def _write_turn_sidecars(turn: dict) -> None:
     from congress_videos.srt_helpers import (
         _parse_srt_blocks,
         _serialize_srt_blocks,
+        _window_srt_blocks,
         find_srt_for_chapter,
     )
 
@@ -185,13 +186,16 @@ def _write_turn_sidecars(turn: dict) -> None:
 
     if srt_path is not None:
         blocks = _parse_srt_blocks(srt_path)
-        window_start = float(turn.get("start_seconds", 0))
-        window_end = float(turn.get("end_seconds", 99 * 3600))
-        windowed = [
-            b
-            for b in blocks
-            if b["start_secs"] >= window_start and b["end_secs"] <= window_end
-        ]
+        # Use group extent when available (grouped-turn clip spans multiple individual
+        # turns sharing one output_path).  Fall back to per-turn start/end for
+        # single-turn rows that do not carry group_* keys.
+        window_start = float(
+            turn.get("group_start_seconds", turn.get("start_seconds", 0))
+        )
+        window_end = float(
+            turn.get("group_end_seconds", turn.get("end_seconds", 99 * 3600))
+        )
+        windowed = _window_srt_blocks(blocks, window_start, window_end)
     else:
         windowed = []
 

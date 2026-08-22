@@ -9,6 +9,7 @@ from congress_videos.srt_helpers import (
     _parse_srt_blocks,
     _serialize_srt_blocks,
     _srt_timestamp_to_seconds,
+    _window_srt_blocks,
     find_srt_for_chapter,
     score_turn_interest,
     _window_srt_text,
@@ -777,3 +778,64 @@ class TestMaterializeTaskScoring:
         assert isinstance(result, dict), "must return summary dict even on scorer failure"
         update_calls = [c for c in execute_calls if "UPDATE" in str(c[0]).upper() and "interest_score" in str(c[0]).lower()]
         assert len(update_calls) == 0, "interest_score UPDATE must not be committed when scorer raises"
+
+
+# ---------------------------------------------------------------------------
+# _window_srt_blocks — overlap filtering + clip-origin re-timing
+# ---------------------------------------------------------------------------
+
+class TestWindowSrtBlocks:
+    """Pure unit tests for the _window_srt_blocks helper.
+
+    Overlap predicate: block.start_secs < window_end AND block.end_secs > window_start.
+    Re-timing: max(0.0, secs - window_start) for each surviving block's timestamps.
+    """
+
+    def test_block_fully_inside_window_included(self):
+        """Block start=19200s, end=19210s inside window [19157, 19784] is present."""
+        blocks = [{"start_secs": 19200.0, "end_secs": 19210.0, "text": "Inside"}]
+        result = _window_srt_blocks(blocks, 19157.0, 19784.0)
+        assert len(result) == 1
+        assert result[0]["text"] == "Inside"
+
+    def test_block_straddling_window_start_included(self):
+        """Block start=19150s, end=19165s straddles window_start=19157 — included."""
+        blocks = [{"start_secs": 19150.0, "end_secs": 19165.0, "text": "StraddleStart"}]
+        result = _window_srt_blocks(blocks, 19157.0, 19784.0)
+        assert len(result) == 1
+
+    def test_block_straddling_window_end_included(self):
+        """Block start=19780s, end=19790s straddles window_end=19784 — included."""
+        blocks = [{"start_secs": 19780.0, "end_secs": 19790.0, "text": "StraddleEnd"}]
+        result = _window_srt_blocks(blocks, 19157.0, 19784.0)
+        assert len(result) == 1
+
+    def test_block_entirely_outside_excluded(self):
+        """Block start=100s, end=110s is entirely outside window [19157, 19784] — excluded."""
+        blocks = [{"start_secs": 100.0, "end_secs": 110.0, "text": "Outside"}]
+        result = _window_srt_blocks(blocks, 19157.0, 19784.0)
+        assert result == []
+
+    def test_grouped_block_retimed_to_clip_origin(self):
+        """window_start=19157, src start=19160 → output start_secs=3.0."""
+        blocks = [{"start_secs": 19160.0, "end_secs": 19170.0, "text": "Retimed"}]
+        result = _window_srt_blocks(blocks, 19157.0, 19784.0)
+        assert len(result) == 1
+        assert result[0]["start_secs"] == pytest.approx(3.0)
+        assert result[0]["end_secs"] == pytest.approx(13.0)
+
+    def test_single_turn_block_retimed(self):
+        """window_start=300, src start=305/end=310 → output 5.0/10.0."""
+        blocks = [{"start_secs": 305.0, "end_secs": 310.0, "text": "SingleTurn"}]
+        result = _window_srt_blocks(blocks, 300.0, 420.0)
+        assert len(result) == 1
+        assert result[0]["start_secs"] == pytest.approx(5.0)
+        assert result[0]["end_secs"] == pytest.approx(10.0)
+
+    def test_block_starting_before_window_clamped_to_zero(self):
+        """Block start=19100s straddling window_start=19157 → re-timed start clamped to 0.0."""
+        blocks = [{"start_secs": 19100.0, "end_secs": 19165.0, "text": "Clamp"}]
+        result = _window_srt_blocks(blocks, 19157.0, 19784.0)
+        assert len(result) == 1
+        assert result[0]["start_secs"] == pytest.approx(0.0)
+        assert result[0]["end_secs"] == pytest.approx(8.0)

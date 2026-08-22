@@ -979,3 +979,46 @@ class TestUpdateThumbnailYoutubeVideoId:
 
         _, params = mock_cursor.execute.call_args[0]
         assert params == ("", 1)
+
+
+# --------------------------------------------------------------------------- #
+# select_unprepared_turns — window-aggregate columns (issue #151)
+# --------------------------------------------------------------------------- #
+
+class TestSelectUnpreparedTurnsQueryShape:
+    """Assert that select_unprepared_turns emits SQL with the two new window-aggregate
+    columns (group_start_seconds / group_end_seconds) needed to fix empty
+    subtitles.srt for grouped speaker-turn videos.
+
+    Uses the same mock-cursor pattern as the existing `db` fixture.
+    """
+
+    def test_query_contains_group_start_seconds_window(self, db):
+        """SQL must include MIN(st.start_seconds) OVER and alias group_start_seconds."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.select_unprepared_turns(limit=2)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "MIN(st.start_seconds) OVER" in sql, (
+            "select_unprepared_turns must use MIN(st.start_seconds) OVER window aggregate"
+        )
+        assert "group_start_seconds" in sql, (
+            "select_unprepared_turns must expose group_start_seconds column alias"
+        )
+
+    def test_query_contains_group_end_seconds_window(self, db):
+        """SQL must include MAX(st.end_seconds) OVER and alias group_end_seconds."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.select_unprepared_turns(limit=2)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "MAX(st.end_seconds) OVER" in sql, (
+            "select_unprepared_turns must use MAX(st.end_seconds) OVER window aggregate"
+        )
+        assert "group_end_seconds" in sql, (
+            "select_unprepared_turns must expose group_end_seconds column alias"
+        )

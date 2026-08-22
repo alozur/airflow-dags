@@ -429,6 +429,180 @@ class TestTriggerThumbnailPollTimeout:
 # 3.6 Integrity-check command must use ffmpeg (not ffprobe)
 # ---------------------------------------------------------------------------
 
+class TestWriteTurnSidecarsGroupedRange:
+    """Verify _write_turn_sidecars uses group_start/end_seconds for SRT windowing.
+
+    Mocks: find_srt_for_chapter, _parse_srt_blocks,
+           generate_youtube_metadata_for_selected_videos, _write_orador_sidecars.
+    """
+
+    def _make_grouped_turn(
+        self,
+        tmp_path,
+        turn_id: int = 278,
+        group_start: float = 19157.0,
+        group_end: float = 19784.0,
+    ) -> dict:
+        video_dir = tmp_path / "output_turn_278"
+        video_dir.mkdir()
+        return {
+            "turn_id": turn_id,
+            "output_path": str(video_dir / "video.mp4"),
+            "chapter_id": 100,
+            "resolved_name": "Speaker Name",
+            "start_seconds": group_start,
+            "end_seconds": group_end,
+            "group_start_seconds": group_start,
+            "group_end_seconds": group_end,
+            "interest_score": 5,
+            "video_id": "vidXYZ",
+            "chapter_title": "Test Chapter",
+            "description": "A test description",
+            "relevance_score": 4,
+            "key_speakers": ["Speaker Name"],
+            "session_number": 1,
+            "session_date": "2026-01-01",
+            "materialized_at": "2026-01-01T00:00:00",
+        }
+
+    def test_chapter278_grouped_produces_nonempty_retimed_srt(self, tmp_path):
+        """Grouped turn with group_start=19157/group_end=19784 and overlapping SRT
+        blocks produces a non-empty subtitles.srt whose first entry is near 00:00:00.
+        """
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        turn = self._make_grouped_turn(tmp_path)
+        video_dir = Path(turn["output_path"]).parent
+
+        # One SRT block fully inside the group window
+        fake_blocks = [
+            {"start_secs": 19200.0, "end_secs": 19210.0, "text": "Bloque de prueba"},
+        ]
+
+        with (
+            patch(
+                "congress_videos.srt_helpers.find_srt_for_chapter",
+                return_value="/fake/source.srt",
+            ),
+            patch(
+                "congress_videos.srt_helpers._parse_srt_blocks",
+                return_value=fake_blocks,
+            ),
+            patch(
+                "congress_videos.modules.youtube.youtube_ai"
+                ".generate_youtube_metadata_for_selected_videos",
+                return_value={"topic_metadata": []},
+            ),
+            patch(
+                "congress_videos.modules.youtube.youtube_upload._write_orador_sidecars",
+            ),
+        ):
+            _write_turn_sidecars(turn)
+
+        srt_path = video_dir / "subtitles.srt"
+        assert srt_path.exists(), "subtitles.srt must be written"
+        content = srt_path.read_text(encoding="utf-8")
+        assert len(content) > 0, "subtitles.srt must be non-empty for overlapping blocks"
+        # First SRT entry must be re-timed to near 00:00:00 (19200 - 19157 = 43s)
+        assert "00:00:43" in content, (
+            f"First entry should be at ~43s (19200-19157), got: {content[:200]}"
+        )
+
+    def test_group_span_no_overlap_writes_empty_file(self, tmp_path):
+        """When no SRT blocks overlap the group span, subtitles.srt is 0 bytes and
+        no exception is raised.
+        """
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        turn = self._make_grouped_turn(
+            tmp_path, group_start=50000.0, group_end=51000.0
+        )
+        video_dir = Path(turn["output_path"]).parent
+
+        # Blocks entirely outside the 50000-51000 window
+        fake_blocks = [
+            {"start_secs": 100.0, "end_secs": 200.0, "text": "Outside"},
+            {"start_secs": 300.0, "end_secs": 400.0, "text": "Also outside"},
+        ]
+
+        with (
+            patch(
+                "congress_videos.srt_helpers.find_srt_for_chapter",
+                return_value="/fake/source.srt",
+            ),
+            patch(
+                "congress_videos.srt_helpers._parse_srt_blocks",
+                return_value=fake_blocks,
+            ),
+            patch(
+                "congress_videos.modules.youtube.youtube_ai"
+                ".generate_youtube_metadata_for_selected_videos",
+                return_value={"topic_metadata": []},
+            ),
+            patch(
+                "congress_videos.modules.youtube.youtube_upload._write_orador_sidecars",
+            ),
+        ):
+            _write_turn_sidecars(turn)  # must not raise
+
+        srt_path = video_dir / "subtitles.srt"
+        assert srt_path.exists()
+        assert srt_path.stat().st_size == 0, "subtitles.srt must be 0 bytes when no blocks overlap"
+
+    def test_single_turn_no_group_fields_regression(self, tmp_path):
+        """Turn dict without group_start/end_seconds uses per-turn fallback — backward compat."""
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        video_dir = tmp_path / "single_turn"
+        video_dir.mkdir()
+        turn = {
+            "turn_id": 1,
+            "output_path": str(video_dir / "video.mp4"),
+            "chapter_id": 50,
+            "resolved_name": "Solo Speaker",
+            "start_seconds": 300.0,
+            "end_seconds": 420.0,
+            # No group_start_seconds / group_end_seconds keys
+            "interest_score": 3,
+            "video_id": "vidABC",
+            "chapter_title": "Chapter 1",
+            "description": "desc",
+            "relevance_score": 3,
+            "key_speakers": [],
+            "session_number": 2,
+            "session_date": "2026-01-02",
+            "materialized_at": "2026-01-02T00:00:00",
+        }
+
+        # Block inside [300, 420] → should produce non-empty SRT
+        fake_blocks = [{"start_secs": 305.0, "end_secs": 310.0, "text": "Solo"}]
+
+        with (
+            patch(
+                "congress_videos.srt_helpers.find_srt_for_chapter",
+                return_value="/fake/source.srt",
+            ),
+            patch(
+                "congress_videos.srt_helpers._parse_srt_blocks",
+                return_value=fake_blocks,
+            ),
+            patch(
+                "congress_videos.modules.youtube.youtube_ai"
+                ".generate_youtube_metadata_for_selected_videos",
+                return_value={"topic_metadata": []},
+            ),
+            patch(
+                "congress_videos.modules.youtube.youtube_upload._write_orador_sidecars",
+            ),
+        ):
+            _write_turn_sidecars(turn)
+
+        srt_path = video_dir / "subtitles.srt"
+        assert srt_path.exists()
+        content = srt_path.read_text(encoding="utf-8")
+        assert len(content) > 0, "Single-turn SRT must be non-empty for overlapping block"
+
+
 class TestIntegrityCheckUsesFFmpeg:
     """Step 3 must invoke ffmpeg -f null, NOT ffprobe which lacks the null muxer."""
 

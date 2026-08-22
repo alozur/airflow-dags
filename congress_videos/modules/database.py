@@ -1317,6 +1317,8 @@ class CongressionalVideoDB:
                         SELECT DISTINCT ON (stv.output_path)
                             stv.turn_id, stv.output_path, st.chapter_id, st.resolved_name,
                             st.start_seconds, st.end_seconds, st.interest_score,
+                            MIN(st.start_seconds) OVER (PARTITION BY stv.output_path) AS group_start_seconds,
+                            MAX(st.end_seconds) OVER (PARTITION BY stv.output_path) AS group_end_seconds,
                             vc.video_id, vc.title AS chapter_title, vc.description,
                             vc.relevance_score, vc.key_speakers,
                             ysv.session_number, ysv.session_date, stv.materialized_at

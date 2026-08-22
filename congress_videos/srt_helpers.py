@@ -251,6 +251,43 @@ def _find_phrase_in_blocks(blocks: list[dict], phrase: str) -> Optional[dict]:
     return None
 
 
+def _window_srt_blocks(
+    blocks: list[dict],
+    window_start: float,
+    window_end: float,
+) -> list[dict]:
+    """Filter and re-time SRT blocks to a clip window.
+
+    Returns a new list of ``{start_secs, end_secs, text}`` dicts that overlap
+    ``[window_start, window_end)`` with timestamps re-timed to clip origin
+    (i.e. ``window_start`` is subtracted from each surviving block's
+    ``start_secs`` / ``end_secs``).  Timestamps that would go negative are
+    clamped to 0.0 (boundary-straddling blocks whose start precedes the window).
+
+    Overlap predicate: ``block.start_secs < window_end AND block.end_secs > window_start``
+    (identical to the predicate used in ``_window_srt_text``).
+
+    Pure; no I/O; never raises.
+
+    Args:
+        blocks:       Parsed SRT blocks, each a ``{start_secs, end_secs, text}`` dict.
+        window_start: Clip window start in seconds.
+        window_end:   Clip window end in seconds.
+
+    Returns:
+        Re-timed blocks whose original interval overlaps the window.
+    """
+    out = []
+    for b in blocks:
+        if b["start_secs"] < window_end and b["end_secs"] > window_start:
+            out.append({
+                "start_secs": max(0.0, b["start_secs"] - window_start),
+                "end_secs": max(0.0, b["end_secs"] - window_start),
+                "text": b["text"],
+            })
+    return out
+
+
 def _window_srt_text(video_id: str, start_seconds: float, end_seconds: float) -> str:
     """Return joined text of SRT blocks overlapping [start_seconds, end_seconds].
 
