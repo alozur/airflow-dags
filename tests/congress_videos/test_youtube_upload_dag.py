@@ -38,11 +38,12 @@ class TestYoutubeUploadDagLoads:
         assert dag is not None
         assert dag.dag_id == "congress_youtube_chapter_uploader"
 
-    def test_dag_has_thirteen_tasks(self):
-        """DAG must have 13 tasks after replacing t3/t4 with 3 new tasks (net +1)."""
+    def test_dag_has_fourteen_tasks(self):
+        """DAG must have 14 tasks: 13 original (t1_db replaced by get_uploadable_item PythonOperator)
+        plus mark_turns_uploaded task."""
         from congress_videos.youtube_upload_dag import dag
 
-        assert len(dag.tasks) == 13
+        assert len(dag.tasks) == 14
 
     def test_expected_task_ids_present(self):
         """New task IDs present; legacy Pillow task IDs absent."""
@@ -1183,3 +1184,1001 @@ class TestTriggerThumbnailGenerationForwardsKeySpeakers:
         assert len(captured_confs) == 1
         assert "key_speakers" in captured_confs[0]
         assert captured_confs[0]["key_speakers"] == []
+
+
+# ---------------------------------------------------------------------------
+# Dual-queue: turn queue tried first, chapter fallback when turns empty
+# ---------------------------------------------------------------------------
+
+
+def _make_turn_row(
+    turn_id: int = 1,
+    output_path: str = "/data/turn1.mp4",
+    resolved_name: str = "Ana García",
+    start_seconds: float = 120.0,
+    end_seconds: float = 240.0,
+    chapter_id: int = 42,
+    key_speakers: list | None = None,
+    session_number: int = 80,
+    session_date: str = "2025-06-10",
+) -> dict:
+    return {
+        "turn_id": turn_id,
+        "output_path": output_path,
+        "resolved_name": resolved_name,
+        "start_seconds": start_seconds,
+        "end_seconds": end_seconds,
+        "chapter_id": chapter_id,
+        "key_speakers": key_speakers if key_speakers is not None else ["Ana García", "Pedro López"],
+        "session_number": session_number,
+        "session_date": session_date,
+        "chapter_title": "Un capítulo de prueba",
+        "description": "Descripción del capítulo",
+        "relevance_score": 4,
+    }
+
+
+class TestPrepareThumbnailConfigForTurn:
+    """_prepare_thumbnail_config anchors key_speakers to turn speaker and uses SRT window."""
+
+    def test_key_speakers_anchored_to_resolved_name(self):
+        """Turn config: key_speakers must be [resolved_name] ignoring chapter's key_speakers."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(
+            turn_id=1,
+            resolved_name="Ana García",
+        )
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "garcia-ana"},
+        ):
+            result = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert result["key_speakers"] == ["Ana García"]
+
+    def test_slug_resolved_from_resolved_name_not_key_speakers(self):
+        """Turn config: slug is derived from resolved_name (turn speaker), not chapter's speakers."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(
+            resolved_name="Pedro López",
+        )
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "lopez-pedro"},
+        ) as lookup:
+            result = _prepare_thumbnail_config(turn, MagicMock())
+
+        lookup.assert_called_once_with("Pedro López")
+        assert result["slug"] == "lopez-pedro"
+
+    def test_srt_fragment_bounded_by_start_end_seconds(self, tmp_path, mocker):
+        """Turn config: SRT fragment must be limited to [start_seconds, end_seconds]."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        # SRT content: block 1 within window, block 2 after window
+        srt_content = (
+            "1\n00:01:00,000 --> 00:02:00,000\nDentro del turno.\n\n"
+            "2\n00:04:00,000 --> 00:05:00,000\nFuera del turno.\n\n"
+        )
+        srt_path = tmp_path / "test.srt"
+        srt_path.write_text(srt_content, encoding="utf-8")
+
+        turn = _make_turn_row(
+            turn_id=1,
+            start_seconds=60.0,   # 00:01:00
+            end_seconds=180.0,    # 00:03:00 — block 2 is at 240s, outside window
+        )
+        turn["video_id"] = "video123"
+        turn["session_date"] = "2025-06-10"
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.find_srt_for_chapter",
+            return_value=str(srt_path),
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "garcia-ana"},
+        )
+
+        result = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert "srt_fragment" in result
+        assert "Dentro del turno" in result["srt_fragment"]
+        assert "Fuera del turno" not in result["srt_fragment"]
+
+    def test_chapter_id_preserved_in_config(self):
+        """Turn config: chapter_id must be preserved for thumbnail identity."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(turn_id=5, chapter_id=42)
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value=None,
+        ):
+            result = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert result["chapter_id"] == 42
+
+    def test_session_derived_from_session_number(self):
+        """Turn config: session label derived from session_number."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(session_number=80)
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value=None,
+        ):
+            result = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert "80" in result["session"]
+
+
+class TestDualQueueBehavior:
+    """Dual-queue: turn queue has priority; chapter fallback used when turns empty."""
+
+    def test_uploader_selects_turn_when_available(self, mocker):
+        """When get_uploadable_turns returns a turn, _run_get_uploadable_item returns it."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        fake_turn = _make_turn_row()
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = [fake_turn]
+        mock_db.get_uploadable_chapters.return_value = []
+
+        result = _run_get_uploadable_item(mock_db)
+
+        assert result["item"] == fake_turn
+        assert result["item_type"] == "turn"
+        mock_db.get_uploadable_chapters.assert_not_called()
+
+    def test_uploader_falls_back_to_chapter_when_turns_empty(self, mocker):
+        """When turns empty, _run_get_uploadable_item falls back to chapters."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        fake_chapter = {"chapter_id": 99, "title": "Cap 99"}
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = []
+        mock_db.get_uploadable_chapters.return_value = [fake_chapter]
+
+        result = _run_get_uploadable_item(mock_db)
+
+        assert result["item"] == fake_chapter
+        assert result["item_type"] == "chapter"
+        mock_db.get_uploadable_chapters.assert_called_once()
+
+    def test_uploader_returns_none_when_both_queues_empty(self):
+        """When both queues empty, _run_get_uploadable_item returns None."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = []
+        mock_db.get_uploadable_chapters.return_value = []
+
+        result = _run_get_uploadable_item(mock_db)
+
+        assert result is None
+
+
+class TestGuardAAndGuardB:
+    """View-level guards: Guard A (chapter excluded when turn uploaded),
+    Guard B (turn excluded when chapter uploaded). Both enforced in the SQL
+    view — these tests verify the uploader passes the right rows through."""
+
+    def test_guard_b_turn_excluded_by_empty_view(self):
+        """Guard B: when uploadable_turns is empty (chapter already uploaded),
+        uploader falls back to chapter queue."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = []  # Guard B filtered them out
+        mock_db.get_uploadable_chapters.return_value = []
+
+        result = _run_get_uploadable_item(mock_db)
+        assert result is None
+
+    def test_guard_a_chapter_excluded_by_empty_view(self):
+        """Guard A: when chapter fallback returns empty (turn already uploaded),
+        uploader has nothing to upload."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = []
+        mock_db.get_uploadable_chapters.return_value = []  # Guard A filtered chapter out
+
+        result = _run_get_uploadable_item(mock_db)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL-1: Dual-queue wired into DAG task graph (not dead code)
+# ---------------------------------------------------------------------------
+
+
+class TestDualQueueWiredIntoDag:
+    """Verify that the DAG task graph actually invokes dual-queue logic
+    rather than calling get_uploadable_chapters directly."""
+
+    def test_dag_has_get_uploadable_item_task_not_static_chapters_op(self):
+        """DAG must have a 'get_uploadable_item' task (PythonOperator), not a
+        PostgreSQLOperator with operation='get_uploadable_chapters'."""
+        from congress_videos.youtube_upload_dag import dag
+
+        task_ids = {t.task_id for t in dag.tasks}
+        # The wired task must exist
+        assert "get_uploadable_item" in task_ids, (
+            "DAG must have a get_uploadable_item task (dual-queue wired)"
+        )
+
+    def test_get_uploadable_item_task_is_python_operator(self):
+        """The get_uploadable_item task must be a PythonOperator (not PostgreSQLOperator)."""
+        from airflow.operators.python import PythonOperator
+        from congress_videos.youtube_upload_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        task = tasks_by_id.get("get_uploadable_item")
+        assert task is not None, "get_uploadable_item task must exist"
+        assert isinstance(task, PythonOperator), (
+            "get_uploadable_item must be a PythonOperator, not a PostgreSQLOperator"
+        )
+
+    def test_get_uploadable_item_is_downstream_of_skip_if_quota_reached(self):
+        """get_uploadable_item must be downstream of skip_if_quota_reached."""
+        from congress_videos.youtube_upload_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        skip_task = tasks_by_id["skip_if_quota_reached"]
+        item_task = tasks_by_id.get("get_uploadable_item")
+        assert item_task is not None, "get_uploadable_item task must exist"
+        downstream_ids = {t.task_id for t in skip_task.downstream_list}
+        assert item_task.task_id in downstream_ids, (
+            "get_uploadable_item must be downstream of skip_if_quota_reached"
+        )
+
+    def test_generate_metadata_is_downstream_of_get_uploadable_item(self):
+        """generate_youtube_metadata must be downstream of get_uploadable_item."""
+        from congress_videos.youtube_upload_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        item_task = tasks_by_id.get("get_uploadable_item")
+        meta_task = tasks_by_id["generate_youtube_metadata"]
+        assert item_task is not None, "get_uploadable_item task must exist"
+        upstream_ids = {t.task_id for t in meta_task.upstream_list}
+        assert item_task.task_id in upstream_ids, (
+            "generate_youtube_metadata must be downstream of get_uploadable_item"
+        )
+
+    def test_dag_task_count_updated_for_wired_dual_queue(self):
+        """DAG must have 14 tasks after replacing t1_db with get_uploadable_item and adding mark_turns_uploaded."""
+        from congress_videos.youtube_upload_dag import dag
+
+        assert len(dag.tasks) == 14, (
+            f"Expected 14 tasks (13 original tasks, t1_db replaced by get_uploadable_item PythonOperator, "
+            f"plus mark_turns_uploaded), got {len(dag.tasks)}"
+        )
+
+    def test_mark_turns_uploaded_task_exists(self):
+        """DAG must have a mark_turns_uploaded task (CRITICAL-3)."""
+        from congress_videos.youtube_upload_dag import dag
+
+        task_ids = {t.task_id for t in dag.tasks}
+        assert "mark_turns_uploaded" in task_ids, (
+            "DAG must have a mark_turns_uploaded task after upload"
+        )
+
+    def test_mark_turns_uploaded_is_downstream_of_trigger_youtube_upload(self):
+        """mark_turns_uploaded must be downstream of trigger_youtube_upload."""
+        from congress_videos.youtube_upload_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        upload_task = tasks_by_id["trigger_youtube_upload"]
+        mark_turns = tasks_by_id.get("mark_turns_uploaded")
+        assert mark_turns is not None, "mark_turns_uploaded task must exist"
+        downstream_ids = {t.task_id for t in upload_task.downstream_list}
+        assert mark_turns.task_id in downstream_ids, (
+            "mark_turns_uploaded must be downstream of trigger_youtube_upload"
+        )
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL-2: Combined daily cap (turns + chapters in uploads_today)
+# ---------------------------------------------------------------------------
+
+
+class TestCombinedDailyCap:
+    """check_upload_quota must count turns uploaded today + chapters uploaded today."""
+
+    def test_uploads_today_includes_turns_and_chapters(self, mocker):
+        """When 1 turn and 1 chapter were uploaded today, uploads_today must be 2."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db = MagicMock()
+        mock_db.count_chapters_uploaded_today.return_value = 1
+        mock_db.count_turns_uploaded_today.return_value = 1
+        mock_db.count_pending_uploadable_chapters.return_value = 3
+        mock_db.count_pending_uploadable_turns.return_value = 2
+
+        mocker.patch(
+            "congress_videos.modules.postgres_operators.CongressionalVideoDB",
+            return_value=mock_db,
+        )
+        mocker.patch.dict(
+            "os.environ",
+            {
+                "POSTGRES_HOST": "localhost",
+                "POSTGRES_PORT": "5432",
+                "POSTGRES_DB": "testdb",
+                "POSTGRES_USER": "testuser",
+                "POSTGRES_PASSWORD": "testpass",
+                "POSTGRES_SCHEMA": "public",
+            },
+        )
+
+        op = PostgreSQLOperator(
+            task_id="check_upload_quota",
+            operation="check_upload_quota",
+            output_xcom_key="upload_quota",
+        )
+        ti = MagicMock()
+        ti.xcom_store = {}
+        ti.xcom_push.side_effect = lambda key, value, **kw: ti.xcom_store.update({key: value})
+        context = {"params": {}, "ti": ti}
+
+        op.execute(context)
+
+        result = ti.xcom_store.get("upload_quota")
+        assert result is not None, "upload_quota must be pushed to XCom"
+        assert result["uploads_today"] == 2, (
+            f"uploads_today must be turns (1) + chapters (1) = 2, got {result['uploads_today']}"
+        )
+
+    def test_uploads_today_zero_when_nothing_uploaded(self, mocker):
+        """When no turns and no chapters uploaded today, uploads_today must be 0."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db = MagicMock()
+        mock_db.count_chapters_uploaded_today.return_value = 0
+        mock_db.count_turns_uploaded_today.return_value = 0
+        mock_db.count_pending_uploadable_chapters.return_value = 5
+        mock_db.count_pending_uploadable_turns.return_value = 2
+
+        mocker.patch(
+            "congress_videos.modules.postgres_operators.CongressionalVideoDB",
+            return_value=mock_db,
+        )
+        mocker.patch.dict(
+            "os.environ",
+            {
+                "POSTGRES_HOST": "localhost",
+                "POSTGRES_PORT": "5432",
+                "POSTGRES_DB": "testdb",
+                "POSTGRES_USER": "testuser",
+                "POSTGRES_PASSWORD": "testpass",
+                "POSTGRES_SCHEMA": "public",
+            },
+        )
+
+        op = PostgreSQLOperator(
+            task_id="check_upload_quota",
+            operation="check_upload_quota",
+            output_xcom_key="upload_quota",
+        )
+        ti = MagicMock()
+        ti.xcom_store = {}
+        ti.xcom_push.side_effect = lambda key, value, **kw: ti.xcom_store.update({key: value})
+        context = {"params": {}, "ti": ti}
+
+        op.execute(context)
+
+        result = ti.xcom_store.get("upload_quota")
+        assert result["uploads_today"] == 0
+
+    def test_uploads_today_chapter_only_when_no_turns_uploaded(self, mocker):
+        """When only chapters uploaded today, uploads_today = chapter count."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db = MagicMock()
+        mock_db.count_chapters_uploaded_today.return_value = 1
+        mock_db.count_turns_uploaded_today.return_value = 0
+        mock_db.count_pending_uploadable_chapters.return_value = 2
+        mock_db.count_pending_uploadable_turns.return_value = 0
+
+        mocker.patch(
+            "congress_videos.modules.postgres_operators.CongressionalVideoDB",
+            return_value=mock_db,
+        )
+        mocker.patch.dict(
+            "os.environ",
+            {
+                "POSTGRES_HOST": "localhost",
+                "POSTGRES_PORT": "5432",
+                "POSTGRES_DB": "testdb",
+                "POSTGRES_USER": "testuser",
+                "POSTGRES_PASSWORD": "testpass",
+                "POSTGRES_SCHEMA": "public",
+            },
+        )
+
+        op = PostgreSQLOperator(
+            task_id="check_upload_quota",
+            operation="check_upload_quota",
+            output_xcom_key="upload_quota",
+        )
+        ti = MagicMock()
+        ti.xcom_store = {}
+        ti.xcom_push.side_effect = lambda key, value, **kw: ti.xcom_store.update({key: value})
+        context = {"params": {}, "ti": ti}
+
+        op.execute(context)
+
+        result = ti.xcom_store.get("upload_quota")
+        assert result["uploads_today"] == 1
+
+
+# ---------------------------------------------------------------------------
+# WARNING-1: queue_size includes turns_pending in should_upload gate
+# ---------------------------------------------------------------------------
+
+
+class TestQueueSizeIncludesTurns:
+    """should_upload must gate on combined queue size (turns + chapters)."""
+
+    def test_queue_size_with_only_turns_pending_allows_upload(self):
+        """When only turns are pending (queue_size=0 for chapters), gate on combined."""
+        from congress_videos.youtube_upload_dag import should_upload
+
+        # Simulate quota xcom: chapter queue empty but turns pending
+        # queue_size must already include turns for the gate to work.
+        # This test verifies the combined queue_size is what should_upload sees.
+        ctx = _make_context_for_should_upload(queue_size=1, hour=19, uploads_today=0)
+        # queue_size=1 represents turns_pending=1 counted in combined queue_size
+        assert should_upload(**ctx) is True
+
+    def test_combined_queue_size_in_check_upload_quota(self, mocker):
+        """check_upload_quota queue_size must include turns_pending + chapters pending."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db = MagicMock()
+        mock_db.count_chapters_uploaded_today.return_value = 0
+        mock_db.count_turns_uploaded_today.return_value = 0
+        mock_db.count_pending_uploadable_chapters.return_value = 2
+        mock_db.count_pending_uploadable_turns.return_value = 3  # 3 turns pending
+
+        mocker.patch(
+            "congress_videos.modules.postgres_operators.CongressionalVideoDB",
+            return_value=mock_db,
+        )
+        mocker.patch.dict(
+            "os.environ",
+            {
+                "POSTGRES_HOST": "localhost",
+                "POSTGRES_PORT": "5432",
+                "POSTGRES_DB": "testdb",
+                "POSTGRES_USER": "testuser",
+                "POSTGRES_PASSWORD": "testpass",
+                "POSTGRES_SCHEMA": "public",
+            },
+        )
+
+        op = PostgreSQLOperator(
+            task_id="check_upload_quota",
+            operation="check_upload_quota",
+            output_xcom_key="upload_quota",
+        )
+        ti = MagicMock()
+        ti.xcom_store = {}
+        ti.xcom_push.side_effect = lambda key, value, **kw: ti.xcom_store.update({key: value})
+        context = {"params": {}, "ti": ti}
+
+        op.execute(context)
+
+        result = ti.xcom_store.get("upload_quota")
+        # queue_size must be chapters(2) + turns(3) = 5
+        assert result["queue_size"] == 5, (
+            f"queue_size must be chapters_pending(2) + turns_pending(3) = 5, got {result['queue_size']}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# thumbnail-canonical-path (Slice 4a): output_path threading
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareThumbnailConfigThreadsOutputPath:
+    """_prepare_thumbnail_config must include output_path for turn items, absent for chapters."""
+
+    def test_turn_item_includes_output_path(self):
+        """Turn row with output_path → config['output_path'] equals the row value."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(output_path="/data/oradores/42/video.mp4")
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value=None,
+        ):
+            config = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert config["output_path"] == "/data/oradores/42/video.mp4"
+
+    def test_chapter_item_omits_output_path(self):
+        """Chapter row (no turn_id) → config.get('output_path') is None."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_chapter()
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value=None,
+        ):
+            config = _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert config.get("output_path") is None
+
+    def test_turn_item_with_none_output_path_is_set_to_none(self):
+        """Turn row whose output_path column is NULL → config['output_path'] is None (not absent)."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(output_path=None)  # type: ignore[arg-type]
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value=None,
+        ):
+            config = _prepare_thumbnail_config(turn, MagicMock())
+
+        # Key must be present (set by is_turn branch) even if value is None
+        assert "output_path" in config
+        assert config["output_path"] is None
+
+
+class TestTriggerThumbnailGenerationForwardsOutputPath:
+    """trigger_thumbnail_generation must forward output_path into child_conf only when truthy."""
+
+    def _make_mock_run(self, mocker, captured_confs):
+        mock_run = MagicMock()
+        mock_run.run_id = "thumb_run_output_path"
+        mock_run.state = "success"
+        mock_run.refresh_from_db = MagicMock()
+
+        def _fake_trigger(dag_id, conf, run_id):
+            captured_confs.append(conf)
+            return mock_run
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.trigger_dag_api",
+            side_effect=_fake_trigger,
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.XCom.get_one",
+            return_value={
+                "success": True,
+                "chapter_id": 42,
+                "output_path": "/data/oradores/42/thumbnail.png",
+                "title": "Un título",
+            },
+        )
+        return mock_run
+
+    def test_forwards_output_path_when_present(self, mocker):
+        """When thumbnail_config has a truthy output_path, child_conf must include it."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        captured_confs: list = []
+        self._make_mock_run(mocker, captured_confs)
+
+        ti = _make_ti(
+            {
+                "thumbnail_config": {
+                    "chapter_id": 42,
+                    "debate_summary": "un resumen",
+                    "session": "Sesión 80",
+                    "domain": "congreso",
+                    "slug": None,
+                    "output_path": "/data/oradores/42/video.mp4",
+                }
+            }
+        )
+
+        trigger_thumbnail_generation(ti, run_id="test_run")
+
+        assert len(captured_confs) == 1
+        assert captured_confs[0].get("output_path") == "/data/oradores/42/video.mp4"
+
+    def test_omits_output_path_when_absent(self, mocker):
+        """When thumbnail_config lacks output_path, child_conf must NOT contain the key."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        captured_confs: list = []
+        self._make_mock_run(mocker, captured_confs)
+
+        ti = _make_ti(
+            {
+                "thumbnail_config": {
+                    "chapter_id": 42,
+                    "debate_summary": "un resumen",
+                    "session": "Sesión 80",
+                    "domain": "congreso",
+                    "slug": None,
+                    # No output_path key
+                }
+            }
+        )
+
+        trigger_thumbnail_generation(ti, run_id="test_run")
+
+        assert len(captured_confs) == 1
+        assert "output_path" not in captured_confs[0]
+
+    def test_omits_output_path_when_none(self, mocker):
+        """When thumbnail_config has output_path=None, child_conf must NOT contain the key."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        captured_confs: list = []
+        self._make_mock_run(mocker, captured_confs)
+
+        ti = _make_ti(
+            {
+                "thumbnail_config": {
+                    "chapter_id": 42,
+                    "debate_summary": "un resumen",
+                    "session": "Sesión 80",
+                    "domain": "congreso",
+                    "slug": None,
+                    "output_path": None,
+                }
+            }
+        )
+
+        trigger_thumbnail_generation(ti, run_id="test_run")
+
+        assert len(captured_confs) == 1
+        assert "output_path" not in captured_confs[0]
+
+
+# ---------------------------------------------------------------------------
+# SRT sidecar write (Slice 5 — srt-sidecar-canonical-path)
+# ---------------------------------------------------------------------------
+
+class TestPrepareThumbnailConfigSrtSidecar:
+    """Upload path (issue #146 Fix C) no longer writes subtitles.srt for turns.
+
+    The nightly speaker_turn_prepare DAG now owns the turn subtitles.srt sidecar,
+    so _prepare_thumbnail_config must NOT write it at upload time. It still
+    computes config['srt_fragment'] for the lapidary thumbnail quote.
+    """
+
+    _WINDOWED_BLOCKS = [
+        {"start_secs": 60.0, "end_secs": 70.0, "text": "primera frase"},
+        {"start_secs": 75.0, "end_secs": 85.0, "text": "segunda frase"},
+        # outside window — must not appear in SRT
+        {"start_secs": 200.0, "end_secs": 210.0, "text": "fuera de ventana"},
+    ]
+
+    def _run_turn(self, tmp_path, blocks=None, output_path_override=None):
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        video_mp4 = tmp_path / "video.mp4"
+        video_mp4.write_bytes(b"")
+        out_path = output_path_override if output_path_override is not None else str(video_mp4)
+        turn = _make_turn_row(
+            output_path=out_path,
+            start_seconds=50.0,
+            end_seconds=100.0,
+        )
+        # video_id is required so find_srt_for_chapter is actually called
+        turn["video_id"] = "vid001"
+        if blocks is None:
+            blocks = self._WINDOWED_BLOCKS
+
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+                return_value={"slug": "garcia-ana"},
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag.find_srt_for_chapter",
+                return_value="/fake/session.srt",
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag._parse_srt_blocks",
+                return_value=blocks,
+            ),
+        ):
+            return _prepare_thumbnail_config(turn, MagicMock()), tmp_path
+
+    def test_turn_with_output_path_does_not_write_subtitles_srt(self, tmp_path):
+        """Turn-type + output_path -> upload path must NOT write subtitles.srt (PREPARE owns it).
+
+        Updated for issue #146 Fix C: PREPARE DAG now owns the turn srt sidecar.
+        srt_fragment is still computed for the lapidary quote.
+        """
+        config, out_dir = self._run_turn(tmp_path)
+
+        srt_path = out_dir / "subtitles.srt"
+        assert not srt_path.exists(), (
+            "upload path must NOT write subtitles.srt for turns; PREPARE DAG owns it"
+        )
+        assert not any(out_dir.rglob("subtitles.srt"))
+        # srt_fragment still computed for the lapidary thumbnail quote.
+        assert "primera frase" in config.get("srt_fragment", "")
+        assert "segunda frase" in config.get("srt_fragment", "")
+        assert "fuera de ventana" not in config.get("srt_fragment", "")
+        assert config.get("chapter_id") == 42  # config unaffected
+
+    def test_chapter_type_produces_no_subtitles_srt(self, tmp_path):
+        """Chapter row (no turn_id) -> no subtitles.srt written anywhere."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_srt_chapter(start_time="00:00:50,000", end_time="00:01:40,000")
+        blocks = [
+            {"start_secs": 60.0, "end_secs": 70.0, "text": "chapter text"},
+        ]
+
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+                return_value={"slug": "garcia-ana"},
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag.find_srt_for_chapter",
+                return_value="/fake/session.srt",
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag._parse_srt_blocks",
+                return_value=blocks,
+            ),
+        ):
+            _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert not any(tmp_path.rglob("subtitles.srt"))
+
+    def test_turn_with_none_output_path_produces_no_write(self, tmp_path):
+        """Turn row whose output_path is None -> no subtitles.srt written."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(output_path=None, start_seconds=50.0, end_seconds=100.0)  # type: ignore[arg-type]
+        turn["video_id"] = "vid001"
+        blocks = [{"start_secs": 60.0, "end_secs": 70.0, "text": "texto"}]
+
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+                return_value={"slug": "garcia-ana"},
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag.find_srt_for_chapter",
+                return_value="/fake/session.srt",
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag._parse_srt_blocks",
+                return_value=blocks,
+            ),
+        ):
+            config = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert not any(tmp_path.rglob("subtitles.srt"))
+        assert "chapter_id" in config  # config still returned
+
+    def test_turn_path_never_opens_a_file_for_writing(self, tmp_path):
+        """Upload path must not open the turn dir for writing (issue #146 Fix C).
+
+        Previously the upload path wrote subtitles.srt (and swallowed OSError). Now
+        that PREPARE owns the srt, no write occurs, so no subtitles.srt file exists.
+        """
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        video_mp4 = tmp_path / "video.mp4"
+        video_mp4.write_bytes(b"")
+        turn = _make_turn_row(
+            output_path=str(video_mp4),
+            start_seconds=50.0,
+            end_seconds=100.0,
+        )
+        turn["video_id"] = "vid001"
+        blocks = [{"start_secs": 60.0, "end_secs": 70.0, "text": "texto"}]
+
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+                return_value={"slug": "garcia-ana"},
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag.find_srt_for_chapter",
+                return_value="/fake/session.srt",
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag._parse_srt_blocks",
+                return_value=blocks,
+            ),
+        ):
+            config = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert "chapter_id" in config
+        assert not any(tmp_path.rglob("subtitles.srt")), (
+            "upload path must not write subtitles.srt for turns"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.3 — Upload DAG turn path (issue #146): no thumbnail trigger for turns
+# ---------------------------------------------------------------------------
+
+
+class TestUploadDagTurnPathRefactor:
+    """Verify the upload DAG turn branch reads pre-prepared sidecars (issue #146).
+
+    After the split, the upload DAG must NOT call trigger_thumbnail_generation
+    for turn items; instead it reads from canonical #133 path sidecars.
+    """
+
+    def test_run_generate_thumbnail_skipped_for_turns(self):
+        """When item_type=turn, _run_generate_thumbnail must not trigger the thumbnail DAG."""
+        from unittest.mock import patch
+        from congress_videos.youtube_upload_dag import _run_generate_thumbnail
+
+        store = {
+            "uploadable_item": {
+                "item": {"turn_id": 1, "output_path": "/data/v.mp4"},
+                "item_type": "turn",
+            }
+        }
+        ti = _make_ti(store)
+
+        with patch("congress_videos.youtube_upload_dag.trigger_thumbnail_generation") as mock_trig:
+            _run_generate_thumbnail(ti)
+
+        mock_trig.assert_not_called()
+
+    def test_prepare_upload_config_turn_reads_sidecars(self, tmp_path):
+        """_prepare_upload_config for a turn item must read pre-written sidecars."""
+        from congress_videos.youtube_upload_dag import _prepare_upload_config
+
+        turn_dir = tmp_path / "oradores" / "1"
+        turn_dir.mkdir(parents=True)
+        (turn_dir / "video.mp4").write_bytes(b"fake")
+        (turn_dir / "title.txt").write_text("TÍTULO SIDECAR", encoding="utf-8")
+        (turn_dir / "description.txt").write_text("Desc.", encoding="utf-8")
+        (turn_dir / "thumbnail.png").write_bytes(b"\x89PNG")
+        (turn_dir / "subtitles.srt").write_text("", encoding="utf-8")
+
+        extraction = {
+            "total_chapters": 1,
+            "successful_extractions": 1,
+            "results": [
+                {
+                    "chapter_id": None,
+                    "turn_id": 1,
+                    "video_id": "vidXYZ",
+                    "success": True,
+                    "output_path": str(turn_dir / "video.mp4"),
+                    "file_size_mb": None,
+                    "duration_seconds": None,
+                    "error": None,
+                }
+            ],
+        }
+
+        store = {
+            "uploadable_item": {
+                "item": {
+                    "turn_id": 1,
+                    "output_path": str(turn_dir / "video.mp4"),
+                    "chapter_id": 100,
+                },
+                "item_type": "turn",
+            },
+            "chapter_extraction_results": extraction,
+            "youtube_metadata_results": None,
+            "thumbnail_result": None,
+        }
+        ti = _make_ti(store)
+        context = {"params": {"isTesting": False, "dry_run": False}}
+
+        _prepare_upload_config(ti, **context)
+
+        config = ti.xcom_store.get("upload_config")
+        assert config is not None
+        videos = config.get("videos", [])
+        assert len(videos) == 1
+        assert videos[0]["title"] == "TÍTULO SIDECAR"
+
+    def test_prepare_upload_config_turn_no_ai_call(self, tmp_path):
+        """For turn items, _prepare_upload_config must not call youtube_ai."""
+        from unittest.mock import patch
+        from congress_videos.youtube_upload_dag import _prepare_upload_config
+
+        turn_dir = tmp_path / "oradores" / "1"
+        turn_dir.mkdir(parents=True)
+        (turn_dir / "video.mp4").write_bytes(b"fake")
+        (turn_dir / "title.txt").write_text("T", encoding="utf-8")
+        (turn_dir / "description.txt").write_text("D", encoding="utf-8")
+        (turn_dir / "thumbnail.png").write_bytes(b"\x89PNG")
+        (turn_dir / "subtitles.srt").write_text("", encoding="utf-8")
+
+        extraction = {
+            "total_chapters": 1,
+            "successful_extractions": 1,
+            "results": [
+                {
+                    "chapter_id": None,
+                    "turn_id": 1,
+                    "video_id": "vidXYZ",
+                    "success": True,
+                    "output_path": str(turn_dir / "video.mp4"),
+                    "file_size_mb": None,
+                    "duration_seconds": None,
+                    "error": None,
+                }
+            ],
+        }
+
+        store = {
+            "uploadable_item": {
+                "item": {"turn_id": 1, "output_path": str(turn_dir / "video.mp4")},
+                "item_type": "turn",
+            },
+            "chapter_extraction_results": extraction,
+            "youtube_metadata_results": None,
+            "thumbnail_result": None,
+        }
+        ti = _make_ti(store)
+        context = {"params": {"isTesting": False, "dry_run": False}}
+
+        with patch("congress_videos.modules.youtube.youtube_ai.generate_youtube_metadata_for_selected_videos") as mock_ai:
+            _prepare_upload_config(ti, **context)
+
+        mock_ai.assert_not_called()
+
+    def test_prepare_upload_config_chapter_unchanged(self):
+        """For chapter items, _prepare_upload_config must still use AI metadata (unchanged path)."""
+        from congress_videos.youtube_upload_dag import _prepare_upload_config
+
+        extraction = {
+            "total_chapters": 1,
+            "successful_extractions": 1,
+            "results": [
+                {
+                    "chapter_id": 999,
+                    "video_id": "vidABC",
+                    "success": True,
+                    "output_path": "/data/chapter_video.mp4",
+                    "file_size_mb": 50.0,
+                    "duration_seconds": 300.0,
+                    "error": None,
+                }
+            ],
+        }
+        metadata = {
+            "topic_metadata": [
+                {
+                    "chapter_id": 999,
+                    "video_id": "vidABC",
+                    "title": {"title": "Chapter Title"},
+                    "description": {"description": "Chapter desc"},
+                }
+            ]
+        }
+
+        store = {
+            "uploadable_item": {"item": {"chapter_id": 999}, "item_type": "chapter"},
+            "chapter_extraction_results": extraction,
+            "youtube_metadata_results": metadata,
+            "thumbnail_result": None,
+        }
+        ti = _make_ti(store)
+        context = {"params": {"isTesting": False, "dry_run": False}}
+
+        _prepare_upload_config(ti, **context)
+
+        config = ti.xcom_store.get("upload_config")
+        assert config is not None
+        videos = config.get("videos", [])
+        assert len(videos) == 1
+        assert videos[0]["title"] == "Chapter Title"

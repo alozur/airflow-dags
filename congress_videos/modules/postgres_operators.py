@@ -366,14 +366,20 @@ class PostgreSQLOperator(BaseOperator):
         elif self.operation == 'check_upload_quota':
             min_relevance_score = context["params"].get("min_relevance_score", 2)
 
-            uploads_today = db.count_chapters_uploaded_today()
-            queue_size = db.count_pending_uploadable_chapters(min_relevance_score)
+            chapters_uploaded_today = db.count_chapters_uploaded_today()
+            turns_uploaded_today = db.count_turns_uploaded_today()
+            uploads_today = chapters_uploaded_today + turns_uploaded_today
+
+            chapters_pending = db.count_pending_uploadable_chapters(min_relevance_score)
+            turns_pending = db.count_pending_uploadable_turns()
+            queue_size = chapters_pending + turns_pending
 
             result = {
                 "uploads_today": uploads_today,
                 "queue_size": queue_size,
+                "turns_pending": turns_pending,
             }
-            print(f"✅ Upload quota: {uploads_today} today, {queue_size} in queue")
+            print(f"✅ Upload quota: {uploads_today} today ({chapters_uploaded_today} chapters + {turns_uploaded_today} turns), {chapters_pending} chapters + {turns_pending} turns in queue")
 
         elif self.operation == 'get_uploadable_chapters':
             min_relevance_score = context["params"].get("min_relevance_score", 2)
@@ -466,6 +472,59 @@ class PostgreSQLOperator(BaseOperator):
                     'details': details
                 }
                 print(f"✅ Updated {updated_count} chapters, {failed_count} failed, {recorded_failures} failures recorded")
+
+        elif self.operation == 'get_uploadable_turns':
+            result = db.get_uploadable_turns(limit=1)
+            print(f"✅ Retrieved {len(result)} uploadable turns")
+
+        elif self.operation == 'mark_turns_uploaded':
+            """Mark speaker turn videos as uploaded to YouTube after successful upload."""
+            upload_results = ti.xcom_pull(key=self.xcom_keys.get('upload_results', 'upload_results'))
+
+            if not upload_results or not upload_results.get('upload_details'):
+                print("No turn upload results to process")
+                result = {'updated_turns': 0, 'failed_updates': 0, 'details': []}
+            else:
+                updated_count = 0
+                failed_count = 0
+                details = []
+
+                for upload_detail in upload_results['upload_details']:
+                    turn_id = upload_detail.get('turn_id')
+                    youtube_video_id = upload_detail.get('youtube_video_id')
+                    success = upload_detail.get('success', False)
+
+                    if success and turn_id and youtube_video_id:
+                        try:
+                            db.mark_turns_uploaded(turn_id=turn_id, youtube_video_id=youtube_video_id)
+                            updated_count += 1
+                            details.append({
+                                'turn_id': turn_id,
+                                'youtube_video_id': youtube_video_id,
+                                'status': 'updated',
+                            })
+                            print(f"✅ Marked turn {turn_id} as uploaded: {youtube_video_id}")
+                        except Exception as e:
+                            failed_count += 1
+                            details.append({
+                                'turn_id': turn_id,
+                                'status': 'failed',
+                                'error': str(e),
+                            })
+                            print(f"❌ Failed to mark turn {turn_id}: {e}")
+                    else:
+                        details.append({
+                            'turn_id': turn_id,
+                            'status': 'skipped',
+                            'reason': 'upload_failed_or_missing_fields',
+                        })
+
+                result = {
+                    'updated_turns': updated_count,
+                    'failed_updates': failed_count,
+                    'details': details,
+                }
+                print(f"✅ Marked {updated_count} turns uploaded, {failed_count} failed")
 
         elif self.operation == 'get_chapters_for_shorts':
             """Get video chapters eligible for Reap Shorts processing"""

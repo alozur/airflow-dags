@@ -129,20 +129,25 @@ def _resolve_speaker_name(chapter: dict) -> str | None:
 
 
 def _prepare_thumbnail_config(chapter: dict, db) -> dict:
-    """Build the thumbnail-generation config dict for a single chapter.
+    """Build the thumbnail-generation config dict for a single chapter or turn.
 
-    Resolves the raw speaker at the boundary and stores the participant slug
-    before assembling the fields
-    expected by the generic thumbnail pipeline.
+    Handles two row types:
+    - Chapter rows (from uploadable_chapters view): use key_speakers list, resolved_participant_slug,
+      and SRT window from start_time/end_time strings.
+    - Turn rows (from uploadable_turns view, identified by presence of 'turn_id'): anchor
+      key_speakers to [resolved_name], use resolved_name for slug lookup, and use start_seconds/
+      end_seconds (float seconds) for the SRT window.
 
     Args:
-        chapter: Chapter row from the uploadable_chapters view.
+        chapter: Chapter or turn row from the database view.
         db: CongressionalVideoDB instance (kept for task-call compatibility).
 
     Returns:
         Dict with keys: chapter_id, debate_summary, domain, session,
-        slug (may be None on fallback).
+        slug (may be None on fallback), key_speakers, optionally srt_fragment.
     """
+    is_turn = "turn_id" in chapter
+
     chapter_id = chapter.get("chapter_id")
     title = chapter.get("chapter_title", "")
     description = chapter.get("description", "")
@@ -158,24 +163,46 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
     else:
         session = str(session_date) if session_date else None
 
-    # Prefer the authoritative slug written by speaker normalization (fuzzy or
-    # institutional-role resolution). Fall back to a raw-speaker fuzzy match only
-    # when the chapter was never resolved. Fuzzy matching stays confined to this
-    # boundary; downstream thumbnail code receives only the stable slug.
-    slug = chapter.get("resolved_participant_slug") or None
-    if not slug:
-        try:
-            raw_speaker = _resolve_speaker_name(chapter)
-            participant = lookup_participant_fuzzy(raw_speaker) if raw_speaker else None
-            slug = participant.get("slug") if participant else None
-        except Exception as exc:
-            logging.warning(
-                "_prepare_thumbnail_config: speaker resolution failed for "
-                "chapter_id=%s: %s — setting slug=None",
-                chapter_id,
-                exc,
-            )
-            slug = None
+    if is_turn:
+        # Turn path: anchor key_speakers to the turn's own speaker (resolved_name).
+        # Use resolved_name directly for the fuzzy slug lookup.
+        resolved_name = chapter.get("resolved_name") or ""
+        key_speakers = [resolved_name] if resolved_name else []
+        slug = None
+        if resolved_name:
+            try:
+                participant = lookup_participant_fuzzy(resolved_name)
+                slug = participant.get("slug") if participant else None
+            except Exception as exc:
+                logging.warning(
+                    "_prepare_thumbnail_config: turn speaker resolution failed for "
+                    "turn_id=%s resolved_name=%r: %s — setting slug=None",
+                    chapter.get("turn_id"),
+                    resolved_name,
+                    exc,
+                )
+                slug = None
+    else:
+        # Chapter path: preserve existing behaviour.
+        # Prefer the authoritative slug written by speaker normalization (fuzzy or
+        # institutional-role resolution). Fall back to a raw-speaker fuzzy match only
+        # when the chapter was never resolved. Fuzzy matching stays confined to this
+        # boundary; downstream thumbnail code receives only the stable slug.
+        key_speakers = chapter.get("key_speakers") or []
+        slug = chapter.get("resolved_participant_slug") or None
+        if not slug:
+            try:
+                raw_speaker = _resolve_speaker_name(chapter)
+                participant = lookup_participant_fuzzy(raw_speaker) if raw_speaker else None
+                slug = participant.get("slug") if participant else None
+            except Exception as exc:
+                logging.warning(
+                    "_prepare_thumbnail_config: speaker resolution failed for "
+                    "chapter_id=%s: %s — setting slug=None",
+                    chapter_id,
+                    exc,
+                )
+                slug = None
 
     config = {
         "chapter_id": chapter_id,
@@ -183,8 +210,13 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
         "domain": "congreso",
         "session": session,
         "slug": slug,
-        "key_speakers": chapter.get("key_speakers") or [],
+        "key_speakers": key_speakers,
     }
+
+    # Thread the canonical output_path for turn-type items (Slice 4a).
+    # Chapter-type items never have output_path — key is absent by design.
+    if is_turn:
+        config["output_path"] = chapter.get("output_path")
 
     # Resolve SRT fragment for lapidary quote extraction (issue #57).
     video_id = chapter.get("video_id")
@@ -195,18 +227,45 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
     )
     if srt_path is not None:
         blocks = _parse_srt_blocks(srt_path)
-        # Convert chapter time-window boundaries (SRT-format strings) to seconds.
-        chapter_start_secs = _srt_timestamp_to_seconds(chapter.get("start_time", "00:00:00,000"))
-        chapter_end_secs = _srt_timestamp_to_seconds(chapter.get("end_time", "99:59:59,999"))
-        window_texts = [
-            b["text"]
+        if is_turn:
+            # Turn: use integer seconds directly from the turn row.
+            window_start_secs = float(chapter.get("start_seconds", 0))
+            window_end_secs = float(chapter.get("end_seconds", 99 * 3600))
+        else:
+            # Chapter: convert SRT-format timestamp strings to seconds.
+            window_start_secs = _srt_timestamp_to_seconds(chapter.get("start_time", "00:00:00,000"))
+            window_end_secs = _srt_timestamp_to_seconds(chapter.get("end_time", "99:59:59,999"))
+        windowed = [
+            b
             for b in blocks
-            if b["start_secs"] >= chapter_start_secs and b["end_secs"] <= chapter_end_secs
+            if b["start_secs"] >= window_start_secs and b["end_secs"] <= window_end_secs
         ]
-        joined = " ".join(window_texts)
-        config["srt_fragment"] = joined[:10_000]
+        config["srt_fragment"] = " ".join(b["text"] for b in windowed)[:10_000]
+        # Note (issue #146 Fix C): the turn subtitles.srt sidecar is now written
+        # exclusively by the nightly speaker_turn_prepare DAG. The upload path no
+        # longer writes it; srt_fragment above is still needed for the lapidary
+        # thumbnail quote (chapter path) and is harmless for turns.
 
     return config
+
+
+def _run_get_uploadable_item(db) -> dict | None:
+    """Try the turn queue first; fall back to the chapter queue.
+
+    Returns a dict with keys:
+      - 'item': the row dict (turn or chapter)
+      - 'item_type': 'turn' or 'chapter'
+    Returns None when both queues are empty.
+    """
+    turns = db.get_uploadable_turns(limit=1)
+    if turns:
+        return {"item": turns[0], "item_type": "turn"}
+
+    chapters = db.get_uploadable_chapters(limit=1, min_relevance_score=2)
+    if chapters:
+        return {"item": chapters[0], "item_type": "chapter"}
+
+    return None
 
 
 def _thumbnail_failure(chapter_id: int | None) -> dict:
@@ -239,6 +298,8 @@ def trigger_thumbnail_generation(ti, **context) -> str | None:
     }
     if "srt_fragment" in thumbnail_config:
         child_conf["srt_fragment"] = thumbnail_config["srt_fragment"]
+    if thumbnail_config.get("output_path"):
+        child_conf["output_path"] = thumbnail_config["output_path"]
     try:
         dag_run = trigger_dag_api(
             dag_id=_THUMBNAIL_DAG_ID,
@@ -398,62 +459,183 @@ with (
         python_callable=should_upload,
     )
 
-    # Step 2: Get uploadable chapters (limit=1 per run)
-    # Ordered by: session_date DESC, relevance_score DESC, created_at DESC
-    t1_db = PostgreSQLOperator(
-        task_id="get_uploadable_chapters",
-        operation="get_uploadable_chapters",
-        output_xcom_key="uploadable_chapters",
-    )
+    # Step 2: Dual-queue item selection — turns first, chapters as fallback (limit=1 per run)
+    def _run_get_uploadable_item_task(ti):
+        """Select upload item from turn queue first; fall back to chapter queue.
+
+        Pushes 'uploadable_item' XCom key with dict:
+          {'item': <row dict>, 'item_type': 'turn' | 'chapter'}
+        or {'item': None, 'item_type': None} when both queues are empty.
+        """
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        db = CongressionalVideoDB()
+        result = _run_get_uploadable_item(db)
+        if result is None:
+            result = {"item": None, "item_type": None}
+        ti.xcom_push(key="uploadable_item", value=result)
+        logging.info(
+            "Selected uploadable item: item_type=%s, item=%s",
+            result.get("item_type"),
+            result.get("item", {}).get("chapter_id") if result.get("item") else None,
+        )
 
     def _generate_youtube_metadata(ti):
         from congress_videos.modules.youtube import youtube_ai
 
+        uploadable = ti.xcom_pull(key="uploadable_item") or {}
+        item = uploadable.get("item") or {}
+        # Pass a single-item list matching the chapter-list contract expected by youtube_ai
+        items = [item] if item else []
         return xcom_task(
             ti,
-            lambda: youtube_ai.generate_youtube_metadata_for_selected_videos(
-                ti.xcom_pull(key="uploadable_chapters")
-            ),
+            lambda: youtube_ai.generate_youtube_metadata_for_selected_videos(items),
             "youtube_metadata_results",
         )
 
     def _run_prepare_thumbnail_config(ti):
-        """Resolve speaker name and build thumbnail config struct for the chapter."""
+        """Resolve speaker name and build thumbnail config struct for the item (turn or chapter)."""
         from congress_videos.modules.database import CongressionalVideoDB
 
-        chapters = ti.xcom_pull(key="uploadable_chapters") or []
-        # Uploader processes exactly 1 chapter per run
-        chapter = chapters[0] if chapters else {}
+        uploadable = ti.xcom_pull(key="uploadable_item") or {}
+        item = uploadable.get("item") or {}
         db = CongressionalVideoDB()
-        result = _prepare_thumbnail_config(chapter, db)
+        result = _prepare_thumbnail_config(item, db)
         ti.xcom_push(key="thumbnail_config", value=result)
 
     def _run_generate_thumbnail(ti):
-        """Trigger the generic thumbnail DAG and retain its completed result."""
+        """Trigger the generic thumbnail DAG for chapters; skip for turns (sidecars pre-written).
+
+        Turn items have already been prepared by the speaker_turn_prepare DAG which
+        triggers generic_thumbnail_generator and writes all sidecars. The upload DAG
+        must not duplicate that work. Skipping here is identified by item_type='turn'
+        from the uploadable_item XCom key.
+        """
+        uploadable = ti.xcom_pull(key="uploadable_item") or {}
+        if uploadable.get("item_type") == "turn":
+            # Thumbnail already written by PREPARE DAG — do nothing.
+            logging.info(
+                "_run_generate_thumbnail: skipping thumbnail trigger for turn item "
+                "(sidecars pre-written by speaker_turn_prepare)"
+            )
+            return None
         return trigger_thumbnail_generation(ti, run_id=ti.run_id)
 
     def _extract_chapter_videos(ti):
+        """Extract chapter video via ffmpeg, or use the pre-materialized turn video path."""
         from congress_videos.modules import video_splitter
 
-        return xcom_task(
-            ti,
-            lambda: video_splitter.extract_chapters_from_video(
-                ti.xcom_pull(key="uploadable_chapters"),
-                ti.xcom_pull(key="data_directory_path"),
-            ),
-            "chapter_extraction_results",
-        )
+        uploadable = ti.xcom_pull(key="uploadable_item") or {}
+        item = uploadable.get("item") or {}
+        item_type = uploadable.get("item_type")
+
+        if item_type == "turn":
+            # Turn video already exists at output_path — no ffmpeg extraction needed.
+            output_path = item.get("output_path")
+            success = bool(output_path)
+            result = {
+                "total_chapters": 1,
+                "successful_extractions": 1 if success else 0,
+                "failed_extractions": 0 if success else 1,
+                "results": [
+                    {
+                        "chapter_id": item.get("chapter_id"),
+                        "turn_id": item.get("turn_id"),
+                        "video_id": item.get("video_id"),
+                        "success": success,
+                        "output_path": output_path,
+                        "file_size_mb": None,
+                        "duration_seconds": None,
+                        "error": None if success else "turn output_path missing",
+                    }
+                ],
+            }
+            ti.xcom_push(key="chapter_extraction_results", value=result)
+            return result
+        else:
+            # Chapter: call video_splitter (ffmpeg-based extraction)
+            chapters = [item] if item else []
+            return xcom_task(
+                ti,
+                lambda: video_splitter.extract_chapters_from_video(
+                    chapters,
+                    ti.xcom_pull(key="data_directory_path"),
+                ),
+                "chapter_extraction_results",
+            )
 
     def _prepare_upload_config(ti, **context):
-        from congress_videos.modules.youtube import prepare_chapter_upload_config
+        """Build upload config for the selected item (turn or chapter).
 
+        Turn items: read pre-prepared sidecars via prepare_orador_upload_config.
+          - Zero AI calls, zero ffmpeg calls, zero thumbnail triggers.
+          - Validates sidecar presence; raises FileNotFoundError if any is missing.
+        Chapter items: unchanged path via prepare_chapter_upload_config + AI metadata.
+        """
+        from congress_videos.modules.youtube import prepare_chapter_upload_config
+        from congress_videos.modules.youtube.youtube_upload import prepare_orador_upload_config
+
+        dry_run = context.get("params", {}).get("dry_run", False)
+        is_testing = context.get("params", {}).get("isTesting", False)
+        uploadable = ti.xcom_pull(key="uploadable_item") or {}
+        item_type = uploadable.get("item_type")
+
+        if item_type == "turn":
+            # Turn path: read pre-written sidecars; build a minimal extraction_results
+            # wrapper so the generic uploader receives the same envelope shape.
+            extraction_results = ti.xcom_pull(key="chapter_extraction_results") or {}
+            results = extraction_results.get("results") or []
+            if not results or not results[0].get("success"):
+                logging.warning(
+                    "_prepare_upload_config: turn extraction result missing or failed — "
+                    "skipping upload config"
+                )
+                ti.xcom_push(key="upload_config", value=None)
+                return None
+
+            output_path = results[0].get("output_path") or ""
+            if not output_path:
+                logging.warning(
+                    "_prepare_upload_config: turn output_path missing — skipping"
+                )
+                ti.xcom_push(key="upload_config", value=None)
+                return None
+
+            turn_config = prepare_orador_upload_config(
+                output_path=output_path,
+                is_testing=is_testing,
+            )
+            # Add turn_id + chapter_id from extraction result for upload tracking
+            turn_config["chapter_id"] = results[0].get("chapter_id")
+            turn_config["turn_id"] = results[0].get("turn_id")
+            turn_config["video_id"] = results[0].get("video_id")
+
+            from congress_videos.config.youtube_channels import (
+                DEFAULT_CHANNEL,
+                resolve_token_path,
+            )
+
+            config = {
+                "token_file": resolve_token_path(DEFAULT_CHANNEL, "upload"),
+                "videos": [turn_config],
+            }
+            logging.info(
+                "_prepare_upload_config: turn path — sidecars read from %s, title=%r",
+                os.path.dirname(output_path),
+                turn_config.get("title", "")[:60],
+            )
+            ti.xcom_push(key="upload_config", value=config)
+            return config
+
+        # Chapter path (unchanged).
         return xcom_task(
             ti,
             lambda: prepare_chapter_upload_config(
                 ti.xcom_pull(key="chapter_extraction_results"),
                 ti.xcom_pull(key="youtube_metadata_results"),
                 thumbnail_result=ti.xcom_pull(key="thumbnail_result"),
-                is_testing=context["params"].get("isTesting", False),
+                is_testing=is_testing,
+                dry_run=dry_run,
             ),
             "upload_config",
         )
@@ -462,7 +644,12 @@ with (
         """Back-fill youtube_video_id in video_thumbnails after upload completes."""
         _backfill_thumbnail_video_id(ti)
 
-    # Step 2: Generate YouTube metadata for chapters
+    t1_item = PythonOperator(
+        task_id="get_uploadable_item",
+        python_callable=_run_get_uploadable_item_task,
+    )
+
+    # Step 2: Generate YouTube metadata for the selected item (turn or chapter)
     t2 = PythonOperator(
         task_id="generate_youtube_metadata",
         python_callable=_generate_youtube_metadata,
@@ -480,7 +667,7 @@ with (
         python_callable=_run_generate_thumbnail,
     )
 
-    # Step 5: Extract chapter videos from source YouTube videos using ffmpeg
+    # Step 5: Extract video — turn path reused directly; chapter extracted via ffmpeg
     t5 = PythonOperator(
         task_id="extract_chapter_videos",
         python_callable=_extract_chapter_videos,
@@ -604,6 +791,14 @@ with (
         output_xcom_key="chapter_upload_updates",
     )
 
+    # Step 8c: Mark turn videos as uploaded (runs in parallel with mark_chapters_uploaded)
+    t8_turns = PostgreSQLOperator(
+        task_id="mark_turns_uploaded",
+        operation="mark_turns_uploaded",
+        xcom_keys={"upload_results": "upload_results"},
+        output_xcom_key="turn_upload_updates",
+    )
+
     # Step 8b: Back-fill youtube_video_id in video_thumbnails
     t8_backfill = PythonOperator(
         task_id="backfill_thumbnail_video_id",
@@ -616,20 +811,20 @@ with (
         python_callable=_check_upload_failures,
     )
 
-    # Task dependencies (13 tasks total)
-    # t0 > t1_quota > t1_skip > t1_db > t2 > t3_prepare > t4_generate > t5 > t6 > t7 > t8_db > t8_backfill > t9
+    # Task dependencies (14 tasks total)
+    # t0 > t1_quota > t1_skip > t1_item > t2 > t3_prepare > t4_generate > t5 > t6 > t7 > [t8_db, t8_turns] > t8_backfill > t9
     (
         t0
         >> t1_quota
         >> t1_skip
-        >> t1_db
+        >> t1_item
         >> t2
         >> t3_prepare
         >> t4_generate
         >> t5
         >> t6
         >> t7
-        >> t8_db
+        >> [t8_db, t8_turns]
         >> t8_backfill
         >> t9
     )

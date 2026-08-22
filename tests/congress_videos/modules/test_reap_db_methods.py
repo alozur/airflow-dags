@@ -469,3 +469,49 @@ class TestGetChapterMetadata:
         assert "youtube_video_id" in sql
         assert "source_video_title" in sql
         assert "source_video_url" in sql
+
+
+# --------------------------------------------------------------------------- #
+# get_source_video_id_for_chapter
+# --------------------------------------------------------------------------- #
+
+class TestGetSourceVideoIdForChapter:
+
+    @pytest.mark.parametrize("row,expected", [
+        ({"video_id": "src_vid_001"}, "src_vid_001"),
+        (None, None),
+    ])
+    def test_returns_video_id_or_none(self, db, row, expected):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = row
+
+        result = instance.get_source_video_id_for_chapter(7)
+
+        assert result == expected
+
+    def test_null_video_id_in_row_returns_none(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"video_id": None}
+
+        result = instance.get_source_video_id_for_chapter(99)
+
+        assert result is None
+
+    def test_query_selects_from_video_chapters(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.get_source_video_id_for_chapter(5)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "video_chapters" in sql
+        assert "video_id" in sql
+
+    def test_passes_chapter_id_as_param(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.get_source_video_id_for_chapter(42)
+
+        _, params = mock_cursor.execute.call_args[0]
+        assert 42 in params

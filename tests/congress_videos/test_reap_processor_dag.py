@@ -187,11 +187,14 @@ class TestReapJobSensor:
         mock_db_cls = mocker.patch("congress_videos.reap_processor_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
         mock_db.insert_video_short_clip.return_value = 1
+        mock_db.get_source_video_id_for_chapter.return_value = "src_vid_001"
 
-        mocker.patch("os.makedirs")
+        mock_path = MagicMock()
+        mock_path.__str__ = MagicMock(side_effect=lambda: "/data/canonical/clip.mp4")
+        mock_path.parent = MagicMock()
         mocker.patch(
-            "congress_videos.reap_processor_dag.get_short_file_path",
-            side_effect=lambda ch, cl: f"/data/{ch}/{cl}.mp4",
+            "congress_videos.reap_processor_dag.get_chapter_short_file_path",
+            return_value=mock_path,
         )
 
         result = sensor.poke(context)
@@ -216,10 +219,14 @@ class TestReapJobSensor:
 
         mock_db_cls = mocker.patch("congress_videos.reap_processor_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
+        mock_db.get_source_video_id_for_chapter.return_value = "src_vid_001"
 
+        mock_path = MagicMock()
+        mock_path.__str__ = MagicMock(return_value="/data/canonical/clip.mp4")
+        mock_path.parent = MagicMock()
         mocker.patch(
-            "congress_videos.reap_processor_dag.get_short_file_path",
-            side_effect=lambda ch, cl: f"/data/{ch}/{cl}.mp4",
+            "congress_videos.reap_processor_dag.get_chapter_short_file_path",
+            return_value=mock_path,
         )
 
         sensor.poke(context)
@@ -434,3 +441,129 @@ class TestCreateReapJob:
         _create_reap_job(ti, params={})
 
         assert ti.xcom_store.get("credits_exhausted") is True
+
+
+# ---------------------------------------------------------------------------
+# TestReapJobSensorCanonicalPath — Slice 6 (#133)
+# ---------------------------------------------------------------------------
+
+class TestReapJobSensorCanonicalPath:
+    """Tests for the canonical write-point rewire in ReapJobSensor.poke."""
+
+    def _build_sensor(self):
+        from congress_videos.reap_processor_dag import ReapJobSensor
+        return ReapJobSensor(
+            task_id="wait_for_reap_canonical_test",
+            reap_project_id_key="reap_project_id_for_sensor",
+            chapter_id_key="chapter_id_for_sensor",
+            poke_interval=900,
+            timeout=7200,
+            mode="reschedule",
+        )
+
+    def test_canonical_path_used_when_source_video_id_present(self, mocker):
+        """download_clip and insert_video_short_clip both receive the canonical str path."""
+        sensor = self._build_sensor()
+        context = _make_context({
+            "reap_project_id_for_sensor": "proj-abc",
+            "chapter_id_for_sensor": 7,
+        })
+
+        clips = [{"clip_id": "clip-1", "clip_url": "https://cdn.reap.video/c1.mp4", "virality_score": 0.8}]
+
+        mock_client_cls = mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
+        mock_client = mock_client_cls.return_value
+        mock_client.get_project_status.return_value = {"status": "completed"}
+        mock_client.get_project_clips.return_value = clips
+
+        mock_db_cls = mocker.patch("congress_videos.reap_processor_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_source_video_id_for_chapter.return_value = "src001"
+
+        canonical_str = "/data/congreso-es-tv/src001/video_chapters/7/shorts/clip-1.mp4"
+        mock_path = MagicMock()
+        mock_path.__str__ = MagicMock(return_value=canonical_str)
+        mock_path.parent = MagicMock()
+        mocker.patch(
+            "congress_videos.reap_processor_dag.get_chapter_short_file_path",
+            return_value=mock_path,
+        )
+
+        sensor.poke(context)
+
+        # download_clip must receive str, not Path
+        download_args = mock_client.download_clip.call_args[0]
+        assert download_args[1] == canonical_str
+        assert isinstance(download_args[1], str)
+
+        # insert_video_short_clip must receive the same str via local_file_path
+        insert_kwargs = mock_db.insert_video_short_clip.call_args[1]
+        assert insert_kwargs["local_file_path"] == canonical_str
+
+    def test_skip_with_warning_when_source_video_id_is_none(self, mocker, caplog):
+        """When get_source_video_id_for_chapter returns None, no download/insert, no exception."""
+        import logging
+        sensor = self._build_sensor()
+        context = _make_context({
+            "reap_project_id_for_sensor": "proj-xyz",
+            "chapter_id_for_sensor": 99,
+        })
+
+        clips = [{"clip_id": "clip-X", "clip_url": "https://cdn.reap.video/cx.mp4", "virality_score": 0.5}]
+
+        mock_client_cls = mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
+        mock_client = mock_client_cls.return_value
+        mock_client.get_project_status.return_value = {"status": "completed"}
+        mock_client.get_project_clips.return_value = clips
+
+        mock_db_cls = mocker.patch("congress_videos.reap_processor_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_source_video_id_for_chapter.return_value = None
+
+        mocker.patch("congress_videos.reap_processor_dag.get_chapter_short_file_path")
+
+        with caplog.at_level(logging.WARNING):
+            result = sensor.poke(context)
+
+        assert result is True
+        mock_client.download_clip.assert_not_called()
+        mock_db.insert_video_short_clip.assert_not_called()
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "99" in r.message]
+        assert len(warnings) >= 1
+
+    def test_parent_mkdir_called_before_download(self, mocker):
+        """dest_path.parent.mkdir(parents=True, exist_ok=True) must be called before download."""
+        from pathlib import Path
+        sensor = self._build_sensor()
+        context = _make_context({
+            "reap_project_id_for_sensor": "proj-mkdir",
+            "chapter_id_for_sensor": 5,
+        })
+
+        clips = [{"clip_id": "c1", "clip_url": "https://cdn.reap.video/c1.mp4", "virality_score": 0.6}]
+
+        mock_client_cls = mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
+        mock_client = mock_client_cls.return_value
+        mock_client.get_project_status.return_value = {"status": "completed"}
+        mock_client.get_project_clips.return_value = clips
+
+        mock_db_cls = mocker.patch("congress_videos.reap_processor_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_source_video_id_for_chapter.return_value = "svid5"
+
+        mock_path = MagicMock(spec=Path)
+        mock_path.__str__ = MagicMock(return_value="/data/canonical/c1.mp4")
+        mock_path.parent = MagicMock()
+        mocker.patch(
+            "congress_videos.reap_processor_dag.get_chapter_short_file_path",
+            return_value=mock_path,
+        )
+
+        call_order = []
+        mock_path.parent.mkdir.side_effect = lambda **kw: call_order.append("mkdir")
+        mock_client.download_clip.side_effect = lambda *a: call_order.append("download")
+
+        sensor.poke(context)
+
+        mock_path.parent.mkdir.assert_called_once_with(parents=True, exist_ok=True)
+        assert call_order.index("mkdir") < call_order.index("download")

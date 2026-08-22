@@ -36,7 +36,9 @@ Pipeline overview::
 
 from __future__ import annotations
 
+import os
 import pathlib
+import shutil
 from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
@@ -184,7 +186,13 @@ def _task_download_option(label: str, ti: TaskInstance, **context: object) -> di
     gen_result: dict = ti.xcom_pull(task_ids=f"generate_thumbnail_{label}") or {}
 
     output_url: str = gen_result.get("output") or gen_result.get("output_url", "")
-    thumb_dir = get_thumbnail_dir(conf["youtube_video_id"])
+    _output_path = conf.get("output_path")
+    if _output_path:
+        # Turn-type item: co-locate thumbnail beside video.mp4 in the canonical dir.
+        thumb_dir = pathlib.Path(os.path.dirname(_output_path))
+    else:
+        # Chapter-type or standalone trigger: use the legacy thumbnail directory.
+        thumb_dir = get_thumbnail_dir(conf["youtube_video_id"])
     local_path = thumb_dir / f"{label}.png"
 
     _pkz.download(output_url, str(local_path))
@@ -265,15 +273,52 @@ def _task_persist_results(ti: TaskInstance, **context: object) -> None:
     )
 
 
+def _persist_canonical_thumbnail(best_local_path: str, canonical_dir: pathlib.Path) -> str:
+    """Copy the chosen best option to thumbnail.png in the canonical directory.
+
+    This reconciliation step ensures the final artifact is always named
+    ``thumbnail.png`` beside ``video.mp4`` for turn-type items, regardless
+    of which option label (option_a / option_b) was selected as the best.
+
+    Args:
+        best_local_path: Absolute path of the best-scored PNG (e.g. .../option_a.png).
+        canonical_dir: Parent directory derived from conf['output_path'] (anchor folder).
+
+    Returns:
+        Absolute path of the resulting ``thumbnail.png`` file.
+    """
+    canonical_thumbnail = canonical_dir / "thumbnail.png"
+    shutil.copy(best_local_path, str(canonical_thumbnail))
+    return str(canonical_thumbnail)
+
+
 def _task_thumbnail_result(ti: TaskInstance, **context: object) -> dict:
-    """Expose the persisted generation result to the DAG that triggered this run."""
+    """Expose the persisted generation result to the DAG that triggered this run.
+
+    For turn-type items (canonical path): copies the best option to thumbnail.png
+    in the canonical directory and returns that path as output_path.
+    For chapter-type or standalone triggers (legacy path): returns best local_path
+    unchanged.
+    """
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
     best: dict = ti.xcom_pull(task_ids="choose_best_option") or {}
     title: str = ti.xcom_pull(task_ids="generate_title") or ""
+
+    best_local_path: str | None = best.get("local_path")
+    _conf_output_path = conf.get("output_path")
+
+    if _conf_output_path and best_local_path:
+        # Turn-type canonical path: reconcile to thumbnail.png.
+        canonical_dir = pathlib.Path(os.path.dirname(_conf_output_path))
+        output_path = _persist_canonical_thumbnail(best_local_path, canonical_dir)
+    else:
+        # Legacy chapter path or standalone trigger: use best local_path as-is.
+        output_path = best_local_path
+
     return {
         "chapter_id": int(conf["chapter_id"]),
         "success": True,
-        "output_path": best.get("local_path"),
+        "output_path": output_path,
         "title": title,
     }
 

@@ -7,8 +7,11 @@ import pytest
 from congress_videos.srt_helpers import (
     _find_phrase_in_blocks,
     _parse_srt_blocks,
+    _serialize_srt_blocks,
     _srt_timestamp_to_seconds,
     find_srt_for_chapter,
+    score_turn_interest,
+    _window_srt_text,
     select_pretrim_window,
 )
 
@@ -424,3 +427,353 @@ class TestParseSrtToTextBatch2:
         result = parse_srt_to_text(path, max_chars=500)
 
         assert len(result) <= 500
+
+
+# ---------------------------------------------------------------------------
+# _serialize_srt_blocks
+# ---------------------------------------------------------------------------
+
+class TestSerializeSrtBlocks:
+
+    @pytest.mark.parametrize("blocks,expected", [
+        (
+            [],
+            "",
+        ),
+        (
+            [{"start_secs": 0.0, "end_secs": 59.999, "text": "Hola"}],
+            "1\n00:00:00,000 --> 00:00:59,999\nHola\n",
+        ),
+        (
+            [
+                {"start_secs": 3661.5, "end_secs": 3663.0, "text": "Hola"},
+                {"start_secs": 3663.5, "end_secs": 3665.0, "text": "Mundo"},
+            ],
+            (
+                "1\n01:01:01,500 --> 01:01:03,000\nHola\n"
+                "\n"
+                "2\n01:01:03,500 --> 01:01:05,000\nMundo\n"
+            ),
+        ),
+    ])
+    def test_serialize_produces_valid_srt(self, blocks, expected):
+        assert _serialize_srt_blocks(blocks) == expected
+
+    def test_sequential_1_based_index(self):
+        blocks = [
+            {"start_secs": 1.0, "end_secs": 2.0, "text": "A"},
+            {"start_secs": 3.0, "end_secs": 4.0, "text": "B"},
+            {"start_secs": 5.0, "end_secs": 6.0, "text": "C"},
+        ]
+        result = _serialize_srt_blocks(blocks)
+        assert result.startswith("1\n")
+        assert "\n2\n" in result
+        assert "\n3\n" in result
+
+    def test_milliseconds_rounded_correctly(self):
+        # 0.9999 seconds → should round to 1000 ms → carry → 00:00:01,000
+        # but spec says round the frac part; 0.9999 * 1000 = 999.9 → rounds to 1000
+        # Actually per spec: ms = int(round((secs % 1) * 1000))
+        # For secs=0.9999: secs%1=0.9999, *1000=999.9, round=1000 → ms=1000
+        # That would make the display 00:00:00,1000 — which is not valid SRT.
+        # The design uses int(secs) first, so 0.9999 → int(0.9999)=0, h=0,m=0,sec=0, ms=round(0.9999*1000)=1000
+        # Per _secs_to_srt_ts formula in design: rebuild from formula gives ms=1000 here.
+        # We test a clean value: 59.999 → ms=round(0.999*1000)=round(999)=999
+        blocks = [{"start_secs": 59.999, "end_secs": 60.0, "text": "X"}]
+        result = _serialize_srt_blocks(blocks)
+        assert "00:00:59,999" in result
+        assert "00:01:00,000" in result
+
+
+# ---------------------------------------------------------------------------
+# find_srt_for_chapter — canonical-first probe (new param)
+# ---------------------------------------------------------------------------
+
+class TestFindSrtForChapterCanonical:
+
+    def test_canonical_dir_set_and_file_exists_returns_canonical(self, tmp_path):
+        canonical_dir = tmp_path / "oradores" / "abc"
+        canonical_dir.mkdir(parents=True)
+        srt = canonical_dir / "subtitles.srt"
+        srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nHola\n", encoding="utf-8")
+
+        result = find_srt_for_chapter(
+            "vid123", 1, session_date=None, canonical_dir=str(canonical_dir)
+        )
+
+        assert result == str(srt)
+
+    def test_canonical_dir_set_but_file_absent_falls_back_to_legacy(self, tmp_path, mocker):
+        canonical_dir = tmp_path / "oradores" / "abc"
+        canonical_dir.mkdir(parents=True)
+        # subtitles.srt does NOT exist — triggers legacy fallback
+
+        legacy_path = "/data/congress_videos/vid123/srt_files/vid123.srt"
+
+        def _exists(p):
+            # canonical path: absent; legacy path: present
+            return p == legacy_path
+
+        mocker.patch("os.path.exists", side_effect=_exists)
+        mocker.patch("os.path.isdir", return_value=False)
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", "/data/congress_videos")
+
+        result = find_srt_for_chapter(
+            "vid123", 1, session_date="2025-01-01", canonical_dir=str(canonical_dir)
+        )
+
+        assert result == legacy_path
+
+    def test_canonical_dir_none_default_preserves_legacy_behavior(self, mocker):
+        expected = "/data/congress_videos/vid123/srt_files/vid123.srt"
+
+        def _exists(p):
+            return p == expected
+
+        mocker.patch("os.path.exists", side_effect=_exists)
+        mocker.patch("os.path.isdir", return_value=False)
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", "/data/congress_videos")
+
+        result = find_srt_for_chapter("vid123", 1, session_date="2025-01-01")
+
+        assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# score_turn_interest
+# ---------------------------------------------------------------------------
+
+SAMPLE_SRT_MULTI = (
+    "1\n00:00:01,000 --> 00:00:05,000\nEl presidente compareció ante el Congreso\n\n"
+    "2\n00:00:10,000 --> 00:00:20,000\npara informar sobre el accidente ferroviario\n\n"
+    "3\n00:01:00,000 --> 00:01:10,000\nLa oposición criticó la gestión del gobierno\n\n"
+    "4\n00:01:15,000 --> 00:01:25,000\nquedan a disposición de sus señorías\n\n"
+)
+
+
+class TestScoreTurnInterest:
+
+    def test_happy_path(self):
+        """Inject completion_fn returning '7' → expect 7."""
+        def _fn(**kwargs):
+            return {"content": "7", "error": None}
+
+        result = score_turn_interest("texto de prueba", completion_fn=_fn)
+        assert result == 7
+
+    def test_prose_response(self):
+        """completion returns 'Score: 8/10' → expect 8 (re.search first digit group)."""
+        def _fn(**kwargs):
+            return {"content": "Score: 8/10", "error": None}
+
+        result = score_turn_interest("texto de prueba", completion_fn=_fn)
+        assert result == 8
+
+    def test_non_numeric_response(self):
+        """completion returns 'abc' → expect None."""
+        def _fn(**kwargs):
+            return {"content": "abc", "error": None}
+
+        result = score_turn_interest("texto de prueba", completion_fn=_fn)
+        assert result is None
+
+    def test_clamp_high(self):
+        """completion returns '99' → expect 10 (clamped to INTEREST_SCALE_MAX)."""
+        def _fn(**kwargs):
+            return {"content": "99", "error": None}
+
+        result = score_turn_interest("texto de prueba", completion_fn=_fn)
+        assert result == 10
+
+    def test_clamp_low(self):
+        """completion returns '-3' → expect 0 (clamped to INTEREST_SCALE_MIN)."""
+        def _fn(**kwargs):
+            return {"content": "-3", "error": None}
+
+        result = score_turn_interest("texto de prueba", completion_fn=_fn)
+        assert result == 0
+
+    def test_empty_window_returns_none(self):
+        """Call with '' → expect None; assert completion_fn was NOT called."""
+        called = []
+
+        def _fn(**kwargs):
+            called.append(True)
+            return {"content": "7", "error": None}
+
+        result = score_turn_interest("", completion_fn=_fn)
+        assert result is None
+        assert not called, "completion_fn must NOT be called for empty window"
+
+    def test_whitespace_only_returns_none(self):
+        """Call with whitespace-only text → expect None; no LLM call."""
+        called = []
+
+        def _fn(**kwargs):
+            called.append(True)
+            return {"content": "7", "error": None}
+
+        result = score_turn_interest("   \n  ", completion_fn=_fn)
+        assert result is None
+        assert not called
+
+    def test_llm_returns_none_content(self):
+        """completion returns {'content': None, 'error': 'timeout'} → expect None."""
+        def _fn(**kwargs):
+            return {"content": None, "error": "timeout"}
+
+        result = score_turn_interest("texto de prueba", completion_fn=_fn)
+        assert result is None
+
+    def test_llm_raises_returns_none(self):
+        """completion_fn raises RuntimeError → expect None (never raises)."""
+        def _fn(**kwargs):
+            raise RuntimeError("network error")
+
+        result = score_turn_interest("texto de prueba", completion_fn=_fn)
+        assert result is None
+
+    def test_uses_gpt4o_mini_model(self):
+        """score_turn_interest must pass model='gpt-4o-mini' to completion_fn."""
+        called_with = {}
+
+        def _fn(**kwargs):
+            called_with.update(kwargs)
+            return {"content": "5", "error": None}
+
+        score_turn_interest("texto de prueba", completion_fn=_fn)
+        assert called_with.get("model") == "gpt-4o-mini"
+
+    def test_uses_temperature_zero(self):
+        """score_turn_interest must pass temperature=0.0 to completion_fn."""
+        called_with = {}
+
+        def _fn(**kwargs):
+            called_with.update(kwargs)
+            return {"content": "5", "error": None}
+
+        score_turn_interest("texto de prueba", completion_fn=_fn)
+        assert called_with.get("temperature") == 0.0
+
+
+# ---------------------------------------------------------------------------
+# _window_srt_text
+# ---------------------------------------------------------------------------
+
+
+class TestWindowSrtText:
+
+    @pytest.fixture
+    def srt_file_multi(self, tmp_path) -> str:
+        path = tmp_path / "video_merged.srt"
+        path.write_text(SAMPLE_SRT_MULTI, encoding="utf-8")
+        return str(path)
+
+    def test_in_range_blocks_joined_first_window(self, mocker, srt_file_multi):
+        """Blocks overlapping [0, 10] → include first block; exclude 60s block."""
+        mocker.patch(
+            "congress_videos.srt_helpers.find_srt_for_chapter",
+            return_value=srt_file_multi,
+        )
+        result = _window_srt_text("vidXXX", 0.0, 10.0)
+        assert "presidente" in result.lower()
+        assert "oposición" not in result.lower()
+
+    def test_in_range_blocks_joined_third_window(self, mocker, srt_file_multi):
+        """Blocks overlapping [50, 80] → include third and fourth blocks only."""
+        mocker.patch(
+            "congress_videos.srt_helpers.find_srt_for_chapter",
+            return_value=srt_file_multi,
+        )
+        result = _window_srt_text("vidXXX", 50.0, 80.0)
+        assert "oposición" in result.lower() or "disposición" in result.lower()
+        assert "presidente" not in result.lower()
+
+    def test_missing_srt_returns_empty(self, mocker):
+        """video_id with no SRT on disk → returns ''."""
+        mocker.patch(
+            "congress_videos.srt_helpers.find_srt_for_chapter",
+            return_value=None,
+        )
+        result = _window_srt_text("nonexistent_vid", 0.0, 100.0)
+        assert result == ""
+
+    def test_no_blocks_in_range_returns_empty(self, mocker, srt_file_multi):
+        """SRT exists but [500, 600] range has no blocks → returns ''."""
+        mocker.patch(
+            "congress_videos.srt_helpers.find_srt_for_chapter",
+            return_value=srt_file_multi,
+        )
+        result = _window_srt_text("vidXXX", 500.0, 600.0)
+        assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# TestMaterializeTaskScoring
+# ---------------------------------------------------------------------------
+
+
+class TestMaterializeTaskScoring:
+
+    def test_scorer_failure_does_not_crash_materialize(self, monkeypatch):
+        """patch score_turn_interest to raise RuntimeError; _materialize_task returns summary dict
+        without re-raising; no UPDATE with interest_score is executed."""
+        import importlib
+        import sys
+
+        MODULE = "congress_videos.speaker_turn_videos_dag"
+        if MODULE in sys.modules:
+            del sys.modules[MODULE]
+        mod = importlib.import_module(MODULE)
+
+        # Patch scorer to raise
+        monkeypatch.setattr(
+            "congress_videos.speaker_turn_videos_dag.score_turn_interest",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        monkeypatch.setattr(
+            "congress_videos.speaker_turn_videos_dag._window_srt_text",
+            lambda *a, **kw: "some text",
+        )
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: "/data/src.mp4")
+
+        plan_mock = type("Plan", (), {
+            "turn_ids": (7,),
+            "keep_intervals": (type("KI", (), {"start": 600.0, "end": 700.0})(),),
+            "needs_reencode": False,
+            "output_turn_id": 7,
+            "chapter_id": 3,
+        })()
+
+        monkeypatch.setattr(mod, "plan_turn_materialization", lambda turns, trims: [plan_mock])
+        monkeypatch.setattr(mod, "execute_plan", lambda *a, **kw: None)
+        monkeypatch.setattr(mod, "get_cached_codec", lambda *a, **k: "h264")
+
+        execute_calls = []
+
+        pg = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        conn = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        cur = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        cur.fetchall.return_value = []
+
+        def _execute(sql, params=None):
+            execute_calls.append((sql, params))
+
+        cur.execute.side_effect = _execute
+        conn.cursor.return_value.__enter__.return_value = cur
+        pg.get_connection.return_value.__enter__.return_value = conn
+        pg.get_qualified_table.side_effect = lambda n: f"test.{n}"
+        monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
+
+        ti = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+        ti.xcom_pull.return_value = [{
+            "turn_id": 7, "chapter_id": 3, "video_id": "vid1",
+            "start_seconds": 600.0, "end_seconds": 700.0,
+        }]
+
+        # Must not raise
+        result = mod._materialize_task(ti=ti, dag_run=__import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(conf={}))
+
+        assert isinstance(result, dict), "must return summary dict even on scorer failure"
+        update_calls = [c for c in execute_calls if "UPDATE" in str(c[0]).upper() and "interest_score" in str(c[0]).lower()]
+        assert len(update_calls) == 0, "interest_score UPDATE must not be committed when scorer raises"

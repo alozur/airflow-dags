@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -16,15 +17,16 @@ from congress_videos.config.paths import (
     FONT_REGULAR,
     FONTS_DIR,
     PROJECT_DATA_DIR,
-    VIDEOS_DIR,
     YOUTUBE_TOKEN_FILE,
     ensure_directory_exists,
+    get_chapter_short_file_path,
+    get_chapter_shorts_dir,
     get_download_date_path,
     get_download_file_path,
     get_download_video_path,
-    get_session_path,
-    get_topic_path,
-    get_video_path,
+    get_orador_artifact_path,
+    get_orador_video_dir,
+    get_video_chapter_dir,
 )
 
 
@@ -40,9 +42,6 @@ class TestModuleConstants:
 
     def test_project_data_dir_ends_with_congress_videos(self):
         assert PROJECT_DATA_DIR.endswith("congress_videos")
-
-    def test_videos_dir_ends_with_videos(self):
-        assert VIDEOS_DIR.endswith("videos")
 
     def test_downloads_dir_ends_with_downloads(self):
         assert DOWNLOADS_DIR.endswith("downloads")
@@ -71,86 +70,8 @@ class TestModuleConstants:
     def test_project_data_dir_contains_base_data_dir(self):
         assert PROJECT_DATA_DIR.startswith(BASE_DATA_DIR)
 
-    def test_videos_dir_contains_project_data_dir(self):
-        assert VIDEOS_DIR.startswith(PROJECT_DATA_DIR)
-
     def test_downloads_dir_contains_project_data_dir(self):
         assert DOWNLOADS_DIR.startswith(PROJECT_DATA_DIR)
-
-
-# ---------------------------------------------------------------------------
-# get_session_path
-# ---------------------------------------------------------------------------
-
-class TestGetSessionPath:
-    def test_returns_string(self):
-        result = get_session_path("PL_115_001")
-        assert isinstance(result, str)
-
-    def test_path_ends_with_session_number(self):
-        result = get_session_path("PL_115_001")
-        assert result.endswith("PL_115_001")
-
-    def test_path_starts_with_videos_dir(self):
-        result = get_session_path("PL_115_001")
-        assert result.startswith(VIDEOS_DIR)
-
-    def test_path_separator(self):
-        result = get_session_path("MY_SESSION")
-        assert result == f"{VIDEOS_DIR}/MY_SESSION"
-
-    @pytest.mark.parametrize("session", ["PL_115_001", "PL_001", "SESSION-2025", "123"])
-    def test_various_session_numbers(self, session: str):
-        result = get_session_path(session)
-        assert result.endswith(session)
-        assert VIDEOS_DIR in result
-
-
-# ---------------------------------------------------------------------------
-# get_topic_path
-# ---------------------------------------------------------------------------
-
-class TestGetTopicPath:
-    def test_returns_correct_path(self):
-        result = get_topic_path("PL_115_001", "20250101_01")
-        assert result == f"{VIDEOS_DIR}/PL_115_001/20250101_01"
-
-    def test_ends_with_topic_entry_id(self):
-        result = get_topic_path("PL_115_001", "20250101_01")
-        assert result.endswith("20250101_01")
-
-    def test_contains_session_number(self):
-        result = get_topic_path("PL_115_001", "20250101_01")
-        assert "PL_115_001" in result
-
-    def test_path_depth_is_correct(self):
-        result = get_topic_path("S1", "T1")
-        assert result == f"{VIDEOS_DIR}/S1/T1"
-
-
-# ---------------------------------------------------------------------------
-# get_video_path
-# ---------------------------------------------------------------------------
-
-class TestGetVideoPath:
-    def test_returns_correct_path(self):
-        result = get_video_path("PL_115_001", "20250101_01", "video.mp4")
-        assert result == f"{VIDEOS_DIR}/PL_115_001/20250101_01/video.mp4"
-
-    def test_ends_with_filename(self):
-        result = get_video_path("PL_115_001", "20250101_01", "clip.mp4")
-        assert result.endswith("clip.mp4")
-
-    def test_contains_all_segments(self):
-        result = get_video_path("PL_115_001", "20250101_01", "video.mp4")
-        assert "PL_115_001" in result
-        assert "20250101_01" in result
-        assert "video.mp4" in result
-
-    @pytest.mark.parametrize("filename", ["video.mp4", "audio.mp3", "thumbnail.png", "subtitles.srt"])
-    def test_various_filenames(self, filename: str):
-        result = get_video_path("S1", "T1", filename)
-        assert result.endswith(filename)
 
 
 # ---------------------------------------------------------------------------
@@ -246,3 +167,153 @@ class TestEnsureDirectoryExists:
         result = ensure_directory_exists(nested)
         assert os.path.isdir(nested)
         assert result == nested
+
+
+# ---------------------------------------------------------------------------
+# get_orador_video_dir — T1
+# ---------------------------------------------------------------------------
+
+class TestGetOradorVideoDir:
+    """Tests for get_orador_video_dir helper (canonical speaker-turn layout)."""
+
+    def test_default_channel_slug(self):
+        result = get_orador_video_dir("abc123", 7, 42)
+        assert result == Path(f"{PROJECT_DATA_DIR}/congreso-es-tv/abc123/video_chapters/7/oradores/42")
+
+    def test_custom_channel_slug(self):
+        result = get_orador_video_dir("abc123", 7, 42, channel_slug="otro-canal")
+        assert result == Path(f"{PROJECT_DATA_DIR}/otro-canal/abc123/video_chapters/7/oradores/42")
+
+    def test_integer_ids_coerce_to_string_form(self):
+        result = get_orador_video_dir("vid1", 10, 99)
+        path_str = str(result)
+        assert "/10/" in path_str
+        assert path_str.endswith("/99")
+
+    def test_string_ids_identical_to_integer_ids(self):
+        assert get_orador_video_dir("vid1", "10", "99") == get_orador_video_dir("vid1", 10, 99)
+
+    def test_no_directory_created(self, tmp_path):
+        result = get_orador_video_dir("nosuchvid", 1, 1)
+        assert not result.exists()
+
+    def test_return_type_is_path(self):
+        result = get_orador_video_dir("abc123", 7, 42)
+        assert isinstance(result, Path)
+
+    def test_exact_segment_sequence(self):
+        result = get_orador_video_dir("abc123", 7, 42)
+        parts = result.parts
+        # Verify canonical order in the trailing segments
+        idx = parts.index("congreso-es-tv")
+        assert parts[idx] == "congreso-es-tv"
+        assert parts[idx + 1] == "abc123"
+        assert parts[idx + 2] == "video_chapters"
+        assert parts[idx + 3] == "7"
+        assert parts[idx + 4] == "oradores"
+        assert parts[idx + 5] == "42"
+
+
+# ---------------------------------------------------------------------------
+# get_orador_artifact_path — T2
+# ---------------------------------------------------------------------------
+
+class TestGetOradorArtifactPath:
+    """Tests for get_orador_artifact_path helper."""
+
+    def test_video_artifact_path(self):
+        result = get_orador_artifact_path("abc123", 7, 42, "video.mp4")
+        assert result == get_orador_video_dir("abc123", 7, 42) / "video.mp4"
+
+    @pytest.mark.parametrize("filename", [
+        "video.mp4",
+        "subtitles.srt",
+        "thumbnail.png",
+        "title.txt",
+        "description.txt",
+    ])
+    def test_all_five_artifact_filenames(self, filename: str):
+        result = get_orador_artifact_path("abc123", 7, 42, filename)
+        assert result.name == filename
+        assert result.parent == get_orador_video_dir("abc123", 7, 42)
+
+    def test_composition_via_get_orador_video_dir(self):
+        src, chap, turn, name = "somevid", 3, 17, "thumbnail.png"
+        result = get_orador_artifact_path(src, chap, turn, name)
+        assert result == get_orador_video_dir(src, chap, turn) / name
+
+    def test_no_directory_created(self):
+        result = get_orador_artifact_path("nosuchvid", 1, 1, "video.mp4")
+        assert not result.parent.exists()
+
+    def test_return_type_is_path(self):
+        result = get_orador_artifact_path("abc123", 7, 42, "title.txt")
+        assert isinstance(result, Path)
+
+
+# ---------------------------------------------------------------------------
+# TestOradorHelpersImportPurity — T3
+# ---------------------------------------------------------------------------
+
+class TestOradorHelpersImportPurity:
+    """Tests that helpers are pure, deterministic, and importable without Airflow."""
+
+    def test_deterministic_video_dir(self):
+        args = ("myvid", 5, 10)
+        assert get_orador_video_dir(*args) == get_orador_video_dir(*args)
+
+    def test_deterministic_artifact_path(self):
+        args = ("myvid", 5, 10, "video.mp4")
+        assert get_orador_artifact_path(*args) == get_orador_artifact_path(*args)
+
+    def test_import_requires_only_pathlib_and_config(self):
+        # Re-import inside the test body to confirm no Airflow/DB dependency at import time.
+        from congress_videos.config.paths import (  # noqa: PLC0415
+            get_orador_artifact_path as _a,
+            get_orador_video_dir as _v,
+        )
+        assert callable(_v)
+        assert callable(_a)
+
+
+# ---------------------------------------------------------------------------
+# TestChapterShortPathHelpers — Slice 6 (#133)
+# ---------------------------------------------------------------------------
+
+class TestChapterShortPathHelpers:
+    """Unit tests for chapter-level short-clip path helpers (Slice 6)."""
+
+    @pytest.mark.parametrize("source_video_id,chapter_id,clip_id,expected_suffix", [
+        ("abc123", 7, "clip01", "congreso-es-tv/abc123/video_chapters/7/shorts/clip01.mp4"),
+        ("xyz999", 42, "clip99", "congreso-es-tv/xyz999/video_chapters/42/shorts/clip99.mp4"),
+    ])
+    def test_canonical_segment_order(self, source_video_id, chapter_id, clip_id, expected_suffix):
+        result = get_chapter_short_file_path(source_video_id, chapter_id, clip_id)
+        assert str(result).endswith(expected_suffix)
+
+    def test_explicit_channel_slug_overrides_default(self):
+        result = get_chapter_short_file_path("abc123", 7, "clip01", channel_slug="custom-channel")
+        assert "custom-channel/" in str(result)
+        assert "congreso-es-tv" not in str(result)
+
+    def test_integer_chapter_id_coerces_to_string_segment(self):
+        result = get_video_chapter_dir("abc", 42)
+        parts = result.parts
+        assert "42" in parts
+
+    def test_file_path_is_strict_child_of_shorts_dir(self):
+        src, ch, clip = "vid1", 5, "c01"
+        file_path = get_chapter_short_file_path(src, ch, clip)
+        shorts_dir = get_chapter_shorts_dir(src, ch)
+        assert file_path.parent == shorts_dir
+
+    def test_shorts_dir_is_strict_child_of_chapter_dir(self):
+        src, ch = "vid1", 5
+        shorts_dir = get_chapter_shorts_dir(src, ch)
+        chapter_dir = get_video_chapter_dir(src, ch)
+        assert shorts_dir.parent == chapter_dir
+
+    def test_return_types_are_path(self):
+        assert isinstance(get_video_chapter_dir("v", 1), Path)
+        assert isinstance(get_chapter_shorts_dir("v", 1), Path)
+        assert isinstance(get_chapter_short_file_path("v", 1, "c"), Path)

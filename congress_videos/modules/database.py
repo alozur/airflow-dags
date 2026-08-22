@@ -1008,6 +1008,26 @@ class CongressionalVideoDB:
                     f"for project {reap_project_id}"
                 )
 
+    def get_source_video_id_for_chapter(self, chapter_id: int) -> str | None:
+        """Return the source YouTube video_id for a chapter row.
+
+        Args:
+            chapter_id: Database chapter ID to look up.
+
+        Returns:
+            The ``video_id`` string when the chapter exists and has a non-NULL
+            ``video_id``; ``None`` otherwise (no row or NULL value).
+        """
+        table = self.pg_conn.get_qualified_table('video_chapters')
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT video_id FROM {table} WHERE chapter_id = %s",
+                    (chapter_id,),
+                )
+                row = cur.fetchone()
+                return row['video_id'] if row and row['video_id'] else None
+
     def claim_pending_clip(self) -> dict | None:
         """
         Atomically claim one pending clip from the queue, ordered by priority.
@@ -1220,10 +1240,154 @@ class CongressionalVideoDB:
                 result = cur.fetchone()
                 return result['count'] if result else 0
 
+    def get_uploadable_turns(self, limit: int = 1) -> List[Dict]:
+        """Get speaker turn videos eligible for YouTube upload.
+
+        Args:
+            limit: Maximum number of turns to return (default: 1).
+
+        Returns:
+            List of turn records from the uploadable_turns view.
+        """
+        uploadable_turns_view = self.pg_conn.get_qualified_table('uploadable_turns')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT * FROM {uploadable_turns_view} LIMIT %s",
+                    (limit,),
+                )
+                turns = cur.fetchall()
+                logger.info(f"Retrieved {len(turns)} uploadable turns (limit={limit})")
+                return turns
+
+    def mark_turns_uploaded(self, turn_id: int, youtube_video_id: str) -> None:
+        """Mark a speaker turn video as uploaded to YouTube.
+
+        Sets is_uploaded_to_youtube=TRUE, youtube_video_id, and
+        youtube_upload_date=NOW() for the given turn_id.
+
+        Args:
+            turn_id: Database ID of the speaker turn.
+            youtube_video_id: YouTube video ID of the uploaded turn video.
+        """
+        stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {stv_table} SET
+                        is_uploaded_to_youtube = TRUE,
+                        youtube_video_id = %s,
+                        youtube_upload_date = NOW()
+                    WHERE output_path = (
+                        SELECT output_path FROM {stv_table} WHERE turn_id = %s
+                    )
+                    """,
+                    (youtube_video_id, turn_id),
+                )
+                logger.info(
+                    f"Marked turn {turn_id} as uploaded to YouTube: {youtube_video_id}"
+                )
+
+    def select_unprepared_turns(self, limit: int = 2) -> List[Dict]:
+        """Select speaker turns that have not been prepared yet.
+
+        Returns turns where prepared_at IS NULL and is_uploaded_to_youtube = FALSE,
+        ordered by COALESCE(interest_score, 1) DESC (uploadable_turns priority order).
+        Used exclusively by the speaker_turn_prepare DAG nightly loop.
+
+        Args:
+            limit: Maximum number of turns to return (default: 2, the nightly buffer).
+
+        Returns:
+            List of speaker_turn_videos rows joined to speaker_turns.
+        """
+        stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+        st_table = self.pg_conn.get_qualified_table('speaker_turns')
+        vc_table = self.pg_conn.get_qualified_table('video_chapters')
+        ysv_table = self.pg_conn.get_qualified_table('youtube_source_videos')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT * FROM (
+                        SELECT DISTINCT ON (stv.output_path)
+                            stv.turn_id, stv.output_path, st.chapter_id, st.resolved_name,
+                            st.start_seconds, st.end_seconds, st.interest_score,
+                            vc.video_id, vc.title AS chapter_title, vc.description,
+                            vc.relevance_score, vc.key_speakers,
+                            ysv.session_number, ysv.session_date, stv.materialized_at
+                        FROM {stv_table} stv
+                        JOIN {st_table} st ON stv.turn_id = st.turn_id
+                        JOIN {vc_table} vc ON st.chapter_id = vc.chapter_id
+                        JOIN {ysv_table} ysv ON vc.video_id = ysv.video_id
+                        WHERE stv.prepared_at IS NULL
+                          AND stv.is_uploaded_to_youtube = FALSE
+                          AND vc.is_uploaded_to_youtube = FALSE
+                          AND vc.relevance_score >= 2
+                          AND COALESCE(st.interest_score, 1) >= 1
+                        ORDER BY stv.output_path, stv.turn_id
+                    ) dedup
+                    ORDER BY COALESCE(dedup.interest_score, 1) DESC,
+                             dedup.relevance_score DESC, dedup.session_date DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                turns = cur.fetchall()
+                logger.info(
+                    "select_unprepared_turns: %d unprepared turns (limit=%d)",
+                    len(turns),
+                    limit,
+                )
+                return turns
+
+    def mark_turn_prepared(self, turn_id: int) -> None:
+        """Set prepared_at = now() for the given speaker_turn_videos row.
+
+        Called LAST by the prepare pipeline, only after:
+        - All four sidecars (thumbnail.png, title.txt, description.txt, subtitles.srt)
+          have been written to disk successfully, AND
+        - ffprobe returns rc==0 confirming video integrity.
+
+        Must NOT update is_uploaded_to_youtube (that is the upload gate, not prepare gate).
+
+        Args:
+            turn_id: FK / PK of the speaker_turn_videos row to mark prepared.
+        """
+        stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {stv_table}
+                    SET prepared_at = NOW()
+                    WHERE turn_id = %s
+                    """,
+                    (turn_id,),
+                )
+                logger.info("mark_turn_prepared: turn_id=%d marked prepared", turn_id)
+
+    def count_pending_uploadable_turns(self) -> int:
+        """Returns the count of speaker turn videos pending upload."""
+        count = self._count_records('uploadable_turns')
+        logger.info(f"Pending uploadable turns: {count}")
+        return count
+
     def count_chapters_uploaded_today(self) -> int:
         """Returns the number of chapters uploaded to YouTube today (UTC date)."""
         count = self._count_records('video_chapters', 'youtube_upload_date >= CURRENT_DATE')
         logger.info(f"Chapters uploaded today: {count}")
+        return count
+
+    def count_turns_uploaded_today(self) -> int:
+        """Returns the number of speaker turn videos uploaded to YouTube today (UTC date)."""
+        count = self._count_records('speaker_turn_videos', 'youtube_upload_date >= CURRENT_DATE')
+        logger.info(f"Turns uploaded today: {count}")
         return count
 
     def count_pending_uploadable_chapters(self, min_relevance_score: int = 2) -> int:

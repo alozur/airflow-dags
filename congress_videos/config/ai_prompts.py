@@ -303,6 +303,17 @@ THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE = (
 )
 
 
+# Interest scoring — rates a parliamentary excerpt 0–10 for YouTube newsworthiness.
+# Named constant so SQL comments and tests can reference it by name.
+# See srt_helpers.py: INTEREST_FILTER_THRESHOLD, INTEREST_NEUTRAL.
+INTEREST_SCORING_SYSTEM_PROMPT = (
+    "Rate 0-10 how interesting or newsworthy this parliamentary excerpt is for a YouTube audience. "
+    "0 = procedural or dead air (applause, roll calls, formalities). "
+    "10 = high-impact confrontation, major revelation, or heated accusation. "
+    "Reply with ONLY the integer. No explanation, no prose."
+)
+
+
 # Lapidary quote ranking — selects the most impactful verbatim SRT phrase for
 # the thumbnail text field.  The LLM only picks an index (never rewrites text).
 LAPIDARY_RANKING_SYSTEM_PROMPT = (
