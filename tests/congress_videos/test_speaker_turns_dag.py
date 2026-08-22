@@ -26,15 +26,66 @@ class TestDagLoads:
         mod = _fresh()
         assert mod.dag is not None
 
-    def test_schedule_is_none(self):
+    def test_schedule_is_0_1_5_twice_nightly(self):
+        """Detect DAG must run twice nightly at 01:00 and 05:00 UTC."""
         mod = _fresh()
-        assert mod.dag.schedule_interval is None
+        assert mod.dag.schedule_interval == "0 1,5 * * *"
+
+    def test_max_active_runs_is_1(self):
+        """max_active_runs=1 queues rather than drops concurrent cron runs."""
+        mod = _fresh()
+        assert mod.dag.max_active_runs == 1
 
     def test_expected_tasks_present(self):
         mod = _fresh()
         task_ids = {t.task_id for t in mod.dag.tasks}
         assert "select_chapters" in task_ids
         assert "process_chapters" in task_ids
+
+    def test_trigger_materialize_task_exists(self):
+        """Terminal trigger_materialize task must be in DAG task ids."""
+        mod = _fresh()
+        assert "trigger_materialize" in {t.task_id for t in mod.dag.tasks}
+
+    def test_trigger_materialize_downstream_of_process_chapters(self):
+        """trigger_materialize must be directly downstream of process_chapters."""
+        mod = _fresh()
+        tasks_by_id = {t.task_id: t for t in mod.dag.tasks}
+        process_task = tasks_by_id["process_chapters"]
+        downstream_ids = {t.task_id for t in process_task.downstream_list}
+        assert "trigger_materialize" in downstream_ids
+
+    def test_trigger_materialize_all_done_rule(self):
+        """trigger_materialize must fire even on partial upstream failure."""
+        mod = _fresh()
+        tasks_by_id = {t.task_id: t for t in mod.dag.tasks}
+        t = tasks_by_id["trigger_materialize"]
+        assert str(t.trigger_rule) == "all_done"
+
+    def test_trigger_materialize_callable_fires_with_imported_dag_id(self, mocker):
+        """trigger callable must call trigger_dag_api with speaker_turn_videos_dag.DAG_ID."""
+        import importlib
+        import sys
+        # ensure a fresh module load so the import is live
+        for m in list(sys.modules.keys()):
+            if "speaker_turns_dag" in m or "speaker_turn_videos_dag" in m:
+                del sys.modules[m]
+        mod = importlib.import_module("congress_videos.speaker_turns_dag")
+        import congress_videos.speaker_turn_videos_dag as stv_dag
+
+        mock_trigger = mocker.patch(
+            "congress_videos.speaker_turns_dag.trigger_dag_api"
+        )
+        mod._trigger_materialize()
+
+        mock_trigger.assert_called_once()
+        call_kwargs = mock_trigger.call_args
+        dag_id_arg = call_kwargs[1].get("dag_id") or call_kwargs[0][0]
+        assert dag_id_arg == stv_dag.DAG_ID, (
+            f"Expected dag_id={stv_dag.DAG_ID!r}, got {dag_id_arg!r}"
+        )
+        conf_arg = call_kwargs[1].get("conf")
+        assert conf_arg == {}, f"Expected conf={{}}, got {conf_arg!r}"
 
 
 class TestRunChapterTurns:

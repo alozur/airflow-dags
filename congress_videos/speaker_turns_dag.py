@@ -5,9 +5,11 @@ existing thematic ``video_chapters`` and persists named sub-turns to the
 ``speaker_turns`` table. It does NOT cut, re-encode, or move any video —
 materialization (1 speaker = 1 video) is issue #88.
 
-Triggered exclusively via the Airflow trigger API (``schedule=None``). Never
-chained into ``youtube_upload_dag`` — diarization runs ~4.6x realtime and must
-not block the upload flow.
+Runs twice nightly (``0 1,5 * * *`` UTC) as the first stage of the turn train
+(detect → materialize → prepare, issue #159); on completion it fire-and-forget
+triggers ``speaker_turn_videos``. Never chained into ``youtube_upload_dag`` —
+diarization runs ~4.6x realtime and must not block the upload flow. Manual
+runs via the trigger API keep working.
 
 Usage::
 
@@ -31,7 +33,15 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
+from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 from airflow.operators.python import PythonOperator
+
+# Import the id from config.constants, NOT from the sibling DAG module: importing
+# a DAG module executes it and Airflow auto-registers its DAG to THIS file,
+# raising AirflowDagDuplicatedIdException at parse time.
+from congress_videos.config.constants import (
+    SPEAKER_TURN_VIDEOS_DAG_ID as MATERIALIZE_DAG_ID,
+)
 
 from congress_videos.modules.participants_db import lookup_participant_fuzzy
 from congress_videos.modules.speaker_turns import detect_turns, _upsert_turns
@@ -178,6 +188,24 @@ def _process_task(**context) -> dict:
     return summary
 
 
+def _trigger_materialize(**_context) -> None:
+    """Fire-and-forget trigger to speaker_turn_videos after detect completes.
+
+    Uses trigger_rule='all_done' on the calling task so it fires even when
+    process_chapters partially fails. Any exception is caught and logged —
+    the detect DAG run is never failed by the trigger.
+    """
+    try:
+        trigger_dag_api(
+            dag_id=MATERIALIZE_DAG_ID,
+            conf={},
+            run_id=f"train_materialize_{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}",
+        )
+        logger.info("_trigger_materialize: triggered %s", MATERIALIZE_DAG_ID)
+    except Exception as exc:  # noqa: BLE001 fire-and-forget
+        logger.warning("could not trigger %s: %s", MATERIALIZE_DAG_ID, exc)
+
+
 default_args = {
     "owner": "airflow",
     "retries": 0,
@@ -186,12 +214,16 @@ default_args = {
 
 dag = DAG(
     dag_id=DAG_ID,
-    description="On-demand speaker-turn detection within video chapters (issue #86)",
-    schedule=None,
+    description=(
+        "Twice-nightly speaker-turn detection within video chapters (issue #86/#159). "
+        "On completion chains to speaker_turn_videos via trigger_materialize."
+    ),
+    schedule="0 1,5 * * *",
     start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
     catchup=False,
+    max_active_runs=1,
     default_args=default_args,
-    tags=["congress_videos", "speaker-turns", "on-demand"],
+    tags=["congress_videos", "speaker-turns"],
 )
 
 with dag:
@@ -203,4 +235,9 @@ with dag:
         task_id="process_chapters",
         python_callable=_process_task,
     )
-    select_chapters_task >> process_chapters_task
+    trigger_materialize_task = PythonOperator(
+        task_id="trigger_materialize",
+        python_callable=_trigger_materialize,
+        trigger_rule="all_done",
+    )
+    select_chapters_task >> process_chapters_task >> trigger_materialize_task

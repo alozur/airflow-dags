@@ -26,6 +26,19 @@ YOUTUBE_CHANNEL_HANDLE = "@CanalParlamento-Congreso_Es"
 TARGET_VIDEO_TITLE = "Sesión Plenaria (original)"  # Title to filter for monitoring
 
 # -------------------------
+# Turn-train DAG ids (issue #159)
+# -------------------------
+# Canonical dag_ids for the chained turn pipeline. Chain trigger callables MUST
+# import these instead of the sibling DAG module: importing a DAG module
+# executes it, and Airflow >=2.4 auto-registers every DAG constructed during
+# file parse — including transitively imported ones — raising
+# AirflowDagDuplicatedIdException. This module defines no DAGs, so it is safe
+# to import from any DAG file.
+SPEAKER_TURNS_DAG_ID = "speaker_turns"
+SPEAKER_TURN_VIDEOS_DAG_ID = "speaker_turn_videos"
+SPEAKER_TURN_PREPARE_DAG_ID = "speaker_turn_prepare"
+
+# -------------------------
 # Voice Activity Detection (VAD) — chapter-start adjustment (monitor)
 # -------------------------
 # VAD detects the real start AND end of sustained speech in each chapter's audio

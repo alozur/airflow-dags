@@ -40,8 +40,16 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
+from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 from airflow.operators.python import PythonOperator
 
+# Import the id from config.constants, NOT from the sibling DAG module: importing
+# a DAG module executes it and Airflow auto-registers its DAG to THIS file,
+# raising AirflowDagDuplicatedIdException at parse time.
+from congress_videos.config.constants import (
+    SPEAKER_TURN_PREPARE_DAG_ID as PREPARE_DAG_ID,
+    SPEAKER_TURN_VIDEOS_DAG_ID,
+)
 from congress_videos.config.paths import DOWNLOADS_DIR, get_orador_video_dir
 from congress_videos.modules.materialization import plan_turn_materialization
 from congress_videos.modules.materialization_executor import execute_plan
@@ -51,7 +59,7 @@ from utils.postgres_helpers import PostgresConnection
 
 logger = logging.getLogger(__name__)
 
-DAG_ID = "speaker_turn_videos"
+DAG_ID = SPEAKER_TURN_VIDEOS_DAG_ID
 
 _MEDIA_SUFFIXES = (".mp4", ".mkv", ".webm")
 
@@ -275,6 +283,24 @@ def _collect_task(**context) -> dict:
     return summary
 
 
+def _trigger_prepare(**_context) -> None:
+    """Fire-and-forget trigger to speaker_turn_prepare after materialization completes.
+
+    Uses trigger_rule='all_done' on the calling task so it fires even when
+    materialization partially fails. Any exception is caught and logged —
+    the materialize DAG run is never failed by the trigger.
+    """
+    try:
+        trigger_dag_api(
+            dag_id=PREPARE_DAG_ID,
+            conf={},
+            run_id=f"train_prepare_{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}",
+        )
+        logger.info("_trigger_prepare: triggered %s", PREPARE_DAG_ID)
+    except Exception as exc:  # noqa: BLE001 fire-and-forget
+        logger.warning("could not trigger %s: %s", PREPARE_DAG_ID, exc)
+
+
 # ---------------------------------------------------------------------------
 # DAG definition
 # ---------------------------------------------------------------------------
@@ -289,11 +315,13 @@ dag = DAG(
     dag_id=DAG_ID,
     description=(
         "On-demand DAG that materializes speaker-turn MP4 files from approved "
-        "trim proposals (issue #88). Requires nas_ffmpeg Airflow pool (pool_slots=1)."
+        "trim proposals (issue #88/#159). Requires nas_ffmpeg Airflow pool (pool_slots=1). "
+        "On completion chains to speaker_turn_prepare via trigger_prepare."
     ),
     schedule=None,
     start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
     catchup=False,
+    max_active_runs=1,
     max_active_tasks=1,
     default_args=default_args,
     tags=["congress_videos", "materialization", "on-demand"],
@@ -314,5 +342,10 @@ with dag:
         task_id="collect_results",
         python_callable=_collect_task,
     )
+    trigger_prepare_task = PythonOperator(
+        task_id="trigger_prepare",
+        python_callable=_trigger_prepare,
+        trigger_rule="all_done",
+    )
 
-    select_turns_task >> materialize_turns_task >> collect_results_task
+    select_turns_task >> materialize_turns_task >> collect_results_task >> trigger_prepare_task

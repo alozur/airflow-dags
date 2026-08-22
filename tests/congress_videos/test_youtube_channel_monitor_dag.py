@@ -213,132 +213,27 @@ class TestNormalizeSpeakersTask:
 
 
 # ---------------------------------------------------------------------------
-# Monitor fire-and-forget trigger for speaker_turns_dag (issue #117)
+# Phase 4 — Monitor cleanup: trigger_refinement removed, normalize_speakers terminal
 # ---------------------------------------------------------------------------
 
-def _make_ti_monitor(xcom_store: dict | None = None):
-    """Return a TaskInstance double with an in-memory XCom store."""
-    from unittest.mock import MagicMock
-    store: dict = xcom_store or {}
-    ti = MagicMock(name="TaskInstance")
-    ti.xcom_store = store
+class TestMonitorTriggerRefinementRemoved:
+    """Negative tests: trigger_refinement task must NOT exist; normalize_speakers is terminal."""
 
-    def _push(key, value, **_kw):
-        store[key] = value
-
-    def _pull(key=None, **_kw):
-        if key is None:
-            return None
-        return store.get(key)
-
-    ti.xcom_push.side_effect = _push
-    ti.xcom_pull.side_effect = _pull
-    return ti
-
-
-class TestMonitorTriggerRefinementTask:
-    """t_trigger_refinement topology tests (structural, no DB)."""
-
-    def test_trigger_refinement_task_exists(self):
-        """trigger_refinement task must exist in the monitor DAG."""
+    def test_no_trigger_refinement_task(self):
+        """trigger_refinement task must not exist in the monitor DAG after cleanup."""
         from congress_videos.youtube_channel_monitor_dag import dag
         task_ids = {t.task_id for t in dag.tasks}
-        assert "trigger_refinement" in task_ids, (
-            "Expected task_id 'trigger_refinement' in monitor DAG tasks"
+        assert "trigger_refinement" not in task_ids, (
+            "trigger_refinement task must be deleted from the monitor DAG "
+            "(was targeting non-existent dag_id='speaker_turns_dag')"
         )
 
-    def test_trigger_refinement_is_downstream_of_normalize_speakers(self):
-        """trigger_refinement must be wired after normalize_speakers."""
+    def test_normalize_speakers_is_terminal(self):
+        """normalize_speakers must have no downstream tasks after trigger_refinement is removed."""
         from congress_videos.youtube_channel_monitor_dag import dag
         tasks_by_id = {t.task_id: t for t in dag.tasks}
-
         normalize = tasks_by_id["normalize_speakers"]
-        trigger = tasks_by_id["trigger_refinement"]
-
-        downstream_ids = {t.task_id for t in normalize.downstream_list}
-        assert trigger.task_id in downstream_ids, (
-            "'trigger_refinement' must be a direct downstream of 'normalize_speakers'"
+        assert len(normalize.downstream_list) == 0, (
+            f"normalize_speakers must be terminal (no downstream tasks); "
+            f"found: {[t.task_id for t in normalize.downstream_list]}"
         )
-
-    def test_trigger_refinement_trigger_rule_is_all_done(self):
-        """trigger_refinement must use trigger_rule='all_done' so it runs even when
-        normalize_speakers short-circuits."""
-        from congress_videos.youtube_channel_monitor_dag import dag
-        tasks_by_id = {t.task_id: t for t in dag.tasks}
-        t = tasks_by_id["trigger_refinement"]
-        assert str(t.trigger_rule) == "all_done", (
-            f"Expected trigger_rule='all_done', got {t.trigger_rule!r}"
-        )
-
-    def test_dag_import_is_clean(self):
-        """DAG must import without errors after adding trigger_dag_api import."""
-        from congress_videos.youtube_channel_monitor_dag import dag
-        assert dag is not None
-        assert dag.dag_id == "congress_youtube_channel_monitor"
-
-
-class TestMonitorTriggerRefinementCallable:
-    """Callable unit tests: fire-and-forget, error swallowing, zero-chapters skip."""
-
-    def test_trigger_called_when_chapters_saved(self, mocker):
-        """trigger_dag_api called when db_save_results.total_chapters_saved > 0."""
-        from congress_videos.youtube_channel_monitor_dag import _trigger_refinement
-
-        mock_trigger = mocker.patch(
-            "congress_videos.youtube_channel_monitor_dag.trigger_dag_api"
-        )
-        ti = _make_ti_monitor(
-            {"db_save_results": {"total_chapters_saved": 3, "total_videos_saved": 1}}
-        )
-
-        _trigger_refinement(ti=ti)
-
-        mock_trigger.assert_called_once()
-        call_kwargs = mock_trigger.call_args
-        # Must target speaker_turns_dag
-        assert call_kwargs[1].get("dag_id") == "speaker_turns_dag" or (
-            len(call_kwargs[0]) > 0 and call_kwargs[0][0] == "speaker_turns_dag"
-        )
-
-    def test_trigger_not_called_when_zero_chapters_saved(self, mocker):
-        """trigger_dag_api NOT called when total_chapters_saved == 0."""
-        from congress_videos.youtube_channel_monitor_dag import _trigger_refinement
-
-        mock_trigger = mocker.patch(
-            "congress_videos.youtube_channel_monitor_dag.trigger_dag_api"
-        )
-        ti = _make_ti_monitor(
-            {"db_save_results": {"total_chapters_saved": 0, "total_videos_saved": 0}}
-        )
-
-        _trigger_refinement(ti=ti)
-
-        mock_trigger.assert_not_called()
-
-    def test_trigger_not_called_when_no_db_save_results(self, mocker):
-        """trigger_dag_api NOT called when db_save_results XCom is absent."""
-        from congress_videos.youtube_channel_monitor_dag import _trigger_refinement
-
-        mock_trigger = mocker.patch(
-            "congress_videos.youtube_channel_monitor_dag.trigger_dag_api"
-        )
-        ti = _make_ti_monitor({})  # no db_save_results key
-
-        _trigger_refinement(ti=ti)
-
-        mock_trigger.assert_not_called()
-
-    def test_trigger_exception_is_swallowed(self, mocker):
-        """trigger_dag_api raising an exception must NOT propagate — task succeeds."""
-        from congress_videos.youtube_channel_monitor_dag import _trigger_refinement
-
-        mocker.patch(
-            "congress_videos.youtube_channel_monitor_dag.trigger_dag_api",
-            side_effect=Exception("Network error"),
-        )
-        ti = _make_ti_monitor(
-            {"db_save_results": {"total_chapters_saved": 2, "total_videos_saved": 1}}
-        )
-
-        # Must not raise — fire-and-forget
-        _trigger_refinement(ti=ti)

@@ -24,12 +24,15 @@ from airflow import DAG
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 from airflow.operators.python import PythonOperator
 
+from congress_videos.config.constants import SPEAKER_TURN_PREPARE_DAG_ID
 from congress_videos.modules.database import CongressionalVideoDB
 from utils.env_loader import load_env_if_local
 
 load_env_if_local()
 
 logger = logging.getLogger(__name__)
+
+DAG_ID = SPEAKER_TURN_PREPARE_DAG_ID
 
 _THUMBNAIL_DAG_ID = "generic_thumbnail_generator"
 _THUMBNAIL_RESULT_TASK_ID = "thumbnail_result"
@@ -138,6 +141,7 @@ def _write_turn_sidecars(turn: dict) -> None:
     from congress_videos.srt_helpers import (
         _parse_srt_blocks,
         _serialize_srt_blocks,
+        _window_srt_blocks,
         find_srt_for_chapter,
     )
 
@@ -185,13 +189,16 @@ def _write_turn_sidecars(turn: dict) -> None:
 
     if srt_path is not None:
         blocks = _parse_srt_blocks(srt_path)
-        window_start = float(turn.get("start_seconds", 0))
-        window_end = float(turn.get("end_seconds", 99 * 3600))
-        windowed = [
-            b
-            for b in blocks
-            if b["start_secs"] >= window_start and b["end_secs"] <= window_end
-        ]
+        # Use group extent when available (grouped-turn clip spans multiple individual
+        # turns sharing one output_path).  Fall back to per-turn start/end for
+        # single-turn rows that do not carry group_* keys.
+        window_start = float(
+            turn.get("group_start_seconds", turn.get("start_seconds", 0))
+        )
+        window_end = float(
+            turn.get("group_end_seconds", turn.get("end_seconds", 99 * 3600))
+        )
+        windowed = _window_srt_blocks(blocks, window_start, window_end)
     else:
         windowed = []
 
@@ -204,6 +211,22 @@ def _write_turn_sidecars(turn: dict) -> None:
         turn.get("turn_id"),
         video_dir,
     )
+
+
+def _run_ffmpeg_decode_check(path: str) -> int:
+    """Fully decode a video via ffmpeg to verify integrity.
+
+    Uses ``ffmpeg -f null -`` (ffprobe has no null output muxer and always
+    returns rc=1, which means prepared_at is never set — live-confirmed on
+    prod 2026-08-22). A non-zero return code means the file is truncated or
+    corrupt. Does not raise on failure; returns the process return code.
+    """
+    result = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return result.returncode
 
 
 def _prepare_turns_callable() -> None:
@@ -245,19 +268,13 @@ def _prepare_turns_callable() -> None:
             _write_turn_sidecars(turn)
 
             # Step 3: ffmpeg decode integrity check.
-            # ffprobe does not support the -f null output muxer and always
-            # returns rc=1; use ffmpeg -f null - to fully decode the file.
-            result = subprocess.run(
-                ["ffmpeg", "-v", "error", "-i", str(output_path), "-f", "null", "-"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            if result.returncode != 0:
+            rc = _run_ffmpeg_decode_check(output_path)
+            if rc != 0:
                 logger.warning(
                     "_prepare_turns_callable: ffmpeg decode check failed for turn_id=%d "
                     "(rc=%d) — prepared_at NOT set; will retry next night",
                     turn_id,
-                    result.returncode,
+                    rc,
                 )
                 continue
 
@@ -291,15 +308,17 @@ default_args = {
 }
 
 with DAG(
-    "speaker_turn_prepare",
+    DAG_ID,
     default_args=default_args,
     description=(
-        "Nightly PREPARE phase: generates sidecars and validates up to 2 speaker "
-        "turn videos; sets prepared_at readiness gate before upload."
+        "PREPARE phase: generates sidecars and validates up to 2 speaker "
+        "turn videos; sets prepared_at readiness gate before upload. "
+        "Triggered by speaker_turn_videos chain (schedule=None)."
     ),
-    schedule="0 2 * * *",
+    schedule=None,
     start_date=datetime(2026, 8, 21),
     catchup=False,
+    max_active_runs=1,
     tags=["congress", "speaker-turns", "prepare"],
 ) as dag:
     prepare_turns = PythonOperator(

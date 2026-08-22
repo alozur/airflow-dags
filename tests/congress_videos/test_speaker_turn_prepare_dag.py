@@ -1,10 +1,13 @@
-"""Tests for speaker_turn_prepare DAG (issue #146).
+"""Tests for speaker_turn_prepare DAG (issue #146, #152).
 
 TDD cycle: RED tests written first; GREEN implementations follow.
 """
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
+from subprocess import PIPE
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -73,10 +76,16 @@ class TestSpeakerTurnPrepareDagLoads:
         )
 
     def test_dag_schedule_is_0_2_daily(self):
-        """DAG schedule must be '0 2 * * *' (UTC 02:00, off-peak)."""
+        """DAG schedule must be None (driven by chain trigger, not cron)."""
         from congress_videos.speaker_turn_prepare_dag import dag
 
-        assert dag.schedule_interval == "0 2 * * *" or dag.schedule == "0 2 * * *"
+        assert dag.schedule_interval is None
+
+    def test_max_active_runs_is_1(self):
+        """DAG must have max_active_runs=1 to serialise chain-triggered runs."""
+        from congress_videos.speaker_turn_prepare_dag import dag
+
+        assert dag.max_active_runs == 1
 
     def test_prepare_task_uses_nas_ffmpeg_pool(self):
         """The prepare_turns task must use pool='nas_ffmpeg'."""
@@ -100,13 +109,11 @@ class TestSpeakerTurnPrepareDagLoads:
     def test_dag_has_no_expand_call(self):
         """DAG source must not use .expand() as a live method call (no dynamic task mapping)."""
         from congress_videos.speaker_turn_prepare_dag import dag
-        import inspect
         import ast
 
-        dag_source = Path(
-            "/home/alozur/src/github.com/alozur/airflow-dags-issue-146"
-            "/congress_videos/speaker_turn_prepare_dag.py"
-        )
+        # Resolve the DAG source relative to this test file so the test is
+        # portable across worktrees.
+        dag_source = Path(__file__).parent.parent.parent / "congress_videos" / "speaker_turn_prepare_dag.py"
         content = dag_source.read_text(encoding="utf-8")
         tree = ast.parse(content)
         # Find any call nodes whose function is an attribute named 'expand'
@@ -126,7 +133,7 @@ class TestSpeakerTurnPrepareDagLoads:
 # ---------------------------------------------------------------------------
 
 class TestPrepareTurnsCallableSequentialLoop:
-    """Verify the prepare callable iterates sequentially and gates on ffprobe/sidecars."""
+    """Verify the prepare callable iterates sequentially and gates on the ffmpeg decode check/sidecars."""
 
     def test_two_turns_processed_sequentially(self):
         """Given 2 turns, callable iterates both; no concurrent fork."""
@@ -170,8 +177,8 @@ class TestPrepareTurnsCallableSequentialLoop:
         thumb2_idx = next(i for i, item in enumerate(call_order) if item == ("thumbnail", 2))
         assert mark1_idx < thumb2_idx
 
-    def test_mark_turn_prepared_not_called_when_ffprobe_nonzero(self):
-        """If ffprobe returns non-zero rc, mark_turn_prepared must NOT be called."""
+    def test_mark_turn_prepared_not_called_when_ffmpeg_nonzero(self):
+        """If the ffmpeg decode check returns non-zero rc, mark_turn_prepared must NOT be called."""
         from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
 
         turns = [_make_turn(1, "/data/v1.mp4")]
@@ -211,8 +218,8 @@ class TestPrepareTurnsCallableSequentialLoop:
 
         mock_db.mark_turn_prepared.assert_not_called()
 
-    def test_mark_turn_prepared_called_last_after_ffprobe_passes(self):
-        """mark_turn_prepared must be called AFTER ffprobe rc==0 (last step)."""
+    def test_mark_turn_prepared_called_last_after_ffmpeg_passes(self):
+        """mark_turn_prepared must be called AFTER the ffmpeg decode check rc==0 (last step)."""
         from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
 
         call_order = []
@@ -231,16 +238,16 @@ class TestPrepareTurnsCallableSequentialLoop:
             patch("subprocess.run") as mock_subproc,
         ):
             def fake_run(*args, **kwargs):
-                call_order.append("ffprobe")
+                call_order.append("ffmpeg")
                 return MagicMock(returncode=0)
             mock_subproc.side_effect = fake_run
             _prepare_turns_callable()
 
         assert "write_sidecars" in call_order
-        assert "ffprobe" in call_order
+        assert "ffmpeg" in call_order
         assert "mark_prepared" in call_order
-        # ffprobe must come before mark_prepared
-        assert call_order.index("ffprobe") < call_order.index("mark_prepared")
+        # ffmpeg decode check must come before mark_prepared
+        assert call_order.index("ffmpeg") < call_order.index("mark_prepared")
         # write_sidecars must come before mark_prepared
         assert call_order.index("write_sidecars") < call_order.index("mark_prepared")
 
@@ -306,8 +313,8 @@ class TestPrepareTurnsCallableSequentialLoop:
         mock_db.mark_turn_prepared.assert_not_called()
         mock_sub.assert_not_called()
 
-    def test_ffprobe_corrupt_check_prepared_at_not_set_when_nonzero(self):
-        """ffprobe rc != 0 must leave prepared_at NULL (mark_turn_prepared not called)."""
+    def test_ffmpeg_corrupt_check_prepared_at_not_set_when_nonzero(self):
+        """ffmpeg decode rc != 0 must leave prepared_at NULL (mark_turn_prepared not called)."""
         from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
 
         turns = [_make_turn(1, "/data/v1.mp4")]
@@ -324,8 +331,8 @@ class TestPrepareTurnsCallableSequentialLoop:
 
         mock_db.mark_turn_prepared.assert_not_called()
 
-    def test_ffprobe_corrupt_check_prepared_at_set_when_zero(self):
-        """ffprobe rc == 0 + all sidecars OK must result in mark_turn_prepared called."""
+    def test_ffmpeg_corrupt_check_prepared_at_set_when_zero(self):
+        """ffmpeg decode rc == 0 + all sidecars OK must result in mark_turn_prepared called."""
         from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
 
         turns = [_make_turn(1, "/data/v1.mp4")]
@@ -426,18 +433,232 @@ class TestTriggerThumbnailPollTimeout:
 
 
 # ---------------------------------------------------------------------------
-# 3.6 Integrity-check command must use ffmpeg (not ffprobe)
+# 3.6 Integrity-check helper: _run_ffmpeg_decode_check
 # ---------------------------------------------------------------------------
 
+class TestWriteTurnSidecarsGroupedRange:
+    """Verify _write_turn_sidecars uses group_start/end_seconds for SRT windowing.
+
+    Mocks: find_srt_for_chapter, _parse_srt_blocks,
+           generate_youtube_metadata_for_selected_videos, _write_orador_sidecars.
+    """
+
+    def _make_grouped_turn(
+        self,
+        tmp_path,
+        turn_id: int = 278,
+        group_start: float = 19157.0,
+        group_end: float = 19784.0,
+    ) -> dict:
+        video_dir = tmp_path / "output_turn_278"
+        video_dir.mkdir()
+        return {
+            "turn_id": turn_id,
+            "output_path": str(video_dir / "video.mp4"),
+            "chapter_id": 100,
+            "resolved_name": "Speaker Name",
+            "start_seconds": group_start,
+            "end_seconds": group_end,
+            "group_start_seconds": group_start,
+            "group_end_seconds": group_end,
+            "interest_score": 5,
+            "video_id": "vidXYZ",
+            "chapter_title": "Test Chapter",
+            "description": "A test description",
+            "relevance_score": 4,
+            "key_speakers": ["Speaker Name"],
+            "session_number": 1,
+            "session_date": "2026-01-01",
+            "materialized_at": "2026-01-01T00:00:00",
+        }
+
+    def test_chapter278_grouped_produces_nonempty_retimed_srt(self, tmp_path):
+        """Grouped turn with group_start=19157/group_end=19784 and overlapping SRT
+        blocks produces a non-empty subtitles.srt whose first entry is near 00:00:00.
+        """
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        turn = self._make_grouped_turn(tmp_path)
+        video_dir = Path(turn["output_path"]).parent
+
+        # One SRT block fully inside the group window
+        fake_blocks = [
+            {"start_secs": 19200.0, "end_secs": 19210.0, "text": "Bloque de prueba"},
+        ]
+
+        with (
+            patch(
+                "congress_videos.srt_helpers.find_srt_for_chapter",
+                return_value="/fake/source.srt",
+            ),
+            patch(
+                "congress_videos.srt_helpers._parse_srt_blocks",
+                return_value=fake_blocks,
+            ),
+            patch(
+                "congress_videos.modules.youtube.youtube_ai"
+                ".generate_youtube_metadata_for_selected_videos",
+                return_value={"topic_metadata": []},
+            ),
+            patch(
+                "congress_videos.modules.youtube.youtube_upload._write_orador_sidecars",
+            ),
+        ):
+            _write_turn_sidecars(turn)
+
+        srt_path = video_dir / "subtitles.srt"
+        assert srt_path.exists(), "subtitles.srt must be written"
+        content = srt_path.read_text(encoding="utf-8")
+        assert len(content) > 0, "subtitles.srt must be non-empty for overlapping blocks"
+        # First SRT entry must be re-timed to near 00:00:00 (19200 - 19157 = 43s)
+        assert "00:00:43" in content, (
+            f"First entry should be at ~43s (19200-19157), got: {content[:200]}"
+        )
+
+    def test_group_span_no_overlap_writes_empty_file(self, tmp_path):
+        """When no SRT blocks overlap the group span, subtitles.srt is 0 bytes and
+        no exception is raised.
+        """
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        turn = self._make_grouped_turn(
+            tmp_path, group_start=50000.0, group_end=51000.0
+        )
+        video_dir = Path(turn["output_path"]).parent
+
+        # Blocks entirely outside the 50000-51000 window
+        fake_blocks = [
+            {"start_secs": 100.0, "end_secs": 200.0, "text": "Outside"},
+            {"start_secs": 300.0, "end_secs": 400.0, "text": "Also outside"},
+        ]
+
+        with (
+            patch(
+                "congress_videos.srt_helpers.find_srt_for_chapter",
+                return_value="/fake/source.srt",
+            ),
+            patch(
+                "congress_videos.srt_helpers._parse_srt_blocks",
+                return_value=fake_blocks,
+            ),
+            patch(
+                "congress_videos.modules.youtube.youtube_ai"
+                ".generate_youtube_metadata_for_selected_videos",
+                return_value={"topic_metadata": []},
+            ),
+            patch(
+                "congress_videos.modules.youtube.youtube_upload._write_orador_sidecars",
+            ),
+        ):
+            _write_turn_sidecars(turn)  # must not raise
+
+        srt_path = video_dir / "subtitles.srt"
+        assert srt_path.exists()
+        assert srt_path.stat().st_size == 0, "subtitles.srt must be 0 bytes when no blocks overlap"
+
+    def test_single_turn_no_group_fields_regression(self, tmp_path):
+        """Turn dict without group_start/end_seconds uses per-turn fallback — backward compat."""
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        video_dir = tmp_path / "single_turn"
+        video_dir.mkdir()
+        turn = {
+            "turn_id": 1,
+            "output_path": str(video_dir / "video.mp4"),
+            "chapter_id": 50,
+            "resolved_name": "Solo Speaker",
+            "start_seconds": 300.0,
+            "end_seconds": 420.0,
+            # No group_start_seconds / group_end_seconds keys
+            "interest_score": 3,
+            "video_id": "vidABC",
+            "chapter_title": "Chapter 1",
+            "description": "desc",
+            "relevance_score": 3,
+            "key_speakers": [],
+            "session_number": 2,
+            "session_date": "2026-01-02",
+            "materialized_at": "2026-01-02T00:00:00",
+        }
+
+        # Block inside [300, 420] → should produce non-empty SRT
+        fake_blocks = [{"start_secs": 305.0, "end_secs": 310.0, "text": "Solo"}]
+
+        with (
+            patch(
+                "congress_videos.srt_helpers.find_srt_for_chapter",
+                return_value="/fake/source.srt",
+            ),
+            patch(
+                "congress_videos.srt_helpers._parse_srt_blocks",
+                return_value=fake_blocks,
+            ),
+            patch(
+                "congress_videos.modules.youtube.youtube_ai"
+                ".generate_youtube_metadata_for_selected_videos",
+                return_value={"topic_metadata": []},
+            ),
+            patch(
+                "congress_videos.modules.youtube.youtube_upload._write_orador_sidecars",
+            ),
+        ):
+            _write_turn_sidecars(turn)
+
+        srt_path = video_dir / "subtitles.srt"
+        assert srt_path.exists()
+        content = srt_path.read_text(encoding="utf-8")
+        assert len(content) > 0, "Single-turn SRT must be non-empty for overlapping block"
+
+
 class TestIntegrityCheckUsesFFmpeg:
-    """Step 3 must invoke ffmpeg -f null, NOT ffprobe which lacks the null muxer."""
+    """_run_ffmpeg_decode_check must invoke ffmpeg -f null, NOT ffprobe.
+
+    ffprobe does not support the -f null output muxer and always returns rc=1,
+    which means prepared_at is never set (live-confirmed on prod 2026-08-22).
+    """
+
+    def test_integrity_check_helper_calls_module_subprocess(self):
+        """_run_ffmpeg_decode_check must call the module-bound subprocess.run exactly once
+        with the correct argv and return its returncode.
+        """
+        from congress_videos.speaker_turn_prepare_dag import _run_ffmpeg_decode_check
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+
+        with patch(
+            "congress_videos.speaker_turn_prepare_dag.subprocess.run",
+            return_value=mock_result,
+        ) as mock_run:
+            rc = _run_ffmpeg_decode_check("/data/v1.mp4")
+
+        mock_run.assert_called_once_with(
+            ["ffmpeg", "-v", "error", "-i", "/data/v1.mp4", "-f", "null", "-"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert rc == 0
+
+    def test_integrity_check_helper_propagates_nonzero(self):
+        """_run_ffmpeg_decode_check returns the non-zero rc without raising."""
+        from congress_videos.speaker_turn_prepare_dag import _run_ffmpeg_decode_check
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+
+        with patch(
+            "congress_videos.speaker_turn_prepare_dag.subprocess.run",
+            return_value=mock_result,
+        ):
+            rc = _run_ffmpeg_decode_check("/data/bad.mp4")
+
+        assert rc == 1
 
     def test_integrity_check_invokes_ffmpeg_decode(self):
-        """subprocess.run must be called with ['ffmpeg', '-v', 'error', '-i', <path>, '-f', 'null', '-'].
+        """_prepare_turns_callable must reach _run_ffmpeg_decode_check with ffmpeg argv.
 
-        ffprobe does not support the -f null output muxer and always returns rc=1,
-        which means prepared_at is never set (live-confirmed on prod 2026-08-22).
-        The correct decode-integrity check uses ffmpeg -f null -.
+        Regression guard: verifies cmd[0] == 'ffmpeg' (not 'ffprobe') at the
+        _prepare_turns_callable level via module-bound subprocess.run patch.
         """
         from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
 
@@ -455,7 +676,7 @@ class TestIntegrityCheckUsesFFmpeg:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._trigger_thumbnail_for_turn"),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
-            patch("subprocess.run", side_effect=fake_run),
+            patch("congress_videos.speaker_turn_prepare_dag.subprocess.run", side_effect=fake_run),
         ):
             _prepare_turns_callable()
 
@@ -468,3 +689,43 @@ class TestIntegrityCheckUsesFFmpeg:
         assert cmd == ["ffmpeg", "-v", "error", "-i", "/data/v1.mp4", "-f", "null", "-"], (
             f"Full command mismatch: {cmd}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Smoke tests: _run_ffmpeg_decode_check with a real ffmpeg binary
+# ---------------------------------------------------------------------------
+
+class TestDecodeCheckSmoke:
+    """Real ffmpeg smoke tests for _run_ffmpeg_decode_check (integration, slow)."""
+
+    @pytest.mark.integration
+    @pytest.mark.slow
+    def test_valid_clip_returns_zero(self, tmp_path):
+        """A valid libx264 clip must be accepted (rc == 0) by _run_ffmpeg_decode_check."""
+        shutil.which("ffmpeg") or pytest.skip("ffmpeg not on PATH")
+        from congress_videos.speaker_turn_prepare_dag import _run_ffmpeg_decode_check
+
+        out = tmp_path / "out.mp4"
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-f", "lavfi", "-i", "testsrc=duration=1:size=128x64:rate=25",
+                "-c:v", "libx264", "-preset", "ultrafast",
+                str(out),
+            ],
+            stdout=PIPE,
+            stderr=PIPE,
+            timeout=120,
+        )
+        assert _run_ffmpeg_decode_check(str(out)) == 0
+
+    @pytest.mark.integration
+    @pytest.mark.slow
+    def test_corrupt_file_returns_nonzero(self, tmp_path):
+        """A garbage file must be rejected (rc != 0) by _run_ffmpeg_decode_check."""
+        shutil.which("ffmpeg") or pytest.skip("ffmpeg not on PATH")
+        from congress_videos.speaker_turn_prepare_dag import _run_ffmpeg_decode_check
+
+        bad = tmp_path / "bad.mp4"
+        bad.write_bytes(b"not a real mp4 file\x00\x01" * 8)
+        assert _run_ffmpeg_decode_check(str(bad)) != 0
