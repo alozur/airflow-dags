@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1202,6 +1203,9 @@ def _make_turn_row(
     session_number: int = 80,
     session_date: str = "2025-06-10",
 ) -> dict:
+    # Non-zero offset (hours=2) reproduces the psycopg2 TIMESTAMPTZ shape that
+    # crashes Airflow's XCom serializer with a ValueError on empty ZoneInfo key.
+    _tz_offset = timezone(timedelta(hours=2))
     return {
         "turn_id": turn_id,
         "output_path": output_path,
@@ -1215,6 +1219,8 @@ def _make_turn_row(
         "chapter_title": "Un capítulo de prueba",
         "description": "Descripción del capítulo",
         "relevance_score": 4,
+        "materialized_at": datetime(2026, 8, 22, 1, 0, tzinfo=_tz_offset),
+        "prepared_at": datetime(2026, 8, 22, 0, 0, tzinfo=_tz_offset),
     }
 
 
@@ -1323,8 +1329,12 @@ class TestDualQueueBehavior:
     """Dual-queue: turn queue has priority; chapter fallback used when turns empty."""
 
     def test_uploader_selects_turn_when_available(self, mocker):
-        """When get_uploadable_turns returns a turn, _run_get_uploadable_item returns it."""
-        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+        """When get_uploadable_turns returns a turn, _run_get_uploadable_item returns it
+        (with datetime fields sanitized to ISO-8601 strings)."""
+        from congress_videos.youtube_upload_dag import (
+            _run_get_uploadable_item,
+            _sanitize_row_for_xcom,
+        )
 
         fake_turn = _make_turn_row()
         mock_db = MagicMock()
@@ -1333,7 +1343,7 @@ class TestDualQueueBehavior:
 
         result = _run_get_uploadable_item(mock_db)
 
-        assert result["item"] == fake_turn
+        assert result["item"] == _sanitize_row_for_xcom(fake_turn)
         assert result["item_type"] == "turn"
         mock_db.get_uploadable_chapters.assert_not_called()
 
@@ -1363,6 +1373,127 @@ class TestDualQueueBehavior:
         result = _run_get_uploadable_item(mock_db)
 
         assert result is None
+
+    def test_turn_xcom_item_contains_no_datetime_values(self):
+        """PRIMARY regression test (issue #163): item dict returned for a turn
+        must contain no datetime.datetime values after _run_get_uploadable_item,
+        so Airflow's XCom serializer never sees a non-zero-offset stdlib tzinfo."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        fake_turn = _make_turn_row()
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = [fake_turn]
+
+        result = _run_get_uploadable_item(mock_db)
+
+        assert result is not None
+        assert all(not isinstance(v, datetime) for v in result["item"].values()), (
+            "item dict must not contain any datetime.datetime values (XCom serializer safety)"
+        )
+
+    def test_turn_xcom_materialized_at_is_isoformat_string(self):
+        """materialized_at and prepared_at must be ISO-8601 strings in the XCom item."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        fake_turn = _make_turn_row()
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = [fake_turn]
+
+        result = _run_get_uploadable_item(mock_db)
+
+        assert isinstance(result["item"]["materialized_at"], str)
+        assert isinstance(result["item"]["prepared_at"], str)
+        # Verify the strings are valid ISO-8601 (parseable back to datetime)
+        datetime.fromisoformat(result["item"]["materialized_at"])
+        datetime.fromisoformat(result["item"]["prepared_at"])
+
+    def test_chapter_row_unchanged_by_sanitization(self):
+        """Chapter rows (no datetime columns) must pass through unchanged."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        fake_chapter = {"chapter_id": 99, "title": "Cap 99", "relevance_score": 3}
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = []
+        mock_db.get_uploadable_chapters.return_value = [fake_chapter]
+
+        result = _run_get_uploadable_item(mock_db)
+
+        assert result["item"] == fake_chapter
+        assert result["item_type"] == "chapter"
+
+
+class TestSanitizeRowForXcom:
+    """Unit tests for the pure helper _sanitize_row_for_xcom."""
+
+    def test_sanitize_converts_datetime_to_isoformat_string(self):
+        """datetime.datetime values must be replaced with their .isoformat() string."""
+        from congress_videos.youtube_upload_dag import _sanitize_row_for_xcom
+
+        tz = timezone(timedelta(hours=2))
+        dt = datetime(2026, 8, 22, 1, 0, tzinfo=tz)
+        row = {"materialized_at": dt, "turn_id": 1}
+
+        result = _sanitize_row_for_xcom(row)
+
+        assert result["materialized_at"] == dt.isoformat()
+        assert isinstance(result["materialized_at"], str)
+
+    def test_sanitize_leaves_non_datetime_fields_unchanged(self):
+        """int, str, float, None, list, and datetime.date must pass through unchanged."""
+        import datetime as dt_module
+
+        from congress_videos.youtube_upload_dag import _sanitize_row_for_xcom
+
+        date_only = dt_module.date(2026, 8, 22)
+        row = {
+            "turn_id": 7,
+            "name": "Ana",
+            "score": 4.5,
+            "nothing": None,
+            "tags": ["a", "b"],
+            "session_date": date_only,
+        }
+
+        result = _sanitize_row_for_xcom(row)
+
+        assert result["turn_id"] == 7
+        assert result["name"] == "Ana"
+        assert result["score"] == 4.5
+        assert result["nothing"] is None
+        assert result["tags"] == ["a", "b"]
+        assert result["session_date"] is date_only
+
+    def test_sanitize_returns_new_dict_does_not_mutate_input(self):
+        """The helper must return a NEW dict; the original row must be unmodified."""
+        from congress_videos.youtube_upload_dag import _sanitize_row_for_xcom
+
+        tz = timezone(timedelta(hours=2))
+        dt = datetime(2026, 8, 22, 1, 0, tzinfo=tz)
+        row = {"prepared_at": dt, "turn_id": 5}
+
+        result = _sanitize_row_for_xcom(row)
+
+        assert result is not row
+        assert isinstance(row["prepared_at"], datetime), "Original must remain a datetime"
+
+    def test_sanitize_handles_multiple_datetime_fields(self):
+        """All datetime.datetime values in the row must be converted."""
+        from congress_videos.youtube_upload_dag import _sanitize_row_for_xcom
+
+        tz = timezone(timedelta(hours=2))
+        row = {
+            "materialized_at": datetime(2026, 8, 22, 1, 0, tzinfo=tz),
+            "prepared_at": datetime(2026, 8, 22, 0, 0, tzinfo=tz),
+            "turn_id": 3,
+        }
+
+        result = _sanitize_row_for_xcom(row)
+
+        assert all(not isinstance(v, datetime) for v in result.values()), (
+            "All datetime.datetime values must be converted to strings"
+        )
+        assert isinstance(result["materialized_at"], str)
+        assert isinstance(result["prepared_at"], str)
 
 
 class TestGuardAAndGuardB:
