@@ -31,6 +31,8 @@ load_env_if_local()
 
 logger = logging.getLogger(__name__)
 
+DAG_ID = "speaker_turn_prepare"
+
 _THUMBNAIL_DAG_ID = "generic_thumbnail_generator"
 _THUMBNAIL_RESULT_TASK_ID = "thumbnail_result"
 
@@ -305,15 +307,17 @@ default_args = {
 }
 
 with DAG(
-    "speaker_turn_prepare",
+    DAG_ID,
     default_args=default_args,
     description=(
-        "Nightly PREPARE phase: generates sidecars and validates up to 2 speaker "
-        "turn videos; sets prepared_at readiness gate before upload."
+        "PREPARE phase: generates sidecars and validates up to 2 speaker "
+        "turn videos; sets prepared_at readiness gate before upload. "
+        "Triggered by speaker_turn_videos chain (schedule=None)."
     ),
-    schedule="0 2 * * *",
+    schedule=None,
     start_date=datetime(2026, 8, 21),
     catchup=False,
+    max_active_runs=1,
     tags=["congress", "speaker-turns", "prepare"],
 ) as dag:
     prepare_turns = PythonOperator(

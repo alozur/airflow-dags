@@ -76,10 +76,16 @@ class TestSpeakerTurnPrepareDagLoads:
         )
 
     def test_dag_schedule_is_0_2_daily(self):
-        """DAG schedule must be '0 2 * * *' (UTC 02:00, off-peak)."""
+        """DAG schedule must be None (driven by chain trigger, not cron)."""
         from congress_videos.speaker_turn_prepare_dag import dag
 
-        assert dag.schedule_interval == "0 2 * * *" or dag.schedule == "0 2 * * *"
+        assert dag.schedule_interval is None
+
+    def test_max_active_runs_is_1(self):
+        """DAG must have max_active_runs=1 to serialise chain-triggered runs."""
+        from congress_videos.speaker_turn_prepare_dag import dag
+
+        assert dag.max_active_runs == 1
 
     def test_prepare_task_uses_nas_ffmpeg_pool(self):
         """The prepare_turns task must use pool='nas_ffmpeg'."""
