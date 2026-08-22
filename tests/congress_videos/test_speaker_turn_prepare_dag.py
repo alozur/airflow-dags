@@ -127,7 +127,7 @@ class TestSpeakerTurnPrepareDagLoads:
 # ---------------------------------------------------------------------------
 
 class TestPrepareTurnsCallableSequentialLoop:
-    """Verify the prepare callable iterates sequentially and gates on ffprobe/sidecars."""
+    """Verify the prepare callable iterates sequentially and gates on the ffmpeg decode check/sidecars."""
 
     def test_two_turns_processed_sequentially(self):
         """Given 2 turns, callable iterates both; no concurrent fork."""
@@ -171,8 +171,8 @@ class TestPrepareTurnsCallableSequentialLoop:
         thumb2_idx = next(i for i, item in enumerate(call_order) if item == ("thumbnail", 2))
         assert mark1_idx < thumb2_idx
 
-    def test_mark_turn_prepared_not_called_when_ffprobe_nonzero(self):
-        """If ffprobe returns non-zero rc, mark_turn_prepared must NOT be called."""
+    def test_mark_turn_prepared_not_called_when_ffmpeg_nonzero(self):
+        """If the ffmpeg decode check returns non-zero rc, mark_turn_prepared must NOT be called."""
         from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
 
         turns = [_make_turn(1, "/data/v1.mp4")]
@@ -212,8 +212,8 @@ class TestPrepareTurnsCallableSequentialLoop:
 
         mock_db.mark_turn_prepared.assert_not_called()
 
-    def test_mark_turn_prepared_called_last_after_ffprobe_passes(self):
-        """mark_turn_prepared must be called AFTER ffprobe rc==0 (last step)."""
+    def test_mark_turn_prepared_called_last_after_ffmpeg_passes(self):
+        """mark_turn_prepared must be called AFTER the ffmpeg decode check rc==0 (last step)."""
         from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
 
         call_order = []
@@ -232,16 +232,16 @@ class TestPrepareTurnsCallableSequentialLoop:
             patch("subprocess.run") as mock_subproc,
         ):
             def fake_run(*args, **kwargs):
-                call_order.append("ffprobe")
+                call_order.append("ffmpeg")
                 return MagicMock(returncode=0)
             mock_subproc.side_effect = fake_run
             _prepare_turns_callable()
 
         assert "write_sidecars" in call_order
-        assert "ffprobe" in call_order
+        assert "ffmpeg" in call_order
         assert "mark_prepared" in call_order
-        # ffprobe must come before mark_prepared
-        assert call_order.index("ffprobe") < call_order.index("mark_prepared")
+        # ffmpeg decode check must come before mark_prepared
+        assert call_order.index("ffmpeg") < call_order.index("mark_prepared")
         # write_sidecars must come before mark_prepared
         assert call_order.index("write_sidecars") < call_order.index("mark_prepared")
 
@@ -307,8 +307,8 @@ class TestPrepareTurnsCallableSequentialLoop:
         mock_db.mark_turn_prepared.assert_not_called()
         mock_sub.assert_not_called()
 
-    def test_ffprobe_corrupt_check_prepared_at_not_set_when_nonzero(self):
-        """ffprobe rc != 0 must leave prepared_at NULL (mark_turn_prepared not called)."""
+    def test_ffmpeg_corrupt_check_prepared_at_not_set_when_nonzero(self):
+        """ffmpeg decode rc != 0 must leave prepared_at NULL (mark_turn_prepared not called)."""
         from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
 
         turns = [_make_turn(1, "/data/v1.mp4")]
@@ -325,8 +325,8 @@ class TestPrepareTurnsCallableSequentialLoop:
 
         mock_db.mark_turn_prepared.assert_not_called()
 
-    def test_ffprobe_corrupt_check_prepared_at_set_when_zero(self):
-        """ffprobe rc == 0 + all sidecars OK must result in mark_turn_prepared called."""
+    def test_ffmpeg_corrupt_check_prepared_at_set_when_zero(self):
+        """ffmpeg decode rc == 0 + all sidecars OK must result in mark_turn_prepared called."""
         from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
 
         turns = [_make_turn(1, "/data/v1.mp4")]
