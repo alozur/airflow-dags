@@ -24,6 +24,7 @@ from airflow import DAG
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 from airflow.operators.python import PythonOperator
 
+from congress_videos.config.constants import SPEAKER_TURN_PREPARE_DAG_ID
 from congress_videos.modules.database import CongressionalVideoDB
 from utils.env_loader import load_env_if_local
 
@@ -31,7 +32,7 @@ load_env_if_local()
 
 logger = logging.getLogger(__name__)
 
-DAG_ID = "speaker_turn_prepare"
+DAG_ID = SPEAKER_TURN_PREPARE_DAG_ID
 
 _THUMBNAIL_DAG_ID = "generic_thumbnail_generator"
 _THUMBNAIL_RESULT_TASK_ID = "thumbnail_result"
