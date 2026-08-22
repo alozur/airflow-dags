@@ -210,6 +210,22 @@ def _write_turn_sidecars(turn: dict) -> None:
     )
 
 
+def _run_ffmpeg_decode_check(path: str) -> int:
+    """Fully decode a video via ffmpeg to verify integrity.
+
+    Uses ``ffmpeg -f null -`` (ffprobe has no null output muxer and always
+    returns rc=1, which means prepared_at is never set — live-confirmed on
+    prod 2026-08-22). A non-zero return code means the file is truncated or
+    corrupt. Does not raise on failure; returns the process return code.
+    """
+    result = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return result.returncode
+
+
 def _prepare_turns_callable() -> None:
     """Callable for the prepare_turns PythonOperator task.
 
@@ -249,19 +265,13 @@ def _prepare_turns_callable() -> None:
             _write_turn_sidecars(turn)
 
             # Step 3: ffmpeg decode integrity check.
-            # ffprobe does not support the -f null output muxer and always
-            # returns rc=1; use ffmpeg -f null - to fully decode the file.
-            result = subprocess.run(
-                ["ffmpeg", "-v", "error", "-i", str(output_path), "-f", "null", "-"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            if result.returncode != 0:
+            rc = _run_ffmpeg_decode_check(output_path)
+            if rc != 0:
                 logger.warning(
                     "_prepare_turns_callable: ffmpeg decode check failed for turn_id=%d "
                     "(rc=%d) — prepared_at NOT set; will retry next night",
                     turn_id,
-                    result.returncode,
+                    rc,
                 )
                 continue
 
