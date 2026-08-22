@@ -36,7 +36,12 @@ from airflow import DAG
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 from airflow.operators.python import PythonOperator
 
-from congress_videos.speaker_turn_videos_dag import DAG_ID as MATERIALIZE_DAG_ID
+# Import the id from config.constants, NOT from the sibling DAG module: importing
+# a DAG module executes it and Airflow auto-registers its DAG to THIS file,
+# raising AirflowDagDuplicatedIdException at parse time.
+from congress_videos.config.constants import (
+    SPEAKER_TURN_VIDEOS_DAG_ID as MATERIALIZE_DAG_ID,
+)
 
 from congress_videos.modules.participants_db import lookup_participant_fuzzy
 from congress_videos.modules.speaker_turns import detect_turns, _upsert_turns

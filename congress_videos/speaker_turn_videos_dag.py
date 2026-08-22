@@ -43,8 +43,13 @@ from airflow import DAG
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 from airflow.operators.python import PythonOperator
 
-from congress_videos.speaker_turn_prepare_dag import DAG_ID as PREPARE_DAG_ID
-
+# Import the id from config.constants, NOT from the sibling DAG module: importing
+# a DAG module executes it and Airflow auto-registers its DAG to THIS file,
+# raising AirflowDagDuplicatedIdException at parse time.
+from congress_videos.config.constants import (
+    SPEAKER_TURN_PREPARE_DAG_ID as PREPARE_DAG_ID,
+    SPEAKER_TURN_VIDEOS_DAG_ID,
+)
 from congress_videos.config.paths import DOWNLOADS_DIR, get_orador_video_dir
 from congress_videos.modules.materialization import plan_turn_materialization
 from congress_videos.modules.materialization_executor import execute_plan
@@ -54,7 +59,7 @@ from utils.postgres_helpers import PostgresConnection
 
 logger = logging.getLogger(__name__)
 
-DAG_ID = "speaker_turn_videos"
+DAG_ID = SPEAKER_TURN_VIDEOS_DAG_ID
 
 _MEDIA_SUFFIXES = (".mp4", ".mkv", ".webm")
 
