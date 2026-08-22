@@ -5,9 +5,11 @@ existing thematic ``video_chapters`` and persists named sub-turns to the
 ``speaker_turns`` table. It does NOT cut, re-encode, or move any video —
 materialization (1 speaker = 1 video) is issue #88.
 
-Triggered exclusively via the Airflow trigger API (``schedule=None``). Never
-chained into ``youtube_upload_dag`` — diarization runs ~4.6x realtime and must
-not block the upload flow.
+Runs twice nightly (``0 1,5 * * *`` UTC) as the first stage of the turn train
+(detect → materialize → prepare, issue #159); on completion it fire-and-forget
+triggers ``speaker_turn_videos``. Never chained into ``youtube_upload_dag`` —
+diarization runs ~4.6x realtime and must not block the upload flow. Manual
+runs via the trigger API keep working.
 
 Usage::
 
