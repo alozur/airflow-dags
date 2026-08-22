@@ -53,6 +53,55 @@ class TestDagLoads:
         mod = _fresh()
         assert mod.dag.max_active_tasks == 1
 
+    def test_max_active_runs_is_1(self):
+        """max_active_runs=1 queues chain-triggered runs instead of running them concurrently."""
+        mod = _fresh()
+        assert mod.dag.max_active_runs == 1
+
+    def test_trigger_prepare_task_exists(self):
+        """Terminal trigger_prepare task must exist in speaker_turn_videos DAG."""
+        mod = _fresh()
+        assert "trigger_prepare" in {t.task_id for t in mod.dag.tasks}
+
+    def test_trigger_prepare_downstream_of_collect_results(self):
+        """trigger_prepare must be directly downstream of collect_results."""
+        mod = _fresh()
+        tasks_by_id = {t.task_id: t for t in mod.dag.tasks}
+        collect_task = tasks_by_id["collect_results"]
+        downstream_ids = {t.task_id for t in collect_task.downstream_list}
+        assert "trigger_prepare" in downstream_ids
+
+    def test_trigger_prepare_all_done_rule(self):
+        """trigger_prepare must fire even when upstream tasks partially fail."""
+        mod = _fresh()
+        tasks_by_id = {t.task_id: t for t in mod.dag.tasks}
+        t = tasks_by_id["trigger_prepare"]
+        assert str(t.trigger_rule) == "all_done"
+
+    def test_trigger_prepare_callable_fires_with_imported_dag_id(self, mocker):
+        """trigger callable must call trigger_dag_api with speaker_turn_prepare_dag.DAG_ID."""
+        import importlib
+        import sys
+        for m in list(sys.modules.keys()):
+            if "speaker_turn_videos_dag" in m or "speaker_turn_prepare_dag" in m:
+                del sys.modules[m]
+        mod = importlib.import_module("congress_videos.speaker_turn_videos_dag")
+        import congress_videos.speaker_turn_prepare_dag as stp_dag
+
+        mock_trigger = mocker.patch(
+            "congress_videos.speaker_turn_videos_dag.trigger_dag_api"
+        )
+        mod._trigger_prepare()
+
+        mock_trigger.assert_called_once()
+        call_kwargs = mock_trigger.call_args
+        dag_id_arg = call_kwargs[1].get("dag_id") or call_kwargs[0][0]
+        assert dag_id_arg == stp_dag.DAG_ID, (
+            f"Expected dag_id={stp_dag.DAG_ID!r}, got {dag_id_arg!r}"
+        )
+        conf_arg = call_kwargs[1].get("conf")
+        assert conf_arg == {}, f"Expected conf={{}}, got {conf_arg!r}"
+
 
 # ---------------------------------------------------------------------------
 # 2.9 select_turns skips already-materialized turns
