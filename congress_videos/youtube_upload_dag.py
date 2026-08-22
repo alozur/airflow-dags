@@ -249,6 +249,22 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
     return config
 
 
+def _sanitize_row_for_xcom(row: dict) -> dict:
+    """Return a NEW row dict with every datetime.datetime value replaced by
+    its ISO-8601 string, so the row survives Airflow's XCom serializer.
+
+    TIMESTAMPTZ columns (materialized_at, prepared_at) arrive from psycopg2 as
+    datetime objects with a non-zero fixed-offset stdlib tzinfo; Airflow encodes
+    those as an empty-named tz that crashes on xcom_pull (issue #163). Values of
+    other types (date, Decimal, str, int, float, list, None) pass through
+    unchanged. Not recursive: the row is flat.
+    """
+    return {
+        k: (v.isoformat() if isinstance(v, datetime) else v)
+        for k, v in row.items()
+    }
+
+
 def _run_get_uploadable_item(db) -> dict | None:
     """Try the turn queue first; fall back to the chapter queue.
 
@@ -259,11 +275,11 @@ def _run_get_uploadable_item(db) -> dict | None:
     """
     turns = db.get_uploadable_turns(limit=1)
     if turns:
-        return {"item": turns[0], "item_type": "turn"}
+        return {"item": _sanitize_row_for_xcom(turns[0]), "item_type": "turn"}
 
     chapters = db.get_uploadable_chapters(limit=1, min_relevance_score=2)
     if chapters:
-        return {"item": chapters[0], "item_type": "chapter"}
+        return {"item": _sanitize_row_for_xcom(chapters[0]), "item_type": "chapter"}
 
     return None
 
