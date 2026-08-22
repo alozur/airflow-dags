@@ -423,3 +423,48 @@ class TestTriggerThumbnailPollTimeout:
         ):
             with pytest.raises(RuntimeError):
                 _trigger_thumbnail_for_turn(_make_turn(1, "/data/v1.mp4"))
+
+
+# ---------------------------------------------------------------------------
+# 3.6 Integrity-check command must use ffmpeg (not ffprobe)
+# ---------------------------------------------------------------------------
+
+class TestIntegrityCheckUsesFFmpeg:
+    """Step 3 must invoke ffmpeg -f null, NOT ffprobe which lacks the null muxer."""
+
+    def test_integrity_check_invokes_ffmpeg_decode(self):
+        """subprocess.run must be called with ['ffmpeg', '-v', 'error', '-i', <path>, '-f', 'null', '-'].
+
+        ffprobe does not support the -f null output muxer and always returns rc=1,
+        which means prepared_at is never set (live-confirmed on prod 2026-08-22).
+        The correct decode-integrity check uses ffmpeg -f null -.
+        """
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turns = [_make_turn(1, "/data/v1.mp4")]
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = turns
+
+        captured_cmd = []
+
+        def fake_run(cmd, **kwargs):
+            captured_cmd.append(cmd)
+            return MagicMock(returncode=0)
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._trigger_thumbnail_for_turn"),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            _prepare_turns_callable()
+
+        assert len(captured_cmd) == 1, "subprocess.run must be called exactly once"
+        cmd = captured_cmd[0]
+        assert cmd[0] == "ffmpeg", (
+            f"Integrity check must use 'ffmpeg', got '{cmd[0]}'. "
+            "ffprobe rejects -f null and always returns rc=1."
+        )
+        assert cmd == ["ffmpeg", "-v", "error", "-i", "/data/v1.mp4", "-f", "null", "-"], (
+            f"Full command mismatch: {cmd}"
+        )
