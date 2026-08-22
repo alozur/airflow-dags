@@ -1,8 +1,8 @@
 """Speaker Turn Prepare DAG (issue #146).
 
 Nightly preparation of up to N=2 unprepared TURN items. Generates all required
-sidecars, validates video integrity with ffprobe, then sets prepared_at as the
-upload readiness gate.
+sidecars, validates video integrity with an ffmpeg decode check, then sets
+prepared_at as the upload readiness gate.
 
 Schedule: 0 2 * * * UTC (off-peak; 02:00 avoids monitor scrape, reap, and upload
 windows). The upload DAG runs at 0 19 * * *.
@@ -10,7 +10,7 @@ windows). The upload DAG runs at 0 19 * * *.
 Design constraints (non-negotiable):
 - Strictly sequential: one PythonOperator, pool="nas_ffmpeg", pool_slots=1.
 - No dynamic task mapping (.expand() is prohibited).
-- prepared_at set ONLY after: all sidecars on disk AND ffprobe rc==0.
+- prepared_at set ONLY after: all sidecars on disk AND ffmpeg decode check rc==0.
 - Failures are self-healing: prepared_at stays NULL, retry next night.
 """
 
@@ -212,7 +212,7 @@ def _prepare_turns_callable() -> None:
     Selects up to N=2 unprepared turns and processes each sequentially:
     1. Trigger + poll generic_thumbnail_generator.
     2. Write title.txt, description.txt, subtitles.srt.
-    3. Run ffprobe integrity check on video.mp4.
+    3. Run ffmpeg decode integrity check on video.mp4.
     4. Set prepared_at (only when all prior steps succeeded).
 
     Any failure within a turn's steps leaves prepared_at NULL; the next
@@ -244,15 +244,17 @@ def _prepare_turns_callable() -> None:
             # Step 2: Write text sidecars.
             _write_turn_sidecars(turn)
 
-            # Step 3: ffprobe integrity check.
+            # Step 3: ffmpeg decode integrity check.
+            # ffprobe does not support the -f null output muxer and always
+            # returns rc=1; use ffmpeg -f null - to fully decode the file.
             result = subprocess.run(
-                ["ffprobe", "-v", "error", "-i", str(output_path), "-f", "null", "-"],
+                ["ffmpeg", "-v", "error", "-i", str(output_path), "-f", "null", "-"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
             if result.returncode != 0:
                 logger.warning(
-                    "_prepare_turns_callable: ffprobe failed for turn_id=%d "
+                    "_prepare_turns_callable: ffmpeg decode check failed for turn_id=%d "
                     "(rc=%d) — prepared_at NOT set; will retry next night",
                     turn_id,
                     result.returncode,
