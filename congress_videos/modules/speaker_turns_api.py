@@ -101,3 +101,43 @@ def api_diarize_fn(
         ) from exc
 
     return payload["speaker_changes"]
+
+
+def check_diarize_api_health(
+    *,
+    getter: Callable[..., object] = requests.get,
+    timeout: int = 5,
+) -> None:
+    """Probe diarize-api /health; raise SidecarApiError if unreachable.
+
+    Reachability only — does not verify model readiness (accepted).
+
+    Args:
+        getter:  Injectable HTTP GET callable (default ``requests.get``).
+        timeout: Request timeout in seconds.
+
+    Raises:
+        SidecarApiError: On timeout, connection error, or non-200 HTTP status.
+    """
+    url = f"{DIARIZE_API_URL}/health"
+    try:
+        resp = getter(url, timeout=timeout)
+    except requests.exceptions.Timeout as exc:
+        raise SidecarApiError(
+            f"diarize-api health probe timeout after {timeout}s at {url}. "
+            "Check the diarize-api sidecar container is running and that "
+            "the whisper_network docker bridge is up (Synology/DSM firewall "
+            "can drop inter-container TCP on new bridges)."
+        ) from exc
+    except requests.exceptions.RequestException as exc:
+        raise SidecarApiError(
+            f"diarize-api unreachable at {url}: {exc}. "
+            "Check the diarize-api sidecar container is running and that "
+            "the whisper_network docker bridge is up (Synology/DSM firewall "
+            "can drop inter-container TCP on new bridges)."
+        ) from exc
+    if resp.status_code != 200:
+        raise SidecarApiError(
+            f"diarize-api unhealthy: HTTP {resp.status_code} from {url}. "
+            "Verify the diarize-api sidecar container finished startup."
+        )

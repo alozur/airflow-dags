@@ -44,8 +44,9 @@ from congress_videos.config.constants import (
 )
 
 from congress_videos.modules.participants_db import lookup_participant_fuzzy
+from congress_videos.modules.sidecar_api_error import SidecarApiError
 from congress_videos.modules.speaker_turns import detect_turns, _upsert_turns
-from congress_videos.modules.speaker_turns_api import api_diarize_fn
+from congress_videos.modules.speaker_turns_api import api_diarize_fn, check_diarize_api_health
 from congress_videos.modules.vad_helpers import _find_source_video, extract_audio_wav
 from congress_videos.srt_helpers import _parse_srt_blocks, find_srt_for_chapter
 from utils.postgres_helpers import PostgresConnection
@@ -180,6 +181,7 @@ def _select_task(**context) -> list[dict]:
 
 def _process_task(**context) -> dict:
     chapters = context["ti"].xcom_pull(key="chapters", task_ids="select_chapters") or []
+    check_diarize_api_health()  # fail fast on outage before DB/WAV work
     summary = {"processed": 0, "skipped": 0, "turns": 0}
     pg = PostgresConnection()
     turns_table = pg.get_qualified_table("speaker_turns")
@@ -189,7 +191,13 @@ def _process_task(**context) -> dict:
             for chapter in chapters:
                 try:
                     result = run_chapter_turns(chapter, cur, turns_table=turns_table)
-                except Exception:  # noqa: BLE001 — one bad chapter must not sink the run
+                except SidecarApiError:  # noqa: BLE001 mid-run drop → fail loud
+                    logger.exception(
+                        "chapter %s: diarize-api outage — failing task",
+                        chapter.get("chapter_id"),
+                    )
+                    raise
+                except Exception:  # noqa: BLE001 data error → skip
                     logger.exception(
                         "chapter %s failed — skipping", chapter.get("chapter_id")
                     )
