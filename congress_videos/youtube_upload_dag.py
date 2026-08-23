@@ -292,20 +292,16 @@ def _sanitize_row_for_xcom(row: dict) -> dict:
 
 
 def _run_get_uploadable_item(db) -> dict | None:
-    """Try the turn queue first; fall back to the chapter queue.
+    """Select the next item from the turn queue only.
 
     Returns a dict with keys:
-      - 'item': the row dict (turn or chapter)
-      - 'item_type': 'turn' or 'chapter'
-    Returns None when both queues are empty.
+      - 'item': the row dict (turn)
+      - 'item_type': 'turn'
+    Returns None when the turn queue is empty.
     """
     turns = db.get_uploadable_turns(limit=1)
     if turns:
         return {"item": _sanitize_row_for_xcom(turns[0]), "item_type": "turn"}
-
-    chapters = db.get_uploadable_chapters(limit=1, min_relevance_score=2)
-    if chapters:
-        return {"item": _sanitize_row_for_xcom(chapters[0]), "item_type": "chapter"}
 
     return None
 
@@ -501,13 +497,13 @@ with (
         python_callable=should_upload,
     )
 
-    # Step 2: Dual-queue item selection — turns first, chapters as fallback (limit=1 per run)
+    # Step 2: Turn-only queue; None when empty (no chapter fallback) (limit=1 per run)
     def _run_get_uploadable_item_task(ti):
-        """Select upload item from turn queue first; fall back to chapter queue.
+        """Select upload item from the turn queue only.
 
         Pushes 'uploadable_item' XCom key with dict:
-          {'item': <row dict>, 'item_type': 'turn' | 'chapter'}
-        or {'item': None, 'item_type': None} when both queues are empty.
+          {'item': <row dict>, 'item_type': 'turn'}
+        or {'item': None, 'item_type': None} when the turn queue is empty.
         """
         from congress_videos.modules.database import CongressionalVideoDB
 

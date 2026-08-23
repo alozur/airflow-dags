@@ -1188,7 +1188,7 @@ class TestTriggerThumbnailGenerationForwardsKeySpeakers:
 
 
 # ---------------------------------------------------------------------------
-# Dual-queue: turn queue tried first, chapter fallback when turns empty
+# Turn-only queue: None when empty (no chapter fallback)
 # ---------------------------------------------------------------------------
 
 
@@ -1325,8 +1325,8 @@ class TestPrepareThumbnailConfigForTurn:
         assert "80" in result["session"]
 
 
-class TestDualQueueBehavior:
-    """Dual-queue: turn queue has priority; chapter fallback used when turns empty."""
+class TestTurnQueueSelection:
+    """Turn-only queue: selects the next turn to upload; returns None when empty."""
 
     def test_uploader_selects_turn_when_available(self, mocker):
         """When get_uploadable_turns returns a turn, _run_get_uploadable_item returns it
@@ -1347,20 +1347,17 @@ class TestDualQueueBehavior:
         assert result["item_type"] == "turn"
         mock_db.get_uploadable_chapters.assert_not_called()
 
-    def test_uploader_falls_back_to_chapter_when_turns_empty(self, mocker):
-        """When turns empty, _run_get_uploadable_item falls back to chapters."""
+    def test_uploader_returns_none_when_turns_empty(self):
+        """When turns empty, _run_get_uploadable_item returns None without calling get_uploadable_chapters."""
         from congress_videos.youtube_upload_dag import _run_get_uploadable_item
 
-        fake_chapter = {"chapter_id": 99, "title": "Cap 99"}
         mock_db = MagicMock()
         mock_db.get_uploadable_turns.return_value = []
-        mock_db.get_uploadable_chapters.return_value = [fake_chapter]
 
         result = _run_get_uploadable_item(mock_db)
 
-        assert result["item"] == fake_chapter
-        assert result["item_type"] == "chapter"
-        mock_db.get_uploadable_chapters.assert_called_once()
+        assert result is None
+        mock_db.get_uploadable_chapters.assert_not_called()
 
     def test_uploader_returns_none_when_both_queues_empty(self):
         """When both queues empty, _run_get_uploadable_item returns None."""
@@ -1406,21 +1403,6 @@ class TestDualQueueBehavior:
         # Verify the strings are valid ISO-8601 (parseable back to datetime)
         datetime.fromisoformat(result["item"]["materialized_at"])
         datetime.fromisoformat(result["item"]["prepared_at"])
-
-    def test_chapter_row_unchanged_by_sanitization(self):
-        """Chapter rows (no datetime columns) must pass through unchanged."""
-        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
-
-        fake_chapter = {"chapter_id": 99, "title": "Cap 99", "relevance_score": 3}
-        mock_db = MagicMock()
-        mock_db.get_uploadable_turns.return_value = []
-        mock_db.get_uploadable_chapters.return_value = [fake_chapter]
-
-        result = _run_get_uploadable_item(mock_db)
-
-        assert result["item"] == fake_chapter
-        assert result["item_type"] == "chapter"
-
 
 class TestSanitizeRowForXcom:
     """Unit tests for the pure helper _sanitize_row_for_xcom."""
@@ -1502,25 +1484,23 @@ class TestGuardAAndGuardB:
     view — these tests verify the uploader passes the right rows through."""
 
     def test_guard_b_turn_excluded_by_empty_view(self):
-        """Guard B: when uploadable_turns is empty (chapter already uploaded),
-        uploader falls back to chapter queue."""
+        """Guard B: when uploadable_turns is empty (view filtered them out),
+        uploader returns None (no turns to upload)."""
         from congress_videos.youtube_upload_dag import _run_get_uploadable_item
 
         mock_db = MagicMock()
         mock_db.get_uploadable_turns.return_value = []  # Guard B filtered them out
-        mock_db.get_uploadable_chapters.return_value = []
 
         result = _run_get_uploadable_item(mock_db)
         assert result is None
 
     def test_guard_a_chapter_excluded_by_empty_view(self):
-        """Guard A: when chapter fallback returns empty (turn already uploaded),
-        uploader has nothing to upload."""
+        """Guard A: when uploadable_turns is empty (turn already uploaded),
+        uploader returns None (turn-only queue; no chapter fallback)."""
         from congress_videos.youtube_upload_dag import _run_get_uploadable_item
 
         mock_db = MagicMock()
         mock_db.get_uploadable_turns.return_value = []
-        mock_db.get_uploadable_chapters.return_value = []  # Guard A filtered chapter out
 
         result = _run_get_uploadable_item(mock_db)
         assert result is None
@@ -1537,7 +1517,7 @@ class TestDualQueueWiredIntoDag:
 
     def test_dag_has_get_uploadable_item_task_not_static_chapters_op(self):
         """DAG must have a 'get_uploadable_item' task (PythonOperator), not a
-        PostgreSQLOperator with operation='get_uploadable_chapters'."""
+        PostgreSQLOperator with operation='get_uploadable_chapters'. Wires turn-only queue."""
         from congress_videos.youtube_upload_dag import dag
 
         task_ids = {t.task_id for t in dag.tasks}
