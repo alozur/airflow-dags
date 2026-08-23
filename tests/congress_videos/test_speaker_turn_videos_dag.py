@@ -118,7 +118,7 @@ class TestSelectTurns:
         # video_id or session_date column.
         cur.description = [
             ("turn_id",), ("chapter_id",), ("video_id",),
-            ("start_seconds",), ("end_seconds",),
+            ("start_seconds",), ("end_seconds",), ("resolved_name",),
         ]
         # PostgresConnection uses RealDictCursor, so real rows are dict-like.
         # Convert the tuple fixtures into dict rows so the mock matches prod and
@@ -138,8 +138,8 @@ class TestSelectTurns:
     def test_already_materialized_turns_excluded(self, monkeypatch):
         mod = _fresh()
         turns_rows = [
-            (1, 10, "vid1", 0.0, 100.0),
-            (2, 10, "vid1", 100.0, 200.0),
+            (1, 10, "vid1", 0.0, 100.0, None),
+            (2, 10, "vid1", 100.0, 200.0, None),
         ]
         self._make_pg_mock(monkeypatch, mod, turns_rows, already_materialized_ids=[1])
 
@@ -175,7 +175,7 @@ class TestSelectTurns:
         mod = _fresh()
         cur = self._make_pg_mock(
             monkeypatch, mod,
-            turns_rows=[(1, 10, "vid1", 0.0, 100.0)],
+            turns_rows=[(1, 10, "vid1", 0.0, 100.0, None)],
             already_materialized_ids=[],
         )
 
@@ -191,10 +191,28 @@ class TestSelectTurns:
             f"session_date is not a real column and must not be selected; got: {select_sql}"
         )
 
+    def test_select_includes_resolved_name(self, monkeypatch):
+        """_select_task SQL must include st.resolved_name so _materialize_task can classify turns."""
+        mod = _fresh()
+        cur = self._make_pg_mock(
+            monkeypatch, mod,
+            turns_rows=[(1, 10, "vid1", 0.0, 100.0, None)],
+            already_materialized_ids=[],
+        )
+
+        ti = MagicMock()
+        ti.xcom_push.side_effect = lambda key, value: None
+        mod._select_task(ti=ti, dag_run=MagicMock(conf={"chapter_id": 10}))
+
+        select_sql = cur.execute.call_args_list[0].args[0].lower()
+        assert "resolved_name" in select_sql, (
+            f"_select_task must include st.resolved_name in SELECT; got: {select_sql}"
+        )
+
     def test_no_turns_when_all_already_materialized(self, monkeypatch):
         mod = _fresh()
         turns_rows = [
-            (5, 10, "vid1", 0.0, 100.0),
+            (5, 10, "vid1", 0.0, 100.0, None),
         ]
         self._make_pg_mock(monkeypatch, mod, turns_rows, already_materialized_ids=[5])
 
@@ -219,13 +237,14 @@ class TestSelectTurns:
 
 class TestMaterializeTurns:
     def _turn(self, turn_id=7, chapter_id=3, video_id="vid1",
-              start=600.0, end=700.0):
+              start=600.0, end=700.0, resolved_name=None):
         return {
             "turn_id": turn_id,
             "chapter_id": chapter_id,
             "video_id": video_id,
             "start_seconds": start,
             "end_seconds": end,
+            "resolved_name": resolved_name,
         }
 
     def test_canonical_path_in_insert(self, monkeypatch):
@@ -405,6 +424,135 @@ class TestMaterializeTurns:
         insert_calls = [c for c in all_calls if "INSERT" in c.upper()]
         assert len(insert_calls) == 0, f"INSERT must not be called on ffmpeg failure; got: {insert_calls}"
         assert result["skipped"] >= 1
+
+
+    def _make_materialize_mocks(self, monkeypatch, mod, plan_mock, turns):
+        """Wire mocks for _materialize_task without touching ffmpeg or DB."""
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: "/data/src.mp4")
+        monkeypatch.setattr(mod, "plan_turn_materialization", lambda t, tr: [plan_mock])
+        monkeypatch.setattr(mod, "execute_plan", lambda *a, **kw: None)
+        monkeypatch.setattr(mod, "get_cached_codec", lambda *a, **k: "h264")
+        pg = MagicMock()
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+        cur.description = [
+            ("turn_id",), ("start_seconds",), ("end_seconds",),
+            ("is_approved",), ("is_voice_free",),
+        ]
+        conn.cursor.return_value.__enter__.return_value = cur
+        pg.get_connection.return_value.__enter__.return_value = conn
+        pg.get_qualified_table.side_effect = lambda n: f"test.{n}"
+        monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
+        ti = MagicMock()
+        ti.xcom_pull.return_value = turns
+        return cur, ti
+
+    def test_insert_params_include_turn_type(self, monkeypatch):
+        """INSERT params tuple must be (turn_id, output_path, turn_type) — 3-tuple."""
+        mod = _fresh()
+        plan_mock = MagicMock()
+        plan_mock.turn_ids = (7,)
+        plan_mock.keep_intervals = (MagicMock(start=600.0, end=700.0),)
+        plan_mock.needs_reencode = False
+        plan_mock.output_turn_id = 7
+        plan_mock.chapter_id = 3
+
+        turns = [self._turn(resolved_name=None)]
+        cur, ti = self._make_materialize_mocks(monkeypatch, mod, plan_mock, turns)
+
+        mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        all_calls = cur.execute.call_args_list
+        insert_calls = [c for c in all_calls if "INSERT" in str(c).upper()]
+        assert len(insert_calls) >= 1, f"Expected INSERT; got: {all_calls}"
+        # params tuple must be (turn_id, output_path, turn_type)
+        params = insert_calls[0].args[1]
+        assert len(params) == 3, (
+            f"INSERT params must be a 3-tuple (turn_id, output_path, turn_type); got: {params}"
+        )
+        turn_id_param, output_path_param, turn_type_param = params
+        assert turn_id_param == 7
+        assert isinstance(turn_type_param, str), (
+            f"turn_type must be a string; got: {turn_type_param!r}"
+        )
+        assert turn_type_param in ("monologue", "qa"), (
+            f"turn_type must be 'monologue' or 'qa'; got: {turn_type_param!r}"
+        )
+
+    def test_single_resolved_name_yields_monologue_in_insert(self, monkeypatch):
+        """Single turn with a real resolved_name → INSERT must carry turn_type='monologue'."""
+        mod = _fresh()
+        plan_mock = MagicMock()
+        plan_mock.turn_ids = (7,)
+        plan_mock.keep_intervals = (MagicMock(start=600.0, end=700.0),)
+        plan_mock.needs_reencode = False
+        plan_mock.output_turn_id = 7
+        plan_mock.chapter_id = 3
+
+        turns = [self._turn(resolved_name="Pedro Sanchez")]
+        cur, ti = self._make_materialize_mocks(monkeypatch, mod, plan_mock, turns)
+
+        mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        insert_calls = [c for c in cur.execute.call_args_list if "INSERT" in str(c).upper()]
+        params = insert_calls[0].args[1]
+        assert params[2] == "monologue", (
+            f"Single-turn plan with one real name → monologue; got: {params[2]!r}"
+        )
+
+    def test_two_distinct_names_yields_qa_in_insert(self, monkeypatch):
+        """Grouped plan with 2 distinct real resolved_names → INSERT must carry turn_type='qa'."""
+        mod = _fresh()
+        plan_mock = MagicMock()
+        plan_mock.turn_ids = (7, 8)
+        plan_mock.keep_intervals = (MagicMock(start=600.0, end=700.0),)
+        plan_mock.needs_reencode = False
+        plan_mock.output_turn_id = 7
+        plan_mock.chapter_id = 3
+
+        turns = [
+            self._turn(turn_id=7, resolved_name="Pedro Sanchez"),
+            self._turn(turn_id=8, resolved_name="Alberto Gonzalez"),
+        ]
+        cur, ti = self._make_materialize_mocks(monkeypatch, mod, plan_mock, turns)
+
+        mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        insert_calls = [c for c in cur.execute.call_args_list if "INSERT" in str(c).upper()]
+        # All rows in the plan share the same turn_type
+        for c in insert_calls:
+            assert c.args[1][2] == "qa", (
+                f"Two-name grouped plan → qa; got: {c.args[1][2]!r}"
+            )
+
+    def test_grouped_plan_all_rows_share_same_turn_type(self, monkeypatch):
+        """All rows in a grouped plan must receive the same turn_type value."""
+        mod = _fresh()
+        plan_mock = MagicMock()
+        plan_mock.turn_ids = (7, 8, 9)
+        plan_mock.keep_intervals = (MagicMock(start=600.0, end=800.0),)
+        plan_mock.needs_reencode = False
+        plan_mock.output_turn_id = 7
+        plan_mock.chapter_id = 3
+
+        turns = [
+            self._turn(turn_id=7, resolved_name="Pedro Sanchez"),
+            self._turn(turn_id=8, resolved_name="Alberto Gonzalez"),
+            self._turn(turn_id=9, resolved_name=None),
+        ]
+        cur, ti = self._make_materialize_mocks(monkeypatch, mod, plan_mock, turns)
+
+        mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        insert_calls = [c for c in cur.execute.call_args_list if "INSERT" in str(c).upper()]
+        assert len(insert_calls) == 3, (
+            f"Expected 3 INSERTs for 3 turn_ids; got {len(insert_calls)}"
+        )
+        turn_types = {c.args[1][2] for c in insert_calls}
+        assert len(turn_types) == 1, (
+            f"All grouped rows must share one turn_type; got distinct values: {turn_types}"
+        )
 
 
 # ---------------------------------------------------------------------------

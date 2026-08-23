@@ -21,8 +21,11 @@ import pytest
 from congress_videos.modules.materialization import (
     GROUP_GAP_TOLERANCE_SECS,
     MIN_LONG_INTERVENTION_SECS,
+    MONOLOGUE,
+    QA,
     KeepInterval,
     MaterializationPlan,
+    classify_turn_type,
     plan_turn_materialization,
 )
 
@@ -404,6 +407,61 @@ class TestModuleConstants:
     def test_group_gap_tolerance_secs_value(self):
         """GROUP_GAP_TOLERANCE_SECS must be 0.5."""
         assert GROUP_GAP_TOLERANCE_SECS == 0.5
+
+
+# ---------------------------------------------------------------------------
+# classify_turn_type — pure turn-type classifier
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyTurnType:
+    """Unit tests for classify_turn_type (pure function, no I/O)."""
+
+    def test_single_turn_is_monologue(self):
+        """A group of exactly one turn always yields 'monologue'."""
+        resolved = {1: "Maria Lopez"}
+        assert classify_turn_type([1], resolved) == MONOLOGUE
+
+    def test_all_null_resolved_names_is_monologue(self):
+        """All-NULL resolved_names (all unknown) → 'monologue'."""
+        resolved = {1: None, 2: None, 3: None}
+        assert classify_turn_type([1, 2, 3], resolved) == MONOLOGUE
+
+    def test_all_placeholder_names_is_monologue(self):
+        """All placeholder resolved_names → 'monologue'."""
+        resolved = {1: "desconocido", 2: "unknown", 3: "(no especificado)"}
+        assert classify_turn_type([1, 2, 3], resolved) == MONOLOGUE
+
+    def test_one_real_plus_unknowns_is_monologue(self):
+        """One real name + several NULL/placeholder → 'monologue'."""
+        resolved = {1: "Pedro Sanchez", 2: None, 3: "desconocido", 4: None}
+        assert classify_turn_type([1, 2, 3, 4], resolved) == MONOLOGUE
+
+    def test_two_distinct_real_names_is_qa(self):
+        """Two distinct non-placeholder, non-NULL names → 'qa'."""
+        resolved = {1: "Pedro Sanchez", 2: "Alberto Gonzalez"}
+        assert classify_turn_type([1, 2], resolved) == QA
+
+    def test_two_turns_same_real_name_is_monologue(self):
+        """Repeated real name does not count as two distinct speakers → 'monologue'."""
+        resolved = {1: "Pedro Sanchez", 2: "Pedro Sanchez"}
+        assert classify_turn_type([1, 2], resolved) == MONOLOGUE
+
+    def test_role_only_placeholder_skipped(self):
+        """Role-only string (e.g. 'Portavoz del grupo') is a placeholder → skipped."""
+        # 'Portavoz del grupo' matches _ROLE_ONLY_RE → placeholder → monologue
+        resolved = {1: "Pedro Sanchez", 2: "Portavoz del grupo"}
+        assert classify_turn_type([1, 2], resolved) == MONOLOGUE
+
+    def test_constants_have_correct_values(self):
+        """MONOLOGUE and QA module constants must have the string values they document."""
+        assert MONOLOGUE == "monologue"
+        assert QA == "qa"
+
+    def test_mixed_real_and_placeholder_with_two_real_is_qa(self):
+        """Two distinct real names even when some turns are placeholder → 'qa'."""
+        resolved = {1: "Pedro Sanchez", 2: None, 3: "Alberto Gonzalez"}
+        assert classify_turn_type([1, 2, 3], resolved) == QA
 
 
 class TestDecimalInputs:
