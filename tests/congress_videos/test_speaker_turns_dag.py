@@ -183,6 +183,66 @@ class TestSelectChapters:
                          "start_time": "00:10:00,000", "end_time": "00:40:00,000"}]
 
 
+class TestSelectChaptersProgressFilter:
+    """Verify the cron-branch SQL filter added in issue #166."""
+
+    def _make_pg_mock(self, monkeypatch, mod, cur):
+        """Build a pg mock with side_effect keyed by table name and wire it."""
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+        pg = MagicMock()
+
+        def _qualified(table_name):
+            return f"development.{table_name}"
+
+        pg.get_qualified_table.side_effect = _qualified
+        pg.get_connection.return_value.__enter__.return_value = conn
+        monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
+        return pg, conn
+
+    def test_cron_branch_sql_excludes_detected_chapters(self, monkeypatch):
+        """Cron-branch SQL must contain TURNS_DETECTED_AT IS NULL and NOT EXISTS + SPEAKER_TURNS."""
+        mod = _fresh()
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+        self._make_pg_mock(monkeypatch, mod, cur)
+
+        mod.select_chapters(limit=5)
+
+        executed_sql = cur.execute.call_args[0][0].upper()
+        assert "TURNS_DETECTED_AT IS NULL" in executed_sql
+        assert "NOT EXISTS" in executed_sql
+        assert "SPEAKER_TURNS" in executed_sql
+
+    def test_cron_branch_qualifies_video_chapters_table(self, monkeypatch):
+        """pg.get_qualified_table must be called with 'video_chapters' and 'speaker_turns'."""
+        mod = _fresh()
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+        pg, _ = self._make_pg_mock(monkeypatch, mod, cur)
+
+        mod.select_chapters(limit=5)
+
+        call_args = [call.args[0] for call in pg.get_qualified_table.call_args_list]
+        assert "video_chapters" in call_args
+        assert "speaker_turns" in call_args
+
+    def test_chapter_ids_branch_skips_progress_filter(self, monkeypatch):
+        """Explicit chapter_ids bypass must NOT include TURNS_DETECTED_AT in SQL."""
+        mod = _fresh()
+        cur = MagicMock()
+        cur.fetchall.return_value = [
+            {"chapter_id": 263, "video_id": "x", "session_date": "2026-06-10",
+             "start_time": "00:00:00,000", "end_time": "00:10:00,000"},
+        ]
+        self._make_pg_mock(monkeypatch, mod, cur)
+
+        mod.select_chapters(chapter_ids=[263])
+
+        executed_sql = cur.execute.call_args[0][0].upper()
+        assert "TURNS_DETECTED_AT" not in executed_sql
+
+
 class TestProcessTask:
     def _ti_with(self, chapters):
         ti = MagicMock()
@@ -212,4 +272,90 @@ class TestProcessTask:
         )
 
         assert summary == {"processed": 1, "skipped": 2, "turns": 3}
+        conn.commit.assert_called_once()
+
+
+class TestProcessTaskMarkDetected:
+    """Verify the turns_detected_at UPDATE written for issue #166."""
+
+    def _ti_with(self, chapters):
+        ti = MagicMock()
+        ti.xcom_pull.return_value = chapters
+        return {"ti": ti}
+
+    def _make_process_mock(self, monkeypatch, mod, fake_run):
+        cur = MagicMock()
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+        pg = MagicMock()
+        pg.get_qualified_table.side_effect = lambda t: f"development.{t}"
+        pg.get_connection.return_value.__enter__.return_value = conn
+        monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
+        monkeypatch.setattr(mod, "run_chapter_turns", fake_run)
+        return cur, conn
+
+    def test_ok_chapter_triggers_update_turns_detected_at(self, monkeypatch):
+        """status=='ok' must trigger UPDATE turns_detected_at WHERE chapter_id."""
+        mod = _fresh()
+
+        def fake_run(chapter, cursor, **k):
+            return {"status": "ok", "chapter_id": chapter["chapter_id"], "turns": 2}
+
+        cur, _ = self._make_process_mock(monkeypatch, mod, fake_run)
+
+        mod._process_task(**self._ti_with([{"chapter_id": 1}]))
+
+        executed_sqls = [call.args[0].upper() for call in cur.execute.call_args_list]
+        update_calls = [s for s in executed_sqls if "TURNS_DETECTED_AT" in s]
+        assert len(update_calls) == 1, f"Expected exactly 1 UPDATE with TURNS_DETECTED_AT, got: {update_calls}"
+        assert "WHERE CHAPTER_ID" in update_calls[0]
+
+    def test_skipped_no_video_does_not_update(self, monkeypatch):
+        """status=='skipped_no_video' must NOT trigger UPDATE turns_detected_at."""
+        mod = _fresh()
+
+        def fake_run(chapter, cursor, **k):
+            return {"status": "skipped_no_video", "chapter_id": chapter["chapter_id"], "turns": 0}
+
+        cur, _ = self._make_process_mock(monkeypatch, mod, fake_run)
+
+        mod._process_task(**self._ti_with([{"chapter_id": 3}]))
+
+        executed_sqls = [call.args[0].upper() for call in cur.execute.call_args_list]
+        update_calls = [s for s in executed_sqls if "TURNS_DETECTED_AT" in s]
+        assert update_calls == [], f"Expected no UPDATE with TURNS_DETECTED_AT, got: {update_calls}"
+
+    def test_exception_chapter_does_not_update(self, monkeypatch):
+        """Exception-caught chapter must NOT trigger UPDATE turns_detected_at."""
+        mod = _fresh()
+
+        def fake_run(chapter, cursor, **k):
+            raise RuntimeError("diarize failed")
+
+        cur, _ = self._make_process_mock(monkeypatch, mod, fake_run)
+
+        mod._process_task(**self._ti_with([{"chapter_id": 2}]))
+
+        executed_sqls = [call.args[0].upper() for call in cur.execute.call_args_list]
+        update_calls = [s for s in executed_sqls if "TURNS_DETECTED_AT" in s]
+        assert update_calls == [], f"Expected no UPDATE with TURNS_DETECTED_AT, got: {update_calls}"
+
+    def test_single_commit_still_called_once(self, monkeypatch):
+        """Mixed statuses (ok + raise + skipped) must still commit exactly once."""
+        mod = _fresh()
+
+        def fake_run(chapter, cursor, **k):
+            cid = chapter["chapter_id"]
+            if cid == 1:
+                return {"status": "ok", "chapter_id": 1, "turns": 3}
+            if cid == 2:
+                raise RuntimeError("boom")
+            return {"status": "skipped_no_video", "chapter_id": 3, "turns": 0}
+
+        _, conn = self._make_process_mock(monkeypatch, mod, fake_run)
+
+        mod._process_task(
+            **self._ti_with([{"chapter_id": 1}, {"chapter_id": 2}, {"chapter_id": 3}])
+        )
+
         conn.commit.assert_called_once()

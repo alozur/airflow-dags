@@ -60,13 +60,19 @@ DEFAULT_LIMIT = 5
 def select_chapters(limit: int = DEFAULT_LIMIT, chapter_ids: list[int] | None = None) -> list[dict]:
     """Read publishable chapters from the ``uploadable_chapters`` view.
 
-    When ``chapter_ids`` is given, only those chapters are returned; otherwise
-    the first ``limit`` uploadable chapters are returned. Each row carries the
-    fields the per-chapter pipeline needs: chapter_id, video_id, session_date,
-    start_time, end_time.
+    When ``chapter_ids`` is given, only those chapters are returned without any
+    progress filter — this is the manual re-detection escape hatch (issue #166).
+    Otherwise the first ``limit`` uploadable chapters that have not yet been
+    attempted (turns_detected_at IS NULL and no existing speaker_turns rows) are
+    returned, preventing barren chapters from looping indefinitely.
+
+    Each row carries the fields the per-chapter pipeline needs: chapter_id,
+    video_id, session_date, start_time, end_time.
     """
     pg = PostgresConnection()
     view = pg.get_qualified_table("uploadable_chapters")
+    vc_table = pg.get_qualified_table("video_chapters")
+    turns_table = pg.get_qualified_table("speaker_turns")
     cols = "chapter_id, video_id, session_date, start_time, end_time"
     with pg.get_connection() as conn:
         with conn.cursor() as cur:
@@ -78,7 +84,17 @@ def select_chapters(limit: int = DEFAULT_LIMIT, chapter_ids: list[int] | None = 
                 )
             else:
                 cur.execute(
-                    f"SELECT {cols} FROM {view} ORDER BY chapter_id LIMIT %s",
+                    f"SELECT {cols} FROM {view} vc"
+                    f" WHERE EXISTS ("
+                    f"SELECT 1 FROM {vc_table} v"
+                    f" WHERE v.chapter_id = vc.chapter_id"
+                    f" AND v.turns_detected_at IS NULL"
+                    f")"
+                    f" AND NOT EXISTS ("
+                    f"SELECT 1 FROM {turns_table} st"
+                    f" WHERE st.chapter_id = vc.chapter_id"
+                    f")"
+                    f" ORDER BY chapter_id LIMIT %s",
                     (limit,),
                 )
             # PostgresConnection uses RealDictCursor: rows are dict-like.
@@ -167,6 +183,7 @@ def _process_task(**context) -> dict:
     summary = {"processed": 0, "skipped": 0, "turns": 0}
     pg = PostgresConnection()
     turns_table = pg.get_qualified_table("speaker_turns")
+    vc_table = pg.get_qualified_table("video_chapters")
     with pg.get_connection() as conn:
         with conn.cursor() as cur:
             for chapter in chapters:
@@ -179,6 +196,11 @@ def _process_task(**context) -> dict:
                     summary["skipped"] += 1
                     continue
                 if result["status"] == "ok":
+                    cur.execute(
+                        f"UPDATE {vc_table} SET turns_detected_at = NOW() "
+                        f"WHERE chapter_id = %s AND turns_detected_at IS NULL",
+                        (chapter["chapter_id"],),
+                    )
                     summary["processed"] += 1
                     summary["turns"] += result["turns"]
                 else:
