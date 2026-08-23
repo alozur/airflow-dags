@@ -334,6 +334,7 @@ class TestLongTurnInterruptsGroup:
         t_b = _turn(turn_id=41, chapter_id=6, start=60.0, end=400.0)
         t_c = _turn(turn_id=42, chapter_id=6, start=400.0, end=460.0)
         plans = plan_turn_materialization([t_a, t_b, t_c], approved_trims=[])
+        assert len(plans) == 3
         for p in plans:
             assert len(p.turn_ids) == 1
 

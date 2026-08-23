@@ -520,6 +520,7 @@ class TestMaterializeTurns:
         mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
 
         insert_calls = [c for c in cur.execute.call_args_list if "INSERT" in str(c).upper()]
+        assert insert_calls, "Expected at least one INSERT for the grouped plan"
         # All rows in the plan share the same turn_type
         for c in insert_calls:
             assert c.args[1][2] == "qa", (
