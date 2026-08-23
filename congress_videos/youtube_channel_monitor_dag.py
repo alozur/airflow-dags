@@ -56,6 +56,41 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
+
+def _resolve_srt_input(ti):
+    """Return the first XCom SRT input that actually has videos.
+
+    Reads 'merged_srt_files' then 'youtube_subtitles'. A value qualifies
+    only when it is a non-None dict with a non-empty 'videos' list. Raises
+    ValueError (fail-fast) when neither qualifies, so the run FAILs visibly
+    instead of persisting a silent empty result (#158).
+    """
+    merged = ti.xcom_pull(key='merged_srt_files')
+    subtitles = ti.xcom_pull(key='youtube_subtitles')
+
+    def _has_videos(val):
+        return bool(val and val.get('videos'))
+
+    if _has_videos(merged):
+        return merged
+    if _has_videos(subtitles):
+        return subtitles
+
+    plenary = ti.xcom_pull(key='plenary_videos')
+    video_ids = []
+    if plenary and isinstance(plenary, dict):
+        video_ids = [
+            v.get('video_id')
+            for v in plenary.get('videos', [])
+            if isinstance(v, dict) and v.get('video_id')
+        ]
+    raise ValueError(
+        "split_srt_by_silence has no SRT input: both sources are empty. "
+        f"video_ids={video_ids or 'unknown'} "
+        f"merged_srt_files={merged!r} youtube_subtitles={subtitles!r}"
+    )
+
+
 with DAG(
     'congress_youtube_channel_monitor',
     default_args=default_args,
@@ -406,7 +441,7 @@ with DAG(
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.split_srt_by_silence(
-                ti.xcom_pull(key='merged_srt_files') or ti.xcom_pull(key='youtube_subtitles'),  # Try both sources
+                _resolve_srt_input(ti),
                 target_date=context["params"].get("target_date"),
                 min_silence_seconds=15,
                 min_chunk_duration_minutes=10,
