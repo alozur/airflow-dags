@@ -104,7 +104,11 @@ while :; do
     echo "[test-airflow-e2e] --- scheduler log tail ---" >&2
     docker logs --tail 50 "$scheduler_container" >&2 2>&1 || true
     echo "[test-airflow-e2e] --- webserver log tail ---" >&2
-    docker logs --tail 50 "$webserver_container" >&2 2>&1 || true
+    webserver_tail="$(docker logs --tail 50 "$webserver_container" 2>&1 || true)"
+    echo "$webserver_tail" >&2
+    if echo "$webserver_tail" | grep -q 'ImportError'; then
+      echo "[test-airflow-e2e] HINT: webserver log contains ImportError — a heavy-package stub may be missing from e2e/stubs/sitecustomize.py" >&2
+    fi
     exit "$EXIT_HEALTH_TIMEOUT"
   fi
 
