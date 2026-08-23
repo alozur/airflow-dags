@@ -133,7 +133,11 @@ class TestSpeakerTurnPrepareDagLoads:
 # ---------------------------------------------------------------------------
 
 class TestPrepareTurnsCallableSequentialLoop:
-    """Verify the prepare callable iterates sequentially and gates on the ffmpeg decode check/sidecars."""
+    """Verify the prepare callable iterates sequentially and gates on the ffmpeg decode check/sidecars.
+
+    After issue #169: _trigger_thumbnail_for_turn is deleted; tests no longer patch it.
+    _prepare_turns_callable steps: srt-sidecar → decode-check → mark_turn_prepared.
+    """
 
     def test_two_turns_processed_sequentially(self):
         """Given 2 turns, callable iterates both; no concurrent fork."""
@@ -152,15 +156,11 @@ class TestPrepareTurnsCallableSequentialLoop:
         mock_db.select_unprepared_turns.side_effect = fake_db_select
         mock_db.mark_turn_prepared.side_effect = fake_mark_prepared
 
-        def fake_trigger_thumbnail(turn):
-            call_order.append(("thumbnail", turn["turn_id"]))
-
         def fake_write_sidecars(turn):
             call_order.append(("sidecars", turn["turn_id"]))
 
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
-            patch("congress_videos.speaker_turn_prepare_dag._trigger_thumbnail_for_turn", side_effect=fake_trigger_thumbnail),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_write_sidecars),
             patch("subprocess.run") as mock_subproc,
         ):
@@ -168,14 +168,14 @@ class TestPrepareTurnsCallableSequentialLoop:
             _prepare_turns_callable()
 
         # Both turns must be prepared; turn 1 must fully complete before turn 2 starts
-        thumbnail_indices = [i for i, item in enumerate(call_order) if item[0] == "thumbnail"]
-        assert len(thumbnail_indices) == 2
-        # First thumbnail call (turn 1) must come before second thumbnail call (turn 2)
-        assert thumbnail_indices[0] < thumbnail_indices[1]
-        # mark_prepared for turn 1 must precede thumbnail for turn 2
+        sidecar_indices = [i for i, item in enumerate(call_order) if item[0] == "sidecars"]
+        assert len(sidecar_indices) == 2
+        # First sidecars call (turn 1) must come before second (turn 2)
+        assert sidecar_indices[0] < sidecar_indices[1]
+        # mark_prepared for turn 1 must precede sidecars for turn 2
         mark1_idx = next(i for i, item in enumerate(call_order) if item == ("mark_prepared", 1))
-        thumb2_idx = next(i for i, item in enumerate(call_order) if item == ("thumbnail", 2))
-        assert mark1_idx < thumb2_idx
+        sidecar2_idx = next(i for i, item in enumerate(call_order) if item == ("sidecars", 2))
+        assert mark1_idx < sidecar2_idx
 
     def test_mark_turn_prepared_not_called_when_ffmpeg_nonzero(self):
         """If the ffmpeg decode check returns non-zero rc, mark_turn_prepared must NOT be called."""
@@ -187,7 +187,6 @@ class TestPrepareTurnsCallableSequentialLoop:
 
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
-            patch("congress_videos.speaker_turn_prepare_dag._trigger_thumbnail_for_turn"),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("subprocess.run") as mock_subproc,
         ):
@@ -206,7 +205,6 @@ class TestPrepareTurnsCallableSequentialLoop:
 
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
-            patch("congress_videos.speaker_turn_prepare_dag._trigger_thumbnail_for_turn"),
             patch(
                 "congress_videos.speaker_turn_prepare_dag._write_turn_sidecars",
                 side_effect=OSError("disk full"),
@@ -233,7 +231,6 @@ class TestPrepareTurnsCallableSequentialLoop:
 
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
-            patch("congress_videos.speaker_turn_prepare_dag._trigger_thumbnail_for_turn"),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_write_sidecars),
             patch("subprocess.run") as mock_subproc,
         ):
@@ -251,31 +248,8 @@ class TestPrepareTurnsCallableSequentialLoop:
         # write_sidecars must come before mark_prepared
         assert call_order.index("write_sidecars") < call_order.index("mark_prepared")
 
-    def test_thumbnail_triggered_once_per_turn(self):
-        """_trigger_thumbnail_for_turn must be called once per turn."""
-        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
-
-        turns = [_make_turn(1, "/data/v1.mp4"), _make_turn(2, "/data/v2.mp4")]
-        mock_db = MagicMock()
-        mock_db.select_unprepared_turns.return_value = turns
-
-        thumbnail_calls = []
-
-        def fake_trigger(turn):
-            thumbnail_calls.append(turn["turn_id"])
-
-        with (
-            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
-            patch("congress_videos.speaker_turn_prepare_dag._trigger_thumbnail_for_turn", side_effect=fake_trigger),
-            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
-            patch("subprocess.run", return_value=MagicMock(returncode=0)),
-        ):
-            _prepare_turns_callable()
-
-        assert thumbnail_calls == [1, 2]
-
-    def test_no_thumbnail_call_when_turn_list_empty(self):
-        """When no turns are available, _trigger_thumbnail_for_turn must not be called."""
+    def test_no_sidecar_call_when_turn_list_empty(self):
+        """When no turns are available, _write_turn_sidecars must not be called."""
         from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
 
         mock_db = MagicMock()
@@ -283,13 +257,11 @@ class TestPrepareTurnsCallableSequentialLoop:
 
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
-            patch("congress_videos.speaker_turn_prepare_dag._trigger_thumbnail_for_turn") as mock_thumb,
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars") as mock_side,
             patch("subprocess.run") as mock_sub,
         ):
             _prepare_turns_callable()
 
-        mock_thumb.assert_not_called()
         mock_side.assert_not_called()
         mock_sub.assert_not_called()
         mock_db.mark_turn_prepared.assert_not_called()
@@ -303,7 +275,6 @@ class TestPrepareTurnsCallableSequentialLoop:
 
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
-            patch("congress_videos.speaker_turn_prepare_dag._trigger_thumbnail_for_turn"),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("subprocess.run") as mock_sub,
         ):
@@ -323,7 +294,6 @@ class TestPrepareTurnsCallableSequentialLoop:
 
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
-            patch("congress_videos.speaker_turn_prepare_dag._trigger_thumbnail_for_turn"),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("subprocess.run", return_value=MagicMock(returncode=1)),
         ):
@@ -341,7 +311,6 @@ class TestPrepareTurnsCallableSequentialLoop:
 
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
-            patch("congress_videos.speaker_turn_prepare_dag._trigger_thumbnail_for_turn"),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
@@ -351,89 +320,9 @@ class TestPrepareTurnsCallableSequentialLoop:
 
 
 # ---------------------------------------------------------------------------
-# 3.5 Thumbnail poll-loop timeout (issue #146 Fix B)
-# ---------------------------------------------------------------------------
-
-class TestTriggerThumbnailPollTimeout:
-    """_trigger_thumbnail_for_turn must bound the poll loop with a deadline."""
-
-    def test_timeout_raises_runtime_error(self):
-        """A dag_run stuck in 'running' past the deadline must raise RuntimeError."""
-        from congress_videos.speaker_turn_prepare_dag import _trigger_thumbnail_for_turn
-
-        dag_run = MagicMock()
-        dag_run.run_id = "prepare_turn_1_stuck"
-        dag_run.state = "running"  # never resolves
-
-        # monotonic advances well past the timeout on the second read.
-        monotonic_values = iter([0.0, 0.0, 100000.0, 100000.0, 100000.0])
-
-        with (
-            patch(
-                "congress_videos.speaker_turn_prepare_dag.trigger_dag_api",
-                return_value=dag_run,
-            ),
-            patch("congress_videos.speaker_turn_prepare_dag.time.sleep"),
-            patch(
-                "congress_videos.speaker_turn_prepare_dag.time.monotonic",
-                side_effect=lambda: next(monotonic_values),
-            ),
-        ):
-            with pytest.raises(RuntimeError) as exc:
-                _trigger_thumbnail_for_turn(_make_turn(1, "/data/v1.mp4"))
-
-        # Error must name the turn_id and run_id so the operator can trace it.
-        msg = str(exc.value)
-        assert "1" in msg
-        assert "prepare_turn_1_stuck" in msg
-
-    def test_success_before_deadline_does_not_raise(self):
-        """A dag_run reaching 'success' before the deadline must not raise."""
-        from congress_videos.speaker_turn_prepare_dag import _trigger_thumbnail_for_turn
-
-        dag_run = MagicMock()
-        dag_run.run_id = "prepare_turn_1_ok"
-        dag_run.state = "success"
-
-        with (
-            patch(
-                "congress_videos.speaker_turn_prepare_dag.trigger_dag_api",
-                return_value=dag_run,
-            ),
-            patch("congress_videos.speaker_turn_prepare_dag.time.sleep"),
-            patch(
-                "congress_videos.speaker_turn_prepare_dag.time.monotonic",
-                side_effect=[0.0, 1.0],
-            ),
-        ):
-            # Must not raise
-            _trigger_thumbnail_for_turn(_make_turn(1, "/data/v1.mp4"))
-
-    def test_failed_state_raises_runtime_error(self):
-        """A dag_run reaching 'failed' before the deadline must still raise RuntimeError."""
-        from congress_videos.speaker_turn_prepare_dag import _trigger_thumbnail_for_turn
-
-        dag_run = MagicMock()
-        dag_run.run_id = "prepare_turn_1_failed"
-        dag_run.state = "failed"
-
-        with (
-            patch(
-                "congress_videos.speaker_turn_prepare_dag.trigger_dag_api",
-                return_value=dag_run,
-            ),
-            patch("congress_videos.speaker_turn_prepare_dag.time.sleep"),
-            patch(
-                "congress_videos.speaker_turn_prepare_dag.time.monotonic",
-                side_effect=[0.0, 1.0],
-            ),
-        ):
-            with pytest.raises(RuntimeError):
-                _trigger_thumbnail_for_turn(_make_turn(1, "/data/v1.mp4"))
-
-
-# ---------------------------------------------------------------------------
-# 3.6 Integrity-check helper: _run_ffmpeg_decode_check
+# 3.5 Integrity-check helper: _run_ffmpeg_decode_check
+# Note: TestTriggerThumbnailPollTimeout (3 tests) deleted — the function
+# _trigger_thumbnail_for_turn was removed in issue #169 unify-upload-metadata.
 # ---------------------------------------------------------------------------
 
 class TestWriteTurnSidecarsGroupedRange:
@@ -475,6 +364,9 @@ class TestWriteTurnSidecarsGroupedRange:
     def test_chapter278_grouped_produces_nonempty_retimed_srt(self, tmp_path):
         """Grouped turn with group_start=19157/group_end=19784 and overlapping SRT
         blocks produces a non-empty subtitles.srt whose first entry is near 00:00:00.
+
+        After issue #169: generate_youtube_metadata and _write_orador_sidecars patches
+        removed — _write_turn_sidecars no longer calls them.
         """
         from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
 
@@ -495,14 +387,6 @@ class TestWriteTurnSidecarsGroupedRange:
                 "congress_videos.srt_helpers._parse_srt_blocks",
                 return_value=fake_blocks,
             ),
-            patch(
-                "congress_videos.modules.youtube.youtube_ai"
-                ".generate_youtube_metadata_for_selected_videos",
-                return_value={"topic_metadata": []},
-            ),
-            patch(
-                "congress_videos.modules.youtube.youtube_upload._write_orador_sidecars",
-            ),
         ):
             _write_turn_sidecars(turn)
 
@@ -518,6 +402,9 @@ class TestWriteTurnSidecarsGroupedRange:
     def test_group_span_no_overlap_writes_empty_file(self, tmp_path):
         """When no SRT blocks overlap the group span, subtitles.srt is 0 bytes and
         no exception is raised.
+
+        After issue #169: generate_youtube_metadata and _write_orador_sidecars patches
+        removed — _write_turn_sidecars no longer calls them.
         """
         from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
 
@@ -541,14 +428,6 @@ class TestWriteTurnSidecarsGroupedRange:
                 "congress_videos.srt_helpers._parse_srt_blocks",
                 return_value=fake_blocks,
             ),
-            patch(
-                "congress_videos.modules.youtube.youtube_ai"
-                ".generate_youtube_metadata_for_selected_videos",
-                return_value={"topic_metadata": []},
-            ),
-            patch(
-                "congress_videos.modules.youtube.youtube_upload._write_orador_sidecars",
-            ),
         ):
             _write_turn_sidecars(turn)  # must not raise
 
@@ -557,7 +436,11 @@ class TestWriteTurnSidecarsGroupedRange:
         assert srt_path.stat().st_size == 0, "subtitles.srt must be 0 bytes when no blocks overlap"
 
     def test_single_turn_no_group_fields_regression(self, tmp_path):
-        """Turn dict without group_start/end_seconds uses per-turn fallback — backward compat."""
+        """Turn dict without group_start/end_seconds uses per-turn fallback — backward compat.
+
+        After issue #169: generate_youtube_metadata and _write_orador_sidecars patches
+        removed — _write_turn_sidecars no longer calls them.
+        """
         from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
 
         video_dir = tmp_path / "single_turn"
@@ -592,14 +475,6 @@ class TestWriteTurnSidecarsGroupedRange:
             patch(
                 "congress_videos.srt_helpers._parse_srt_blocks",
                 return_value=fake_blocks,
-            ),
-            patch(
-                "congress_videos.modules.youtube.youtube_ai"
-                ".generate_youtube_metadata_for_selected_videos",
-                return_value={"topic_metadata": []},
-            ),
-            patch(
-                "congress_videos.modules.youtube.youtube_upload._write_orador_sidecars",
             ),
         ):
             _write_turn_sidecars(turn)
@@ -659,6 +534,7 @@ class TestIntegrityCheckUsesFFmpeg:
 
         Regression guard: verifies cmd[0] == 'ffmpeg' (not 'ffprobe') at the
         _prepare_turns_callable level via module-bound subprocess.run patch.
+        After issue #169: _trigger_thumbnail_for_turn is deleted; patch removed.
         """
         from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
 
@@ -674,7 +550,6 @@ class TestIntegrityCheckUsesFFmpeg:
 
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
-            patch("congress_videos.speaker_turn_prepare_dag._trigger_thumbnail_for_turn"),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.subprocess.run", side_effect=fake_run),
         ):
@@ -729,3 +604,103 @@ class TestDecodeCheckSmoke:
         bad = tmp_path / "bad.mp4"
         bad.write_bytes(b"not a real mp4 file\x00\x01" * 8)
         assert _run_ffmpeg_decode_check(str(bad)) != 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 RED tests: prepare DAG shrink (issue #169)
+# After unify-upload-metadata, _write_turn_sidecars must NOT call AI and
+# _prepare_turns_callable must NOT trigger the thumbnail DAG.
+# ---------------------------------------------------------------------------
+
+
+class TestWriteTurnSidecarsNoAiCall:
+    """_write_turn_sidecars must write only subtitles.srt; no AI call (issue #169)."""
+
+    def test_write_turn_sidecars_no_ai_call(self, tmp_path):
+        """_write_turn_sidecars must not call generate_youtube_metadata_for_selected_videos."""
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        video_dir = tmp_path / "turn_1"
+        video_dir.mkdir()
+        turn = _make_turn(turn_id=1, output_path=str(video_dir / "video.mp4"))
+
+        fake_blocks = [{"start_secs": 10.0, "end_secs": 15.0, "text": "test block"}]
+
+        with (
+            patch(
+                "congress_videos.srt_helpers.find_srt_for_chapter",
+                return_value="/fake/source.srt",
+            ),
+            patch(
+                "congress_videos.srt_helpers._parse_srt_blocks",
+                return_value=fake_blocks,
+            ),
+            patch(
+                "congress_videos.modules.youtube.youtube_ai"
+                ".generate_youtube_metadata_for_selected_videos",
+            ) as mock_ai,
+        ):
+            _write_turn_sidecars(turn)
+
+        mock_ai.assert_not_called(), (
+            "_write_turn_sidecars must not call AI metadata generation after issue #169"
+        )
+
+    def test_write_turn_sidecars_writes_subtitles_srt(self, tmp_path):
+        """_write_turn_sidecars still writes subtitles.srt after removing AI call."""
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        video_dir = tmp_path / "turn_1"
+        video_dir.mkdir()
+        turn = _make_turn(turn_id=1, output_path=str(video_dir / "video.mp4"))
+        turn["start_seconds"] = 10.0
+        turn["end_seconds"] = 20.0
+
+        fake_blocks = [{"start_secs": 10.0, "end_secs": 15.0, "text": "contenido srt"}]
+
+        with (
+            patch(
+                "congress_videos.srt_helpers.find_srt_for_chapter",
+                return_value="/fake/source.srt",
+            ),
+            patch(
+                "congress_videos.srt_helpers._parse_srt_blocks",
+                return_value=fake_blocks,
+            ),
+        ):
+            _write_turn_sidecars(turn)
+
+        srt_path = video_dir / "subtitles.srt"
+        assert srt_path.exists(), "subtitles.srt must still be written after AI removal"
+        content = srt_path.read_text(encoding="utf-8")
+        assert len(content) > 0
+
+
+class TestPrepareTurnsCallableNoThumbnailTrigger:
+    """_prepare_turns_callable must not call _trigger_thumbnail_for_turn (issue #169)."""
+
+    def test_prepare_turns_callable_no_thumbnail_trigger(self):
+        """After issue #169, _trigger_thumbnail_for_turn must not be called from _prepare_turns_callable."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turns = [_make_turn(1, "/data/v1.mp4")]
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = turns
+
+        # _trigger_thumbnail_for_turn is deleted — accessing it via hasattr must return False,
+        # OR if the module attr is absent, the patch would raise AttributeError.
+        # We assert no thumbnail trigger is called and the prepare still succeeds.
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            # _trigger_thumbnail_for_turn must not be callable (deleted) or must not be called.
+            # After deletion, accessing it on the module raises AttributeError.
+            import congress_videos.speaker_turn_prepare_dag as prepare_mod
+            assert not hasattr(prepare_mod, "_trigger_thumbnail_for_turn"), (
+                "_trigger_thumbnail_for_turn must be deleted from the module (issue #169)"
+            )
+            _prepare_turns_callable()
+
+        mock_db.mark_turn_prepared.assert_called_once_with(1)
