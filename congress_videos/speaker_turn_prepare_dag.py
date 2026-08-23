@@ -17,11 +17,9 @@ Design constraints (non-negotiable):
 import logging
 import os
 import subprocess
-import time
 from datetime import datetime, timedelta
 
 from airflow import DAG
-from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 from airflow.operators.python import PythonOperator
 
 from congress_videos.config.constants import SPEAKER_TURN_PREPARE_DAG_ID
@@ -34,101 +32,18 @@ logger = logging.getLogger(__name__)
 
 DAG_ID = SPEAKER_TURN_PREPARE_DAG_ID
 
-_THUMBNAIL_DAG_ID = "generic_thumbnail_generator"
-_THUMBNAIL_RESULT_TASK_ID = "thumbnail_result"
-
-# Poll cadence and hard deadline for the child thumbnail DAG. A bounded loop
-# guarantees the single nas_ffmpeg pool slot is released even if the child hangs;
-# leaving prepared_at unset lets the nightly loop self-heal on the next run.
-_THUMBNAIL_POLL_INTERVAL_SECS = 15
-_THUMBNAIL_POLL_TIMEOUT_SECS = 1800
-
 # ---------------------------------------------------------------------------
 # Internal helpers (testable pure functions)
 # ---------------------------------------------------------------------------
 
 
-def _trigger_thumbnail_for_turn(turn: dict) -> None:
-    """Trigger generic_thumbnail_generator and poll until completion.
-
-    Reuses the trigger+poll pattern from youtube_upload_dag.trigger_thumbnail_generation.
-    Thumbnails are written to the canonical #133 path by the thumbnail DAG.
-
-    Args:
-        turn: Row dict from select_unprepared_turns (turn_id, output_path, …).
-
-    Raises:
-        RuntimeError: when the thumbnail DAG fails (non-zero exit); prepare will
-            NOT set prepared_at for this turn.
-    """
-    turn_id = turn["turn_id"]
-    output_path = turn.get("output_path") or ""
-
-    # Build the child config mirroring the chapter-uploader pattern (Slice 4a).
-    child_conf = {
-        "youtube_video_id": str(turn_id),
-        "chapter_id": turn.get("chapter_id"),
-        "debate_summary": (
-            (turn.get("chapter_title") or "")
-            + ("\n" + (turn.get("description") or "") if turn.get("description") else "")
-        ),
-        "domain": "congreso",
-        "session": (
-            f"Sesión {turn['session_number']}"
-            if turn.get("session_number") is not None
-            else str(turn.get("session_date", ""))
-        ),
-        "slug": None,
-        "key_speakers": [turn["resolved_name"]] if turn.get("resolved_name") else [],
-        "output_path": output_path,
-    }
-
-    try:
-        dag_run = trigger_dag_api(
-            dag_id=_THUMBNAIL_DAG_ID,
-            conf=child_conf,
-            run_id=f"prepare_turn_{turn_id}_{int(datetime.utcnow().timestamp())}",
-        )
-    except Exception as exc:
-        raise RuntimeError(
-            f"_trigger_thumbnail_for_turn: could not trigger thumbnail DAG "
-            f"for turn_id={turn_id}: {exc}"
-        ) from exc
-
-    logger.info(
-        "_trigger_thumbnail_for_turn: triggered run %s for turn_id=%d",
-        dag_run.run_id,
-        turn_id,
-    )
-
-    deadline = time.monotonic() + _THUMBNAIL_POLL_TIMEOUT_SECS
-    while True:
-        time.sleep(_THUMBNAIL_POLL_INTERVAL_SECS)
-        dag_run.refresh_from_db()
-        if dag_run.state in ("success", "failed"):
-            break
-        if time.monotonic() >= deadline:
-            raise RuntimeError(
-                f"_trigger_thumbnail_for_turn: thumbnail DAG run {dag_run.run_id} "
-                f"for turn_id={turn_id} did not complete within "
-                f"{_THUMBNAIL_POLL_TIMEOUT_SECS}s; leaving prepared_at unset for retry"
-            )
-
-    if dag_run.state != "success":
-        raise RuntimeError(
-            f"_trigger_thumbnail_for_turn: thumbnail DAG run {dag_run.run_id} "
-            f"failed for turn_id={turn_id}"
-        )
-
-    logger.info(
-        "_trigger_thumbnail_for_turn: thumbnail ready for turn_id=%d (run=%s)",
-        turn_id,
-        dag_run.run_id,
-    )
-
-
 def _write_turn_sidecars(turn: dict) -> None:
-    """Generate and write title.txt, description.txt, and subtitles.srt for a turn.
+    """Write subtitles.srt for a turn from windowed SRT source.
+
+    After issue #169 unify-upload-metadata: title.txt and description.txt are
+    now generated at 19:00 upload time by the uploader DAG, not here. This
+    function writes only the SRT sidecar so prepared_at semantics remain clean:
+    video + srt + decode-check only.
 
     Args:
         turn: Row dict from select_unprepared_turns.
@@ -136,8 +51,6 @@ def _write_turn_sidecars(turn: dict) -> None:
     Raises:
         Exception: Any sidecar write failure propagates so prepared_at is NOT set.
     """
-    from congress_videos.modules.youtube import youtube_ai
-    from congress_videos.modules.youtube.youtube_upload import _write_orador_sidecars
     from congress_videos.srt_helpers import (
         _parse_srt_blocks,
         _serialize_srt_blocks,
@@ -147,30 +60,6 @@ def _write_turn_sidecars(turn: dict) -> None:
 
     output_path = turn.get("output_path") or ""
     video_dir = os.path.dirname(output_path)
-
-    # Generate YouTube metadata (title + description) for this turn.
-    meta_results = youtube_ai.generate_youtube_metadata_for_selected_videos([turn])
-    topic_metadata = (meta_results or {}).get("topic_metadata") or []
-    if topic_metadata:
-        entry = topic_metadata[0]
-        title_data = entry.get("title") or {}
-        desc_data = entry.get("description") or {}
-        title = (
-            title_data.get("title", "")
-            if isinstance(title_data, dict)
-            else str(title_data)
-        )
-        description = (
-            desc_data.get("description", "")
-            if isinstance(desc_data, dict)
-            else str(desc_data)
-        )
-    else:
-        title = turn.get("resolved_name") or ""
-        description = ""
-
-    # Write title.txt + description.txt via canonical helper.
-    _write_orador_sidecars(output_path, title, description)
 
     # Write subtitles.srt from windowed SRT fragment.
     video_id = turn.get("video_id")
@@ -207,7 +96,7 @@ def _write_turn_sidecars(turn: dict) -> None:
         f.write(_serialize_srt_blocks(windowed) if windowed else "")
 
     logger.info(
-        "_write_turn_sidecars: sidecars written for turn_id=%d at %s",
+        "_write_turn_sidecars: subtitles.srt written for turn_id=%d at %s",
         turn.get("turn_id"),
         video_dir,
     )
@@ -233,10 +122,13 @@ def _prepare_turns_callable() -> None:
     """Callable for the prepare_turns PythonOperator task.
 
     Selects up to N=2 unprepared turns and processes each sequentially:
-    1. Trigger + poll generic_thumbnail_generator.
-    2. Write title.txt, description.txt, subtitles.srt.
-    3. Run ffmpeg decode integrity check on video.mp4.
-    4. Set prepared_at (only when all prior steps succeeded).
+    1. Write subtitles.srt sidecar.
+    2. Run ffmpeg decode integrity check on video.mp4.
+    3. Set prepared_at (only when all prior steps succeeded).
+
+    After issue #169 unify-upload-metadata: thumbnail generation and
+    title/description sidecar writing are now owned by the 19:00 upload DAG.
+    prepared_at semantics: video + srt + decode-check only.
 
     Any failure within a turn's steps leaves prepared_at NULL; the next
     nightly run retries all steps from scratch.
@@ -261,13 +153,10 @@ def _prepare_turns_callable() -> None:
         )
 
         try:
-            # Step 1: Generate thumbnail (may take 5–10 min).
-            _trigger_thumbnail_for_turn(turn)
-
-            # Step 2: Write text sidecars.
+            # Step 1: Write subtitles.srt sidecar.
             _write_turn_sidecars(turn)
 
-            # Step 3: ffmpeg decode integrity check.
+            # Step 2: ffmpeg decode integrity check.
             rc = _run_ffmpeg_decode_check(output_path)
             if rc != 0:
                 logger.warning(
@@ -278,7 +167,7 @@ def _prepare_turns_callable() -> None:
                 )
                 continue
 
-            # Step 4: Atomic readiness flip — called LAST.
+            # Step 3: Atomic readiness flip — called LAST.
             db.mark_turn_prepared(turn_id)
             logger.info(
                 "_prepare_turns_callable: turn_id=%d prepared successfully", turn_id

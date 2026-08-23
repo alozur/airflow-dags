@@ -249,6 +249,32 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
     return config
 
 
+def _extract_metadata_title_description(
+    youtube_metadata_results: dict | None,
+) -> tuple[str, str]:
+    """Extract (title, description) from youtube_metadata_results XCom payload.
+
+    Handles both dict-wrapped values (``{"title": "..."}`` nested dict) and
+    plain string values. Returns ``("", "")`` on any missing or empty input.
+
+    Args:
+        youtube_metadata_results: The XCom value pushed by _generate_youtube_metadata.
+            Shape: ``{"topic_metadata": [{"title": {...}|str, "description": {...}|str}]}``.
+
+    Returns:
+        A tuple ``(title, description)`` where both are strings (may be empty).
+    """
+    topic = (youtube_metadata_results or {}).get("topic_metadata") or []
+    if not topic:
+        return "", ""
+    entry = topic[0]
+    t = entry.get("title") or {}
+    d = entry.get("description") or {}
+    title = t.get("title", "") if isinstance(t, dict) else str(t)
+    desc = d.get("description", "") if isinstance(d, dict) else str(d)
+    return title, desc
+
+
 def _sanitize_row_for_xcom(row: dict) -> dict:
     """Return a NEW row dict with every datetime.datetime value replaced by
     its ISO-8601 string, so the row survives Airflow's XCom serializer.
@@ -520,21 +546,13 @@ with (
         ti.xcom_push(key="thumbnail_config", value=result)
 
     def _run_generate_thumbnail(ti):
-        """Trigger the generic thumbnail DAG for chapters; skip for turns (sidecars pre-written).
+        """Trigger the generic thumbnail DAG for both turns and chapters (issue #169).
 
-        Turn items have already been prepared by the speaker_turn_prepare DAG which
-        triggers generic_thumbnail_generator and writes all sidecars. The upload DAG
-        must not duplicate that work. Skipping here is identified by item_type='turn'
-        from the uploadable_item XCom key.
+        Turn items now go through the same thumbnail generation path as chapters:
+        _prepare_thumbnail_config already resolves the turn's speaker slug and
+        sets output_path, so trigger_thumbnail_generation writes thumbnail.png to
+        the canonical #133 turn directory.
         """
-        uploadable = ti.xcom_pull(key="uploadable_item") or {}
-        if uploadable.get("item_type") == "turn":
-            # Thumbnail already written by PREPARE DAG — do nothing.
-            logging.info(
-                "_run_generate_thumbnail: skipping thumbnail trigger for turn item "
-                "(sidecars pre-written by speaker_turn_prepare)"
-            )
-            return None
         return trigger_thumbnail_generation(ti, run_id=ti.run_id)
 
     def _extract_chapter_videos(ti):
@@ -616,6 +634,20 @@ with (
                 )
                 ti.xcom_push(key="upload_config", value=None)
                 return None
+
+            # Issue #169: overwrite title.txt/description.txt from fresh 19:00 AI metadata
+            # BEFORE prepare_orador_upload_config reads them from disk.
+            # This ensures fresh 19:00 AI output wins over any stale prepare-side sidecars.
+            from congress_videos.modules.youtube.youtube_upload import _write_orador_sidecars
+
+            youtube_metadata_results = ti.xcom_pull(key="youtube_metadata_results")
+            fresh_title, fresh_desc = _extract_metadata_title_description(youtube_metadata_results)
+            _write_orador_sidecars(output_path, fresh_title, fresh_desc)
+            logging.info(
+                "_prepare_upload_config: turn path — overwrote sidecars from XCom metadata, "
+                "title=%r",
+                fresh_title[:60] if fresh_title else "",
+            )
 
             turn_config = prepare_orador_upload_config(
                 output_path=output_path,
