@@ -24,11 +24,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from congress_videos.modules.speaker_placeholders import is_placeholder
+
 __all__ = [
     "KeepInterval",
     "MaterializationPlan",
     "MIN_LONG_INTERVENTION_SECS",
     "GROUP_GAP_TOLERANCE_SECS",
+    "MONOLOGUE",
+    "QA",
+    "classify_turn_type",
     "plan_turn_materialization",
 ]
 
@@ -43,6 +48,53 @@ long intervention requiring its own individual output video."""
 GROUP_GAP_TOLERANCE_SECS: float = 0.5
 """Maximum gap (seconds) between two consecutive short turns in the same
 chapter that still allows them to be grouped into a single continuous cut."""
+
+MONOLOGUE: str = "monologue"
+"""Turn-type value when a group has fewer than 2 distinct real speakers."""
+
+QA: str = "qa"
+"""Turn-type value when a group spans 2 or more distinct real (non-placeholder,
+non-NULL) resolved_names."""
+
+
+# ---------------------------------------------------------------------------
+# Pure classifier
+# ---------------------------------------------------------------------------
+
+
+def classify_turn_type(
+    turn_ids: tuple[int, ...] | list[int],
+    resolved_by_id: dict[int, str | None],
+) -> str:
+    """Return 'qa' if the group spans >=2 DISTINCT real speakers; 'monologue' otherwise.
+
+    A solo turn (len==1) always returns 'monologue'. NULL and placeholder
+    resolved_names are treated as unknown and never count toward the distinct
+    real-speaker tally.
+
+    Args:
+        turn_ids:       Ordered sequence of turn_ids in this materialization group.
+        resolved_by_id: Mapping of turn_id → resolved_name (None for unknown).
+
+    Returns:
+        MONOLOGUE or QA.
+    """
+    if len(turn_ids) == 1:
+        return MONOLOGUE
+
+    distinct_real: set[str] = set()
+    for tid in turn_ids:
+        name = resolved_by_id.get(tid)
+        if name is None:
+            continue
+        stripped = name.strip()
+        if not stripped:
+            continue
+        if is_placeholder(stripped):
+            continue
+        distinct_real.add(stripped)
+
+    return QA if len(distinct_real) >= 2 else MONOLOGUE
 
 
 # ---------------------------------------------------------------------------

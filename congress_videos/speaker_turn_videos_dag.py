@@ -51,7 +51,7 @@ from congress_videos.config.constants import (
     SPEAKER_TURN_VIDEOS_DAG_ID,
 )
 from congress_videos.config.paths import DOWNLOADS_DIR, get_orador_video_dir
-from congress_videos.modules.materialization import plan_turn_materialization
+from congress_videos.modules.materialization import classify_turn_type, plan_turn_materialization
 from congress_videos.modules.materialization_executor import execute_plan
 from congress_videos.srt_helpers import _window_srt_text, score_turn_interest
 from utils.codec_detection import get_cached_codec
@@ -105,7 +105,7 @@ def _select_task(**context) -> list[dict]:
     chapters_table = pg.get_qualified_table("video_chapters")
     stv_table = pg.get_qualified_table("speaker_turn_videos")
     # video_id lives on video_chapters, not speaker_turns; join to resolve it.
-    cols = "st.turn_id, st.chapter_id, vc.video_id, st.start_seconds, st.end_seconds"
+    cols = "st.turn_id, st.chapter_id, vc.video_id, st.start_seconds, st.end_seconds, st.resolved_name"
     base = (
         f"SELECT {cols} FROM {turns_table} st "
         f"JOIN {chapters_table} vc ON vc.chapter_id = st.chapter_id"
@@ -181,6 +181,9 @@ def _materialize_task(**context) -> dict:
             # RealDictCursor rows are dict-like.
             approved_trims = [dict(row) for row in cur.fetchall()]
 
+        resolved_by_id: dict[int, str | None] = {
+            t["turn_id"]: t.get("resolved_name") for t in turns
+        }
         plans = plan_turn_materialization(turns, approved_trims)
 
         for plan in plans:
@@ -208,6 +211,8 @@ def _materialize_task(**context) -> dict:
                 / "video.mp4"
             )
 
+            turn_type = classify_turn_type(plan.turn_ids, resolved_by_id)
+
             try:
                 codec = get_cached_codec(source_path, codec_cache)
                 execute_plan(plan, source_path, output_path, codec=codec, codec_cache=codec_cache)
@@ -223,10 +228,10 @@ def _materialize_task(**context) -> dict:
             with conn.cursor() as cur:
                 for tid in plan.turn_ids:
                     cur.execute(
-                        f"INSERT INTO {stv_table} (turn_id, output_path) "
-                        f"VALUES (%s, %s) "
+                        f"INSERT INTO {stv_table} (turn_id, output_path, turn_type) "
+                        f"VALUES (%s, %s, %s) "
                         f"ON CONFLICT (turn_id) DO NOTHING",
-                        (tid, output_path),
+                        (tid, output_path, turn_type),
                     )
             conn.commit()
             summary["materialized"] += len(plan.turn_ids)
