@@ -65,6 +65,7 @@ _stub("rapidfuzz.fuzz", token_sort_ratio=lambda *a, **k: 0.0)
 _stub("google.auth")
 _stub("google.auth.transport")
 _stub("google.auth.transport.requests", Request=object)
+_stub("google.auth.jwt")
 _stub("google.oauth2")
 _stub("google.oauth2.credentials", Credentials=object)
 
