@@ -21,6 +21,8 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Callable
 
+from congress_videos.modules.sidecar_api_error import SidecarApiError
+
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -423,9 +425,8 @@ def detect_turns(
             chapter.get("_wav_path", ""),
             chapter.get("_chapter_offset_seconds", 0.0),
         )
-    except Exception as exc:
-        log.warning("detect_turns: diarize_fn failed for chapter_id=%s: %s", chapter_id, exc)
-        return []
+    except SidecarApiError:
+        raise  # infra outage → escalate to DAG loop (task failure)
 
     if not acoustic_changes:
         return []

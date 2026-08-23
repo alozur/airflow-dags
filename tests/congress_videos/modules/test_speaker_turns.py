@@ -696,3 +696,53 @@ class TestUpsertTurns:
         _upsert_turns(cursor, chapter_id=42, turns=self._make_turns(1))
         sql_arg = cursor.execute.call_args[0][0]
         assert "INSERT INTO speaker_turns" in sql_arg
+
+
+# ---------------------------------------------------------------------------
+# Phase: detect_turns exception propagation (issue #156)
+# ---------------------------------------------------------------------------
+
+class TestDetectTurnsPropagation:
+    """Verify detect_turns does NOT swallow SidecarApiError or other exceptions.
+
+    Prior to this fix, the try/except around diarize_fn caught all exceptions
+    and silently returned []. This masked infra outages as empty results.
+    """
+
+    def _make_chapter(self):
+        return {
+            "chapter_id": 99,
+            "video_id": "xyz",
+            "session_date": "2026-01-01",
+        }
+
+    def test_sidecar_api_error_propagates_not_returns_empty(self):
+        """diarize_fn raises SidecarApiError → detect_turns must re-raise it, NOT return []."""
+        from congress_videos.modules.sidecar_api_error import SidecarApiError
+        from congress_videos.modules.speaker_turns import detect_turns
+
+        def failing_diarize(wav_path, offset):
+            raise SidecarApiError("diarize-api unreachable")
+
+        with pytest.raises(SidecarApiError):
+            detect_turns(self._make_chapter(), [], failing_diarize, lambda n: None)
+
+    def test_value_error_propagates_not_returns_empty(self):
+        """diarize_fn raises ValueError → detect_turns must propagate it, NOT return []."""
+        from congress_videos.modules.speaker_turns import detect_turns
+
+        def failing_diarize(wav_path, offset):
+            raise ValueError("unexpected API shape")
+
+        with pytest.raises(ValueError):
+            detect_turns(self._make_chapter(), [], failing_diarize, lambda n: None)
+
+    def test_empty_return_from_diarize_still_gives_empty_list(self):
+        """diarize_fn returns [] (acoustic-only/no changes) → detect_turns returns [] without raising."""
+        from congress_videos.modules.speaker_turns import detect_turns
+
+        def empty_diarize(wav_path, offset):
+            return []
+
+        result = detect_turns(self._make_chapter(), [], empty_diarize, lambda n: None)
+        assert result == []
