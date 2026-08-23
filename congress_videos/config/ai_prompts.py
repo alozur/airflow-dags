@@ -303,6 +303,40 @@ THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE = (
 )
 
 
+# Speaker Resolution — identifies the speaking participant from the president's intro
+# announcement (pre-turn SRT window) plus the turn's own transcript.
+# Output JSON: {"participant_slug": str|null, "confidence": float, "evidence": str}
+# slug MUST be taken verbatim from the provided participant list or null.
+SPEAKER_RESOLUTION_SYSTEM_PROMPT = (
+    "You are a speaker-attribution assistant for the Spanish Congress of Deputies. "
+    "You receive two transcript windows: the president's introduction before a speaker "
+    "begins (intro window), and the first seconds of the speaker's own turn (turn window). "
+    "Using these windows and the list of known participants, identify which participant "
+    "is speaking.\n\n"
+    "Rules:\n"
+    "- Respond with ONLY valid JSON and nothing else.\n"
+    "- The participant_slug field MUST be copied EXACTLY from the provided list, "
+    "or set to null if you cannot attribute with confidence.\n"
+    "- confidence is a float between 0.0 and 1.0 reflecting how certain you are.\n"
+    "- evidence is a short string (one sentence) quoting the key phrase that led "
+    "to your decision.\n\n"
+    'JSON schema: {"participant_slug": "<slug from list or null>", '
+    '"confidence": <0.0-1.0>, "evidence": "<one sentence>"}'
+)
+
+SPEAKER_RESOLUTION_USER_TEMPLATE = (
+    "INTRO WINDOW (president's introduction, up to 120 seconds before the turn starts):\n"
+    "{intro_text}\n\n"
+    "TURN WINDOW (first 60 seconds of the speaker's own turn):\n"
+    "{turn_text}\n\n"
+    "KNOWN PARTICIPANTS (slug | display_name | party — one per line):\n"
+    "{participant_roster}\n\n"
+    "Identify who is speaking. Return ONLY valid JSON:\n"
+    '{{"participant_slug": "<slug from the list above or null>", '
+    '"confidence": <float 0.0-1.0>, "evidence": "<key phrase from the transcript>"}}'
+)
+
+
 # Interest scoring — rates a parliamentary excerpt 0–10 for YouTube newsworthiness.
 # Named constant so SQL comments and tests can reference it by name.
 # See srt_helpers.py: INTEREST_FILTER_THRESHOLD, INTEREST_NEUTRAL.
