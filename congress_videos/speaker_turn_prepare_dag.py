@@ -24,7 +24,17 @@ from airflow.operators.python import PythonOperator
 
 from congress_videos.config.constants import SPEAKER_TURN_PREPARE_DAG_ID
 from congress_videos.modules.database import CongressionalVideoDB
+from congress_videos.modules.speaker_resolution import (
+    SPEAKER_RESOLUTION_MIN_CONFIDENCE,
+    resolve_speaker,
+)
+from congress_videos.modules.participants_db import CongressParticipantsDB
 from utils.env_loader import load_env_if_local
+
+
+def get_all_participants() -> list[dict]:
+    """Fetch all participants from DB. Extracted for monkeypatching in tests."""
+    return CongressParticipantsDB().get_all_participants()
 
 load_env_if_local()
 
@@ -142,6 +152,17 @@ def _prepare_turns_callable() -> None:
 
     logger.info("_prepare_turns_callable: %d turn(s) selected for preparation", len(turns))
 
+    # Fetch all participants once per DAG loop — injected into resolve_speaker per turn.
+    # Failure here degrades to no-attribution (never blocks prepare).
+    try:
+        participants = get_all_participants()
+    except Exception as exc:
+        logger.warning(
+            "_prepare_turns_callable: failed to fetch participants (%s) — resolution skipped for all turns",
+            exc,
+        )
+        participants = []
+
     for turn in turns:
         turn_id = turn["turn_id"]
         output_path = turn.get("output_path") or ""
@@ -151,6 +172,52 @@ def _prepare_turns_callable() -> None:
             turn_id,
             output_path,
         )
+
+        # Step 1.5: AI speaker resolution (issue #177).
+        # Never blocks preparation — wrapped in its own try/except.
+        try:
+            already_resolved = (
+                turn.get("resolved_participant_slug")
+                and float(turn.get("speaker_resolution_confidence") or 0)
+                >= SPEAKER_RESOLUTION_MIN_CONFIDENCE
+            )
+            if not already_resolved:
+                resolution = resolve_speaker(turn, participants)
+                if resolution is not None:
+                    slug = resolution["participant_slug"]
+                    db.mark_turn_resolved(
+                        output_path, slug, resolution["confidence"], "ai_srt_context"
+                    )
+                    # Patch in-memory so thumbnail/title steps see the real name.
+                    display_name = next(
+                        (p["display_name"] for p in participants if p["slug"] == slug),
+                        None,
+                    )
+                    if display_name:
+                        turn["resolved_name"] = display_name
+                    logger.info(
+                        "_prepare_turns_callable: turn_id=%d resolved → slug=%r",
+                        turn_id,
+                        slug,
+                    )
+                else:
+                    logger.info(
+                        "_prepare_turns_callable: turn_id=%d — no speaker resolved; continuing without attribution",
+                        turn_id,
+                    )
+            else:
+                logger.debug(
+                    "_prepare_turns_callable: turn_id=%d already resolved (slug=%s conf=%.2f); skipping AI call",
+                    turn_id,
+                    turn.get("resolved_participant_slug"),
+                    float(turn.get("speaker_resolution_confidence") or 0),
+                )
+        except Exception as exc:
+            logger.warning(
+                "_prepare_turns_callable: turn_id=%d resolution step failed (%s) — continuing without attribution",
+                turn_id,
+                exc,
+            )
 
         try:
             # Step 1: Write subtitles.srt sidecar.

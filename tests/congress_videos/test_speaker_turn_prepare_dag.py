@@ -53,6 +53,9 @@ def _make_turn(turn_id: int = 1, output_path: str = "/data/video.mp4") -> dict:
         "session_number": 1,
         "session_date": "2026-01-01",
         "materialized_at": "2026-01-01T00:00:00",
+        # issue #177: resolution columns exposed by select_unprepared_turns
+        "resolved_participant_slug": None,
+        "speaker_resolution_confidence": None,
     }
 
 
@@ -704,3 +707,138 @@ class TestPrepareTurnsCallableNoThumbnailTrigger:
             _prepare_turns_callable()
 
         mock_db.mark_turn_prepared.assert_called_once_with(1)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 RED tests: speaker resolution step (issue #177)
+# ---------------------------------------------------------------------------
+
+
+class TestSpeakerResolutionStep:
+    """Resolution step runs after select_unprepared_turns and before sidecars.
+
+    All tests in this class require the resolution columns in _make_turn().
+    """
+
+    def _make_participants(self):
+        return [{"slug": "pedro-sanchez", "display_name": "Pedro Sanchez", "party": "PSOE"}]
+
+    def test_resolution_runs_before_sidecar_write(self):
+        """resolve_speaker must be called before _write_turn_sidecars in the prepare loop."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        call_order = []
+        turns = [_make_turn(1, "/data/v1.mp4")]
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = turns
+
+        def fake_resolve(turn, participants, completion_fn=None):
+            call_order.append("resolve")
+            return None
+
+        def fake_write_sidecars(turn):
+            call_order.append("sidecars")
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_write_sidecars),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", side_effect=fake_resolve),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        assert "resolve" in call_order
+        assert "sidecars" in call_order
+        assert call_order.index("resolve") < call_order.index("sidecars"), (
+            "resolve_speaker must be called before _write_turn_sidecars"
+        )
+
+    def test_resolution_skips_when_already_resolved_above_threshold(self):
+        """Skip resolve_speaker when turn has slug set AND confidence >= 0.80."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turn = _make_turn(1, "/data/v1.mp4")
+        turn["resolved_participant_slug"] = "pedro-sanchez"
+        turn["speaker_resolution_confidence"] = 0.92
+
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = [turn]
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker") as mock_resolve,
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        mock_resolve.assert_not_called()
+
+    def test_resolution_proceeds_on_none_result(self):
+        """When resolve_speaker returns None, sidecar step still runs (never blocks)."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turns = [_make_turn(1, "/data/v1.mp4")]
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = turns
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars") as mock_sidecars,
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        mock_sidecars.assert_called_once()
+
+    def test_resolution_patches_resolved_name_in_memory(self):
+        """On successful resolution, turn['resolved_name'] is updated before sidecar call."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turns = [_make_turn(1, "/data/v1.mp4")]
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = turns
+
+        resolved_names_at_sidecar = []
+
+        def fake_write_sidecars(turn):
+            resolved_names_at_sidecar.append(turn.get("resolved_name"))
+
+        participants = [{"slug": "pedro-sanchez", "display_name": "Pedro Sanchez", "party": "PSOE"}]
+        resolution_result = {"participant_slug": "pedro-sanchez", "confidence": 0.92, "evidence": "..."}
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_write_sidecars),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=participants),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        assert resolved_names_at_sidecar == ["Pedro Sanchez"], (
+            f"resolved_name must be 'Pedro Sanchez' before sidecars; got {resolved_names_at_sidecar}"
+        )
+
+    def test_resolution_failure_does_not_block_preparation(self):
+        """If resolve_speaker raises unexpectedly, the sidecar step still runs."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turns = [_make_turn(1, "/data/v1.mp4")]
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = turns
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars") as mock_sidecars,
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", side_effect=RuntimeError("unexpected")),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        mock_sidecars.assert_called_once()
