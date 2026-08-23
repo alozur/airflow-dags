@@ -618,6 +618,56 @@ class PostgreSQLOperator(BaseOperator):
 
             result = {'recorded_snapshots': len(collected)}
 
+        elif self.operation == 'select_unverified_uploads':
+            """Return uploaded rows whose verification is pending (1h–48h window)."""
+            from congress_videos.modules.post_upload_verification import (
+                VERIFY_WINDOW_MIN_HOURS,
+                VERIFY_WINDOW_MAX_HOURS,
+            )
+
+            candidates = db.select_unverified_uploads(
+                min_h=VERIFY_WINDOW_MIN_HOURS,
+                max_h=VERIFY_WINDOW_MAX_HOURS,
+            )
+            logger.info(
+                "select_unverified_uploads: %d candidates in [%dh, %dh] window",
+                len(candidates),
+                VERIFY_WINDOW_MIN_HOURS,
+                VERIFY_WINDOW_MAX_HOURS,
+            )
+            result = candidates
+
+        elif self.operation == 'record_verification_results':
+            """Write verification outcomes produced by the verify_and_record PythonOperator.
+
+            Reads a 'results' XCom key from the verify_and_record task.  Each
+            result dict must contain:
+                {action: "verified"|"failure", item_type, id, output_path?, error?}
+
+            This operator is intentionally a no-op if the verify_and_record task
+            already called db methods directly; it exists as a clean task boundary
+            in case the architecture ever needs to separate compute from writes.
+            (Note: this module must not mention the D-A-G keyword — the scheduler's
+            safe-mode file heuristic would then parse it standalone and crash on
+            the relative imports.)
+            """
+            results = ti.xcom_pull(
+                key=self.xcom_keys.get('results', 'verification_results')
+            ) or []
+
+            verified = [r for r in results if r.get('action') == 'verified']
+            failures = [r for r in results if r.get('action') == 'failure']
+
+            logger.info(
+                "record_verification_results: %d verified, %d failures",
+                len(verified),
+                len(failures),
+            )
+            result = {
+                'verified': len(verified),
+                'failures': len(failures),
+            }
+
         else:
             raise ValueError(f"Unknown operation: {self.operation}")
 

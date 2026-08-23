@@ -1392,6 +1392,215 @@ class CongressionalVideoDB:
         logger.info(f"Turns uploaded today: {count}")
         return count
 
+    # ==================== Post-Upload Verification (issue #141) ====================
+
+    def select_unverified_uploads(
+        self, min_h: int = 1, max_h: int = 48
+    ) -> List[Dict]:
+        """Return uploaded rows whose youtube_video_id has not yet been verified.
+
+        Covers both video_chapters and speaker_turn_videos.  Rows are filtered
+        to the configurable verification window [min_h, max_h] hours after
+        youtube_upload_date so that very-recent uploads (still processing) and
+        very-old uploads (past the grace period) are excluded.
+
+        Turns are deduplicated DISTINCT ON (output_path) because multiple
+        speaker_turn_videos rows share one youtube_video_id.
+
+        Args:
+            min_h: Minimum age in hours (default 1).
+            max_h: Maximum age in hours (default 48).
+
+        Returns:
+            List of dicts with at least:
+            ``{item_type, chapter_id|turn_id|id, youtube_video_id, output_path?}``
+        """
+        chapters_table = self.pg_conn.get_qualified_table('video_chapters')
+        stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT
+                        'chapter' AS item_type,
+                        chapter_id AS id,
+                        youtube_video_id,
+                        NULL::TEXT AS output_path
+                    FROM {chapters_table}
+                    WHERE is_uploaded_to_youtube = TRUE
+                      AND upload_verified_at IS NULL
+                      AND youtube_upload_date BETWEEN NOW() - INTERVAL '%s hours'
+                                                  AND NOW() - INTERVAL '%s hours'
+
+                    UNION ALL
+
+                    SELECT
+                        'turn' AS item_type,
+                        turn_id AS id,
+                        youtube_video_id,
+                        output_path
+                    FROM (
+                        SELECT DISTINCT ON (output_path)
+                            turn_id,
+                            youtube_video_id,
+                            output_path,
+                            youtube_upload_date,
+                            upload_verified_at,
+                            is_uploaded_to_youtube
+                        FROM {stv_table}
+                        ORDER BY output_path, turn_id
+                    ) dedup_turns
+                    WHERE is_uploaded_to_youtube = TRUE
+                      AND upload_verified_at IS NULL
+                      AND youtube_upload_date BETWEEN NOW() - INTERVAL '%s hours'
+                                                  AND NOW() - INTERVAL '%s hours'
+                    """,
+                    (max_h, min_h, max_h, min_h),
+                )
+                rows = cur.fetchall()
+                logger.info(
+                    "select_unverified_uploads: %d candidates (min_h=%d, max_h=%d)",
+                    len(rows),
+                    min_h,
+                    max_h,
+                )
+                return rows
+
+    def mark_upload_verified(self, item_type: str, id_or_output_path) -> None:
+        """Set upload_verified_at = NOW() for a verified upload.
+
+        For chapters, ``id_or_output_path`` is the integer ``chapter_id``.
+        For turns, ``id_or_output_path`` is the ``output_path`` string; ALL
+        rows sharing that output_path are updated atomically (mirror of
+        ``mark_turns_uploaded``).
+
+        Args:
+            item_type: ``"chapter"`` or ``"turn"``.
+            id_or_output_path: chapter_id (int) or output_path (str).
+        """
+        if item_type == "chapter":
+            chapters_table = self.pg_conn.get_qualified_table('video_chapters')
+            with self.pg_conn.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        UPDATE {chapters_table}
+                        SET upload_verified_at = NOW()
+                        WHERE chapter_id = %s
+                        """,
+                        (id_or_output_path,),
+                    )
+            logger.info(
+                "mark_upload_verified: chapter_id=%s verified", id_or_output_path
+            )
+        elif item_type == "turn":
+            stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+            with self.pg_conn.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        UPDATE {stv_table}
+                        SET upload_verified_at = NOW()
+                        WHERE output_path = %s
+                        """,
+                        (id_or_output_path,),
+                    )
+            logger.info(
+                "mark_upload_verified: output_path=%r all siblings verified",
+                id_or_output_path,
+            )
+        else:
+            raise ValueError(f"mark_upload_verified: unknown item_type={item_type!r}")
+
+    def record_upload_verification_failure(
+        self,
+        item_type: str,
+        id_or_output_path,
+        error_message: str | None = None,
+    ) -> None:
+        """Record a verification failure and re-queue or permanently abandon the item.
+
+        Behaviour mirrors ``record_chapter_upload_failure`` / ``record_short_upload_failure``:
+        - upload_attempts is incremented by 1.
+        - last_upload_error is updated.
+        - If upload_attempts + 1 reaches CHAPTER_UPLOAD_ABANDON_THRESHOLD → is_upload_abandoned=TRUE.
+        - Otherwise → is_uploaded_to_youtube=FALSE so the row re-enters the upload queue.
+
+        For turns: ALL rows sharing ``output_path`` are updated atomically.
+        ``prepared_at`` is intentionally NOT modified.
+
+        Args:
+            item_type: ``"chapter"`` or ``"turn"``.
+            id_or_output_path: chapter_id (int) or output_path (str).
+            error_message: Optional description of the failure.
+        """
+        if item_type == "chapter":
+            chapters_table = self.pg_conn.get_qualified_table('video_chapters')
+            with self.pg_conn.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        UPDATE {chapters_table} SET
+                            upload_attempts = upload_attempts + 1,
+                            last_upload_error = %s,
+                            is_uploaded_to_youtube = (upload_attempts + 1 < {CHAPTER_UPLOAD_ABANDON_THRESHOLD}),
+                            is_upload_abandoned = (upload_attempts + 1 >= {CHAPTER_UPLOAD_ABANDON_THRESHOLD}),
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE chapter_id = %s
+                        RETURNING upload_attempts, is_upload_abandoned
+                        """,
+                        (error_message, id_or_output_path),
+                    )
+                    result = cur.fetchone()
+                    if result and result.get('upload_attempts') == CHAPTER_UPLOAD_ABANDON_THRESHOLD:
+                        logger.warning(
+                            "record_upload_verification_failure: chapter_id=%s abandoned "
+                            "after %d failures",
+                            id_or_output_path,
+                            CHAPTER_UPLOAD_ABANDON_THRESHOLD,
+                        )
+                    else:
+                        logger.info(
+                            "record_upload_verification_failure: chapter_id=%s re-queued",
+                            id_or_output_path,
+                        )
+
+        elif item_type == "turn":
+            stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+            with self.pg_conn.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        UPDATE {stv_table} SET
+                            upload_attempts = upload_attempts + 1,
+                            last_upload_error = %s,
+                            is_uploaded_to_youtube = (upload_attempts + 1 < {CHAPTER_UPLOAD_ABANDON_THRESHOLD}),
+                            is_upload_abandoned = (upload_attempts + 1 >= {CHAPTER_UPLOAD_ABANDON_THRESHOLD}),
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE output_path = %s
+                        RETURNING upload_attempts, is_upload_abandoned
+                        """,
+                        (error_message, id_or_output_path),
+                    )
+                    result = cur.fetchone()
+                    if result and result.get('upload_attempts') == CHAPTER_UPLOAD_ABANDON_THRESHOLD:
+                        logger.warning(
+                            "record_upload_verification_failure: output_path=%r group abandoned "
+                            "after %d failures",
+                            id_or_output_path,
+                            CHAPTER_UPLOAD_ABANDON_THRESHOLD,
+                        )
+                    else:
+                        logger.info(
+                            "record_upload_verification_failure: output_path=%r group re-queued",
+                            id_or_output_path,
+                        )
+        else:
+            raise ValueError(
+                f"record_upload_verification_failure: unknown item_type={item_type!r}"
+            )
+
     def count_pending_uploadable_chapters(self, min_relevance_score: int = 2) -> int:
         """Returns the number of chapters pending upload in the uploadable queue."""
         count = self._count_records('uploadable_chapters', 'relevance_score >= %s', (min_relevance_score,))
