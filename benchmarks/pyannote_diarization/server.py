@@ -171,6 +171,7 @@ def create_app(
     _state: dict = {
         "infer": None,
         "load_lock": asyncio.Lock(),
+        "infer_lock": asyncio.Lock(),
         "last_activity": clock(),
         "inflight": 0,
         "watchdog_task": None,
@@ -258,7 +259,8 @@ def create_app(
                 tmp.flush()
                 tmp.close()
 
-                changes: list[dict] = _state["infer"](tmp.name)
+                async with _state["infer_lock"]:
+                    changes: list[dict] = await asyncio.to_thread(_state["infer"], tmp.name)
             except Exception as exc:
                 logger.exception("diarize-api: inference failed")
                 raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc

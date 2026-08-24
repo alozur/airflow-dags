@@ -58,7 +58,7 @@ from utils.time_utils import parse_timestamp
 logger = logging.getLogger(__name__)
 
 DAG_ID = "speaker_turns"
-DEFAULT_LIMIT = 5
+DEFAULT_LIMIT = 1
 
 
 def select_chapters(limit: int = DEFAULT_LIMIT, chapter_ids: list[int] | None = None) -> list[dict]:
@@ -204,6 +204,7 @@ def _process_task(**context) -> dict:
                     logger.exception(
                         "chapter %s failed — skipping", chapter.get("chapter_id")
                     )
+                    conn.rollback()
                     summary["skipped"] += 1
                     continue
                 if result["status"] == "ok":
@@ -212,11 +213,12 @@ def _process_task(**context) -> dict:
                         f"WHERE chapter_id = %s AND turns_detected_at IS NULL",
                         (chapter["chapter_id"],),
                     )
+                    conn.commit()  # durable per chapter — a later failure must not undo this
                     summary["processed"] += 1
                     summary["turns"] += result["turns"]
                 else:
+                    conn.rollback()
                     summary["skipped"] += 1
-        conn.commit()
     logger.info("Speaker-turn run summary: %s", summary)
     return summary
 
