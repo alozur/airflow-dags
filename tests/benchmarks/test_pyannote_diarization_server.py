@@ -358,6 +358,115 @@ class TestLazyLoad:
         assert len(count) == 1, f"Expected 1 loader call, got {len(count)}"
 
 
+class TestInferenceConcurrency:
+    """`/diarize` must offload inference off the event loop (issue #193).
+
+    `/health` must stay responsive while inference is in flight, and a second
+    concurrent `/diarize` request must queue (serialized), not run in parallel.
+    """
+
+    def test_health_responds_during_inference(self):
+        """GET /health must return in <1s while a /diarize inference is in flight."""
+        import threading
+        import time
+
+        inference_started = threading.Event()
+        inference_release = threading.Event()
+
+        def blocking_inference(wav_path: str) -> list[dict]:
+            inference_started.set()
+            inference_release.wait(timeout=5)
+            return []
+
+        import sys
+        if "benchmarks.pyannote_diarization.server" in sys.modules:
+            del sys.modules["benchmarks.pyannote_diarization.server"]
+        import benchmarks.pyannote_diarization.server as srv
+        app = srv.create_app(model_loader=lambda: blocking_inference, idle_timeout=0)
+
+        diarize_thread = None
+        try:
+            with TestClient(app) as client:
+                diarize_thread = threading.Thread(
+                    target=lambda: client.post(
+                        "/diarize",
+                        files={"audio_file": ("c.wav", io.BytesIO(_WAV_STUB), "audio/wav")},
+                        data={"chapter_offset": "0.0"},
+                    )
+                )
+                diarize_thread.start()
+                assert inference_started.wait(timeout=5), "inference never started"
+
+                t0 = time.monotonic()
+                health_resp = client.get("/health")
+                elapsed = time.monotonic() - t0
+
+                assert health_resp.status_code == 200
+                assert elapsed < 1.0, (
+                    f"/health took {elapsed:.2f}s while inference was in flight — "
+                    "event loop is blocked"
+                )
+        finally:
+            inference_release.set()
+            if diarize_thread is not None:
+                diarize_thread.join(timeout=10)
+
+    def test_second_diarize_request_serialized(self):
+        """Two concurrent /diarize requests must never run inference at the same time."""
+        import threading
+        import time
+
+        concurrency_lock = threading.Lock()
+        current_concurrency = [0]
+        max_concurrency = [0]
+        release_event = threading.Event()
+
+        def tracking_inference(wav_path: str) -> list[dict]:
+            with concurrency_lock:
+                current_concurrency[0] += 1
+                max_concurrency[0] = max(max_concurrency[0], current_concurrency[0])
+            release_event.wait(timeout=5)
+            with concurrency_lock:
+                current_concurrency[0] -= 1
+            return []
+
+        import sys
+        if "benchmarks.pyannote_diarization.server" in sys.modules:
+            del sys.modules["benchmarks.pyannote_diarization.server"]
+        import benchmarks.pyannote_diarization.server as srv
+        app = srv.create_app(model_loader=lambda: tracking_inference, idle_timeout=0)
+
+        results: list[int] = []
+        threads: list = []
+        try:
+            with TestClient(app) as client:
+                def make_request():
+                    resp = client.post(
+                        "/diarize",
+                        files={"audio_file": ("c.wav", io.BytesIO(_WAV_STUB), "audio/wav")},
+                        data={"chapter_offset": "0.0"},
+                    )
+                    results.append(resp.status_code)
+
+                threads = [threading.Thread(target=make_request) for _ in range(2)]
+                for t in threads:
+                    t.start()
+                # Give both requests a window to reach inference before releasing.
+                time.sleep(0.3)
+                release_event.set()
+                for t in threads:
+                    t.join(timeout=10)
+        finally:
+            release_event.set()
+            for t in threads:
+                t.join(timeout=10)
+
+        assert all(s == 200 for s in results), f"Not all 200: {results}"
+        assert max_concurrency[0] == 1, (
+            f"Expected serialized inference (max concurrency 1), got {max_concurrency[0]}"
+        )
+
+
 class TestActivityStamping:
     """last_activity must be stamped by /diarize (entry+exit) and 422 handler; never by /health."""
 

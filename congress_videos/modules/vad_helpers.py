@@ -217,7 +217,7 @@ def extract_audio_wav(
         "-f", "wav",
         wav_path,
     ]
-    timeout = compute_ffmpeg_timeout(0)  # audio extract is cheap; use base overhead
+    timeout = compute_ffmpeg_timeout(duration_secs or 0)
     log.info(
         "vad.extract_audio_wav.start video_path=%s wav_path=%s start_secs=%s duration_secs=%s",
         video_path, wav_path, start_secs, duration_secs,
