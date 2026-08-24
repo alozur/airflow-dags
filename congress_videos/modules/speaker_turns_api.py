@@ -32,7 +32,11 @@ DIARIZE_API_HOST = os.environ.get("DIARIZE_API_HOST", "diarize-api")
 DIARIZE_API_PORT = os.environ.get("DIARIZE_API_PORT", "8080")
 DIARIZE_API_URL = f"http://{DIARIZE_API_HOST}:{DIARIZE_API_PORT}"
 
-_DEFAULT_TIMEOUT_SECONDS = 6 * 60 * 60  # 6 h — diarization is slow
+# 1 h. Diarization is slow, but diarize-api is a single container shared by
+# both Airflow environments: a hung chapter holds it for the whole timeout
+# and starves every chapter queued behind it. The previous 6 h value turned
+# one bad chapter into a lost night.
+_DEFAULT_TIMEOUT_SECONDS = 1 * 60 * 60
 
 
 def api_diarize_fn(
