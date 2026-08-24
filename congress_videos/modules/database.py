@@ -1321,7 +1321,9 @@ class CongressionalVideoDB:
                             MAX(st.end_seconds) OVER (PARTITION BY stv.output_path) AS group_end_seconds,
                             vc.video_id, vc.title AS chapter_title, vc.description,
                             vc.relevance_score, vc.key_speakers,
-                            ysv.session_number, ysv.session_date, stv.materialized_at
+                            ysv.session_number, ysv.session_date, stv.materialized_at,
+                            stv.resolved_participant_slug,
+                            stv.speaker_resolution_confidence
                         FROM {stv_table} stv
                         JOIN {st_table} st ON stv.turn_id = st.turn_id
                         JOIN {vc_table} vc ON st.chapter_id = vc.chapter_id
@@ -1373,6 +1375,47 @@ class CongressionalVideoDB:
                     (turn_id,),
                 )
                 logger.info("mark_turn_prepared: turn_id=%d marked prepared", turn_id)
+
+    def mark_turn_resolved(
+        self,
+        output_path: str,
+        slug: str,
+        confidence: float,
+        method: str,
+    ) -> None:
+        """Persist the speaker resolution result for all rows sharing output_path.
+
+        Updates resolved_participant_slug, speaker_resolution_confidence, and
+        speaker_resolution_method on ALL speaker_turn_videos rows that share the
+        given output_path (grouped-turn consistency, mirrors mark_turns_uploaded).
+
+        Args:
+            output_path: Absolute path to the grouped turn's video.mp4 file.
+            slug: Validated participant slug from congress_participants.
+            confidence: Model confidence in [0.0, 1.0].
+            method: Resolution method, one of 'ai_srt_context', 'fuzzy', 'manual'.
+        """
+        stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {stv_table}
+                    SET resolved_participant_slug = %s,
+                        speaker_resolution_confidence = %s,
+                        speaker_resolution_method = %s
+                    WHERE output_path = %s
+                    """,
+                    (slug, confidence, method, output_path),
+                )
+                logger.info(
+                    "mark_turn_resolved: output_path=%s → slug=%r confidence=%.2f method=%s",
+                    output_path,
+                    slug,
+                    confidence,
+                    method,
+                )
 
     def count_pending_uploadable_turns(self) -> int:
         """Returns the count of speaker turn videos pending upload."""

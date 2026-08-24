@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 # ---------------------------------------------------------------------------
 # DAG load tests
@@ -237,3 +239,80 @@ class TestMonitorTriggerRefinementRemoved:
             f"normalize_speakers must be terminal (no downstream tasks); "
             f"found: {[t.task_id for t in normalize.downstream_list]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #158 — _resolve_srt_input fail-fast helper
+# ---------------------------------------------------------------------------
+
+class TestSplitSrtResolveInput:
+    """Unit tests for the module-level _resolve_srt_input(ti) helper.
+
+    Uses the shared mock_task_instance fixture (tests/conftest.py) which
+    provides an in-memory XCom store keyed by 'key=' kwarg.
+    """
+
+    def test_both_none_raises_value_error(self, mock_task_instance):
+        """Both XCom keys return None -> ValueError with both branch states in message."""
+        from congress_videos.youtube_channel_monitor_dag import _resolve_srt_input
+
+        ti = mock_task_instance
+        # Both keys absent -> xcom_pull returns None
+
+        with pytest.raises(ValueError) as exc_info:
+            _resolve_srt_input(ti)
+
+        message = str(exc_info.value)
+        assert "merged_srt_files=None" in message
+        assert "youtube_subtitles=None" in message
+
+    def test_both_empty_dict_raises_value_error(self, mock_task_instance):
+        """Truthy-but-empty dicts (videos=[]) must still raise ValueError (regression guard)."""
+        from congress_videos.youtube_channel_monitor_dag import _resolve_srt_input
+
+        ti = mock_task_instance
+        empty = {'total_downloaded': 0, 'videos': []}
+        ti.xcom_push(key='merged_srt_files', value=empty)
+        ti.xcom_push(key='youtube_subtitles', value=empty)
+
+        with pytest.raises(ValueError):
+            _resolve_srt_input(ti)
+
+    def test_merged_valid_returns_merged(self, mock_task_instance):
+        """merged_srt_files with videos -> returns that dict unchanged, no exception."""
+        from congress_videos.youtube_channel_monitor_dag import _resolve_srt_input
+
+        ti = mock_task_instance
+        merged = {'videos': [{'id': 1}]}
+        ti.xcom_push(key='merged_srt_files', value=merged)
+        # youtube_subtitles left absent (None)
+
+        result = _resolve_srt_input(ti)
+        assert result is merged
+
+    def test_subtitles_valid_returns_subtitles(self, mock_task_instance):
+        """merged_srt_files empty, youtube_subtitles has videos -> returns subtitles dict unchanged."""
+        from congress_videos.youtube_channel_monitor_dag import _resolve_srt_input
+
+        ti = mock_task_instance
+        subtitles = {'videos': [{'id': 2}]}
+        ti.xcom_push(key='youtube_subtitles', value=subtitles)
+        # merged_srt_files left absent (None)
+
+        result = _resolve_srt_input(ti)
+        assert result is subtitles
+
+    def test_plenary_absent_raises_without_secondary_exception(self, mock_task_instance):
+        """Both SRT keys empty + plenary_videos absent -> ValueError raised, no AttributeError."""
+        from congress_videos.youtube_channel_monitor_dag import _resolve_srt_input
+
+        ti = mock_task_instance
+        # All keys absent; plenary_videos returns None
+
+        # Must raise ValueError (not AttributeError / TypeError from message construction)
+        with pytest.raises(ValueError) as exc_info:
+            _resolve_srt_input(ti)
+
+        message = str(exc_info.value)
+        # Message must reference video ids safely (empty list or 'unknown')
+        assert "unknown" in message or "[]" in message or "video_ids" in message

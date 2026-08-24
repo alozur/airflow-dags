@@ -5,11 +5,14 @@ existing thematic ``video_chapters`` and persists named sub-turns to the
 ``speaker_turns`` table. It does NOT cut, re-encode, or move any video —
 materialization (1 speaker = 1 video) is issue #88.
 
-Runs twice nightly (``0 1,5 * * *`` UTC) as the first stage of the turn train
+Runs once daily (``0 14 * * *`` UTC) as the first stage of the turn train
 (detect → materialize → prepare, issue #159); on completion it fire-and-forget
-triggers ``speaker_turn_videos``. Never chained into ``youtube_upload_dag`` —
-diarization runs ~4.6x realtime and must not block the upload flow. Manual
-runs via the trigger API keep working.
+triggers ``speaker_turn_videos``. 14:00 UTC opens the NAS quiet window
+(14:00-20:00 UTC), where qBittorrent reads ~100x less disk than during the
+00:00-08:00 UTC band the previous ``0 1,5 * * *`` cron sat in (issue #187).
+Never chained into ``youtube_upload_dag`` — diarization runs ~4.6x realtime
+and must not block the upload flow. Manual runs via the trigger API keep
+working.
 
 Usage::
 
@@ -44,8 +47,9 @@ from congress_videos.config.constants import (
 )
 
 from congress_videos.modules.participants_db import lookup_participant_fuzzy
+from congress_videos.modules.sidecar_api_error import SidecarApiError
 from congress_videos.modules.speaker_turns import detect_turns, _upsert_turns
-from congress_videos.modules.speaker_turns_api import api_diarize_fn
+from congress_videos.modules.speaker_turns_api import api_diarize_fn, check_diarize_api_health
 from congress_videos.modules.vad_helpers import _find_source_video, extract_audio_wav
 from congress_videos.srt_helpers import _parse_srt_blocks, find_srt_for_chapter
 from utils.postgres_helpers import PostgresConnection
@@ -180,6 +184,7 @@ def _select_task(**context) -> list[dict]:
 
 def _process_task(**context) -> dict:
     chapters = context["ti"].xcom_pull(key="chapters", task_ids="select_chapters") or []
+    check_diarize_api_health()  # fail fast on outage before DB/WAV work
     summary = {"processed": 0, "skipped": 0, "turns": 0}
     pg = PostgresConnection()
     turns_table = pg.get_qualified_table("speaker_turns")
@@ -189,7 +194,13 @@ def _process_task(**context) -> dict:
             for chapter in chapters:
                 try:
                     result = run_chapter_turns(chapter, cur, turns_table=turns_table)
-                except Exception:  # noqa: BLE001 — one bad chapter must not sink the run
+                except SidecarApiError:  # noqa: BLE001 mid-run drop → fail loud
+                    logger.exception(
+                        "chapter %s: diarize-api outage — failing task",
+                        chapter.get("chapter_id"),
+                    )
+                    raise
+                except Exception:  # noqa: BLE001 data error → skip
                     logger.exception(
                         "chapter %s failed — skipping", chapter.get("chapter_id")
                     )
@@ -237,10 +248,10 @@ default_args = {
 dag = DAG(
     dag_id=DAG_ID,
     description=(
-        "Twice-nightly speaker-turn detection within video chapters (issue #86/#159). "
+        "Daily speaker-turn detection within video chapters (issue #86/#159). "
         "On completion chains to speaker_turn_videos via trigger_materialize."
     ),
-    schedule="0 1,5 * * *",
+    schedule="0 14 * * *",  # Single daily run in the NAS quiet window (issue #187)
     start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
     catchup=False,
     max_active_runs=1,

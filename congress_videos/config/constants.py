@@ -55,6 +55,7 @@ VAD_SAFETY_MARGIN_SECS = 2.0  # cut this many seconds before the first sustained
 VAD_END_MARGIN_SECS = 5.0  # keep this many seconds after the last sustained voice (end)
 VAD_SAMPLE_RATE = 16000  # mono WAV sample rate fed to the VAD backend
 VAD_MIN_CHAPTER_SECS = 5.0  # never trim an edge so far the chapter is shorter than this
+VAD_TURN_TRIM_EPSILON_SECS = 0.5  # skip rewrite when both start AND end trims are below this
 
 # -------------------------
 # Congress Participants Sync (opendataExport portlet + Wikidata enrichment)

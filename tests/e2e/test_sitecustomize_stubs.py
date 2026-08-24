@@ -44,6 +44,7 @@ CONFIRMED_HEAVY_SUBMODULE_IMPORTS = [
     "googleapiclient.discovery",
     "googleapiclient.http",
     "google.auth.transport.requests",
+    "google.auth.jwt",
     "google.oauth2",
     "google.oauth2.credentials",
 ]

@@ -24,7 +24,18 @@ from airflow.operators.python import PythonOperator
 
 from congress_videos.config.constants import SPEAKER_TURN_PREPARE_DAG_ID
 from congress_videos.modules.database import CongressionalVideoDB
+from congress_videos.modules.speaker_resolution import (
+    SPEAKER_RESOLUTION_MIN_CONFIDENCE,
+    resolve_speaker,
+)
+from congress_videos.modules.participants_db import CongressParticipantsDB
+from congress_videos.modules.vad_helpers import trim_turn_silence_with_vad
 from utils.env_loader import load_env_if_local
+
+
+def get_all_participants() -> list[dict]:
+    """Fetch all participants from DB. Extracted for monkeypatching in tests."""
+    return CongressParticipantsDB().get_all_participants()
 
 load_env_if_local()
 
@@ -37,7 +48,12 @@ DAG_ID = SPEAKER_TURN_PREPARE_DAG_ID
 # ---------------------------------------------------------------------------
 
 
-def _write_turn_sidecars(turn: dict) -> None:
+def _write_turn_sidecars(
+    turn: dict,
+    *,
+    trim_start_secs: float = 0.0,
+    trim_end_secs: float = 0.0,
+) -> None:
     """Write subtitles.srt for a turn from windowed SRT source.
 
     After issue #169 unify-upload-metadata: title.txt and description.txt are
@@ -45,8 +61,13 @@ def _write_turn_sidecars(turn: dict) -> None:
     function writes only the SRT sidecar so prepared_at semantics remain clean:
     video + srt + decode-check only.
 
+    After issue #175 vad-trim: when VAD trim was applied, the SRT window is
+    narrowed by the trim offsets so timestamps align with the trimmed MP4.
+
     Args:
         turn: Row dict from select_unprepared_turns.
+        trim_start_secs: Seconds trimmed from the start (0.0 = no trim).
+        trim_end_secs: Seconds trimmed from the end (0.0 = no trim).
 
     Raises:
         Exception: Any sidecar write failure propagates so prepared_at is NOT set.
@@ -87,6 +108,10 @@ def _write_turn_sidecars(turn: dict) -> None:
         window_end = float(
             turn.get("group_end_seconds", turn.get("end_seconds", 99 * 3600))
         )
+        # Issue #175: narrow window by VAD trim offsets so SRT timestamps align
+        # with the (possibly trimmed) MP4. Zero offsets → window unchanged.
+        window_start += trim_start_secs
+        window_end -= trim_end_secs
         windowed = _window_srt_blocks(blocks, window_start, window_end)
     else:
         windowed = []
@@ -142,6 +167,17 @@ def _prepare_turns_callable() -> None:
 
     logger.info("_prepare_turns_callable: %d turn(s) selected for preparation", len(turns))
 
+    # Fetch all participants once per DAG loop — injected into resolve_speaker per turn.
+    # Failure here degrades to no-attribution (never blocks prepare).
+    try:
+        participants = get_all_participants()
+    except Exception as exc:
+        logger.warning(
+            "_prepare_turns_callable: failed to fetch participants (%s) — resolution skipped for all turns",
+            exc,
+        )
+        participants = []
+
     for turn in turns:
         turn_id = turn["turn_id"]
         output_path = turn.get("output_path") or ""
@@ -152,11 +188,63 @@ def _prepare_turns_callable() -> None:
             output_path,
         )
 
+        # Step 1.5: AI speaker resolution (issue #177).
+        # Never blocks preparation — wrapped in its own try/except.
         try:
-            # Step 1: Write subtitles.srt sidecar.
-            _write_turn_sidecars(turn)
+            already_resolved = (
+                turn.get("resolved_participant_slug")
+                and float(turn.get("speaker_resolution_confidence") or 0)
+                >= SPEAKER_RESOLUTION_MIN_CONFIDENCE
+            )
+            if not already_resolved:
+                resolution = resolve_speaker(turn, participants)
+                if resolution is not None:
+                    slug = resolution["participant_slug"]
+                    db.mark_turn_resolved(
+                        output_path, slug, resolution["confidence"], "ai_srt_context"
+                    )
+                    # Patch in-memory so thumbnail/title steps see the real name.
+                    display_name = next(
+                        (p["display_name"] for p in participants if p["slug"] == slug),
+                        None,
+                    )
+                    if display_name:
+                        turn["resolved_name"] = display_name
+                    logger.info(
+                        "_prepare_turns_callable: turn_id=%d resolved → slug=%r",
+                        turn_id,
+                        slug,
+                    )
+                else:
+                    logger.info(
+                        "_prepare_turns_callable: turn_id=%d — no speaker resolved; continuing without attribution",
+                        turn_id,
+                    )
+            else:
+                logger.debug(
+                    "_prepare_turns_callable: turn_id=%d already resolved (slug=%s conf=%.2f); skipping AI call",
+                    turn_id,
+                    turn.get("resolved_participant_slug"),
+                    float(turn.get("speaker_resolution_confidence") or 0),
+                )
+        except Exception as exc:
+            logger.warning(
+                "_prepare_turns_callable: turn_id=%d resolution step failed (%s) — continuing without attribution",
+                turn_id,
+                exc,
+            )
 
-            # Step 2: ffmpeg decode integrity check.
+        try:
+            # Step 0.5: VAD silence trim (issue #175).
+            # Best-effort: trim_turn_silence_with_vad never raises and returns (0.0, 0.0) on
+            # any failure, so preparation continues normally with the original file.
+            # Applies uniformly to monologue and qa turns (no turn_type branching).
+            trim_start, trim_end = trim_turn_silence_with_vad(output_path)
+
+            # Step 1: Write subtitles.srt sidecar (window narrowed by VAD offsets).
+            _write_turn_sidecars(turn, trim_start_secs=trim_start, trim_end_secs=trim_end)
+
+            # Step 2: ffmpeg decode integrity check (validates trimmed or original MP4).
             rc = _run_ffmpeg_decode_check(output_path)
             if rc != 0:
                 logger.warning(

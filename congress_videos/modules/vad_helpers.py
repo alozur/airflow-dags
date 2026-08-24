@@ -32,12 +32,15 @@ import logging
 from congress_videos.config.constants import (
     VAD_BACKEND,
     VAD_END_MARGIN_SECS,
+    VAD_ENABLED,
     VAD_GAP_MERGE_SECS,
     VAD_MIN_CHAPTER_SECS,
     VAD_MIN_SUSTAINED_SECS,
     VAD_SAFETY_MARGIN_SECS,
     VAD_SAMPLE_RATE,
+    VAD_TURN_TRIM_EPSILON_SECS,
 )
+from congress_videos.modules.video_editor import _get_source_duration
 from congress_videos.config.paths import get_download_video_path
 from congress_videos.modules.video_splitter import compute_ffmpeg_timeout
 from utils.time_utils import format_timestamp, parse_timestamp
@@ -561,3 +564,155 @@ def trim_chapter_silence_with_vad(
             )
 
     return scored_chapters
+
+
+def trim_turn_silence_with_vad(
+    video_path: str,
+    *,
+    backend: str = VAD_BACKEND,
+    sample_rate: int = VAD_SAMPLE_RATE,
+    gap_merge_secs: float = VAD_GAP_MERGE_SECS,
+    min_sustained_secs: float = VAD_MIN_SUSTAINED_SECS,
+    safety_margin_secs: float = VAD_SAFETY_MARGIN_SECS,
+    end_margin_secs: float = VAD_END_MARGIN_SECS,
+    min_chapter_secs: float = VAD_MIN_CHAPTER_SECS,
+) -> tuple[float, float]:
+    """Trim leading and trailing silence from a speaker-turn MP4 in place.
+
+    Detects sustained-speech boundaries via VAD, applies margins, and rewrites
+    ``video_path`` atomically with ffmpeg stream-copy. Returns the trimmed
+    offsets ``(trim_start_secs, trim_end_secs)`` so that the caller can adjust
+    the SRT window accordingly.
+
+    Args:
+        video_path: Absolute path to the speaker-turn MP4. Modified in place on success.
+        backend: VAD backend (``"webrtc"`` default).
+        sample_rate: WAV sample rate for the VAD backend.
+        gap_merge_secs: Merge voiced segments separated by gaps shorter than this.
+        min_sustained_secs: Minimum accumulated voiced time for a block to qualify.
+        safety_margin_secs: Seconds before the detected speech start (start margin).
+        end_margin_secs: Seconds after the detected speech end (end margin).
+        min_chapter_secs: Minimum surviving duration after trim.
+
+    Returns:
+        ``(trim_start_secs, trim_end_secs)`` — both 0.0 when the file is untouched.
+        NEVER raises; any internal failure returns ``(0.0, 0.0)`` with the file intact.
+    """
+    if not VAD_ENABLED:
+        log.info("vad.trim_turn.skipped reason=disabled video_path=%s", video_path)
+        return (0.0, 0.0)
+
+    wav_path: str | None = None
+    tmp_video: str | None = None
+    try:
+        log.info("vad.trim_turn.start video_path=%s", video_path)
+
+        # Step 1: Extract whole-file audio WAV for VAD analysis.
+        fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="vad_turn_")
+        os.close(fd)
+        extract_audio_wav(video_path, wav_path, sample_rate=sample_rate)
+
+        # Step 2: Detect speech bounds (relative offsets from file start).
+        speech_start, speech_end = detect_speech_bounds(
+            wav_path,
+            backend=backend,
+            sample_rate=sample_rate,
+            gap_merge_secs=gap_merge_secs,
+            min_sustained_secs=min_sustained_secs,
+            safety_margin_secs=safety_margin_secs,
+            end_margin_secs=end_margin_secs,
+        )
+
+        # Step 3: Probe file duration for tail-trim math.
+        duration = _get_source_duration(video_path)
+
+        # Derive trim offsets.
+        # trim_start = seconds to cut from the start of the file.
+        # trim_end = seconds to cut from the end of the file.
+        trim_start = speech_start if speech_start is not None else 0.0
+        if duration is not None and speech_end is not None:
+            trim_end = max(0.0, duration - speech_end)
+        else:
+            trim_end = 0.0  # no tail trim when duration unknown
+
+        # Step 4: Epsilon guard — skip rewrite for negligible trims.
+        if trim_start < VAD_TURN_TRIM_EPSILON_SECS and trim_end < VAD_TURN_TRIM_EPSILON_SECS:
+            log.info(
+                "vad.trim_turn.skipped reason=below_eps trim_start=%.3f trim_end=%.3f video_path=%s",
+                trim_start, trim_end, video_path,
+            )
+            return (0.0, 0.0)
+
+        # Step 5: Span guard — ensure surviving duration meets minimum.
+        if duration is not None:
+            new_start_abs = trim_start
+            new_end_abs = duration - trim_end
+        else:
+            # Duration unknown: only start trim applied; end is unbounded.
+            # Use a synthetic pass for span guard (start-only trim is always OK if > eps).
+            new_start_abs = trim_start
+            new_end_abs = new_start_abs + min_chapter_secs + 1.0
+
+        if not _chapter_span_ok(new_start_abs, new_end_abs, min_chapter_secs):
+            log.info(
+                "vad.trim_turn.skipped reason=span_guard trim_start=%.3f trim_end=%.3f"
+                " new_start=%.3f new_end=%.3f video_path=%s",
+                trim_start, trim_end, new_start_abs, new_end_abs, video_path,
+            )
+            return (0.0, 0.0)
+
+        # Step 6: Compute ffmpeg -ss/-to values. Input-side seek: -ss/-to BEFORE -i.
+        ss = trim_start
+        to = (duration - trim_end) if duration is not None else None
+
+        # Step 7: Build temp file path in same directory as video_path.
+        video_dir = os.path.dirname(video_path)
+        tmp_fd, tmp_video = tempfile.mkstemp(
+            suffix=".vadtrim.tmp.mp4",
+            dir=video_dir,
+        )
+        os.close(tmp_fd)
+
+        # Step 8: Run ffmpeg with input-side seek (-ss/-to before -i) and stream copy.
+        from congress_videos.modules.video_splitter import compute_ffmpeg_timeout
+        timeout = compute_ffmpeg_timeout(0)
+        cmd = ["ffmpeg", "-y", "-ss", str(ss)]
+        if to is not None:
+            cmd += ["-to", str(to)]
+        cmd += ["-i", video_path, "-c", "copy", tmp_video]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            log.warning(
+                "vad.trim_turn.ffmpeg_failed rc=%d video_path=%s stderr=%s",
+                result.returncode, video_path, result.stderr[:200],
+            )
+            return (0.0, 0.0)
+
+        # Step 9: Atomic replace.
+        os.replace(tmp_video, video_path)
+        tmp_video = None  # replaced — no cleanup needed
+
+        log.info(
+            "vad.trim_turn.applied trim_start=%.3f trim_end=%.3f"
+            " new_duration=%.3f video_path=%s",
+            trim_start, trim_end,
+            (to - ss) if to is not None else 0.0,
+            video_path,
+        )
+        return (trim_start, trim_end)
+
+    except Exception as exc:  # noqa: BLE001 — VAD trim is best-effort, never block preparation
+        log.warning(
+            "vad.trim_turn.skipped reason=error video_path=%s error=%s",
+            video_path, exc,
+        )
+        return (0.0, 0.0)
+    finally:
+        if wav_path and os.path.exists(wav_path):
+            os.unlink(wav_path)
+        if tmp_video and os.path.exists(tmp_video):
+            try:
+                os.unlink(tmp_video)
+            except OSError:
+                pass

@@ -26,10 +26,14 @@ class TestDagLoads:
         mod = _fresh()
         assert mod.dag is not None
 
-    def test_schedule_is_0_1_5_twice_nightly(self):
-        """Detect DAG must run twice nightly at 01:00 and 05:00 UTC."""
+    def test_schedule_is_single_daily_1400_utc(self):
+        """Detect DAG must run once daily at 14:00 UTC (issue #187).
+
+        14:00-20:00 UTC is the NAS quiet window: qBittorrent reads ~100x less
+        disk than during 00:00-08:00 UTC, where the previous cron sat.
+        """
         mod = _fresh()
-        assert mod.dag.schedule_interval == "0 1,5 * * *"
+        assert mod.dag.schedule_interval == "0 14 * * *"
 
     def test_max_active_runs_is_1(self):
         """max_active_runs=1 queues rather than drops concurrent cron runs."""
@@ -256,6 +260,8 @@ class TestProcessTask:
         pg = MagicMock()
         pg.get_connection.return_value.__enter__.return_value = conn
         monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
+        # Probe must be no-op so this data-error test is not affected by infra check
+        monkeypatch.setattr(mod, "check_diarize_api_health", lambda **k: None)
 
         def fake_run(chapter, cursor, **k):
             cid = chapter["chapter_id"]
@@ -292,6 +298,8 @@ class TestProcessTaskMarkDetected:
         pg.get_connection.return_value.__enter__.return_value = conn
         monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
         monkeypatch.setattr(mod, "run_chapter_turns", fake_run)
+        # Probe must be no-op so existing data-error tests are not affected
+        monkeypatch.setattr(mod, "check_diarize_api_health", lambda **k: None)
         return cur, conn
 
     def test_ok_chapter_triggers_update_turns_detected_at(self, monkeypatch):
@@ -359,3 +367,56 @@ class TestProcessTaskMarkDetected:
         )
 
         conn.commit.assert_called_once()
+
+
+class TestProcessTaskFailFast:
+    """Verify _process_task fails loud on diarize-api infra errors (issue #156)."""
+
+    def _ti_with(self, chapters):
+        ti = MagicMock()
+        ti.xcom_pull.return_value = chapters
+        return {"ti": ti}
+
+    def _make_pg_mock(self, monkeypatch, mod):
+        cur = MagicMock()
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+        pg = MagicMock()
+        pg.get_qualified_table.side_effect = lambda t: f"development.{t}"
+        pg.get_connection.return_value.__enter__.return_value = conn
+        monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
+        return cur, conn
+
+    def test_infra_down_before_loop_raises_and_skips_chapters(self, monkeypatch):
+        """check_diarize_api_health raises SidecarApiError → _process_task raises; run_chapter_turns never called."""
+        from congress_videos.modules.sidecar_api_error import SidecarApiError
+        mod = _fresh()
+        self._make_pg_mock(monkeypatch, mod)
+
+        monkeypatch.setattr(
+            mod, "check_diarize_api_health",
+            lambda **k: (_ for _ in ()).throw(SidecarApiError("diarize-api unreachable")),
+        )
+        run_chapter_turns_mock = MagicMock()
+        monkeypatch.setattr(mod, "run_chapter_turns", run_chapter_turns_mock)
+
+        with pytest.raises(SidecarApiError):
+            mod._process_task(**self._ti_with([{"chapter_id": 1}]))
+
+        run_chapter_turns_mock.assert_not_called()
+
+    def test_midrun_sidecar_error_fails_task_not_skips(self, monkeypatch):
+        """Probe ok, run_chapter_turns raises SidecarApiError for chapter → _process_task raises (not skips)."""
+        from congress_videos.modules.sidecar_api_error import SidecarApiError
+        mod = _fresh()
+        self._make_pg_mock(monkeypatch, mod)
+
+        monkeypatch.setattr(mod, "check_diarize_api_health", lambda **k: None)
+
+        def raising_run(chapter, cursor, **k):
+            raise SidecarApiError("diarize-api dropped connection mid-run")
+
+        monkeypatch.setattr(mod, "run_chapter_turns", raising_run)
+
+        with pytest.raises(SidecarApiError):
+            mod._process_task(**self._ti_with([{"chapter_id": 5}]))
