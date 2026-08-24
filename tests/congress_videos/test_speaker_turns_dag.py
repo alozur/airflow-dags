@@ -26,10 +26,14 @@ class TestDagLoads:
         mod = _fresh()
         assert mod.dag is not None
 
-    def test_schedule_is_0_1_5_twice_nightly(self):
-        """Detect DAG must run twice nightly at 01:00 and 05:00 UTC."""
+    def test_schedule_is_single_daily_1400_utc(self):
+        """Detect DAG must run once daily at 14:00 UTC (issue #187).
+
+        14:00-20:00 UTC is the NAS quiet window: qBittorrent reads ~100x less
+        disk than during 00:00-08:00 UTC, where the previous cron sat.
+        """
         mod = _fresh()
-        assert mod.dag.schedule_interval == "0 1,5 * * *"
+        assert mod.dag.schedule_interval == "0 14 * * *"
 
     def test_max_active_runs_is_1(self):
         """max_active_runs=1 queues rather than drops concurrent cron runs."""
