@@ -110,10 +110,17 @@ class TestDagLoads:
 class TestSelectTurns:
     """Turns already in speaker_turn_videos must be excluded from the XCom output."""
 
-    def _make_pg_mock(self, monkeypatch, mod, turns_rows, already_materialized_ids):
-        """Wire a mock PostgresConnection that returns turns_rows and already_materialized_ids."""
+    def _make_pg_mock(self, monkeypatch, mod, turns_rows, already_materialized_ids=None):
+        """Wire a mock PostgresConnection that returns turns_rows.
+
+        When ``already_materialized_ids`` is ``None`` (default branch — the
+        idempotency filter now lives in SQL via ``NOT EXISTS``), only one
+        query/fetch happens: ``cur.fetchall.return_value`` is set to
+        ``turns_dicts``. When it is a list (scoped branches, which keep the
+        existing post-hoc Python filter), the original two-fetch
+        ``side_effect`` is used.
+        """
         cur = MagicMock()
-        # Two queries: one for turns, one for already-materialized ids.
         # video_id comes from the JOIN to video_chapters; speaker_turns has no
         # video_id or session_date column.
         cur.description = [
@@ -125,8 +132,11 @@ class TestSelectTurns:
         # the old dict(zip(names,row)) bug would surface (keys as values).
         col_names = [d[0] for d in cur.description]
         turns_dicts = [dict(zip(col_names, r)) for r in turns_rows]
-        already_rows = [{"turn_id": tid} for tid in already_materialized_ids]
-        cur.fetchall.side_effect = [turns_dicts, already_rows]
+        if already_materialized_ids is None:
+            cur.fetchall.return_value = turns_dicts
+        else:
+            already_rows = [{"turn_id": tid} for tid in already_materialized_ids]
+            cur.fetchall.side_effect = [turns_dicts, already_rows]
         conn = MagicMock()
         conn.cursor.return_value.__enter__.return_value = cur
         pg = MagicMock()
@@ -136,6 +146,7 @@ class TestSelectTurns:
         return cur
 
     def test_already_materialized_turns_excluded(self, monkeypatch):
+        """chapter_id-scoped branch keeps the post-hoc Python idempotency filter."""
         mod = _fresh()
         turns_rows = [
             (1, 10, "vid1", 0.0, 100.0, None),
@@ -151,7 +162,7 @@ class TestSelectTurns:
 
         ti.xcom_push.side_effect = xcom_push
         dag_run = MagicMock()
-        dag_run.conf = {}
+        dag_run.conf = {"chapter_id": 10}
 
         mod._select_task(ti=ti, dag_run=dag_run)
 
@@ -210,6 +221,7 @@ class TestSelectTurns:
         )
 
     def test_no_turns_when_all_already_materialized(self, monkeypatch):
+        """chapter_id-scoped branch: post-hoc filter drops every already-materialized turn."""
         mod = _fresh()
         turns_rows = [
             (5, 10, "vid1", 0.0, 100.0, None),
@@ -224,11 +236,84 @@ class TestSelectTurns:
 
         ti.xcom_push.side_effect = xcom_push
         dag_run = MagicMock()
-        dag_run.conf = {}
+        dag_run.conf = {"chapter_id": 10}
 
         mod._select_task(ti=ti, dag_run=dag_run)
 
         assert pushed["turns"] == []
+
+    def test_default_limit_constant_is_ten(self):
+        """DEFAULT_LIMIT must be a named module constant, mirroring speaker_turns_dag.py."""
+        mod = _fresh()
+        assert mod.DEFAULT_LIMIT == 10
+
+    def test_default_branch_not_exists_precedes_limit(self, monkeypatch):
+        """Default branch (no chapter_id/video_id) must filter pending turns in SQL.
+
+        Issue #216: a client-side filter after a hardcoded LIMIT 10 can return
+        an empty list forever once the lowest turn_ids are all materialized.
+        The anti-join must run BEFORE the row cap, in a single query.
+        """
+        mod = _fresh()
+        cur = self._make_pg_mock(
+            monkeypatch, mod,
+            turns_rows=[(61, 10, "vid1", 0.0, 100.0, None)],
+        )
+
+        ti = MagicMock()
+        ti.xcom_push.side_effect = lambda key, value: None
+        mod._select_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        select_sql = cur.execute.call_args_list[0].args[0].lower()
+        assert "not exists" in select_sql
+        assert "speaker_turn_videos" in select_sql
+        assert "v.turn_id = st.turn_id" in select_sql
+        assert select_sql.index("not exists") < select_sql.index("limit"), (
+            "the anti-join must precede LIMIT so the cap applies to PENDING turns"
+        )
+        params = cur.execute.call_args_list[0].args[1]
+        assert params == (10,)
+
+    def test_default_branch_returns_pending_turns_216(self, monkeypatch):
+        """Regression for #216: turns with high turn_ids must be returned once the
+        lowest turn_ids are already materialized — proven here by a mock that
+        returns high turn_ids directly (as the real NOT EXISTS query would),
+        with no second post-hoc filter query able to empty the result.
+        """
+        mod = _fresh()
+        cur = self._make_pg_mock(
+            monkeypatch, mod,
+            turns_rows=[
+                (61, 10, "vid1", 0.0, 100.0, None),
+                (62, 10, "vid1", 100.0, 200.0, None),
+            ],
+        )
+
+        ti = MagicMock()
+        pushed = {}
+        ti.xcom_push.side_effect = lambda key, value: pushed.update({key: value})
+        mod._select_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        returned_ids = [t["turn_id"] for t in pushed["turns"]]
+        assert returned_ids == [61, 62]
+        assert cur.execute.call_count == 1, (
+            "default branch must issue exactly one query — no post-hoc filter query"
+        )
+
+    def test_conf_limit_override_passed_to_sql(self, monkeypatch):
+        """dag_run.conf['limit'] must override DEFAULT_LIMIT and bind via %s."""
+        mod = _fresh()
+        cur = self._make_pg_mock(
+            monkeypatch, mod,
+            turns_rows=[(61, 10, "vid1", 0.0, 100.0, None)],
+        )
+
+        ti = MagicMock()
+        ti.xcom_push.side_effect = lambda key, value: None
+        mod._select_task(ti=ti, dag_run=MagicMock(conf={"limit": 50}))
+
+        params = cur.execute.call_args_list[0].args[1]
+        assert params == (50,)
 
 
 # ---------------------------------------------------------------------------
