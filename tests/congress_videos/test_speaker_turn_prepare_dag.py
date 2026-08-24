@@ -159,12 +159,13 @@ class TestPrepareTurnsCallableSequentialLoop:
         mock_db.select_unprepared_turns.side_effect = fake_db_select
         mock_db.mark_turn_prepared.side_effect = fake_mark_prepared
 
-        def fake_write_sidecars(turn):
+        def fake_write_sidecars(turn, **kwargs):
             call_order.append(("sidecars", turn["turn_id"]))
 
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_write_sidecars),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("subprocess.run") as mock_subproc,
         ):
             mock_subproc.return_value = MagicMock(returncode=0)
@@ -229,12 +230,13 @@ class TestPrepareTurnsCallableSequentialLoop:
         mock_db.select_unprepared_turns.return_value = turns
         mock_db.mark_turn_prepared.side_effect = lambda tid: call_order.append("mark_prepared")
 
-        def fake_write_sidecars(turn):
+        def fake_write_sidecars(turn, **kwargs):
             call_order.append("write_sidecars")
 
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_write_sidecars),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("subprocess.run") as mock_subproc,
         ):
             def fake_run(*args, **kwargs):
@@ -554,6 +556,7 @@ class TestIntegrityCheckUsesFFmpeg:
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag.subprocess.run", side_effect=fake_run),
         ):
             _prepare_turns_callable()
@@ -736,12 +739,13 @@ class TestSpeakerResolutionStep:
             call_order.append("resolve")
             return None
 
-        def fake_write_sidecars(turn):
+        def fake_write_sidecars(turn, **kwargs):
             call_order.append("sidecars")
 
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_write_sidecars),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", side_effect=fake_resolve),
             patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
@@ -768,6 +772,7 @@ class TestSpeakerResolutionStep:
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker") as mock_resolve,
             patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
@@ -787,6 +792,7 @@ class TestSpeakerResolutionStep:
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars") as mock_sidecars,
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None),
             patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
@@ -805,7 +811,7 @@ class TestSpeakerResolutionStep:
 
         resolved_names_at_sidecar = []
 
-        def fake_write_sidecars(turn):
+        def fake_write_sidecars(turn, **kwargs):
             resolved_names_at_sidecar.append(turn.get("resolved_name"))
 
         participants = [{"slug": "pedro-sanchez", "display_name": "Pedro Sanchez", "party": "PSOE"}]
@@ -814,6 +820,7 @@ class TestSpeakerResolutionStep:
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_write_sidecars),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
             patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=participants),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
@@ -835,6 +842,7 @@ class TestSpeakerResolutionStep:
         with (
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars") as mock_sidecars,
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", side_effect=RuntimeError("unexpected")),
             patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
@@ -842,3 +850,285 @@ class TestSpeakerResolutionStep:
             _prepare_turns_callable()
 
         mock_sidecars.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 RED tests: _write_turn_sidecars window adjustment (issue #175)
+# ---------------------------------------------------------------------------
+
+
+class TestWriteTurnSidecarsVadWindowAdjustment:
+    """_write_turn_sidecars must narrow the SRT window when trim offsets are given.
+
+    Tests 3.1–3.3: window_start, window_end adjusted by trim offsets before
+    _window_srt_blocks is called.
+    """
+
+    def _make_grouped_turn(self, tmp_path, group_start: float = 100.0, group_end: float = 400.0) -> dict:
+        video_dir = tmp_path / "output_turn"
+        video_dir.mkdir()
+        return {
+            "turn_id": 1,
+            "output_path": str(video_dir / "video.mp4"),
+            "chapter_id": 10,
+            "resolved_name": "Speaker",
+            "start_seconds": group_start,
+            "end_seconds": group_end,
+            "group_start_seconds": group_start,
+            "group_end_seconds": group_end,
+            "interest_score": 5,
+            "video_id": "vidXYZ",
+            "chapter_title": "Chapter",
+            "description": "Desc",
+            "relevance_score": 4,
+            "key_speakers": [],
+            "session_number": 1,
+            "session_date": "2026-01-01",
+            "materialized_at": "2026-01-01T00:00:00",
+        }
+
+    def test_sidecar_window_narrowed_by_trim(self, tmp_path):
+        """_write_turn_sidecars(turn, trim_start_secs=2.5, trim_end_secs=3.0) must
+        call _window_srt_blocks with window_start+2.5 and window_end-3.0."""
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        group_start = 100.0
+        group_end = 400.0
+        turn = self._make_grouped_turn(tmp_path, group_start, group_end)
+
+        captured_bounds = []
+
+        def fake_window_srt_blocks(blocks, ws, we):
+            captured_bounds.append((ws, we))
+            return []
+
+        with (
+            patch("congress_videos.srt_helpers.find_srt_for_chapter", return_value="/fake/src.srt"),
+            patch("congress_videos.srt_helpers._parse_srt_blocks", return_value=[]),
+            patch("congress_videos.srt_helpers._window_srt_blocks", side_effect=fake_window_srt_blocks),
+        ):
+            _write_turn_sidecars(turn, trim_start_secs=2.5, trim_end_secs=3.0)
+
+        assert len(captured_bounds) == 1, "must call _window_srt_blocks exactly once"
+        ws, we = captured_bounds[0]
+        assert ws == pytest.approx(group_start + 2.5), (
+            f"window_start must be {group_start+2.5}, got {ws}"
+        )
+        assert we == pytest.approx(group_end - 3.0), (
+            f"window_end must be {group_end-3.0}, got {we}"
+        )
+
+    def test_sidecar_window_unchanged_on_zero_trim(self, tmp_path):
+        """trim_start_secs=0.0, trim_end_secs=0.0 → _window_srt_blocks receives original bounds."""
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        group_start = 100.0
+        group_end = 400.0
+        turn = self._make_grouped_turn(tmp_path, group_start, group_end)
+
+        captured_bounds = []
+
+        def fake_window_srt_blocks(blocks, ws, we):
+            captured_bounds.append((ws, we))
+            return []
+
+        with (
+            patch("congress_videos.srt_helpers.find_srt_for_chapter", return_value="/fake/src.srt"),
+            patch("congress_videos.srt_helpers._parse_srt_blocks", return_value=[]),
+            patch("congress_videos.srt_helpers._window_srt_blocks", side_effect=fake_window_srt_blocks),
+        ):
+            _write_turn_sidecars(turn, trim_start_secs=0.0, trim_end_secs=0.0)
+
+        ws, we = captured_bounds[0]
+        assert ws == pytest.approx(group_start), f"window_start must be {group_start}, got {ws}"
+        assert we == pytest.approx(group_end), f"window_end must be {group_end}, got {we}"
+
+    def test_sidecar_grouped_turn_window_adjusted(self, tmp_path):
+        """Grouped turn: _window_srt_blocks gets group_start+trim_start, group_end-trim_end."""
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        group_start = 19157.0
+        group_end = 19784.0
+        turn = self._make_grouped_turn(tmp_path, group_start, group_end)
+
+        captured_bounds = []
+
+        def fake_window_srt_blocks(blocks, ws, we):
+            captured_bounds.append((ws, we))
+            return []
+
+        with (
+            patch("congress_videos.srt_helpers.find_srt_for_chapter", return_value="/fake/src.srt"),
+            patch("congress_videos.srt_helpers._parse_srt_blocks", return_value=[]),
+            patch("congress_videos.srt_helpers._window_srt_blocks", side_effect=fake_window_srt_blocks),
+        ):
+            _write_turn_sidecars(turn, trim_start_secs=5.0, trim_end_secs=8.0)
+
+        ws, we = captured_bounds[0]
+        assert ws == pytest.approx(group_start + 5.0)
+        assert we == pytest.approx(group_end - 8.0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 RED tests: DAG prepare callable — VAD step integration (issue #175)
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareTurnsCallableVadStep:
+    """VAD trim must be called after speaker-resolution and before _write_turn_sidecars.
+
+    Tests 4.1–4.5: placement, offsets threaded, zero-trim, decode-check, turn_type parity.
+    """
+
+    def _make_participants(self):
+        return []
+
+    def test_vad_called_before_sidecars(self):
+        """VAD trim must be called after speaker-resolution and before _write_turn_sidecars."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        call_order = []
+        turns = [_make_turn(1, "/data/v1.mp4")]
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = turns
+
+        def fake_vad(path, **kwargs):
+            call_order.append("vad")
+            return (0.0, 0.0)
+
+        def fake_sidecars(turn, **kwargs):
+            call_order.append("sidecars")
+
+        def fake_resolve(turn, participants, **kwargs):
+            call_order.append("resolve")
+            return None
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", side_effect=fake_vad),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_sidecars),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", side_effect=fake_resolve),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        assert "vad" in call_order, "trim_turn_silence_with_vad must be called"
+        assert "sidecars" in call_order, "_write_turn_sidecars must be called"
+        vad_idx = call_order.index("vad")
+        sidecars_idx = call_order.index("sidecars")
+        assert vad_idx < sidecars_idx, "VAD must be called before sidecars"
+
+    def test_vad_offsets_flow_into_sidecars(self):
+        """VAD returning (1.5, 2.0) → _write_turn_sidecars called with trim_start_secs=1.5, trim_end_secs=2.0."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turns = [_make_turn(1, "/data/v1.mp4")]
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = turns
+
+        captured_kwargs = []
+
+        def fake_sidecars(turn, **kwargs):
+            captured_kwargs.append(kwargs)
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(1.5, 2.0)),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_sidecars),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        assert len(captured_kwargs) == 1
+        kw = captured_kwargs[0]
+        assert kw.get("trim_start_secs") == pytest.approx(1.5), f"trim_start_secs must be 1.5, got {kw}"
+        assert kw.get("trim_end_secs") == pytest.approx(2.0), f"trim_end_secs must be 2.0, got {kw}"
+
+    def test_vad_zero_offsets_no_change(self):
+        """VAD returning (0.0, 0.0) → _write_turn_sidecars called with trim_start_secs=0.0, trim_end_secs=0.0."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turns = [_make_turn(1, "/data/v1.mp4")]
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = turns
+
+        captured_kwargs = []
+
+        def fake_sidecars(turn, **kwargs):
+            captured_kwargs.append(kwargs)
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_sidecars),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        assert len(captured_kwargs) == 1
+        kw = captured_kwargs[0]
+        assert kw.get("trim_start_secs") == pytest.approx(0.0)
+        assert kw.get("trim_end_secs") == pytest.approx(0.0)
+
+    def test_decode_check_on_trimmed_file(self):
+        """After VAD trim with non-zero offsets, decode check runs on same output_path."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turns = [_make_turn(1, "/data/v1.mp4")]
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = turns
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(2.0, 3.0)),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch("congress_videos.speaker_turn_prepare_dag.subprocess.run") as mock_sub,
+        ):
+            mock_sub.return_value = MagicMock(returncode=0)
+            _prepare_turns_callable()
+
+        # ffmpeg decode check must be called with the output_path
+        mock_sub.assert_called_once()
+        cmd = mock_sub.call_args[0][0]
+        assert "/data/v1.mp4" in cmd, (
+            f"Decode check must operate on output_path /data/v1.mp4; cmd={cmd}"
+        )
+
+    def test_monologue_and_qa_both_vad_called(self):
+        """Two turns (different turn_type) → VAD called for both."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turn1 = _make_turn(1, "/data/v1.mp4")
+        turn1["turn_type"] = "monologue"
+        turn2 = _make_turn(2, "/data/v2.mp4")
+        turn2["turn_type"] = "qa"
+        turns = [turn1, turn2]
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = turns
+
+        vad_calls = []
+
+        def fake_vad(path, **kwargs):
+            vad_calls.append(path)
+            return (0.0, 0.0)
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", side_effect=fake_vad),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        assert len(vad_calls) == 2, f"VAD must be called for both turns; calls={vad_calls}"
+        assert "/data/v1.mp4" in vad_calls
+        assert "/data/v2.mp4" in vad_calls
