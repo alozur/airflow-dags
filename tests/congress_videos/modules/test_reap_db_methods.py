@@ -6,6 +6,12 @@ import logging
 
 import pytest
 
+from congress_videos.modules.database import (
+    SHORTS_PENDING_CANDIDATE_LIMIT,
+    SHORTS_UPLOAD_HISTORY_LIMIT,
+    filter_shorts_by_source_cooldown,
+)
+
 
 # --------------------------------------------------------------------------- #
 # Fixtures
@@ -203,6 +209,138 @@ class TestUpdateVideoShortStatus:
 
 
 # --------------------------------------------------------------------------- #
+# filter_shorts_by_source_cooldown (pure helper)
+# --------------------------------------------------------------------------- #
+
+class TestFilterShortsBySourceCooldown:
+
+    def test_blocked_before_cooldown_elapses(self):
+        """Only 4 other-video uploads since V's last upload — still blocked."""
+        candidates = [{"id": 1, "video_id": "V"}]
+        upload_history = [
+            {"video_id": "other1"},
+            {"video_id": "other2"},
+            {"video_id": "other3"},
+            {"video_id": "other4"},
+            {"video_id": "V"},
+        ]
+
+        result = filter_shorts_by_source_cooldown(candidates, upload_history)
+
+        assert result == []
+
+    def test_released_after_exactly_five_other_uploads(self):
+        """Exactly 5 other-video uploads since V's last upload — eligible."""
+        candidates = [{"id": 1, "video_id": "V"}]
+        upload_history = [
+            {"video_id": "other1"},
+            {"video_id": "other2"},
+            {"video_id": "other3"},
+            {"video_id": "other4"},
+            {"video_id": "other5"},
+            {"video_id": "V"},
+        ]
+
+        result = filter_shorts_by_source_cooldown(candidates, upload_history)
+
+        assert result == candidates
+
+    def test_boundary_four_vs_five(self):
+        """Index 4 (blocked) vs index 5 (eligible) for two different source videos."""
+        candidates = [
+            {"id": 1, "video_id": "A"},  # index 4 in history
+            {"id": 2, "video_id": "B"},  # index 5 in history
+        ]
+        upload_history = [
+            {"video_id": "x1"},
+            {"video_id": "x2"},
+            {"video_id": "x3"},
+            {"video_id": "x4"},
+            {"video_id": "A"},
+            {"video_id": "B"},
+        ]
+
+        result = filter_shorts_by_source_cooldown(candidates, upload_history)
+
+        assert result == [{"id": 2, "video_id": "B"}]
+
+    def test_video_with_no_upload_history_is_eligible(self):
+        """V never appears in upload_history — eligible regardless of other videos' history."""
+        candidates = [{"id": 1, "video_id": "V"}]
+        upload_history = [
+            {"video_id": "other1"},
+            {"video_id": "other2"},
+        ]
+
+        result = filter_shorts_by_source_cooldown(candidates, upload_history)
+
+        assert result == candidates
+
+    def test_history_window_outside_bounded_history_is_eligible(self):
+        """V absent from the (bounded) history list passed in — never a stale lockout."""
+        candidates = [{"id": 1, "video_id": "V"}]
+        upload_history = [{"video_id": f"other{i}"} for i in range(SHORTS_UPLOAD_HISTORY_LIMIT)]
+
+        result = filter_shorts_by_source_cooldown(candidates, upload_history)
+
+        assert result == candidates
+
+    def test_multi_occurrence_uses_first_match_index(self):
+        """Repeated V entries in history: only the MOST RECENT (first) occurrence counts."""
+        candidates = [{"id": 1, "video_id": "V"}]
+        upload_history = [
+            {"video_id": "other1"},
+            {"video_id": "V"},          # most recent V occurrence — index 1
+            {"video_id": "other2"},
+            {"video_id": "other3"},
+            {"video_id": "other4"},
+            {"video_id": "other5"},
+            {"video_id": "V"},          # older occurrence — must be ignored
+        ]
+
+        result = filter_shorts_by_source_cooldown(candidates, upload_history)
+
+        assert result == []
+
+    def test_missing_video_id_fails_open(self):
+        """Candidate row without a video_id key is eligible regardless of history."""
+        candidates = [{"id": 1}]
+        upload_history = [{"video_id": "irrelevant"}]
+
+        result = filter_shorts_by_source_cooldown(candidates, upload_history)
+
+        assert result == candidates
+
+    def test_order_preserved_among_eligible(self):
+        """Filtering never reorders — only removes cooling-down rows."""
+        candidates = [
+            {"id": 1, "video_id": "A"},
+            {"id": 2, "video_id": "B"},
+            {"id": 3, "video_id": "C"},
+        ]
+        upload_history: list[dict] = []
+
+        result = filter_shorts_by_source_cooldown(candidates, upload_history)
+
+        assert result == candidates
+
+    def test_empty_upload_history_all_eligible(self):
+        candidates = [{"id": 1, "video_id": "V"}, {"id": 2, "video_id": "W"}]
+
+        result = filter_shorts_by_source_cooldown(candidates, [])
+
+        assert result == candidates
+
+    def test_cooldown_zero_all_eligible(self):
+        candidates = [{"id": 1, "video_id": "V"}]
+        upload_history = [{"video_id": "V"}]
+
+        result = filter_shorts_by_source_cooldown(candidates, upload_history, cooldown=0)
+
+        assert result == candidates
+
+
+# --------------------------------------------------------------------------- #
 # get_pending_shorts
 # --------------------------------------------------------------------------- #
 
@@ -236,14 +374,21 @@ class TestGetPendingShorts:
         assert "LIMIT" in sql
 
     def test_virality_filter_passed_as_param(self, db):
+        """min_virality_score and SHORTS_PENDING_CANDIDATE_LIMIT are bound to the candidate
+        query — the candidate LIMIT is decoupled from `limit`, which is applied afterward in
+        Python and asserted here via the truncated return value."""
         instance, mock_cursor = db
-        mock_cursor.fetchall.return_value = []
+        mock_cursor.fetchall.side_effect = [
+            [],
+            [{"id": 1, "video_id": "A"}, {"id": 2, "video_id": "B"}],
+        ]
 
-        instance.get_pending_shorts(limit=2, min_virality_score=0.6)
+        result = instance.get_pending_shorts(limit=1, min_virality_score=0.6)
 
-        _, params = mock_cursor.execute.call_args[0]
-        assert 0.6 in params
-        assert 2 in params
+        _, candidate_params = mock_cursor.execute.call_args_list[1][0]
+        assert 0.6 in candidate_params
+        assert SHORTS_PENDING_CANDIDATE_LIMIT in candidate_params
+        assert result == [{"id": 1, "video_id": "A"}]
 
     def test_query_excludes_abandoned_shorts(self, db):
         instance, mock_cursor = db
@@ -253,6 +398,91 @@ class TestGetPendingShorts:
 
         sql = mock_cursor.execute.call_args[0][0]
         assert "is_upload_abandoned = FALSE" in sql
+
+    def test_history_query_runs_first_with_expected_shape(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.side_effect = [[], []]
+
+        instance.get_pending_shorts()
+
+        history_sql, history_params = mock_cursor.execute.call_args_list[0][0]
+        assert "is_uploaded = TRUE" in history_sql
+        assert "ORDER BY vs.updated_at DESC" in history_sql
+        assert SHORTS_UPLOAD_HISTORY_LIMIT in history_params
+
+    def test_candidate_query_joins_video_chapters_and_selects_video_id(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.side_effect = [[], []]
+
+        instance.get_pending_shorts(min_virality_score=0.6)
+
+        candidate_sql, candidate_params = mock_cursor.execute.call_args_list[1][0]
+        assert "JOIN" in candidate_sql
+        assert "video_chapters" in candidate_sql
+        assert "vc.video_id" in candidate_sql
+        assert 0.6 in candidate_params
+        assert SHORTS_PENDING_CANDIDATE_LIMIT in candidate_params
+
+    def test_result_truncated_to_limit(self, db):
+        instance, mock_cursor = db
+        candidates = [
+            {"id": 1, "video_id": "A"},
+            {"id": 2, "video_id": "B"},
+            {"id": 3, "video_id": "C"},
+        ]
+        mock_cursor.fetchall.side_effect = [[], candidates]
+
+        result = instance.get_pending_shorts(limit=2)
+
+        assert result == candidates[:2]
+
+    def test_eligible_row_deeper_than_limit_is_returned_past_cooling_down_head(self, db):
+        """Cooling-down head row must not zero out the run — over-fetch + Python filter
+        surfaces the eligible row that sits deeper in the candidate list."""
+        instance, mock_cursor = db
+        history = [
+            {"video_id": "hot"},
+            {"video_id": "other"},
+            {"video_id": "hot"},
+        ]
+        candidates = [
+            {"id": 1, "video_id": "hot"},   # cooling down (index 0 < cooldown 5)
+            {"id": 2, "video_id": "cold"},  # never uploaded -> eligible
+        ]
+        mock_cursor.fetchall.side_effect = [history, candidates]
+
+        result = instance.get_pending_shorts(limit=1)
+
+        assert result == [{"id": 2, "video_id": "cold"}]
+
+    def test_all_cooling_down_returns_empty_and_logs_info(self, db, caplog):
+        instance, mock_cursor = db
+        history = [{"video_id": "V"}]
+        candidates = [{"id": 1, "video_id": "V"}]
+        mock_cursor.fetchall.side_effect = [history, candidates]
+
+        with caplog.at_level(logging.INFO, logger="congress_videos.modules.database"):
+            result = instance.get_pending_shorts()
+
+        assert result == []
+        info_messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        assert any("cooling down" in m.lower() for m in info_messages)
+
+    def test_partial_block_logs_blocked_count(self, db, caplog):
+        instance, mock_cursor = db
+        history = [{"video_id": "hot"}]
+        candidates = [
+            {"id": 1, "video_id": "hot"},   # blocked
+            {"id": 2, "video_id": "cold"},  # eligible
+        ]
+        mock_cursor.fetchall.side_effect = [history, candidates]
+
+        with caplog.at_level(logging.INFO, logger="congress_videos.modules.database"):
+            result = instance.get_pending_shorts()
+
+        assert result == [{"id": 2, "video_id": "cold"}]
+        info_messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        assert any("blocked 1" in m.lower() for m in info_messages)
 
 
 # --------------------------------------------------------------------------- #
