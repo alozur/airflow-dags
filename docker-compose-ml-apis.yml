@@ -36,9 +36,13 @@ services:
       - ml_api_network
     mem_limit: 6g
     healthcheck:
+      # /health is served by the same single-worker uvicorn that runs inference,
+      # so while a diarization is in flight the NAS has no idle CPU and the probe
+      # has been measured at ~26s. A 10s timeout reported the container unhealthy
+      # whenever it was actually working (683 consecutive failures observed).
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
+      interval: 60s
+      timeout: 60s
       retries: 3
       start_period: 30s
 

@@ -33,6 +33,20 @@ SAMPLE_CHANGES = [
 ]
 
 
+class TestDefaultTimeout:
+    def test_default_timeout_is_one_hour(self):
+        """Diarize requests must give up after 1h, not 6h.
+
+        A hung chapter used to hold the single shared diarize-api container for
+        six hours before failing, blocking every other chapter behind it. One
+        hour is well above the slowest observed healthy chapter and still frees
+        the queue the same night.
+        """
+        from congress_videos.modules import speaker_turns_api
+
+        assert speaker_turns_api._DEFAULT_TIMEOUT_SECONDS == 3600
+
+
 class TestApiDiarizeFnHappyPath:
     def test_returns_speaker_changes_list(self, tmp_path):
         from congress_videos.modules.speaker_turns_api import api_diarize_fn
