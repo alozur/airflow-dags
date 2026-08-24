@@ -13,6 +13,52 @@ logger = logging.getLogger(__name__)
 
 CHAPTER_UPLOAD_ABANDON_THRESHOLD = 3  # 3rd recorded failure excludes the chapter
 SHORTS_UPLOAD_ABANDON_THRESHOLD = 3   # 3rd recorded failure excludes the short
+SHORTS_SOURCE_VIDEO_COOLDOWN = 5      # other-video upload events before V is eligible again
+SHORTS_UPLOAD_HISTORY_LIMIT = 50      # bounded upload-history window
+SHORTS_PENDING_CANDIDATE_LIMIT = 200  # candidate over-fetch before the Python cool-down filter
+
+
+def filter_shorts_by_source_cooldown(
+    candidates: List[Dict[str, Any]],
+    upload_history: List[Dict[str, Any]],
+    cooldown: int = SHORTS_SOURCE_VIDEO_COOLDOWN,
+) -> List[Dict[str, Any]]:
+    """
+    Filter out candidate shorts whose source video is still within its
+    per-source-video cool-down.
+
+    `upload_history` MUST be ordered most-recent-first (each row a dict with
+    a "video_id" key). For a candidate with source video V, only the FIRST
+    (most recent) occurrence of V in `upload_history` matters — its ordinal
+    position (0-based) equals the number of other-video upload events since
+    V was last uploaded. V is eligible when that position is >= `cooldown`,
+    or when V does not appear in `upload_history` at all (never uploaded,
+    or its last upload fell outside the bounded history window).
+
+    Pure function: no I/O, no datetime handling, order-preserving, and does
+    NOT truncate — callers apply their own result limit after filtering.
+    """
+    if cooldown <= 0 or not upload_history:
+        return list(candidates)
+
+    history_video_ids = [row.get("video_id") for row in upload_history]
+
+    eligible = []
+    for candidate in candidates:
+        video_id = candidate.get("video_id")
+        if video_id is None:
+            eligible.append(candidate)
+            continue
+        try:
+            position = history_video_ids.index(video_id)
+        except ValueError:
+            eligible.append(candidate)
+            continue
+        if position >= cooldown:
+            eligible.append(candidate)
+
+    return eligible
+
 
 class CongressionalVideoDB:
     """Database operations for congressional video management"""
@@ -1126,12 +1172,24 @@ class CongressionalVideoDB:
         virality score descending as a tie-breaker within the same long-form
         video. Only clips with a local file present are returned.
 
+        Additionally applies a per-source-video cool-down: a candidate is
+        excluded when fewer than SHORTS_SOURCE_VIDEO_COOLDOWN shorts from
+        OTHER source videos have uploaded since its own source video's last
+        upload (see `filter_shorts_by_source_cooldown`). Candidates are
+        over-fetched (up to SHORTS_PENDING_CANDIDATE_LIMIT) and the cool-down
+        filter is applied in Python BEFORE truncating to `limit`, so that a
+        cooling-down row at the head of the queue does not zero out the run
+        while eligible rows sit deeper in it. If every remaining candidate is
+        cooling down, this returns an empty list (strict-skip — never
+        publishes a cooling-down short just to fill the run).
+
         Args:
             limit: Maximum number of rows to return (default 2)
             min_virality_score: Minimum virality score threshold (default 0.0)
 
         Returns:
-            List of video_shorts records ordered by parent chapter
+            List of video_shorts records (each including a `video_id` key for
+            its parent source video) ordered by parent chapter
             youtube_upload_date DESC, then reap_virality_score DESC
         """
         shorts_table = self.pg_conn.get_qualified_table('video_shorts')
@@ -1141,28 +1199,51 @@ class CongressionalVideoDB:
 
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
+                # updated_at doubles as an implicit uploaded_at proxy here: only
+                # mark_short_uploaded() touches it, and it always sets
+                # is_uploaded = TRUE in the same UPDATE, so DESC-ordering
+                # uploaded rows by updated_at reconstructs upload recency.
                 cur.execute(f"""
-                    SELECT vs.* FROM {shorts_table} vs
+                    SELECT vc.video_id, vs.updated_at
+                    FROM {shorts_table} vs
+                    JOIN {chapters_table} vc ON vc.chapter_id = vs.chapter_id
+                    WHERE vs.is_uploaded = TRUE
+                    ORDER BY vs.updated_at DESC
+                    LIMIT %s
+                """, (SHORTS_UPLOAD_HISTORY_LIMIT,))
+                upload_history = cur.fetchall()
+
+                cur.execute(f"""
+                    SELECT vs.*, vc.video_id
+                    FROM {shorts_table} vs
+                    JOIN {chapters_table} vc ON vc.chapter_id = vs.chapter_id
                     WHERE vs.is_uploaded = FALSE
                       AND vs.is_upload_abandoned = FALSE
                       AND vs.local_file_path IS NOT NULL
                       AND vs.reap_status = 'downloaded'
                       AND (vs.reap_virality_score >= %s OR vs.reap_virality_score IS NULL)
-                      AND EXISTS (
-                          SELECT 1 FROM {chapters_table} vc
-                          WHERE vc.chapter_id = vs.chapter_id
-                            AND vc.youtube_upload_date IS NOT NULL
-                      )
-                    ORDER BY (
-                        SELECT vc.youtube_upload_date
-                        FROM {chapters_table} vc
-                        WHERE vc.chapter_id = vs.chapter_id
-                        LIMIT 1
-                    ) DESC NULLS LAST,
-                    vs.reap_virality_score DESC NULLS LAST
+                      AND vc.youtube_upload_date IS NOT NULL
+                    ORDER BY vc.youtube_upload_date DESC NULLS LAST,
+                             vs.reap_virality_score DESC NULLS LAST
                     LIMIT %s
-                """, (min_virality_score, limit))
-                shorts = cur.fetchall()
+                """, (min_virality_score, SHORTS_PENDING_CANDIDATE_LIMIT))
+                candidates = cur.fetchall()
+
+                eligible = filter_shorts_by_source_cooldown(candidates, upload_history)
+                blocked = len(candidates) - len(eligible)
+                if blocked > 0:
+                    logger.info(
+                        f"Source-video cool-down blocked {blocked} of {len(candidates)} "
+                        f"pending shorts (cooldown={SHORTS_SOURCE_VIDEO_COOLDOWN} uploads)"
+                    )
+                if candidates and not eligible:
+                    logger.info(
+                        f"All {len(candidates)} pending shorts are cooling down "
+                        f"(source-video cool-down={SHORTS_SOURCE_VIDEO_COOLDOWN}); "
+                        "uploading nothing this run"
+                    )
+
+                shorts = eligible[:limit]
                 logger.info(
                     f"Found {len(shorts)} pending shorts for upload "
                     f"(min_virality={min_virality_score}, limit={limit})"
