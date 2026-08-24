@@ -19,6 +19,7 @@ from congress_videos.modules.vad_helpers import (
     first_sustained_speech_start,
     last_sustained_speech_end,
 )
+from congress_videos.modules.video_splitter import compute_ffmpeg_timeout
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +257,18 @@ class TestExtractAudioWav:
         assert cmd[cmd.index("-ac") + 1] == "1"
         assert cmd[cmd.index("-ar") + 1] == "16000"
         assert cmd[cmd.index("-f") + 1] == "wav"
+
+    def test_slice_duration_scales_the_ffmpeg_timeout(self, mocker):
+        """duration_secs=300 must scale the subprocess timeout, not use the base overhead."""
+        run = mocker.patch(
+            "congress_videos.modules.vad_helpers.subprocess.run",
+            return_value=MagicMock(returncode=0, stderr=""),
+        )
+        extract_audio_wav(
+            "/data/clip.mp4", "/tmp/out.wav", start_secs=0.0, duration_secs=300.0
+        )
+
+        assert run.call_args[1]["timeout"] == compute_ffmpeg_timeout(300)
 
     def test_whole_file_has_no_slice_args(self, mocker):
         """Both slice args None → whole-file extract, no -ss/-t (back-compatible)."""

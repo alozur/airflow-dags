@@ -92,6 +92,27 @@ class TestDagLoads:
         assert conf_arg == {}, f"Expected conf={{}}, got {conf_arg!r}"
 
 
+class TestCronBatchSize:
+    """Cron-triggered runs must default to a single chapter (issue #193)."""
+
+    def test_default_limit_is_one(self):
+        mod = _fresh()
+        assert mod.DEFAULT_LIMIT == 1
+
+    def test_select_task_empty_conf_calls_select_chapters_with_limit_one(self, monkeypatch):
+        """No --conf override (scheduled cron run) → select_chapters(limit=1)."""
+        mod = _fresh()
+        select_mock = MagicMock(return_value=[])
+        monkeypatch.setattr(mod, "select_chapters", select_mock)
+        dag_run = MagicMock()
+        dag_run.conf = {}
+        ti = MagicMock()
+
+        mod._select_task(dag_run=dag_run, ti=ti)
+
+        select_mock.assert_called_once_with(limit=1, chapter_ids=None)
+
+
 class TestRunChapterTurns:
     def _chapter(self):
         return {
@@ -348,25 +369,91 @@ class TestProcessTaskMarkDetected:
         update_calls = [s for s in executed_sqls if "TURNS_DETECTED_AT" in s]
         assert update_calls == [], f"Expected no UPDATE with TURNS_DETECTED_AT, got: {update_calls}"
 
-    def test_single_commit_still_called_once(self, monkeypatch):
-        """Mixed statuses (ok + raise + skipped) must still commit exactly once."""
+    def test_each_ok_chapter_commits_independently(self, monkeypatch):
+        """2 ok chapters commit individually; the 3rd raising SidecarApiError aborts the task."""
+        from congress_videos.modules.sidecar_api_error import SidecarApiError
         mod = _fresh()
 
         def fake_run(chapter, cursor, **k):
             cid = chapter["chapter_id"]
-            if cid == 1:
-                return {"status": "ok", "chapter_id": 1, "turns": 3}
-            if cid == 2:
-                raise RuntimeError("boom")
-            return {"status": "skipped_no_video", "chapter_id": 3, "turns": 0}
+            if cid in (1, 2):
+                return {"status": "ok", "chapter_id": cid, "turns": 1}
+            raise SidecarApiError("diarize-api dropped connection mid-run")
 
         _, conn = self._make_process_mock(monkeypatch, mod, fake_run)
 
-        mod._process_task(
-            **self._ti_with([{"chapter_id": 1}, {"chapter_id": 2}, {"chapter_id": 3}])
+        with pytest.raises(SidecarApiError):
+            mod._process_task(
+                **self._ti_with([{"chapter_id": 1}, {"chapter_id": 2}, {"chapter_id": 3}])
+            )
+
+        assert conn.commit.call_count == 2, (
+            f"Expected 2 independent commits (one per ok chapter), got {conn.commit.call_count}"
         )
 
-        conn.commit.assert_called_once()
+    def test_skipped_chapter_rolls_back(self, monkeypatch):
+        """Non-'ok' status (e.g. skipped_no_video) must rollback, not commit, for that chapter."""
+        mod = _fresh()
+
+        def fake_run(chapter, cursor, **k):
+            return {"status": "skipped_no_video", "chapter_id": chapter["chapter_id"], "turns": 0}
+
+        _, conn = self._make_process_mock(monkeypatch, mod, fake_run)
+
+        mod._process_task(**self._ti_with([{"chapter_id": 3}]))
+
+        conn.rollback.assert_called_once()
+        conn.commit.assert_not_called()
+
+    def test_data_error_chapter_rolls_back(self, monkeypatch):
+        """A generic exception (data error) must rollback before continue, not commit."""
+        mod = _fresh()
+
+        def fake_run(chapter, cursor, **k):
+            raise RuntimeError("diarize failed")
+
+        _, conn = self._make_process_mock(monkeypatch, mod, fake_run)
+
+        mod._process_task(**self._ti_with([{"chapter_id": 2}]))
+
+        conn.rollback.assert_called_once()
+        conn.commit.assert_not_called()
+
+    def test_commit_ordering_upsert_then_update_then_commit(self, monkeypatch):
+        """The turns UPDATE must execute before commit(); nothing commits between upsert and UPDATE."""
+        mod = _fresh()
+        cur = MagicMock()
+        conn = MagicMock()
+        manager = MagicMock()
+        manager.attach_mock(cur, "cur")
+        manager.attach_mock(conn, "conn")
+        conn.cursor.return_value.__enter__.return_value = cur
+        pg = MagicMock()
+        pg.get_qualified_table.side_effect = lambda t: f"development.{t}"
+        pg.get_connection.return_value.__enter__.return_value = conn
+        monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
+        monkeypatch.setattr(mod, "check_diarize_api_health", lambda **k: None)
+
+        def fake_run(chapter, cursor, **k):
+            cursor.execute("INSERT INTO speaker_turns (...) VALUES (...)")
+            return {"status": "ok", "chapter_id": chapter["chapter_id"], "turns": 1}
+
+        monkeypatch.setattr(mod, "run_chapter_turns", fake_run)
+
+        mod._process_task(**self._ti_with([{"chapter_id": 1}]))
+
+        call_order = [
+            (name, str(args[0]).upper() if args else "")
+            for name, args, _kwargs in manager.mock_calls
+            if name in ("cur.execute", "conn.commit")
+        ]
+        insert_idx = next(i for i, (_n, sql) in enumerate(call_order) if "INSERT" in sql)
+        update_idx = next(i for i, (_n, sql) in enumerate(call_order) if "TURNS_DETECTED_AT" in sql)
+        commit_idx = next(i for i, (n, _sql) in enumerate(call_order) if n == "conn.commit")
+
+        assert insert_idx < update_idx < commit_idx, (
+            f"Expected upsert → UPDATE → commit ordering, got: {call_order}"
+        )
 
 
 class TestProcessTaskFailFast:
