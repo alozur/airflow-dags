@@ -26,6 +26,9 @@ Usage::
     airflow dags trigger speaker_turn_videos \\
         --conf '{"video_id": "hy1cnx-0Oww"}'
 
+    airflow dags trigger speaker_turn_videos \\
+        --conf '{"limit": 50}'
+
 Pipeline::
 
     select_turns  (speaker_turns + idempotency filter)
@@ -60,6 +63,7 @@ from utils.postgres_helpers import PostgresConnection
 logger = logging.getLogger(__name__)
 
 DAG_ID = SPEAKER_TURN_VIDEOS_DAG_ID
+DEFAULT_LIMIT = 10
 
 _MEDIA_SUFFIXES = (".mp4", ".mkv", ".webm")
 
@@ -91,14 +95,24 @@ def _find_source_video_any_date(video_id: str) -> str | None:
 def _select_task(**context) -> list[dict]:
     """Fetch speaker turns in scope and filter out already-materialized ones.
 
-    Reads turns by ``chapter_id`` or ``video_id`` from DAG conf, then
-    cross-checks ``speaker_turn_videos`` and drops any turn_id already present.
+    Reads turns by ``chapter_id`` or ``video_id`` from DAG conf. Scoped
+    branches (either key present) select the full chapter/video and filter
+    already-materialized turns with a post-hoc ``speaker_turn_videos`` lookup,
+    so an operator re-running a scoped conf still sees the whole scope.
+
+    The default (unscoped) branch instead excludes already-materialized turns
+    directly in SQL via ``NOT EXISTS``, so the row cap (``conf["limit"]``,
+    default ``DEFAULT_LIMIT``) applies to PENDING turns only — draining the
+    backlog run after run instead of permanently returning the same N lowest
+    turn_ids once they are materialized (issue #216).
+
     The filtered list is pushed to XCom under key ``"turns"``.
     """
     dag_run = context.get("dag_run")
     conf = (dag_run.conf or {}) if dag_run else {}
     chapter_id = conf.get("chapter_id")
     video_id = conf.get("video_id")
+    limit = conf.get("limit", DEFAULT_LIMIT)
 
     pg = PostgresConnection()
     turns_table = pg.get_qualified_table("speaker_turns")
@@ -113,6 +127,7 @@ def _select_task(**context) -> list[dict]:
 
     with pg.get_connection() as conn:
         with conn.cursor() as cur:
+            scoped = chapter_id is not None or video_id is not None
             if chapter_id is not None:
                 cur.execute(
                     f"{base} WHERE st.chapter_id = %s ORDER BY st.turn_id",
@@ -124,12 +139,19 @@ def _select_task(**context) -> list[dict]:
                     (str(video_id),),
                 )
             else:
-                cur.execute(f"{base} ORDER BY st.turn_id LIMIT 10")
+                cur.execute(
+                    f"{base} WHERE NOT EXISTS ("
+                    f"SELECT 1 FROM {stv_table} v WHERE v.turn_id = st.turn_id"
+                    f") ORDER BY st.turn_id LIMIT %s",
+                    (limit,),
+                )
             # PostgresConnection uses RealDictCursor: rows are dict-like.
             turns = [dict(row) for row in cur.fetchall()]
 
-            # Idempotency: exclude turns already in speaker_turn_videos
-            if turns:
+            # Scoped runs select the full chapter/video on purpose, so they
+            # still need the post-hoc filter. The default branch already
+            # filtered in SQL (issue #216).
+            if scoped and turns:
                 cur.execute(
                     f"SELECT turn_id FROM {stv_table} WHERE turn_id = ANY(%s)",
                     ([t["turn_id"] for t in turns],),
