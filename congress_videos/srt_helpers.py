@@ -75,6 +75,12 @@ def find_srt_for_chapter(
       2. downloads/{session_date}/{video_id}/srt_files/  (if session_date provided)
       3. downloads/ (date-agnostic search when session_date is None)
     """
+    # video_id becomes a path component below; reject anything outside the
+    # YouTube-id charset to block path traversal from a tampered DB row.
+    if not video_id or not re.fullmatch(r"[A-Za-z0-9_-]+", video_id):
+        logger.warning("find_srt_for_chapter: unsafe video_id %r — refusing path probe", video_id)
+        return None
+
     srt_filenames = [f"{video_id}_merged.srt", f"{video_id}.srt"]
 
     candidates = []

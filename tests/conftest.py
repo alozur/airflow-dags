@@ -53,6 +53,7 @@ def mock_psycopg2_connection(mocker):
     mock_conn.__exit__ = MagicMock(return_value=False)
     mock_conn.commit.return_value = None
     mock_conn.rollback.return_value = None
+    mock_conn.closed = False
     mock_conn.close.return_value = None
 
     mock_connect = mocker.patch("psycopg2.connect", return_value=mock_conn)

@@ -13,6 +13,14 @@ import requests
 
 DEFAULT_BASE_URL = "https://public.reap.video/api/v1/automation"
 
+# (connect, read) timeouts in seconds. Without these, a stalled TCP connection
+# hangs the Airflow worker slot indefinitely — the sensor-level timeout is only
+# checked between pokes, never inside a blocked HTTP call.
+API_TIMEOUT = (10, 60)
+# Streaming transfers (full-video PUT, clip download) get a longer read timeout;
+# requests applies it per socket operation, not to the whole transfer.
+TRANSFER_TIMEOUT = (10, 300)
+
 _DEFAULT_CLIP_PARAMS = {
     "exportOrientation": "portrait",
     "reframeClips": True,
@@ -47,7 +55,7 @@ class ReapApiClient:
     def get_upload_url(self, filename: str) -> dict:
         """POST /get-upload-url → {uploadUrl, upload_id, ...}"""
         url = f"{self._base_url}/get-upload-url"
-        response = requests.post(url, json={"filename": filename}, headers=self._headers)
+        response = requests.post(url, json={"filename": filename}, headers=self._headers, timeout=API_TIMEOUT)
         self._check_credits_error(response)
         response.raise_for_status()
         data = response.json()
@@ -57,14 +65,14 @@ class ReapApiClient:
     def upload_file(self, upload_url: str, file_path: str) -> None:
         """PUT presigned S3 URL — no auth header on this request."""
         with open(file_path, "rb") as f:
-            response = requests.put(upload_url, data=f, headers={"Content-Type": "video/mp4"})
+            response = requests.put(upload_url, data=f, headers={"Content-Type": "video/mp4"}, timeout=TRANSFER_TIMEOUT)
         response.raise_for_status()
 
     def create_clips_job(self, upload_id: str, **kwargs) -> dict:
         """POST /create-clips → project dict with project_id and status."""
         payload = {**_DEFAULT_CLIP_PARAMS, "uploadId": upload_id, **kwargs}
         url = f"{self._base_url}/create-clips"
-        response = requests.post(url, json=payload, headers=self._headers)
+        response = requests.post(url, json=payload, headers=self._headers, timeout=API_TIMEOUT)
         self._check_credits_error(response)
         response.raise_for_status()
         data = response.json()
@@ -74,7 +82,7 @@ class ReapApiClient:
     def get_project_status(self, project_id: str) -> dict:
         """GET /get-project-status?projectId=... → {projectId, status, ...}"""
         url = f"{self._base_url}/get-project-status"
-        response = requests.get(url, params={"projectId": project_id}, headers=self._headers)
+        response = requests.get(url, params={"projectId": project_id}, headers=self._headers, timeout=API_TIMEOUT)
         response.raise_for_status()
         return response.json()
 
@@ -96,7 +104,7 @@ class ReapApiClient:
 
         while True:
             params = {"projectId": project_id, "page": page, "pageSize": page_size}
-            response = requests.get(url, params=params, headers=self._headers)
+            response = requests.get(url, params=params, headers=self._headers, timeout=API_TIMEOUT)
             response.raise_for_status()
             data = response.json()
 
@@ -118,7 +126,7 @@ class ReapApiClient:
     def download_clip(self, clip_url: str, dest_path: str) -> None:
         """Download clip MP4 to dest_path using streaming requests."""
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        response = requests.get(clip_url, stream=True)
+        response = requests.get(clip_url, stream=True, timeout=TRANSFER_TIMEOUT)
         response.raise_for_status()
         with open(dest_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
