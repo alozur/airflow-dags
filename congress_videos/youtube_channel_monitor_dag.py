@@ -661,7 +661,6 @@ with DAG(
         """Load chapters from t9_db XCom and normalize each chapter's speakers."""
         import json as _json
         from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
-        from congress_videos.modules.database import CongressionalVideoDB
         from utils.postgres_helpers import PostgresConnection
 
         from datetime import datetime
@@ -688,7 +687,6 @@ with DAG(
 
         pg = PostgresConnection()
         chapters_table = pg.get_qualified_table("video_chapters")
-        db = CongressionalVideoDB()
 
         with pg.get_connection() as conn:
             with conn.cursor() as cur:
