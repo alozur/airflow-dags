@@ -22,6 +22,30 @@ WHISPER_API_HOST = os.getenv('WHISPER_API_HOST', 'whisper-api')
 WHISPER_API_PORT = os.getenv('WHISPER_API_PORT', '9000')
 WHISPER_API_URL = f"http://{WHISPER_API_HOST}:{WHISPER_API_PORT}"
 
+# Process-lifetime cache of loaded Whisper models, keyed by model_size
+# (issue #202) — loading a model is expensive; repeated transcription calls
+# within one process (e.g. one chunk per XCom task) must not reload it.
+_MODEL_CACHE: Dict[str, object] = {}
+
+
+def _get_cached_model(model_size: str):
+    """Return the cached Whisper model for ``model_size``, loading it once.
+
+    ``import whisper`` stays inside this function (only reached on a cache
+    miss) so callers relying on the pre-existing "library not installed"
+    ImportError contract keep seeing it.
+    """
+    if model_size not in _MODEL_CACHE:
+        import whisper
+        _MODEL_CACHE[model_size] = whisper.load_model(model_size)
+    return _MODEL_CACHE[model_size]
+
+
+def clear_model_cache() -> None:
+    """Reset the Whisper model cache. Used for test isolation and to force
+    a reload (e.g. after a corrupt/partial load)."""
+    _MODEL_CACHE.clear()
+
 
 def format_timestamp_srt(seconds: float) -> str:
     """Convert seconds to SRT timestamp format (HH:MM:SS,mmm)"""
@@ -141,10 +165,8 @@ def transcribe_audio_file_with_local_whisper(
     start_time = time.time()
 
     try:
-        import whisper
-
-        # Load model
-        model = whisper.load_model(model_size)
+        # Load (or reuse the cached) model — see _get_cached_model (#202).
+        model = _get_cached_model(model_size)
 
         # Transcribe with segment timestamps
         result = model.transcribe(

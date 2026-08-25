@@ -91,6 +91,15 @@ class TestDagSchedule:
         # Airflow 2.x exposes the schedule via schedule_interval; schedule=None → schedule_interval is None.
         assert dag.schedule_interval is None
 
+    def test_start_date_is_a_fixed_constant(self) -> None:
+        """start_date must be a fixed past constant, not a parse-time-relative
+        value — a `datetime.now() - timedelta(...)` default silently shifts on
+        every DAG-file parse and can trigger a spurious catchup/backfill run
+        on a schedule=None DAG (issue #206)."""
+        from datetime import datetime, timezone
+        dag = self.mod.dag
+        assert dag.start_date == datetime(2025, 1, 1, tzinfo=timezone.utc)
+
 
 # ---------------------------------------------------------------------------
 # T-03  Exact task-id set

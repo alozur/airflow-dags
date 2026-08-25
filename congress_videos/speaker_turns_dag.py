@@ -23,10 +23,13 @@ Pipeline::
 
     select_chapters (uploadable_chapters view, LIMIT from conf)
       → process_chapters (per chapter, graceful skip)
-          _find_source_video → extract_audio_wav (chapter-window WAV slice)
-            → find_srt_for_chapter / _parse_srt_blocks (window-filtered)
-              → detect_turns(diarize_fn=docker, name_resolver=fuzzy)
-                → _upsert_turns (idempotent)
+          run_chapter_turns — NO database connection held here:
+            _find_source_video → extract_audio_wav (chapter-window WAV slice)
+              → find_srt_for_chapter / _parse_srt_blocks (window-filtered)
+                → detect_turns(diarize_fn=docker, name_resolver=fuzzy)
+          _persist_chapter_turns — short-lived connection scoped to
+            persistence only: _upsert_turns (idempotent) → mark
+            turns_detected_at → commit
 """
 from __future__ import annotations
 
@@ -107,21 +110,25 @@ def select_chapters(limit: int = DEFAULT_LIMIT, chapter_ids: list[int] | None = 
 
 def run_chapter_turns(
     chapter: dict,
-    cursor,
     *,
     diarize_fn=api_diarize_fn,
     name_resolver=lookup_participant_fuzzy,
     turns_table: str = "speaker_turns",
 ) -> dict:
-    """Detect and persist speaker turns for a single chapter.
+    """Detect speaker turns for a single chapter — holds NO database connection.
 
     Locates the source video (skips the chapter if absent — never fails the
     run), extracts the chapter-window WAV, loads the window's SRT blocks (or
-    runs acoustic-only when the SRT is missing), detects turns, and upserts
-    them via the caller-provided cursor. Returns a status dict.
+    runs acoustic-only when the SRT is missing), and detects turns. Returns a
+    status dict whose ``turns`` field is the detected ``Turn`` list (empty when
+    skipped). Persistence is the caller's responsibility via
+    :func:`_persist_chapter_turns` — no connection is opened here, so the
+    ffmpeg extraction, SRT parse, and diarize-api call never hold one open
+    (issue #200).
 
-    ``turns_table`` is forwarded to :func:`_upsert_turns`; the DAG passes the
-    schema-qualified name so persistence targets the right schema in prod.
+    ``turns_table`` is accepted for interface symmetry with
+    :func:`_persist_chapter_turns` so callers can thread one shared kwargs
+    dict through both; it is not used in this function.
     """
     chapter_id = chapter["chapter_id"]
     video_id = chapter["video_id"]
@@ -133,7 +140,7 @@ def run_chapter_turns(
             "chapter %s: no source video for %s/%s — skipping",
             chapter_id, session_date, video_id,
         )
-        return {"status": "skipped_no_video", "chapter_id": chapter_id, "turns": 0}
+        return {"status": "skipped_no_video", "chapter_id": chapter_id, "turns": []}
 
     start_secs = parse_timestamp(chapter["start_time"])
     end_secs = parse_timestamp(chapter["end_time"])
@@ -163,11 +170,31 @@ def run_chapter_turns(
         chapter["_chapter_offset_seconds"] = start_secs
 
         turns = detect_turns(chapter, srt_blocks, diarize_fn, name_resolver)
-        _upsert_turns(cursor, chapter_id, turns, table=turns_table)
-        return {"status": "ok", "chapter_id": chapter_id, "turns": len(turns)}
+        return {"status": "ok", "chapter_id": chapter_id, "turns": turns}
     finally:
         if os.path.exists(wav_path):
             os.remove(wav_path)
+
+
+def _persist_chapter_turns(
+    pg, chapter_id: int, turns: list, *, turns_table: str, vc_table: str
+) -> None:
+    """Persist detected turns for one chapter in a single short-lived transaction.
+
+    Opens a connection only for the upsert of ``turns`` plus the
+    ``turns_detected_at`` UPDATE, then commits and closes — no connection is
+    held during detection (issue #200). ``_upsert_turns`` never commits on its
+    own (see its docstring); this helper owns the transaction boundary.
+    """
+    with pg.get_connection() as conn:
+        with conn.cursor() as cur:
+            _upsert_turns(cur, chapter_id, turns, table=turns_table)
+            cur.execute(
+                f"UPDATE {vc_table} SET turns_detected_at = NOW() "
+                f"WHERE chapter_id = %s AND turns_detected_at IS NULL",
+                (chapter_id,),
+            )
+            conn.commit()  # durable per chapter — a later failure must not undo this
 
 
 def _select_task(**context) -> list[dict]:
@@ -189,36 +216,40 @@ def _process_task(**context) -> dict:
     pg = PostgresConnection()
     turns_table = pg.get_qualified_table("speaker_turns")
     vc_table = pg.get_qualified_table("video_chapters")
-    with pg.get_connection() as conn:
-        with conn.cursor() as cur:
-            for chapter in chapters:
-                try:
-                    result = run_chapter_turns(chapter, cur, turns_table=turns_table)
-                except SidecarApiError:  # noqa: BLE001 mid-run drop → fail loud
-                    logger.exception(
-                        "chapter %s: diarize-api outage — failing task",
-                        chapter.get("chapter_id"),
-                    )
-                    raise
-                except Exception:  # noqa: BLE001 data error → skip
-                    logger.exception(
-                        "chapter %s failed — skipping", chapter.get("chapter_id")
-                    )
-                    conn.rollback()
-                    summary["skipped"] += 1
-                    continue
-                if result["status"] == "ok":
-                    cur.execute(
-                        f"UPDATE {vc_table} SET turns_detected_at = NOW() "
-                        f"WHERE chapter_id = %s AND turns_detected_at IS NULL",
-                        (chapter["chapter_id"],),
-                    )
-                    conn.commit()  # durable per chapter — a later failure must not undo this
-                    summary["processed"] += 1
-                    summary["turns"] += result["turns"]
-                else:
-                    conn.rollback()
-                    summary["skipped"] += 1
+    for chapter in chapters:
+        try:
+            result = run_chapter_turns(chapter, turns_table=turns_table)
+        except SidecarApiError:  # noqa: BLE001 mid-run drop → fail loud
+            logger.exception(
+                "chapter %s: diarize-api outage — failing task",
+                chapter.get("chapter_id"),
+            )
+            raise
+        except Exception:  # noqa: BLE001 data error → skip
+            logger.exception(
+                "chapter %s failed — skipping", chapter.get("chapter_id")
+            )
+            summary["skipped"] += 1
+            continue
+
+        if result["status"] != "ok":
+            summary["skipped"] += 1
+            continue
+
+        try:
+            _persist_chapter_turns(
+                pg, result["chapter_id"], result["turns"],
+                turns_table=turns_table, vc_table=vc_table,
+            )
+        except Exception:  # noqa: BLE001 persistence error → skip, chapter unmarked
+            logger.exception(
+                "chapter %s: persistence failed — skipping", result["chapter_id"]
+            )
+            summary["skipped"] += 1
+            continue
+
+        summary["processed"] += 1
+        summary["turns"] += len(result["turns"])
     logger.info("Speaker-turn run summary: %s", summary)
     return summary
 

@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import inspect
+from datetime import datetime, timezone
+
 import pytest
 
 
@@ -316,3 +319,194 @@ class TestSplitSrtResolveInput:
         message = str(exc_info.value)
         # Message must reference video ids safely (empty list or 'unknown')
         assert "unknown" in message or "[]" in message or "video_ids" in message
+
+
+# ---------------------------------------------------------------------------
+# Issue #206 — _resolve_target_date resolves at task runtime, not parse time
+# ---------------------------------------------------------------------------
+
+class TestResolveTargetDate:
+    """Unit tests for the module-level _resolve_target_date(context) helper.
+
+    target_date must resolve inside each task at execution time, using an
+    explicit params override when present, else the DAG run's own
+    logical_date — never a value computed once when the DAG file was parsed.
+    """
+
+    def test_explicit_override_wins(self):
+        from congress_videos.youtube_channel_monitor_dag import _resolve_target_date
+
+        context = {
+            "params": {"target_date": "2026-08-20"},
+            "logical_date": datetime(2026, 8, 25, tzinfo=timezone.utc),
+        }
+        assert _resolve_target_date(context) == "2026-08-20"
+
+    def test_no_override_uses_logical_date(self):
+        from congress_videos.youtube_channel_monitor_dag import _resolve_target_date
+
+        context = {
+            "params": {"target_date": None},
+            "logical_date": datetime(2026, 8, 24, 15, 30, tzinfo=timezone.utc),
+        }
+        assert _resolve_target_date(context) == "2026-08-24"
+
+    def test_no_logical_date_falls_back_to_data_interval_end(self):
+        from congress_videos.youtube_channel_monitor_dag import _resolve_target_date
+
+        context = {
+            "params": {},
+            "data_interval_end": datetime(2026, 8, 23, 9, 0, tzinfo=timezone.utc),
+        }
+        assert _resolve_target_date(context) == "2026-08-23"
+
+    def test_falls_back_to_ds_when_no_logical_date_available(self):
+        from congress_videos.youtube_channel_monitor_dag import _resolve_target_date
+
+        context = {"params": {}, "ds": "2026-08-22"}
+        assert _resolve_target_date(context) == "2026-08-22"
+
+    def test_last_resort_now_utc(self, monkeypatch):
+        import congress_videos.youtube_channel_monitor_dag as mod
+
+        class _FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 8, 21, 3, 0, 0, tzinfo=tz)
+
+        monkeypatch.setattr(mod, "datetime", _FrozenDatetime)
+
+        assert mod._resolve_target_date({}) == "2026-08-21"
+
+    def test_midnight_boundary_resolves_to_the_run_day(self):
+        """@hourly run at 00:30 UTC on day D with lookback_days=1 must resolve
+        target_date to day D — not a stale date computed at DAG-parse time
+        (regression guard for issue #206)."""
+        from congress_videos.youtube_channel_monitor_dag import _resolve_target_date
+
+        context = {
+            "params": {"target_date": None, "lookback_days": 1},
+            "logical_date": datetime(2026, 8, 24, 0, 30, tzinfo=timezone.utc),
+        }
+        assert _resolve_target_date(context) == "2026-08-24"
+
+
+# ---------------------------------------------------------------------------
+# Issue #202b — _slim_transcriptions_for_xcom trims the transcription
+# payload at the XCom boundary (Postgres XCom backend stores every push).
+# ---------------------------------------------------------------------------
+
+class TestSlimTranscriptionsForXcom:
+
+    def test_none_input_passes_through_unchanged(self):
+        from congress_videos.youtube_channel_monitor_dag import _slim_transcriptions_for_xcom
+        assert _slim_transcriptions_for_xcom(None) is None
+
+    def test_non_dict_input_passes_through_unchanged(self):
+        from congress_videos.youtube_channel_monitor_dag import _slim_transcriptions_for_xcom
+        assert _slim_transcriptions_for_xcom("not a dict") == "not a dict"
+
+    def test_preserves_total_transcribed_and_top_level_error(self):
+        from congress_videos.youtube_channel_monitor_dag import _slim_transcriptions_for_xcom
+
+        result = {"total_transcribed": 0, "videos": [], "error": "Whisper API unavailable"}
+        slimmed = _slim_transcriptions_for_xcom(result)
+
+        assert slimmed["total_transcribed"] == 0
+        assert slimmed["error"] == "Whisper API unavailable"
+        assert slimmed["videos"] == []
+
+    def test_chunked_video_drops_chunk_text_keeps_srt_paths(self):
+        from congress_videos.youtube_channel_monitor_dag import _slim_transcriptions_for_xcom
+
+        result = {
+            "total_transcribed": 1,
+            "videos": [{
+                "video_id": "abc123",
+                "video_title": "Sesión Plenaria",
+                "chunked": True,
+                "total_chunks": 2,
+                "successful_transcriptions": 2,
+                "chunks": [
+                    {"success": True, "text": "a" * 5000, "srt_path": "/srt/c1.srt",
+                     "chunk_number": 1, "segments": [{"start": 0, "end": 1, "text": "..."}]},
+                    {"success": True, "text": "b" * 5000, "srt_path": "/srt/c2.srt",
+                     "chunk_number": 2, "segments": [{"start": 1, "end": 2, "text": "..."}]},
+                ],
+            }],
+        }
+
+        slimmed = _slim_transcriptions_for_xcom(result)
+        video = slimmed["videos"][0]
+
+        assert video["video_id"] == "abc123"
+        assert video["chunked"] is True
+        assert video["total_chunks"] == 2
+        assert video["successful_transcriptions"] == 2
+        assert video["srt_paths"] == ["/srt/c1.srt", "/srt/c2.srt"]
+        assert "chunks" not in video
+        assert "text" not in video
+        assert "segments" not in video
+
+    def test_unchunked_video_drops_full_text_keeps_srt_path(self):
+        from congress_videos.youtube_channel_monitor_dag import _slim_transcriptions_for_xcom
+
+        result = {
+            "total_transcribed": 1,
+            "videos": [{
+                "video_id": "xyz789",
+                "chunked": False,
+                "audio_file_path": "/audio/xyz789.webm",
+                "transcription": "c" * 20000,
+                "transcription_success": True,
+                "srt_path": "/srt/xyz789.srt",
+                "transcription_duration": 12.3,
+                "error": None,
+            }],
+        }
+
+        slimmed = _slim_transcriptions_for_xcom(result)
+        video = slimmed["videos"][0]
+
+        assert video["video_id"] == "xyz789"
+        assert video["chunked"] is False
+        assert video["transcription_success"] is True
+        assert video["srt_path"] == "/srt/xyz789.srt"
+        assert "transcription" not in video
+        assert "audio_file_path" not in video
+
+    def test_per_video_error_preserved(self):
+        from congress_videos.youtube_channel_monitor_dag import _slim_transcriptions_for_xcom
+
+        result = {
+            "total_transcribed": 0,
+            "videos": [{"video_id": "err1", "error": "No audio file path"}],
+        }
+
+        slimmed = _slim_transcriptions_for_xcom(result)
+
+        assert slimmed["videos"][0]["error"] == "No audio file path"
+        assert slimmed["videos"][0]["video_id"] == "err1"
+
+
+class TestTargetDateGuardrail:
+    """Source-scan guardrails for issue #206: every params-override read site
+    must go through _resolve_target_date; the data-field read inside
+    _normalize_speakers must survive untouched.
+    """
+
+    def _source(self) -> str:
+        import congress_videos.youtube_channel_monitor_dag as mod
+        return inspect.getsource(mod)
+
+    def test_no_today_str_references(self):
+        assert "today_str" not in self._source()
+
+    def test_no_params_get_target_date_reads_remain(self):
+        assert 'context["params"].get("target_date")' not in self._source()
+
+    def test_entry_get_target_date_data_field_untouched(self):
+        """entry.get('target_date') inside _normalize_speakers reads a video
+        row's own date field, not the DAG params override — it must appear
+        exactly once, unchanged."""
+        assert self._source().count('entry.get("target_date")') == 1

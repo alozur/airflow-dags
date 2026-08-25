@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -10,11 +11,13 @@ import requests
 
 from tests.helpers.assertions import assert_error_result, assert_success_result
 from utils.whisper_helpers import (
+    clear_model_cache,
     create_srt_from_segments,
     format_timestamp_srt,
     merge_srt_files,
     save_srt_file,
     transcribe_audio_file,
+    transcribe_audio_file_with_local_whisper,
 )
 
 
@@ -198,3 +201,67 @@ class TestTranscribeAudioFile:
 
         assert "duration" in result
         assert isinstance(result["duration"], float)
+
+
+# ---------------------------------------------------------------------------
+# Whisper model cache (issue #202) — load_model must be called at most once
+# per model_size per process lifetime.
+# ---------------------------------------------------------------------------
+
+class TestWhisperModelCache:
+
+    def _audio_file(self, tmp_path, name="chunk.webm"):
+        audio_file = tmp_path / "downloads" / "2025-05-22" / "v1" / "audio_chunks" / name
+        audio_file.parent.mkdir(parents=True, exist_ok=True)
+        audio_file.write_bytes(b"\x00" * 16)
+        return audio_file
+
+    def _fake_whisper(self, mocker):
+        fake_whisper = MagicMock()
+        fake_model = MagicMock()
+        fake_model.transcribe.return_value = {
+            "text": "hello",
+            "segments": [{"start": 0.0, "end": 1.0, "text": "hello"}],
+        }
+        fake_whisper.load_model.return_value = fake_model
+        mocker.patch.dict(sys.modules, {"whisper": fake_whisper})
+        return fake_whisper
+
+    def test_same_model_size_loads_once_across_two_calls(self, tmp_path, mocker):
+        fake_whisper = self._fake_whisper(mocker)
+
+        transcribe_audio_file_with_local_whisper(
+            str(self._audio_file(tmp_path, "a.webm")), model_size="tiny"
+        )
+        transcribe_audio_file_with_local_whisper(
+            str(self._audio_file(tmp_path, "b.webm")), model_size="tiny"
+        )
+
+        fake_whisper.load_model.assert_called_once_with("tiny")
+
+    def test_two_distinct_model_sizes_each_load_once(self, tmp_path, mocker):
+        fake_whisper = self._fake_whisper(mocker)
+
+        transcribe_audio_file_with_local_whisper(
+            str(self._audio_file(tmp_path, "a.webm")), model_size="tiny"
+        )
+        transcribe_audio_file_with_local_whisper(
+            str(self._audio_file(tmp_path, "b.webm")), model_size="base"
+        )
+
+        assert fake_whisper.load_model.call_count == 2
+        fake_whisper.load_model.assert_any_call("tiny")
+        fake_whisper.load_model.assert_any_call("base")
+
+    def test_clear_model_cache_forces_reload(self, tmp_path, mocker):
+        fake_whisper = self._fake_whisper(mocker)
+
+        transcribe_audio_file_with_local_whisper(
+            str(self._audio_file(tmp_path, "a.webm")), model_size="tiny"
+        )
+        clear_model_cache()
+        transcribe_audio_file_with_local_whisper(
+            str(self._audio_file(tmp_path, "b.webm")), model_size="tiny"
+        )
+
+        assert fake_whisper.load_model.call_count == 2
