@@ -1294,6 +1294,190 @@ def _build_fallback_chunk_entry(chunk_number: int, summary_chunk: dict) -> dict:
     }
 
 
+def _build_srt_chunk_index(srt_chunks: list[dict]) -> dict:
+    """Index SRT chunks by ``chunk_number`` for O(1) lookup (#210).
+
+    Mirrors the original linear scan's semantics: the first entry seen for a
+    given ``chunk_number`` wins, and entries with no resolvable
+    ``chunk_number`` (missing key or explicit ``None``) are skipped rather
+    than raising.
+    """
+    index: dict = {}
+    for chunk in srt_chunks:
+        number = chunk.get('chunk_number')
+        if number is None:
+            continue
+        if number in index:
+            continue
+        index[number] = chunk
+    return index
+
+
+def _find_srt_chunk(srt_chunk_index: dict, chunk_number) -> str:
+    """Resolve a chunk's SRT text via the pre-built index (#210).
+
+    Returns the chunk text via ``_chunk_text`` when the chunk is indexed, or
+    ``''`` when no chunk matches ``chunk_number``.
+    """
+    srt_chunk = srt_chunk_index.get(chunk_number)
+    if srt_chunk is None:
+        return ""
+    return _chunk_text(srt_chunk)
+
+
+def _analyze_single_chunk(
+    chunk_number: int,
+    summary_chunk: dict,
+    srt_content: str,
+    chunk_duration: float,
+    min_chapter_duration: int,
+    max_optimal_duration: int,
+) -> dict:
+    """Run the >45-minute AI chapter-identification branch for one chunk (#210).
+
+    Owns the per-window LLM call (``_identify_window``), the map-reduce
+    dispatch for oversized SRT content, both deterministic fallbacks (empty
+    LLM result, all-ranges-invalid), and both except handlers. Always
+    returns a single ``chunks_with_chapters`` entry dict — never ``None``.
+    """
+    from congress_videos.config.ai_prompts import CHAPTER_IDENTIFICATION_SYSTEM_PROMPT, CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE
+    from utils.ai_chapter_analyzer import _flatten_speakers
+    import json
+
+    logging.info(f"  🔍 Chunk {chunk_number} is {chunk_duration:.1f} minutes (>45 min). Using AI to analyze content...")
+
+    try:
+        # Prepare chunk summary text for AI
+        summary_text = f"Chunk {chunk_number} ({summary_chunk['start_time']} - {summary_chunk['end_time']}) - Duration: {chunk_duration:.1f} minutes\n\n"
+
+        if summary_chunk.get('speakers'):
+            summary_text += "Speakers:\n"
+            for speaker in summary_chunk['speakers']:
+                summary_text += f"  - {speaker.get('name', 'Unknown')} ({speaker.get('role', '')})\n"
+            summary_text += "\n"
+
+        if summary_chunk.get('topics'):
+            summary_text += f"Topics: {', '.join(summary_chunk['topics'])}\n\n"
+
+        if summary_chunk.get('summary'):
+            summary_text += f"Summary: {summary_chunk['summary']}\n"
+
+        # #2/#3: per-window LLM call routed through the idempotent
+        # cache. Defined as a closure so the >threshold path (#8)
+        # can reuse it as the injected map-reduce identify function.
+        def _identify_window(window_srt_text: str) -> list[dict]:
+            completion = cached_json_completion(
+                system_prompt=CHAPTER_IDENTIFICATION_SYSTEM_PROMPT,
+                user_prompt=CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE.format(
+                    chunk_summary=summary_text,
+                    srt_content=window_srt_text,  # Full window — no truncation
+                ),
+                model="gpt-4o-mini",
+                temperature=0.3,
+                max_tokens=2000,
+            )
+            if completion.get('error'):
+                raise RuntimeError(completion['error'])
+            chapter_data = completion['data'] or {}
+            return chapter_data.get('interesting_chapters', [])
+
+        # #1/#8: oversized SRT → map-reduce over overlapping windows
+        # so the LLM never decides blind on a truncated view. Below
+        # the threshold this is a single full-SRT call (identical to
+        # the original path).
+        if len(srt_content) > LARGE_SRT_THRESHOLD:
+            logging.info(
+                f"  🧩 Chunk {chunk_number}: SRT content is {len(srt_content):,} chars "
+                f"(>{LARGE_SRT_THRESHOLD:,} threshold). Using map-reduce windowing."
+            )
+            from congress_videos.modules.youtube.map_reduce_chapters import (
+                map_reduce_identify_chapters,
+            )
+            interesting_chapters = map_reduce_identify_chapters(
+                srt_content, identify_fn=_identify_window
+            )
+        else:
+            interesting_chapters = _identify_window(srt_content)
+
+        # --- #4: Deterministic fallback for empty LLM result --------
+        if not interesting_chapters:
+            logging.warning(
+                f"  ⚠️ Chunk {chunk_number}: LLM returned empty chapter list "
+                "— using whole-chunk fallback."
+            )
+            return _build_fallback_chunk_entry(chunk_number, summary_chunk)
+
+        # --- #5: Discard chapters with start >= end -----------------
+        range_valid = _validate_chapter_ranges(interesting_chapters, chunk_number)
+        if not range_valid:
+            logging.warning(
+                f"  ⚠️ Chunk {chunk_number}: all chapters failed range validation "
+                "— using whole-chunk fallback."
+            )
+            return _build_fallback_chunk_entry(chunk_number, summary_chunk)
+
+        # Validate that all chapters are within 15-45 minute range
+        valid_chapters = []
+        for chapter in range_valid:
+            duration = chapter.get('duration_minutes', 0)
+            if min_chapter_duration <= duration <= max_optimal_duration:
+                # Add skipped_ai_analysis flag to each chapter
+                chapter['skipped_ai_analysis'] = False  # AI was used to analyze and create this chapter
+                # Scope the chunk-level timeline down to this sub-chapter's
+                # [start, end] span (absolute timestamps on both sides).
+                chapter['timeline'] = _filter_timeline_by_range(
+                    summary_chunk.get('timeline', []),
+                    chapter.get('start_time'),
+                    chapter.get('end_time'),
+                )
+                # Flatten structured speaker objects to list[str] so
+                # video_chapters.speakers TEXT[] stays byte-compatible.
+                # Also tolerates legacy flat-string form (backward compat).
+                chapter['speakers'] = _flatten_speakers(chapter.get('speakers', []))
+                valid_chapters.append(chapter)
+            else:
+                logging.warning(
+                    f"    ⚠️ Skipping chapter '{chapter.get('title', 'Unknown')}' "
+                    f"- duration {duration:.1f} min is outside 15-120 min range"
+                )
+
+        # Determine if this is a single-chapter result (chunk not divided)
+        is_single_chapter = len(valid_chapters) == 1 and len(interesting_chapters) == 1
+
+        if is_single_chapter:
+            # AI analyzed but decided chunk should remain as one chapter
+            logging.info(
+                f"  ✅ Chunk {chunk_number}: AI analysis determined chunk is a single "
+                f"coherent topic - kept as 1 chapter ({valid_chapters[0]['duration_minutes']:.1f} min)"
+            )
+        else:
+            logging.info(f"  ✅ Chunk {chunk_number}: Split into {len(valid_chapters)} chapters")
+
+        return {
+            'chunk_number': chunk_number,
+            'start_time': summary_chunk['start_time'],
+            'end_time': summary_chunk['end_time'],
+            'duration_minutes': summary_chunk['duration_minutes'],
+            'total_interesting_chapters': len(valid_chapters),
+            'interesting_chapters': valid_chapters,
+            'skipped_ai_analysis': False,  # AI was used (but may have returned 1 chapter)
+            'is_single_chapter': is_single_chapter  # Flag to indicate if chunk was kept whole
+        }
+
+    except json.JSONDecodeError as e:
+        logging.warning(
+            f"  ⚠️ Chunk {chunk_number}: JSON parse error — using whole-chunk fallback. "
+            f"Error: {e}"
+        )
+        return _build_fallback_chunk_entry(chunk_number, summary_chunk)
+    except Exception as e:
+        logging.warning(
+            f"  ⚠️ Chunk {chunk_number}: AI analysis failed — using whole-chunk fallback. "
+            f"Error: {e}"
+        )
+        return _build_fallback_chunk_entry(chunk_number, summary_chunk)
+
+
 def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date: str,
                                  min_chapter_duration: int = 15,
                                  max_optimal_duration: int = 120):
@@ -1326,10 +1510,6 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
         - total_videos: Number of videos analyzed
         - videos: List with video_id, chunks_with_chapters (interesting chapters found in each chunk)
     """
-    from congress_videos.config.ai_prompts import CHAPTER_IDENTIFICATION_SYSTEM_PROMPT, CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE
-    from utils.ai_chapter_analyzer import _flatten_speakers
-    import json
-
     if not chunk_summaries or not chunk_summaries.get('videos'):
         logging.warning("No chunk summaries to analyze")
         return {'total_videos': 0, 'videos': []}
@@ -1367,19 +1547,17 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
         try:
             logging.info(f"Analyzing {len(summarized_chunks)} chunks for video {video_id} to identify interesting chapters...")
             chunks_with_chapters = []
+            # #210: index once per video instead of a linear scan per chunk.
+            srt_chunk_index = _build_srt_chunk_index(srt_chunks)
 
             # Analyze each chunk individually
-            for idx, summary_chunk in enumerate(summarized_chunks):
+            for summary_chunk in summarized_chunks:
                 chunk_number = summary_chunk['chunk_number']
                 chunk_duration = summary_chunk.get('duration_minutes', 0)
 
                 # Find matching SRT content for this chunk
                 # #7: read text via the back-compat shim (path-only XCom).
-                srt_content = ""
-                for srt_chunk in srt_chunks:
-                    if srt_chunk['chunk_number'] == chunk_number:
-                        srt_content = _chunk_text(srt_chunk)
-                        break
+                srt_content = _find_srt_chunk(srt_chunk_index, chunk_number)
 
                 if not srt_content:
                     logging.warning(f"No SRT content found for chunk {chunk_number}")
@@ -1426,149 +1604,17 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
 
                     continue
 
-                # Chunk is > 45 minutes, proceed with AI analysis
-                logging.info(f"  🔍 Chunk {chunk_number} is {chunk_duration:.1f} minutes (>45 min). Using AI to analyze content...")
-
-                try:
-                    # Prepare chunk summary text for AI
-                    summary_text = f"Chunk {chunk_number} ({summary_chunk['start_time']} - {summary_chunk['end_time']}) - Duration: {chunk_duration:.1f} minutes\n\n"
-
-                    if summary_chunk.get('speakers'):
-                        summary_text += "Speakers:\n"
-                        for speaker in summary_chunk['speakers']:
-                            summary_text += f"  - {speaker.get('name', 'Unknown')} ({speaker.get('role', '')})\n"
-                        summary_text += "\n"
-
-                    if summary_chunk.get('topics'):
-                        summary_text += f"Topics: {', '.join(summary_chunk['topics'])}\n\n"
-
-                    if summary_chunk.get('summary'):
-                        summary_text += f"Summary: {summary_chunk['summary']}\n"
-
-                    # #2/#3: per-window LLM call routed through the idempotent
-                    # cache. Defined as a closure so the >threshold path (#8)
-                    # can reuse it as the injected map-reduce identify function.
-                    def _identify_window(window_srt_text: str) -> list[dict]:
-                        completion = cached_json_completion(
-                            system_prompt=CHAPTER_IDENTIFICATION_SYSTEM_PROMPT,
-                            user_prompt=CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE.format(
-                                chunk_summary=summary_text,
-                                srt_content=window_srt_text,  # Full window — no truncation
-                            ),
-                            model="gpt-4o-mini",
-                            temperature=0.3,
-                            max_tokens=2000,
-                        )
-                        if completion.get('error'):
-                            raise RuntimeError(completion['error'])
-                        chapter_data = completion['data'] or {}
-                        return chapter_data.get('interesting_chapters', [])
-
-                    # #1/#8: oversized SRT → map-reduce over overlapping windows
-                    # so the LLM never decides blind on a truncated view. Below
-                    # the threshold this is a single full-SRT call (identical to
-                    # the original path).
-                    if len(srt_content) > LARGE_SRT_THRESHOLD:
-                        logging.info(
-                            f"  🧩 Chunk {chunk_number}: SRT content is {len(srt_content):,} chars "
-                            f"(>{LARGE_SRT_THRESHOLD:,} threshold). Using map-reduce windowing."
-                        )
-                        from congress_videos.modules.youtube.map_reduce_chapters import (
-                            map_reduce_identify_chapters,
-                        )
-                        interesting_chapters = map_reduce_identify_chapters(
-                            srt_content, identify_fn=_identify_window
-                        )
-                    else:
-                        interesting_chapters = _identify_window(srt_content)
-
-                    # --- #4: Deterministic fallback for empty LLM result --------
-                    if not interesting_chapters:
-                        logging.warning(
-                            f"  ⚠️ Chunk {chunk_number}: LLM returned empty chapter list "
-                            "— using whole-chunk fallback."
-                        )
-                        chunks_with_chapters.append(
-                            _build_fallback_chunk_entry(chunk_number, summary_chunk)
-                        )
-                        continue
-
-                    # --- #5: Discard chapters with start >= end -----------------
-                    range_valid = _validate_chapter_ranges(interesting_chapters, chunk_number)
-                    if not range_valid:
-                        logging.warning(
-                            f"  ⚠️ Chunk {chunk_number}: all chapters failed range validation "
-                            "— using whole-chunk fallback."
-                        )
-                        chunks_with_chapters.append(
-                            _build_fallback_chunk_entry(chunk_number, summary_chunk)
-                        )
-                        continue
-
-                    # Validate that all chapters are within 15-45 minute range
-                    valid_chapters = []
-                    for chapter in range_valid:
-                        duration = chapter.get('duration_minutes', 0)
-                        if min_chapter_duration <= duration <= max_optimal_duration:
-                            # Add skipped_ai_analysis flag to each chapter
-                            chapter['skipped_ai_analysis'] = False  # AI was used to analyze and create this chapter
-                            # Scope the chunk-level timeline down to this sub-chapter's
-                            # [start, end] span (absolute timestamps on both sides).
-                            chapter['timeline'] = _filter_timeline_by_range(
-                                summary_chunk.get('timeline', []),
-                                chapter.get('start_time'),
-                                chapter.get('end_time'),
-                            )
-                            # Flatten structured speaker objects to list[str] so
-                            # video_chapters.speakers TEXT[] stays byte-compatible.
-                            # Also tolerates legacy flat-string form (backward compat).
-                            chapter['speakers'] = _flatten_speakers(chapter.get('speakers', []))
-                            valid_chapters.append(chapter)
-                        else:
-                            logging.warning(
-                                f"    ⚠️ Skipping chapter '{chapter.get('title', 'Unknown')}' "
-                                f"- duration {duration:.1f} min is outside 15-120 min range"
-                            )
-
-                    # Determine if this is a single-chapter result (chunk not divided)
-                    is_single_chapter = len(valid_chapters) == 1 and len(interesting_chapters) == 1
-
-                    if is_single_chapter:
-                        # AI analyzed but decided chunk should remain as one chapter
-                        logging.info(
-                            f"  ✅ Chunk {chunk_number}: AI analysis determined chunk is a single "
-                            f"coherent topic - kept as 1 chapter ({valid_chapters[0]['duration_minutes']:.1f} min)"
-                        )
-                    else:
-                        logging.info(f"  ✅ Chunk {chunk_number}: Split into {len(valid_chapters)} chapters")
-
-                    chunks_with_chapters.append({
-                        'chunk_number': chunk_number,
-                        'start_time': summary_chunk['start_time'],
-                        'end_time': summary_chunk['end_time'],
-                        'duration_minutes': summary_chunk['duration_minutes'],
-                        'total_interesting_chapters': len(valid_chapters),
-                        'interesting_chapters': valid_chapters,
-                        'skipped_ai_analysis': False,  # AI was used (but may have returned 1 chapter)
-                        'is_single_chapter': is_single_chapter  # Flag to indicate if chunk was kept whole
-                    })
-
-                except json.JSONDecodeError as e:
-                    logging.warning(
-                        f"  ⚠️ Chunk {chunk_number}: JSON parse error — using whole-chunk fallback. "
-                        f"Error: {e}"
+                # Chunk is > 45 minutes: delegate to the AI-analysis helper (#210).
+                chunks_with_chapters.append(
+                    _analyze_single_chunk(
+                        chunk_number,
+                        summary_chunk,
+                        srt_content,
+                        chunk_duration,
+                        min_chapter_duration,
+                        max_optimal_duration,
                     )
-                    chunks_with_chapters.append(
-                        _build_fallback_chunk_entry(chunk_number, summary_chunk)
-                    )
-                except Exception as e:
-                    logging.warning(
-                        f"  ⚠️ Chunk {chunk_number}: AI analysis failed — using whole-chunk fallback. "
-                        f"Error: {e}"
-                    )
-                    chunks_with_chapters.append(
-                        _build_fallback_chunk_entry(chunk_number, summary_chunk)
-                    )
+                )
 
             # Count total interesting chapters found
             total_chapters_found = sum(
