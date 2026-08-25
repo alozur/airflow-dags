@@ -55,7 +55,7 @@ with DAG(
     default_args=default_args,
     description='Generic YouTube uploader - triggered by other DAGs with video upload config',
     schedule=None,  # Triggered only, never scheduled
-    start_date=datetime.now(timezone.utc) - timedelta(days=1),
+    start_date=datetime(2025, 1, 1, tzinfo=timezone.utc),
     catchup=False,
     tags=['youtube', 'upload', 'generic', 'utils'],
     max_active_runs=3,  # Allow multiple uploads in parallel

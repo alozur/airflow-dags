@@ -20,7 +20,7 @@ Congress website directly.
 
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.operators.python import BranchPythonOperator, PythonOperator, ShortCircuitOperator
@@ -43,8 +43,6 @@ load_env_if_local()
 # Check if running in development environment
 POSTGRES_SCHEMA = os.getenv('POSTGRES_SCHEMA', 'development')
 IS_DEVELOPMENT = POSTGRES_SCHEMA == 'development'
-
-today_str = datetime.now().strftime("%Y-%m-%d")
 
 
 default_args = {
@@ -91,6 +89,72 @@ def _resolve_srt_input(ti):
     )
 
 
+def _resolve_target_date(context) -> str:
+    """Resolve target_date at task runtime — never at DAG-parse time (#206).
+
+    An explicit ``params["target_date"]`` override always wins (manual
+    ``--conf`` trigger). Otherwise this DAG run's own ``logical_date`` (or
+    ``data_interval_end`` / ``execution_date`` on older Airflow) is used, so
+    an @hourly run always resolves to the day it actually runs for — not a
+    date computed once when the DAG file was last parsed by the scheduler.
+    """
+    explicit = (context.get("params") or {}).get("target_date")
+    if explicit:
+        return str(explicit)
+    logical = (
+        context.get("logical_date")
+        or context.get("data_interval_end")
+        or context.get("execution_date")
+    )
+    if logical is not None:
+        return logical.strftime("%Y-%m-%d")
+    return str(context.get("ds") or datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+
+
+def _slim_transcriptions_for_xcom(result):
+    """Trim transcribe_audio_with_whisper()'s payload before it reaches XCom
+    (issue #202b). The Postgres XCom backend persists every push; full
+    per-chunk transcript text (and the whole-file text on the unchunked
+    path) is dead weight once the SRT sidecar is written to disk — only
+    identifiers, counters, and srt path(s) are needed downstream.
+
+    Non-dict input (e.g. None) passes through unchanged.
+    """
+    if not isinstance(result, dict):
+        return result
+
+    slimmed_videos = []
+    for video in result.get("videos", []):
+        slim = {"video_id": video.get("video_id")}
+        if "video_title" in video:
+            slim["video_title"] = video.get("video_title")
+        slim["chunked"] = video.get("chunked", False)
+
+        if video.get("chunked"):
+            if "total_chunks" in video:
+                slim["total_chunks"] = video["total_chunks"]
+            if "successful_transcriptions" in video:
+                slim["successful_transcriptions"] = video["successful_transcriptions"]
+            srt_paths = [
+                c.get("srt_path") for c in video.get("chunks", []) if c.get("srt_path")
+            ]
+            if srt_paths:
+                slim["srt_paths"] = srt_paths
+        else:
+            if "transcription_success" in video:
+                slim["transcription_success"] = video["transcription_success"]
+            if video.get("srt_path"):
+                slim["srt_path"] = video["srt_path"]
+
+        if video.get("error"):
+            slim["error"] = video["error"]
+        slimmed_videos.append(slim)
+
+    slimmed = dict(result)
+    slimmed["videos"] = slimmed_videos
+    return slimmed
+
+
 with DAG(
     'congress_youtube_channel_monitor',
     default_args=default_args,
@@ -100,8 +164,8 @@ with DAG(
     catchup=False,
     max_active_runs=1,  # Serialize runs so overlapping hourly runs don't race on the same video_id
     tags=['congress', 'youtube', 'monitor'],
-    params={  # Default to today; lookback range covers yesterday too
-        "target_date": today_str,
+    params={  # No default: resolved per-run via _resolve_target_date (issue #206)
+        "target_date": None,
         "lookback_days": 1,  # Inclusive lookback window: target_date - lookback_days .. target_date
         "min_hours_since_end": 12,  # Skip videos whose live broadcast ended less than this many hours ago
         "guard_enabled": True,  # Finished-stream guard: drop not-ready VODs before the branch (+ downloader guard)
@@ -162,7 +226,7 @@ with DAG(
             lambda: yt_channel.filter_plenary_session_videos(
                 ti.xcom_pull(key='channel_videos'),
                 target_title=TARGET_VIDEO_TITLE,
-                target_date=context["params"].get("target_date"),
+                target_date=_resolve_target_date(context),
                 lookback_days=context["params"].get("lookback_days", 1)
             ),
             'plenary_videos'
@@ -255,7 +319,7 @@ with DAG(
             ti,
             lambda: yt_channel.try_download_subtitles_from_youtube(
                 ti.xcom_pull(key='video_details'),
-                target_date=context["params"].get("target_date")
+                target_date=_resolve_target_date(context)
             ),
             'youtube_subtitles'
         ),
@@ -288,7 +352,7 @@ with DAG(
             ti,
             lambda: yt_channel.download_video_from_youtube(
                 ti.xcom_pull(key='video_details'),
-                target_date=context["params"].get("target_date"),
+                target_date=_resolve_target_date(context),
                 guard_enabled=context["params"].get("guard_enabled", True)
             ),
             'downloaded_videos'
@@ -335,7 +399,7 @@ with DAG(
             ti,
             lambda: yt_channel.extract_audio_from_youtube(
                 ti.xcom_pull(key='video_details'),
-                target_date=context["params"].get("target_date"),
+                target_date=_resolve_target_date(context),
                 chunk_duration_minutes=context["params"].get("chunk_duration_minutes", 10)
             ),
             'extracted_audio'
@@ -347,10 +411,12 @@ with DAG(
         task_id='transcribe_audio_with_whisper',
         python_callable=lambda ti: xcom_task(
             ti,
-            lambda: yt_channel.transcribe_audio_with_whisper(
-                ti.xcom_pull(key='extracted_audio'),
-                language="es",
-                timeout=3600  # 1 hour timeout per chunk
+            lambda: _slim_transcriptions_for_xcom(
+                yt_channel.transcribe_audio_with_whisper(
+                    ti.xcom_pull(key='extracted_audio'),
+                    language="es",
+                    timeout=3600  # 1 hour timeout per chunk
+                )
             ),
             'transcriptions'
         ),
@@ -363,7 +429,7 @@ with DAG(
             ti,
             lambda: yt_channel.merge_transcription_srt_files(
                 ti.xcom_pull(key='transcriptions'),
-                target_date=context["params"].get("target_date")
+                target_date=_resolve_target_date(context)
             ),
             'merged_srt_files'
         ),
@@ -401,7 +467,7 @@ with DAG(
             ti,
             lambda: yt_channel.download_and_read_agenda(
                 ti.xcom_pull(key='parsed_links'),
-                target_date=context["params"].get("target_date")
+                target_date=_resolve_target_date(context)
             ),
             'agendas'
         ),
@@ -414,7 +480,7 @@ with DAG(
             ti,
             lambda: yt_channel.extract_session_date(
                 ti.xcom_pull(key='agendas'),
-                target_date=context["params"].get("target_date")
+                target_date=_resolve_target_date(context)
             ),
             'session_date'
         ),
@@ -442,7 +508,7 @@ with DAG(
             ti,
             lambda: yt_channel.split_srt_by_silence(
                 _resolve_srt_input(ti),
-                target_date=context["params"].get("target_date"),
+                target_date=_resolve_target_date(context),
                 min_silence_seconds=15,
                 min_chunk_duration_minutes=10,
                 max_chunk_duration_minutes=20,
@@ -497,7 +563,7 @@ with DAG(
             lambda: yt_channel.identify_interesting_chapters(
                 ti.xcom_pull(key='chunk_summaries'),  # Summaries from t5f
                 ti.xcom_pull(key='silence_chunks'),   # SRT chunks from t5e
-                target_date=context["params"].get("target_date")
+                target_date=_resolve_target_date(context)
             ),
             'identified_chapters'
         ),
@@ -511,7 +577,7 @@ with DAG(
             ti,
             lambda: yt_channel.merge_interesting_chapters(
                 ti.xcom_pull(key='identified_chapters'),
-                target_date=context["params"].get("target_date")
+                target_date=_resolve_target_date(context)
             ),
             'interesting_chapters'
         ),
@@ -548,7 +614,7 @@ with DAG(
             return scored
         return trim_chapter_silence_with_vad(
             scored,
-            target_date=context["params"].get("target_date"),
+            target_date=_resolve_target_date(context),
         )
 
     t_trim = PythonOperator(

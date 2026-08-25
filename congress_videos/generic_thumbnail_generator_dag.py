@@ -380,7 +380,7 @@ with DAG(
         "score-gated retry, picks the best, generates a title, and persists results."
     ),
     schedule=None,
-    start_date=datetime.now(timezone.utc) - timedelta(days=1),
+    start_date=datetime(2025, 1, 1, tzinfo=timezone.utc),
     catchup=False,
     tags=["thumbnail", "pikzels", "generic", "on-demand"],
     max_active_runs=3,
