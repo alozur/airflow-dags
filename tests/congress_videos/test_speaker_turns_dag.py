@@ -114,6 +114,11 @@ class TestCronBatchSize:
 
 
 class TestRunChapterTurns:
+    """run_chapter_turns holds NO database connection (issue #200) — it only
+    detects turns and returns them; persistence is the caller's job via
+    _persist_chapter_turns.
+    """
+
     def _chapter(self):
         return {
             "chapter_id": 7,
@@ -128,14 +133,15 @@ class TestRunChapterTurns:
         monkeypatch.setattr(mod, "_find_source_video", lambda *a, **k: None)
         detect = MagicMock()
         monkeypatch.setattr(mod, "detect_turns", detect)
-        cursor = MagicMock()
 
-        result = mod.run_chapter_turns(self._chapter(), cursor)
+        result = mod.run_chapter_turns(self._chapter())
 
         assert result["status"] == "skipped_no_video"
+        assert result["turns"] == []
         detect.assert_not_called()
 
-    def test_happy_path_detects_and_upserts(self, monkeypatch):
+    def test_happy_path_returns_detected_turns(self, monkeypatch):
+        """Detection returns the Turn list directly — no upsert, no cursor."""
         mod = _fresh()
         monkeypatch.setattr(mod, "_find_source_video", lambda *a, **k: "/v/src.mp4")
         monkeypatch.setattr(mod, "extract_audio_wav", lambda *a, **k: "/tmp/c.wav")
@@ -149,16 +155,14 @@ class TestRunChapterTurns:
         monkeypatch.setattr(mod, "detect_turns", detect)
         upsert = MagicMock()
         monkeypatch.setattr(mod, "_upsert_turns", upsert)
-        cursor = MagicMock()
 
-        result = mod.run_chapter_turns(self._chapter(), cursor)
+        result = mod.run_chapter_turns(self._chapter())
 
         assert result["status"] == "ok"
-        assert result["turns"] == 2
+        assert result["turns"] == turns
         detect.assert_called_once()
-        # Default table name flows through when no qualified name is supplied;
-        # _process_task passes pg.get_qualified_table("speaker_turns") in prod.
-        upsert.assert_called_once_with(cursor, 7, turns, table="speaker_turns")
+        # Detection never persists — no DB write happens during turn detection.
+        upsert.assert_not_called()
 
     def test_missing_srt_runs_acoustic_only(self, monkeypatch):
         mod = _fresh()
@@ -174,9 +178,8 @@ class TestRunChapterTurns:
             return []
 
         monkeypatch.setattr(mod, "detect_turns", fake_detect)
-        monkeypatch.setattr(mod, "_upsert_turns", MagicMock())
 
-        result = mod.run_chapter_turns(self._chapter(), MagicMock())
+        result = mod.run_chapter_turns(self._chapter())
 
         assert result["status"] == "ok"
         assert captured["srt_blocks"] == []  # acoustic-only
@@ -279,18 +282,20 @@ class TestProcessTask:
         conn = MagicMock()
         conn.cursor.return_value.__enter__.return_value = MagicMock()
         pg = MagicMock()
+        pg.get_qualified_table.side_effect = lambda t: f"development.{t}"
         pg.get_connection.return_value.__enter__.return_value = conn
         monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
         # Probe must be no-op so this data-error test is not affected by infra check
         monkeypatch.setattr(mod, "check_diarize_api_health", lambda **k: None)
+        monkeypatch.setattr(mod, "_upsert_turns", MagicMock())
 
-        def fake_run(chapter, cursor, **k):
+        def fake_run(chapter, **k):
             cid = chapter["chapter_id"]
             if cid == 1:
-                return {"status": "ok", "chapter_id": 1, "turns": 3}
+                return {"status": "ok", "chapter_id": 1, "turns": [object(), object(), object()]}
             if cid == 2:
                 raise RuntimeError("boom")
-            return {"status": "skipped_no_video", "chapter_id": 3, "turns": 0}
+            return {"status": "skipped_no_video", "chapter_id": 3, "turns": []}
 
         monkeypatch.setattr(mod, "run_chapter_turns", fake_run)
 
@@ -300,6 +305,38 @@ class TestProcessTask:
 
         assert summary == {"processed": 1, "skipped": 2, "turns": 3}
         conn.commit.assert_called_once()
+
+
+class TestProcessTaskConnectionScope:
+    """Verify #200: no DB connection is open while a chapter is being detected."""
+
+    def _ti_with(self, chapters):
+        ti = MagicMock()
+        ti.xcom_pull.return_value = chapters
+        return {"ti": ti}
+
+    def test_no_connection_open_during_detection(self, monkeypatch):
+        mod = _fresh()
+        cur = MagicMock()
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+        pg = MagicMock()
+        pg.get_qualified_table.side_effect = lambda t: f"development.{t}"
+        pg.get_connection.return_value.__enter__.return_value = conn
+        monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
+        monkeypatch.setattr(mod, "check_diarize_api_health", lambda **k: None)
+        monkeypatch.setattr(mod, "_upsert_turns", MagicMock())
+        captured = {}
+
+        def fake_run(chapter, **k):
+            captured["get_connection_call_count"] = pg.get_connection.call_count
+            return {"status": "ok", "chapter_id": chapter["chapter_id"], "turns": []}
+
+        monkeypatch.setattr(mod, "run_chapter_turns", fake_run)
+
+        mod._process_task(**self._ti_with([{"chapter_id": 1}]))
+
+        assert captured["get_connection_call_count"] == 0
 
 
 class TestProcessTaskMarkDetected:
@@ -321,16 +358,19 @@ class TestProcessTaskMarkDetected:
         monkeypatch.setattr(mod, "run_chapter_turns", fake_run)
         # Probe must be no-op so existing data-error tests are not affected
         monkeypatch.setattr(mod, "check_diarize_api_health", lambda **k: None)
-        return cur, conn
+        # _upsert_turns is exercised on its own in TestPersistChapterTurns;
+        # here we only care about the surrounding orchestration.
+        monkeypatch.setattr(mod, "_upsert_turns", MagicMock())
+        return cur, conn, pg
 
     def test_ok_chapter_triggers_update_turns_detected_at(self, monkeypatch):
         """status=='ok' must trigger UPDATE turns_detected_at WHERE chapter_id."""
         mod = _fresh()
 
-        def fake_run(chapter, cursor, **k):
-            return {"status": "ok", "chapter_id": chapter["chapter_id"], "turns": 2}
+        def fake_run(chapter, **k):
+            return {"status": "ok", "chapter_id": chapter["chapter_id"], "turns": [object(), object()]}
 
-        cur, _ = self._make_process_mock(monkeypatch, mod, fake_run)
+        cur, _, _ = self._make_process_mock(monkeypatch, mod, fake_run)
 
         mod._process_task(**self._ti_with([{"chapter_id": 1}]))
 
@@ -343,10 +383,10 @@ class TestProcessTaskMarkDetected:
         """status=='skipped_no_video' must NOT trigger UPDATE turns_detected_at."""
         mod = _fresh()
 
-        def fake_run(chapter, cursor, **k):
-            return {"status": "skipped_no_video", "chapter_id": chapter["chapter_id"], "turns": 0}
+        def fake_run(chapter, **k):
+            return {"status": "skipped_no_video", "chapter_id": chapter["chapter_id"], "turns": []}
 
-        cur, _ = self._make_process_mock(monkeypatch, mod, fake_run)
+        cur, _, _ = self._make_process_mock(monkeypatch, mod, fake_run)
 
         mod._process_task(**self._ti_with([{"chapter_id": 3}]))
 
@@ -358,10 +398,10 @@ class TestProcessTaskMarkDetected:
         """Exception-caught chapter must NOT trigger UPDATE turns_detected_at."""
         mod = _fresh()
 
-        def fake_run(chapter, cursor, **k):
+        def fake_run(chapter, **k):
             raise RuntimeError("diarize failed")
 
-        cur, _ = self._make_process_mock(monkeypatch, mod, fake_run)
+        cur, _, _ = self._make_process_mock(monkeypatch, mod, fake_run)
 
         mod._process_task(**self._ti_with([{"chapter_id": 2}]))
 
@@ -374,13 +414,13 @@ class TestProcessTaskMarkDetected:
         from congress_videos.modules.sidecar_api_error import SidecarApiError
         mod = _fresh()
 
-        def fake_run(chapter, cursor, **k):
+        def fake_run(chapter, **k):
             cid = chapter["chapter_id"]
             if cid in (1, 2):
-                return {"status": "ok", "chapter_id": cid, "turns": 1}
+                return {"status": "ok", "chapter_id": cid, "turns": [object()]}
             raise SidecarApiError("diarize-api dropped connection mid-run")
 
-        _, conn = self._make_process_mock(monkeypatch, mod, fake_run)
+        _, conn, _ = self._make_process_mock(monkeypatch, mod, fake_run)
 
         with pytest.raises(SidecarApiError):
             mod._process_task(
@@ -391,36 +431,41 @@ class TestProcessTaskMarkDetected:
             f"Expected 2 independent commits (one per ok chapter), got {conn.commit.call_count}"
         )
 
-    def test_skipped_chapter_rolls_back(self, monkeypatch):
-        """Non-'ok' status (e.g. skipped_no_video) must rollback, not commit, for that chapter."""
+    def test_skipped_chapter_does_not_open_connection(self, monkeypatch):
+        """Non-'ok' status (e.g. skipped_no_video) must never open a DB connection (issue #200)."""
         mod = _fresh()
 
-        def fake_run(chapter, cursor, **k):
-            return {"status": "skipped_no_video", "chapter_id": chapter["chapter_id"], "turns": 0}
+        def fake_run(chapter, **k):
+            return {"status": "skipped_no_video", "chapter_id": chapter["chapter_id"], "turns": []}
 
-        _, conn = self._make_process_mock(monkeypatch, mod, fake_run)
+        _, conn, pg = self._make_process_mock(monkeypatch, mod, fake_run)
 
         mod._process_task(**self._ti_with([{"chapter_id": 3}]))
 
-        conn.rollback.assert_called_once()
+        pg.get_connection.assert_not_called()
         conn.commit.assert_not_called()
 
-    def test_data_error_chapter_rolls_back(self, monkeypatch):
-        """A generic exception (data error) must rollback before continue, not commit."""
+    def test_data_error_chapter_does_not_open_connection(self, monkeypatch):
+        """A generic exception (data error) must never open a DB connection (issue #200)."""
         mod = _fresh()
 
-        def fake_run(chapter, cursor, **k):
+        def fake_run(chapter, **k):
             raise RuntimeError("diarize failed")
 
-        _, conn = self._make_process_mock(monkeypatch, mod, fake_run)
+        _, conn, pg = self._make_process_mock(monkeypatch, mod, fake_run)
 
         mod._process_task(**self._ti_with([{"chapter_id": 2}]))
 
-        conn.rollback.assert_called_once()
+        pg.get_connection.assert_not_called()
         conn.commit.assert_not_called()
 
-    def test_commit_ordering_upsert_then_update_then_commit(self, monkeypatch):
-        """The turns UPDATE must execute before commit(); nothing commits between upsert and UPDATE."""
+
+class TestPersistChapterTurns:
+    """Direct tests of _persist_chapter_turns — the sole owner of the short-lived
+    persistence transaction (issue #200): upsert → mark turns_detected_at → commit.
+    """
+
+    def test_persists_in_order_upsert_then_update_then_commit(self, monkeypatch):
         mod = _fresh()
         cur = MagicMock()
         conn = MagicMock()
@@ -429,18 +474,18 @@ class TestProcessTaskMarkDetected:
         manager.attach_mock(conn, "conn")
         conn.cursor.return_value.__enter__.return_value = cur
         pg = MagicMock()
-        pg.get_qualified_table.side_effect = lambda t: f"development.{t}"
         pg.get_connection.return_value.__enter__.return_value = conn
-        monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
-        monkeypatch.setattr(mod, "check_diarize_api_health", lambda **k: None)
 
-        def fake_run(chapter, cursor, **k):
+        def fake_upsert(cursor, chapter_id, turns, table):
             cursor.execute("INSERT INTO speaker_turns (...) VALUES (...)")
-            return {"status": "ok", "chapter_id": chapter["chapter_id"], "turns": 1}
 
-        monkeypatch.setattr(mod, "run_chapter_turns", fake_run)
+        monkeypatch.setattr(mod, "_upsert_turns", fake_upsert)
 
-        mod._process_task(**self._ti_with([{"chapter_id": 1}]))
+        mod._persist_chapter_turns(
+            pg, 7, [object()],
+            turns_table="development.speaker_turns",
+            vc_table="development.video_chapters",
+        )
 
         call_order = [
             (name, str(args[0]).upper() if args else "")
@@ -454,6 +499,66 @@ class TestProcessTaskMarkDetected:
         assert insert_idx < update_idx < commit_idx, (
             f"Expected upsert → UPDATE → commit ordering, got: {call_order}"
         )
+
+    def test_update_targets_the_given_chapter_id(self, monkeypatch):
+        mod = _fresh()
+        cur = MagicMock()
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+        pg = MagicMock()
+        pg.get_connection.return_value.__enter__.return_value = conn
+        monkeypatch.setattr(mod, "_upsert_turns", MagicMock())
+
+        mod._persist_chapter_turns(
+            pg, 42, [],
+            turns_table="development.speaker_turns",
+            vc_table="development.video_chapters",
+        )
+
+        update_call = next(
+            c for c in cur.execute.call_args_list
+            if "TURNS_DETECTED_AT" in str(c.args[0]).upper()
+        )
+        assert update_call.args[1] == (42,)
+        conn.commit.assert_called_once()
+
+
+class TestProcessTaskPersistenceFailure:
+    """A persistence-layer failure is a per-chapter skip, not a task failure (#200)."""
+
+    def _ti_with(self, chapters):
+        ti = MagicMock()
+        ti.xcom_pull.return_value = chapters
+        return {"ti": ti}
+
+    def test_persistence_error_counted_skipped_not_task_failure(self, monkeypatch):
+        mod = _fresh()
+        cur = MagicMock()
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+        pg = MagicMock()
+        pg.get_qualified_table.side_effect = lambda t: f"development.{t}"
+        pg.get_connection.return_value.__enter__.return_value = conn
+        monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
+        monkeypatch.setattr(mod, "check_diarize_api_health", lambda **k: None)
+        monkeypatch.setattr(
+            mod, "_upsert_turns",
+            MagicMock(side_effect=RuntimeError("db constraint violation")),
+        )
+
+        def fake_run(chapter, **k):
+            return {"status": "ok", "chapter_id": chapter["chapter_id"], "turns": [object()]}
+
+        monkeypatch.setattr(mod, "run_chapter_turns", fake_run)
+
+        summary = mod._process_task(**self._ti_with([{"chapter_id": 9}]))
+
+        assert summary == {"processed": 0, "skipped": 1, "turns": 0}
+        update_calls = [
+            c for c in cur.execute.call_args_list
+            if "TURNS_DETECTED_AT" in str(c.args[0]).upper()
+        ]
+        assert update_calls == [], "turns_detected_at must not be marked on persistence failure"
 
 
 class TestProcessTaskFailFast:
@@ -500,7 +605,7 @@ class TestProcessTaskFailFast:
 
         monkeypatch.setattr(mod, "check_diarize_api_health", lambda **k: None)
 
-        def raising_run(chapter, cursor, **k):
+        def raising_run(chapter, **k):
             raise SidecarApiError("diarize-api dropped connection mid-run")
 
         monkeypatch.setattr(mod, "run_chapter_turns", raising_run)
