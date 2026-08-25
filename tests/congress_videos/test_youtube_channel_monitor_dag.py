@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import inspect
+from datetime import datetime, timezone
+
 import pytest
 
 
@@ -316,3 +319,96 @@ class TestSplitSrtResolveInput:
         message = str(exc_info.value)
         # Message must reference video ids safely (empty list or 'unknown')
         assert "unknown" in message or "[]" in message or "video_ids" in message
+
+
+# ---------------------------------------------------------------------------
+# Issue #206 — _resolve_target_date resolves at task runtime, not parse time
+# ---------------------------------------------------------------------------
+
+class TestResolveTargetDate:
+    """Unit tests for the module-level _resolve_target_date(context) helper.
+
+    target_date must resolve inside each task at execution time, using an
+    explicit params override when present, else the DAG run's own
+    logical_date — never a value computed once when the DAG file was parsed.
+    """
+
+    def test_explicit_override_wins(self):
+        from congress_videos.youtube_channel_monitor_dag import _resolve_target_date
+
+        context = {
+            "params": {"target_date": "2026-08-20"},
+            "logical_date": datetime(2026, 8, 25, tzinfo=timezone.utc),
+        }
+        assert _resolve_target_date(context) == "2026-08-20"
+
+    def test_no_override_uses_logical_date(self):
+        from congress_videos.youtube_channel_monitor_dag import _resolve_target_date
+
+        context = {
+            "params": {"target_date": None},
+            "logical_date": datetime(2026, 8, 24, 15, 30, tzinfo=timezone.utc),
+        }
+        assert _resolve_target_date(context) == "2026-08-24"
+
+    def test_no_logical_date_falls_back_to_data_interval_end(self):
+        from congress_videos.youtube_channel_monitor_dag import _resolve_target_date
+
+        context = {
+            "params": {},
+            "data_interval_end": datetime(2026, 8, 23, 9, 0, tzinfo=timezone.utc),
+        }
+        assert _resolve_target_date(context) == "2026-08-23"
+
+    def test_falls_back_to_ds_when_no_logical_date_available(self):
+        from congress_videos.youtube_channel_monitor_dag import _resolve_target_date
+
+        context = {"params": {}, "ds": "2026-08-22"}
+        assert _resolve_target_date(context) == "2026-08-22"
+
+    def test_last_resort_now_utc(self, monkeypatch):
+        import congress_videos.youtube_channel_monitor_dag as mod
+
+        class _FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 8, 21, 3, 0, 0, tzinfo=tz)
+
+        monkeypatch.setattr(mod, "datetime", _FrozenDatetime)
+
+        assert mod._resolve_target_date({}) == "2026-08-21"
+
+    def test_midnight_boundary_resolves_to_the_run_day(self):
+        """@hourly run at 00:30 UTC on day D with lookback_days=1 must resolve
+        target_date to day D — not a stale date computed at DAG-parse time
+        (regression guard for issue #206)."""
+        from congress_videos.youtube_channel_monitor_dag import _resolve_target_date
+
+        context = {
+            "params": {"target_date": None, "lookback_days": 1},
+            "logical_date": datetime(2026, 8, 24, 0, 30, tzinfo=timezone.utc),
+        }
+        assert _resolve_target_date(context) == "2026-08-24"
+
+
+class TestTargetDateGuardrail:
+    """Source-scan guardrails for issue #206: every params-override read site
+    must go through _resolve_target_date; the data-field read inside
+    _normalize_speakers must survive untouched.
+    """
+
+    def _source(self) -> str:
+        import congress_videos.youtube_channel_monitor_dag as mod
+        return inspect.getsource(mod)
+
+    def test_no_today_str_references(self):
+        assert "today_str" not in self._source()
+
+    def test_no_params_get_target_date_reads_remain(self):
+        assert 'context["params"].get("target_date")' not in self._source()
+
+    def test_entry_get_target_date_data_field_untouched(self):
+        """entry.get('target_date') inside _normalize_speakers reads a video
+        row's own date field, not the DAG params override — it must appear
+        exactly once, unchanged."""
+        assert self._source().count('entry.get("target_date")') == 1
