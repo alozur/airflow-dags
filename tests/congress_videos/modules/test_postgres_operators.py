@@ -70,29 +70,29 @@ class TestPostgreSQLOperatorInit:
         """operation attribute is set correctly on __init__."""
         from congress_videos.modules.postgres_operators import PostgreSQLOperator
 
-        op = PostgreSQLOperator(task_id="t", operation="save_youtube_metadata")
-        assert op.operation == "save_youtube_metadata"
+        op = PostgreSQLOperator(task_id="t", operation="check_upload_quota")
+        assert op.operation == "check_upload_quota"
 
     def test_xcom_keys_default_to_empty_dict(self, mock_db):
         """xcom_keys defaults to {} when not provided."""
         from congress_videos.modules.postgres_operators import PostgreSQLOperator
 
-        op = PostgreSQLOperator(task_id="t", operation="get_top_videos_for_upload")
+        op = PostgreSQLOperator(task_id="t", operation="get_pending_analytics_checkpoints")
         assert op.xcom_keys == {}
 
     def test_output_xcom_key_default_none(self, mock_db):
         """output_xcom_key defaults to None when not provided."""
         from congress_videos.modules.postgres_operators import PostgreSQLOperator
 
-        op = PostgreSQLOperator(task_id="t", operation="get_top_videos_for_upload")
+        op = PostgreSQLOperator(task_id="t", operation="get_pending_analytics_checkpoints")
         assert op.output_xcom_key is None
 
     def test_custom_xcom_keys(self, mock_db):
         """Custom xcom_keys are preserved."""
         from congress_videos.modules.postgres_operators import PostgreSQLOperator
 
-        keys = {"download_results": "my_key"}
-        op = PostgreSQLOperator(task_id="t", operation="update_downloads", xcom_keys=keys)
+        keys = {"collected": "my_key"}
+        op = PostgreSQLOperator(task_id="t", operation="record_analytics_snapshots", xcom_keys=keys)
         assert op.xcom_keys == keys
 
     def test_output_xcom_key_set(self, mock_db):
@@ -101,171 +101,48 @@ class TestPostgreSQLOperatorInit:
 
         op = PostgreSQLOperator(
             task_id="t",
-            operation="get_top_videos_for_upload",
+            operation="get_pending_analytics_checkpoints",
             output_xcom_key="result_key",
         )
         assert op.output_xcom_key == "result_key"
 
 
 # --------------------------------------------------------------------------- #
-# execute — update_downloads operation
+# execute — removed dead-branch operations raise ValueError (post #205 cleanup)
 # --------------------------------------------------------------------------- #
 
-class TestExecuteUpdateDownloads:
+class TestExecuteRemovedOperations:
 
-    def test_happy_path_with_download_details_dict(
-        self, mock_db, mock_task_instance, make_context
+    @pytest.mark.parametrize(
+        "operation",
+        [
+            "update_downloads",
+            "save_youtube_metadata",
+            "save_thumbnail_info",
+            "get_top_videos_for_upload",
+            "add_to_upload_queue",
+            "get_from_upload_queue",
+            "update_queue_status",
+            "update_youtube_status",
+            "get_uploadable_chapters",
+            "get_uploadable_turns",
+            "get_chapters_for_shorts",
+            "mark_shorts_uploaded",
+            "record_verification_results",
+        ],
+    )
+    def test_removed_operation_raises_value_error(
+        self, mock_db, mock_task_instance, make_context, operation
     ):
-        """download_results with 'download_details' list updates each successful item."""
+        """Each of the 13 dead-branch operation names now hits the unknown-operation
+        else-arm and raises ValueError (branches removed in the #205 cleanup)."""
         from congress_videos.modules.postgres_operators import PostgreSQLOperator
 
-        op = PostgreSQLOperator(task_id="t", operation="update_downloads")
-
-        mock_task_instance.xcom_store["download_results"] = {
-            "download_details": [
-                {"success": True, "file_path": "/data/v1.mp4", "file_size": 1024, "duration": 300},
-                {"success": False, "file_path": None},
-            ]
-        }
-        mock_task_instance.xcom_store["db_topic_ids"] = ["entry-001", "entry-002"]
-
+        op = PostgreSQLOperator(task_id="t", operation=operation)
         ctx = make_context(ti=mock_task_instance)
-        result = op.execute(ctx)
 
-        assert result["updated_topics"] == 1
-        mock_db.update_download_info.assert_called_once_with(
-            "entry-001", "/data/v1.mp4", 1024, 300
-        )
-
-    def test_download_results_as_list(
-        self, mock_db, mock_task_instance, make_context
-    ):
-        """download_results directly as list is handled."""
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
-
-        op = PostgreSQLOperator(task_id="t", operation="update_downloads")
-
-        mock_task_instance.xcom_store["download_results"] = [
-            {"success": True, "file_path": "/data/v.mp4", "file_size": 512, "duration": 60},
-        ]
-        mock_task_instance.xcom_store["db_topic_ids"] = ["entry-x"]
-
-        ctx = make_context(ti=mock_task_instance)
-        result = op.execute(ctx)
-
-        assert result["updated_topics"] == 1
-
-    def test_invalid_download_results_format_returns_error(
-        self, mock_db, mock_task_instance, make_context
-    ):
-        """Unexpected download_results type returns error dict without exception."""
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
-
-        op = PostgreSQLOperator(task_id="t", operation="update_downloads")
-
-        mock_task_instance.xcom_store["download_results"] = "not-a-dict-or-list"
-        mock_task_instance.xcom_store["db_topic_ids"] = ["entry-x"]
-
-        ctx = make_context(ti=mock_task_instance)
-        result = op.execute(ctx)
-
-        assert result["updated_topics"] == 0
-        assert "error" in result
-
-    def test_topic_ids_not_list_returns_error(
-        self, mock_db, mock_task_instance, make_context
-    ):
-        """topic_ids not a list returns error without exception."""
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
-
-        op = PostgreSQLOperator(task_id="t", operation="update_downloads")
-
-        mock_task_instance.xcom_store["download_results"] = {
-            "download_details": [{"success": True, "file_path": "/p.mp4"}]
-        }
-        mock_task_instance.xcom_store["db_topic_ids"] = "not-a-list"
-
-        ctx = make_context(ti=mock_task_instance)
-        result = op.execute(ctx)
-
-        assert result["updated_topics"] == 0
-        assert "error" in result
-
-
-# --------------------------------------------------------------------------- #
-# execute — save_youtube_metadata operation
-# --------------------------------------------------------------------------- #
-
-class TestExecuteSaveYoutubeMetadata:
-
-    def test_saves_valid_metadata(
-        self, mock_db, mock_task_instance, make_context
-    ):
-        """update_youtube_metadata called for each item with title+description."""
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
-
-        op = PostgreSQLOperator(task_id="t", operation="save_youtube_metadata")
-
-        mock_task_instance.xcom_store["youtube_metadata_results"] = {
-            "topic_metadata": [
-                {
-                    "topic_entry_id": "e1",
-                    "title": {"title": "Debate sobre Presupuestos"},
-                    "description": {"description": "Descripcion larga aqui."},
-                }
-            ]
-        }
-        mock_task_instance.xcom_store["db_topic_ids"] = ["e1"]
-
-        ctx = make_context(ti=mock_task_instance)
-        result = op.execute(ctx)
-
-        assert result["updated_topics"] == 1
-        mock_db.update_youtube_metadata.assert_called_once_with(
-            "e1", "Debate sobre Presupuestos", "Descripcion larga aqui."
-        )
-
-    def test_skips_item_with_missing_title(
-        self, mock_db, mock_task_instance, make_context
-    ):
-        """Item with empty title is skipped silently."""
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
-
-        op = PostgreSQLOperator(task_id="t", operation="save_youtube_metadata")
-
-        mock_task_instance.xcom_store["youtube_metadata_results"] = {
-            "topic_metadata": [
-                {
-                    "topic_entry_id": "e2",
-                    "title": {"title": ""},
-                    "description": {"description": "Some desc"},
-                }
-            ]
-        }
-        mock_task_instance.xcom_store["db_topic_ids"] = ["e2"]
-
-        ctx = make_context(ti=mock_task_instance)
-        result = op.execute(ctx)
-
-        assert result["updated_topics"] == 0
-        mock_db.update_youtube_metadata.assert_not_called()
-
-    def test_invalid_metadata_format_returns_error(
-        self, mock_db, mock_task_instance, make_context
-    ):
-        """Unexpected metadata format returns error dict."""
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
-
-        op = PostgreSQLOperator(task_id="t", operation="save_youtube_metadata")
-
-        mock_task_instance.xcom_store["youtube_metadata_results"] = 12345
-        mock_task_instance.xcom_store["db_topic_ids"] = ["e1"]
-
-        ctx = make_context(ti=mock_task_instance)
-        result = op.execute(ctx)
-
-        assert result["updated_topics"] == 0
-        assert "error" in result
+        with pytest.raises(ValueError, match="Unknown operation"):
+            op.execute(ctx)
 
 
 # --------------------------------------------------------------------------- #
@@ -299,20 +176,17 @@ class TestExecuteXcomPush:
         """Result is pushed to xcom when output_xcom_key is configured."""
         from congress_videos.modules.postgres_operators import PostgreSQLOperator
 
-        mock_db.get_top_videos_for_upload.return_value = [{"entry_id": "v1"}]
+        mock_db.get_pending_analytics_checkpoints.return_value = [{"chapter_id": 1}]
 
         op = PostgreSQLOperator(
             task_id="t",
-            operation="get_top_videos_for_upload",
-            output_xcom_key="top_vids",
+            operation="get_pending_analytics_checkpoints",
+            output_xcom_key="pending_checkpoints",
         )
-        ctx = make_context(
-            params={"max_videos": 5, "min_interest_score": 6},
-            ti=mock_task_instance,
-        )
+        ctx = make_context(ti=mock_task_instance)
         op.execute(ctx)
 
-        assert mock_task_instance.xcom_store.get("top_vids") is not None
+        assert mock_task_instance.xcom_store.get("pending_checkpoints") is not None
 
     def test_result_not_pushed_when_key_is_none(
         self, mock_db, mock_task_instance, make_context
@@ -320,16 +194,13 @@ class TestExecuteXcomPush:
         """No xcom_push when output_xcom_key is None."""
         from congress_videos.modules.postgres_operators import PostgreSQLOperator
 
-        mock_db.get_top_videos_for_upload.return_value = []
+        mock_db.get_pending_analytics_checkpoints.return_value = []
 
         op = PostgreSQLOperator(
             task_id="t",
-            operation="get_top_videos_for_upload",
+            operation="get_pending_analytics_checkpoints",
         )
-        ctx = make_context(
-            params={"max_videos": 5, "min_interest_score": 6},
-            ti=mock_task_instance,
-        )
+        ctx = make_context(ti=mock_task_instance)
         op.execute(ctx)
 
         mock_task_instance.xcom_push.assert_not_called()
@@ -450,85 +321,6 @@ class TestExecuteCheckUploadQuota:
         assert result["queue_size"] == 30
         assert "turns_pending" in result
         assert {"uploads_today", "queue_size", "turns_pending"}.issubset(result.keys())
-
-
-# --------------------------------------------------------------------------- #
-# execute — get_uploadable_chapters uses hardcoded limit=1
-# --------------------------------------------------------------------------- #
-
-class TestGetUploadableChaptersHardcodedLimit:
-
-    def test_always_uses_limit_1_regardless_of_xcom(
-        self, mock_db, mock_task_instance, make_context
-    ):
-        """get_uploadable_chapters uses hardcoded limit=1, ignoring any XCom remaining_quota (REQ-LIMIT-01)."""
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
-
-        mock_db.get_uploadable_chapters.return_value = []
-        # Even when XCom carries remaining_quota=5, limit must be 1
-        mock_task_instance.xcom_store["upload_quota"] = {
-            "uploads_today": 0,
-            "queue_size": 50,
-        }
-
-        op = PostgreSQLOperator(task_id="t", operation="get_uploadable_chapters")
-        ctx = make_context(params={"min_relevance_score": 2}, ti=mock_task_instance)
-        op.execute(ctx)
-
-        mock_db.get_uploadable_chapters.assert_called_once_with(limit=1, min_relevance_score=2)
-
-    def test_uses_limit_1_when_no_xcom(
-        self, mock_db, mock_task_instance, make_context
-    ):
-        """get_uploadable_chapters uses limit=1 even when upload_quota XCom is absent (REQ-LIMIT-01)."""
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
-
-        mock_db.get_uploadable_chapters.return_value = []
-
-        op = PostgreSQLOperator(task_id="t", operation="get_uploadable_chapters")
-        ctx = make_context(params={"min_relevance_score": 2}, ti=mock_task_instance)
-        op.execute(ctx)
-
-        mock_db.get_uploadable_chapters.assert_called_once_with(limit=1, min_relevance_score=2)
-
-
-# --------------------------------------------------------------------------- #
-# execute — get_uploadable_chapters reads limit from XCom
-# --------------------------------------------------------------------------- #
-
-class TestGetUploadableChaptersQuotaLimit:
-
-    def test_uses_hardcoded_limit_1(
-        self, mock_db, mock_task_instance, make_context
-    ):
-        """get_uploadable_chapters always uses hardcoded limit=1 (REQ-LIMIT-01)."""
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
-
-        mock_db.get_uploadable_chapters.return_value = []
-        mock_task_instance.xcom_store["upload_quota"] = {
-            "uploads_today": 0,
-            "queue_size": 5,
-        }
-
-        op = PostgreSQLOperator(task_id="t", operation="get_uploadable_chapters")
-        ctx = make_context(params={"min_relevance_score": 2}, ti=mock_task_instance)
-        op.execute(ctx)
-
-        mock_db.get_uploadable_chapters.assert_called_once_with(limit=1, min_relevance_score=2)
-
-    def test_uses_hardcoded_limit_1_when_no_xcom(
-        self, mock_db, mock_task_instance, make_context
-    ):
-        """Uses hardcoded limit=1 even when upload_quota XCom key is absent (REQ-LIMIT-01)."""
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
-
-        mock_db.get_uploadable_chapters.return_value = []
-
-        op = PostgreSQLOperator(task_id="t", operation="get_uploadable_chapters")
-        ctx = make_context(params={"min_relevance_score": 2}, ti=mock_task_instance)
-        op.execute(ctx)
-
-        mock_db.get_uploadable_chapters.assert_called_once_with(limit=1, min_relevance_score=2)
 
 
 # --------------------------------------------------------------------------- #

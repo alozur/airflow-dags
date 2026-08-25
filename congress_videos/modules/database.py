@@ -268,20 +268,6 @@ class CongressionalVideoDB:
                 """, (session_number, session_number))
                 logger.info(f"Updated total_topics count for session {session_number}")
 
-    def update_download_info(self, video_topic_entry_id: str, file_path: str, file_size: int = None, duration: int = None):
-        """Update download information for a video topic"""
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(f"""
-                    UPDATE {self.topics_table} SET
-                        video_file_path = %s,
-                        file_size_bytes = %s,
-                        duration_seconds = %s,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE entry_id = %s
-                """, (file_path, file_size, duration, video_topic_entry_id))
-                logger.info(f"Updated download info for video topic {video_topic_entry_id}")
-
     def update_main_topic_status(self, video_topic_entry_id: str, is_main_topic: bool):
         """Update the is_main_topic status for a video topic"""
         with self.pg_conn.get_connection() as conn:

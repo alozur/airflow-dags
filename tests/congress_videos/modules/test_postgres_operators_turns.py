@@ -45,63 +45,6 @@ def _make_context(ti, params=None):
 
 
 # ---------------------------------------------------------------------------
-# get_uploadable_turns
-# ---------------------------------------------------------------------------
-
-
-class TestGetUploadableTurns:
-    """operation='get_uploadable_turns' fetches turns and pushes them via output_xcom_key."""
-
-    def test_calls_get_uploadable_turns_with_limit_1(
-        self, mock_db, mock_task_instance
-    ):
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
-
-        mock_db.get_uploadable_turns.return_value = []
-
-        op = PostgreSQLOperator(
-            task_id="t",
-            operation="get_uploadable_turns",
-            output_xcom_key="uploadable_turns",
-        )
-        op.execute(_make_context(mock_task_instance))
-
-        mock_db.get_uploadable_turns.assert_called_once_with(limit=1)
-
-    def test_returns_turn_rows(self, mock_db, mock_task_instance):
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
-
-        fake_turns = [
-            {"turn_id": 1, "output_path": "/path/t1.mp4", "resolved_name": "Ana G."}
-        ]
-        mock_db.get_uploadable_turns.return_value = fake_turns
-
-        op = PostgreSQLOperator(
-            task_id="t",
-            operation="get_uploadable_turns",
-            output_xcom_key="uploadable_turns",
-        )
-        result = op.execute(_make_context(mock_task_instance))
-
-        assert result == fake_turns
-
-    def test_xcom_push_with_output_key(self, mock_db, mock_task_instance):
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
-
-        fake_turns = [{"turn_id": 5}]
-        mock_db.get_uploadable_turns.return_value = fake_turns
-
-        op = PostgreSQLOperator(
-            task_id="t",
-            operation="get_uploadable_turns",
-            output_xcom_key="uploadable_turns",
-        )
-        op.execute(_make_context(mock_task_instance))
-
-        assert mock_task_instance.xcom_store.get("uploadable_turns") == fake_turns
-
-
-# ---------------------------------------------------------------------------
 # mark_turns_uploaded
 # ---------------------------------------------------------------------------
 
