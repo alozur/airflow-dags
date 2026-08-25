@@ -146,19 +146,22 @@ class TestGetQualifiedTable:
 
 class TestGetConnection:
 
-    def test_calls_psycopg2_connect_with_correct_args(self, monkeypatch, mock_psycopg2_connection):
+    def _set_env(self, monkeypatch):
         monkeypatch.setenv("POSTGRES_HOST", "db.host.io")
         monkeypatch.setenv("POSTGRES_PORT", "5433")
         monkeypatch.setenv("POSTGRES_DB", "congress_db")
         monkeypatch.setenv("POSTGRES_USER", "congress_user")
         monkeypatch.setenv("POSTGRES_PASSWORD", "s3cr3t")
-        monkeypatch.setenv("POSTGRES_SCHEMA", "public")
+        monkeypatch.setenv("POSTGRES_SCHEMA", "development")
 
+    def test_calls_psycopg2_connect_with_correct_args(self, monkeypatch, mock_psycopg2_connection):
+        self._set_env(monkeypatch)
         mock_connect, mock_conn, _ = mock_psycopg2_connection
 
         from utils.postgres_helpers import PostgresConnection
         pg = PostgresConnection()
-        result = pg.get_connection()
+        with pg.get_connection():
+            pass
 
         mock_connect.assert_called_once()
         call_kwargs = mock_connect.call_args.kwargs
@@ -168,17 +171,70 @@ class TestGetConnection:
         assert call_kwargs["user"] == "congress_user"
         assert call_kwargs["password"] == "s3cr3t"
 
-    def test_get_connection_returns_connection_object(self, monkeypatch, mock_psycopg2_connection):
-        monkeypatch.setenv("POSTGRES_HOST", "localhost")
-        monkeypatch.setenv("POSTGRES_PORT", "5432")
-        monkeypatch.setenv("POSTGRES_DB", "mydb")
-        monkeypatch.setenv("POSTGRES_USER", "user")
-        monkeypatch.setenv("POSTGRES_PASSWORD", "pass")
-
-        mock_connect, mock_conn, _ = mock_psycopg2_connection
+    def test_sets_timeouts_and_application_name(self, monkeypatch, mock_psycopg2_connection):
+        self._set_env(monkeypatch)
+        mock_connect, _, _ = mock_psycopg2_connection
 
         from utils.postgres_helpers import PostgresConnection
-        pg = PostgresConnection()
-        result = pg.get_connection()
+        with PostgresConnection().get_connection():
+            pass
 
-        assert result is mock_conn
+        call_kwargs = mock_connect.call_args.kwargs
+        assert call_kwargs["connect_timeout"] == 10
+        assert call_kwargs["application_name"] == "airflow-development"
+        assert "statement_timeout=30000" in call_kwargs["options"]
+        assert "lock_timeout=5000" in call_kwargs["options"]
+
+    def test_statement_timeout_zero_disables_it(self, monkeypatch, mock_psycopg2_connection):
+        self._set_env(monkeypatch)
+        mock_connect, _, _ = mock_psycopg2_connection
+
+        from utils.postgres_helpers import PostgresConnection
+        with PostgresConnection().get_connection(statement_timeout_ms=0):
+            pass
+
+        assert "statement_timeout=0" in mock_connect.call_args.kwargs["options"]
+
+    def test_statement_timeout_env_override(self, monkeypatch, mock_psycopg2_connection):
+        self._set_env(monkeypatch)
+        monkeypatch.setenv("POSTGRES_STATEMENT_TIMEOUT_MS", "90000")
+        mock_connect, _, _ = mock_psycopg2_connection
+
+        from utils.postgres_helpers import PostgresConnection
+        with PostgresConnection().get_connection():
+            pass
+
+        assert "statement_timeout=90000" in mock_connect.call_args.kwargs["options"]
+
+    def test_yields_connection_object(self, monkeypatch, mock_psycopg2_connection):
+        self._set_env(monkeypatch)
+        _, mock_conn, _ = mock_psycopg2_connection
+
+        from utils.postgres_helpers import PostgresConnection
+        with PostgresConnection().get_connection() as conn:
+            assert conn is mock_conn
+
+    def test_commits_and_closes_on_clean_exit(self, monkeypatch, mock_psycopg2_connection):
+        self._set_env(monkeypatch)
+        _, mock_conn, _ = mock_psycopg2_connection
+
+        from utils.postgres_helpers import PostgresConnection
+        with PostgresConnection().get_connection():
+            pass
+
+        mock_conn.commit.assert_called_once()
+        mock_conn.rollback.assert_not_called()
+        mock_conn.close.assert_called_once()
+
+    def test_rolls_back_and_closes_on_exception(self, monkeypatch, mock_psycopg2_connection):
+        self._set_env(monkeypatch)
+        _, mock_conn, _ = mock_psycopg2_connection
+
+        from utils.postgres_helpers import PostgresConnection
+        with pytest.raises(RuntimeError, match="boom"):
+            with PostgresConnection().get_connection():
+                raise RuntimeError("boom")
+
+        mock_conn.commit.assert_not_called()
+        mock_conn.rollback.assert_called_once()
+        mock_conn.close.assert_called_once()

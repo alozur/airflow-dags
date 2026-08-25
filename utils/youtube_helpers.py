@@ -64,6 +64,12 @@ def _load_credentials(token_file: str) -> Credentials:
             info = json.load(fh)
         credentials = Credentials.from_authorized_user_info(info, info.get("scopes"))
     else:
+        logging.warning(
+            "Loading legacy pickle token %s — pickle deserialization executes "
+            "arbitrary code if the file is tampered with. Migrate this token "
+            "to the per-channel JSON layout (issue #197).",
+            token_file,
+        )
         with open(token_file, "rb") as token:
             credentials = pickle.load(token)
 

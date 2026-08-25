@@ -5,7 +5,6 @@ Database operations specific to congressional video management.
 from utils.postgres_helpers import PostgresConnection
 from typing import Dict, List, Optional, Any
 from datetime import date
-from contextlib import closing
 import json
 import logging
 
@@ -613,10 +612,10 @@ class CongressionalVideoDB:
 
         # Each video is isolated inside its own SAVEPOINT so that a failure on one
         # video (e.g. an aborted statement) does not poison the whole transaction
-        # and discard the videos that did succeed. closing() guarantees the raw
-        # connection is closed — `with conn` only manages the transaction, not the
-        # connection lifecycle.
-        with closing(self.pg_conn.get_connection()) as conn:
+        # and discard the videos that did succeed. get_connection() owns the full
+        # connection lifecycle (commit/rollback/close); `with conn` adds the inner
+        # transaction scope.
+        with self.pg_conn.get_connection() as conn:
             with conn:
                 with conn.cursor() as cur:
                     for video_data in scored_chapters_data['videos']:
@@ -1796,7 +1795,7 @@ class CongressionalVideoDB:
         tbl = self.pg_conn.get_qualified_table('youtube_source_videos')
         video_url = f'https://www.youtube.com/watch?v={video_id}'
 
-        with closing(self.pg_conn.get_connection()) as conn:
+        with self.pg_conn.get_connection() as conn:
             with conn:
                 with conn.cursor() as cur:
                     cur.execute(

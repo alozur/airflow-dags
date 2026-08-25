@@ -36,7 +36,7 @@ default_args = {
 def _ensure_migrations_table() -> None:
     pg = PostgresConnection()
     schema = pg.schema
-    with pg.get_connection() as conn:
+    with pg.get_connection(statement_timeout_ms=0) as conn:
         with conn.cursor() as cur:
             cur.execute(f"""
                 CREATE TABLE IF NOT EXISTS {schema}.schema_migrations (
@@ -58,7 +58,7 @@ def _apply_pending_migrations(**context) -> None:
         logging.info("No migration files found under %s", DAGS_REPO_PATH)
         return
 
-    with pg.get_connection() as conn:
+    with pg.get_connection(statement_timeout_ms=0) as conn:
         with conn.cursor() as cur:
             cur.execute(f"SELECT migration FROM {schema}.schema_migrations")
             applied = {row['migration'] for row in cur.fetchall()}
@@ -80,7 +80,7 @@ def _apply_pending_migrations(**context) -> None:
         sql = path.read_text()
 
         # Each migration runs in its own transaction — partial progress is preserved on failure
-        with pg.get_connection() as conn:
+        with pg.get_connection(statement_timeout_ms=0) as conn:
             with conn.cursor() as cur:
                 cur.execute(f"SET search_path TO {schema}, public")
                 cur.execute(sql)
