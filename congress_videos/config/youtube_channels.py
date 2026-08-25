@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from congress_videos.config.paths import YOUTUBE_TOKEN_FILE, YOUTUBE_TOKENS_DIR
+from congress_videos.config.paths import YOUTUBE_TOKENS_DIR
 
 
 @dataclass(frozen=True)
@@ -47,8 +47,7 @@ CHANNELS: dict[str, ChannelConfig] = {
     ),
 }
 
-# Channel assumed when a caller does not specify one (the original channel;
-# the legacy congress_youtube_token.pickle belongs to it).
+# Channel assumed when a caller does not specify one (the original channel).
 DEFAULT_CHANNEL = "congreso-es-tv"
 
 # OAuth scopes per token purpose. Least privilege: analytics is read-only and
@@ -116,29 +115,14 @@ def resolve_token_path(
     purpose: str,
     *,
     tokens_dir: str = YOUTUBE_TOKENS_DIR,
-    legacy_path: str = YOUTUBE_TOKEN_FILE,
 ) -> str:
-    """Resolve the token path to use, with backward compatibility.
+    """Resolve the on-disk token path for a channel+purpose (JSON).
 
-    Prefers the per-channel/per-purpose path. If that file does not exist yet
-    but the legacy single-token file does, returns the legacy path so existing
-    deployments keep working until their tokens are migrated.
-
-    The legacy fallback applies ONLY to the default channel's ``upload``
-    purpose, because the legacy token predates the per-purpose split and was an
-    upload token for the default channel. The read-only ``analytics`` purpose
-    never falls back — the legacy token lacks the analytics scope.
+    Historically this fell back to the legacy single-token pickle for the
+    default channel's ``upload`` purpose; that fallback was retired in issue
+    #197 together with the pickle format itself.
 
     Raises:
         ValueError: If the channel or purpose is not registered.
     """
-    new_path = get_token_path(channel, purpose, tokens_dir=tokens_dir)
-    if os.path.exists(new_path):
-        return new_path
-    if (
-        channel == DEFAULT_CHANNEL
-        and purpose == "upload"
-        and os.path.exists(legacy_path)
-    ):
-        return legacy_path
-    return new_path
+    return get_token_path(channel, purpose, tokens_dir=tokens_dir)

@@ -45,10 +45,8 @@ FONTS_DIR = f"{ASSETS_DIR}/fonts"
 # Legacy single YouTube token (pre per-channel/per-purpose split).
 # Kept for backward compatibility; see congress_videos/config/youtube_channels.py
 # and resolve_token_path() for the current per-channel layout.
-YOUTUBE_TOKEN_FILE = f"{PROJECT_DATA_DIR}/congress_youtube_token.pickle"
-
-# Root directory for per-channel, per-purpose OAuth token pickles.
-# Layout: {YOUTUBE_TOKENS_DIR}/{channel}/{purpose}.pickle
+# Root directory for per-channel, per-purpose OAuth JSON tokens.
+# Layout: {YOUTUBE_TOKENS_DIR}/{channel}/{purpose}.json
 YOUTUBE_TOKENS_DIR = f"{PROJECT_DATA_DIR}/youtube_tokens"
 
 # -------------------------
@@ -128,7 +126,7 @@ def get_download_file_path(date: str, video_id: str, filename: str) -> str:
 # NOTE: DEFAULT_CHANNEL is resolved via a function-local import of
 # congress_videos.config.youtube_channels.DEFAULT_CHANNEL at call time.
 # A top-level import would create a circular dependency because
-# youtube_channels.py imports YOUTUBE_TOKEN_FILE and YOUTUBE_TOKENS_DIR
+# youtube_channels.py imports YOUTUBE_TOKENS_DIR
 # from this module (paths.py).
 # ---------------------------------------------------------------------------
 

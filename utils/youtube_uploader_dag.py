@@ -11,7 +11,7 @@ USAGE from another DAG:
         task_id='trigger_youtube_upload',
         trigger_dag_id='generic_youtube_uploader',
         conf={
-            'token_file': '/path/to/youtube_token.pickle',
+            'token_file': '/path/to/youtube_token.json',
             'videos': [
                 {
                     'video_file': '/path/to/video.mp4',
@@ -95,7 +95,7 @@ with DAG(
 #     task_id='trigger_youtube_upload',
 #     trigger_dag_id='generic_youtube_uploader',
 #     conf={
-#         'token_file': '/opt/airflow/dags/repo/congress_videos/youtube_token.pickle',
+#         'token_file': '/opt/airflow/dags/repo/congress_videos/youtube_token.json',
 #         'videos': [
 #             {
 #                 'video_file': '/opt/airflow/data/congress_videos/video.mp4',
@@ -114,7 +114,7 @@ with DAG(
 # Example 2: Multiple videos in one trigger
 # -----------------------------------------------------------------------------
 # conf={
-#     'token_file': '/opt/airflow/dags/repo/my_project/youtube_token.pickle',
+#     'token_file': '/opt/airflow/dags/repo/my_project/youtube_token.json',
 #     'videos': [
 #         {...video1...},
 #         {...video2...},
@@ -124,7 +124,7 @@ with DAG(
 #
 # Configuration Fields:
 # -----------------------------------------------------------------------------
-# - token_file: (required) Path to youtube_token.pickle file
+# - token_file: (required) Path to youtube_token.json file
 # - videos: (required) List of video objects, each containing:
 #   - video_file: (required) Path to video file
 #   - title: (required) Video title

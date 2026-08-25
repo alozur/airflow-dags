@@ -115,7 +115,7 @@ services:
         chown -R 50000:0 /data
         chown -R 50000:0 /congress_videos
         chmod -R 755 /congress_videos/assets
-        chmod 600 /congress_videos/congress_youtube_token.pickle
+        chmod -R u=rwX,go= /congress_videos/youtube_tokens
         chmod -R 775 /congress_videos/videos
     volumes:
       - git_dags_prod:/dags
