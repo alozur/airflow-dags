@@ -1,10 +1,9 @@
 """Tests for JSON token storage in youtube_helpers.
 
 JSON storage (Credentials.to_json / from_authorized_user_info) is portable
-across google-auth versions, unlike pickle.
+across google-auth versions (legacy pickle retired in issue #197).
 """
 
-import pickle
 from datetime import datetime, timedelta
 
 from google.oauth2.credentials import Credentials
@@ -38,15 +37,15 @@ class TestSaveCredentials:
         # Must be JSON, not a pickle byte stream.
         assert text.lstrip().startswith("{")
 
-    def test_pickle_path_writes_pickle(self, tmp_path):
+    def test_non_json_path_raises_value_error(self, tmp_path):
         creds = _make_creds(["https://www.googleapis.com/auth/youtube.upload"])
         dst = tmp_path / "legacy.pickle"
 
-        _save_credentials(creds, str(dst))
+        import pytest
 
-        with open(dst, "rb") as fh:
-            loaded = pickle.load(fh)
-        assert loaded.refresh_token == "refresh-token"
+        with pytest.raises(ValueError, match="Only .json tokens"):
+            _save_credentials(creds, str(dst))
+        assert not dst.exists()
 
 
 class TestLoadCredentials:
@@ -66,10 +65,11 @@ class TestLoadCredentials:
         with pytest.raises(FileNotFoundError):
             _load_credentials(str(tmp_path / "nope.json"))
 
-    def test_legacy_pickle_still_loads(self, tmp_path):
+    def test_legacy_pickle_raises_value_error(self, tmp_path):
+        import pytest
+
         dst = tmp_path / "legacy.pickle"
-        _save_credentials(_make_creds(["https://www.googleapis.com/auth/youtube"]), str(dst))
+        dst.write_bytes(b"anything")
 
-        loaded = _load_credentials(str(dst))
-
-        assert loaded.refresh_token == "refresh-token"
+        with pytest.raises(ValueError, match="Only .json tokens"):
+            _load_credentials(str(dst))

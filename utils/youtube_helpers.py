@@ -12,7 +12,6 @@ different token files.
 import json
 import logging
 import os
-import pickle
 from typing import Dict, List, Optional
 
 from google.auth.transport.requests import Request
@@ -27,30 +26,40 @@ from googleapiclient.http import MediaFileUpload
 
 
 def _save_credentials(credentials: Credentials, token_file: str) -> None:
-    """Persist credentials, choosing format by extension.
+    """Persist credentials as portable JSON via ``Credentials.to_json()``.
 
-    ``.json`` tokens are written with ``Credentials.to_json()`` (portable
-    across google-auth versions); any other extension is treated as the
-    legacy pickle format.
+    Only ``.json`` token files are supported. The legacy pickle format was
+    retired in issue #197: pickle deserialization executes arbitrary code if
+    the file is tampered with.
     """
-    if token_file.endswith(".json"):
-        with open(token_file, "w") as fh:
-            fh.write(credentials.to_json())
-    else:
-        with open(token_file, "wb") as fh:
-            pickle.dump(credentials, fh)
+    if not token_file.endswith(".json"):
+        raise ValueError(
+            f"Unsupported token format: {token_file}. Only .json tokens are "
+            "supported (legacy pickle retired in issue #197); regenerate with "
+            "generate_youtube_token.py."
+        )
+    with open(token_file, "w") as fh:
+        fh.write(credentials.to_json())
 
 
 def _load_credentials(token_file: str) -> Credentials:
-    """Load OAuth credentials from a token file, refreshing if expired.
+    """Load OAuth credentials from a ``.json`` token file, refreshing if expired.
 
-    Supports both the portable ``.json`` format (preferred) and the legacy
-    ``.pickle`` format, chosen by file extension. When the token is expired
-    and refreshable, it is refreshed and saved back in the SAME format.
+    When the token is expired and refreshable, it is refreshed and saved back
+    to the same file.
 
     Raises:
+        ValueError: If the token file is not a ``.json`` token (the legacy
+            pickle format was retired in issue #197).
         FileNotFoundError: If the token file does not exist.
     """
+    if not token_file.endswith(".json"):
+        raise ValueError(
+            f"Unsupported token format: {token_file}. Only .json tokens are "
+            "supported (legacy pickle retired in issue #197); regenerate with "
+            "generate_youtube_token.py."
+        )
+
     if not os.path.exists(token_file):
         raise FileNotFoundError(
             f"Token file not found: {token_file}. "
@@ -59,19 +68,9 @@ def _load_credentials(token_file: str) -> Credentials:
 
     logging.info(f"Loading YouTube credentials from {token_file}")
 
-    if token_file.endswith(".json"):
-        with open(token_file) as fh:
-            info = json.load(fh)
-        credentials = Credentials.from_authorized_user_info(info, info.get("scopes"))
-    else:
-        logging.warning(
-            "Loading legacy pickle token %s — pickle deserialization executes "
-            "arbitrary code if the file is tampered with. Migrate this token "
-            "to the per-channel JSON layout (issue #197).",
-            token_file,
-        )
-        with open(token_file, "rb") as token:
-            credentials = pickle.load(token)
+    with open(token_file) as fh:
+        info = json.load(fh)
+    credentials = Credentials.from_authorized_user_info(info, info.get("scopes"))
 
     if credentials.expired and credentials.refresh_token:
         logging.info("Token expired. Refreshing...")
@@ -87,8 +86,7 @@ def get_authenticated_youtube_service(token_file: str):
     Get authenticated YouTube API service using a saved token.
 
     Args:
-        token_file: Path to the token file (``.json`` preferred, ``.pickle``
-            legacy). Chosen by extension.
+        token_file: Path to the ``.json`` token file.
 
     Returns:
         Resource: Authenticated YouTube API service object
@@ -112,8 +110,8 @@ def get_youtube_analytics_service(token_file: str):
     ``youtubeAnalytics v2`` API with ``yt-analytics.readonly`` scope.
 
     Args:
-        token_file: Path to the OAuth token file (``.json`` preferred,
-            ``.pickle`` legacy). The token must have been generated with the
+        token_file: Path to the ``.json`` OAuth token file. The token must
+            have been generated with the
             ``yt-analytics.readonly`` scope (see ``generate_youtube_token.py``).
 
     Returns:
@@ -333,7 +331,7 @@ def upload_multiple_videos(
     Upload multiple videos to YouTube with optional custom thumbnails.
 
     Args:
-        token_file: Path to the YouTube token pickle file
+        token_file: Path to the YouTube ``.json`` token file
         videos: List of video dicts, each containing:
             - video_file: Path to video file
             - title: Video title
@@ -438,7 +436,7 @@ def validate_upload_config(conf):
 
     Expected conf structure:
     {
-        'token_file': str - Path to YouTube token pickle file,
+        'token_file': str - Path to YouTube .json token file,
         'videos': list - List of video dicts with upload parameters
     }
 
@@ -486,7 +484,7 @@ def upload_videos_from_config(conf):
 
     Args:
         conf: Validated configuration dict containing:
-            - token_file: Path to YouTube token pickle file
+            - token_file: Path to YouTube .json token file
             - videos: List of video dicts with upload parameters
 
     Returns:
