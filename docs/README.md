@@ -32,7 +32,6 @@ airflow-dags/
 │   │   ├── database.py            # Clase CongressionalVideoDB: operaciones CRUD
 │   │   ├── postgres_operators.py  # Operador Airflow personalizado para PostgreSQL
 │   │   ├── speaker_helpers.py     # Formateo de información de intervinientes
-│   │   ├── thumbnail_generator.py # Generación de miniaturas con Pillow + IA
 │   │   ├── video_splitter.py      # Extracción de capítulos con ffmpeg
 │   │   ├── web_scraping.py        # Construcción de URLs de sesiones del Congreso
 │   │   └── youtube/

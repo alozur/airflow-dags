@@ -787,6 +787,185 @@ class TestSummarizeSilenceChunks:
 
 
 # ---------------------------------------------------------------------------
+# #210 — extracted helpers: _build_srt_chunk_index / _find_srt_chunk /
+# _analyze_single_chunk
+# ---------------------------------------------------------------------------
+
+class TestBuildSrtChunkIndex:
+
+    def test_indexes_by_chunk_number(self):
+        from congress_videos.modules.youtube.download import _build_srt_chunk_index
+
+        chunks = [
+            {"chunk_number": 1, "content": "one"},
+            {"chunk_number": 2, "content": "two"},
+        ]
+        index = _build_srt_chunk_index(chunks)
+
+        assert index[1]["content"] == "one"
+        assert index[2]["content"] == "two"
+
+    def test_first_occurrence_wins_on_duplicate_chunk_number(self):
+        """D5: first occurrence wins (mirrors the original scan's `break`)."""
+        from congress_videos.modules.youtube.download import _build_srt_chunk_index
+
+        chunks = [
+            {"chunk_number": 1, "content": "first"},
+            {"chunk_number": 1, "content": "second"},
+        ]
+        index = _build_srt_chunk_index(chunks)
+
+        assert index[1]["content"] == "first"
+
+    def test_malformed_entry_missing_chunk_number_is_skipped(self):
+        """D5: entries without a resolvable chunk_number are skipped, not raised."""
+        from congress_videos.modules.youtube.download import _build_srt_chunk_index
+
+        chunks = [
+            {"content": "no chunk_number field"},
+            {"chunk_number": None, "content": "explicit None"},
+            {"chunk_number": 3, "content": "valid"},
+        ]
+        index = _build_srt_chunk_index(chunks)
+
+        assert list(index.keys()) == [3]
+
+    def test_malformed_sibling_after_match_does_not_raise(self):
+        """D5 divergence pin: a malformed entry positioned *after* a valid match
+        for the same chunk_number never raises — .get() keeps the graceful path."""
+        from congress_videos.modules.youtube.download import _build_srt_chunk_index
+
+        chunks = [
+            {"chunk_number": 5, "content": "valid first"},
+            {"content": "malformed sibling, no chunk_number key"},
+        ]
+        index = _build_srt_chunk_index(chunks)
+
+        assert index[5]["content"] == "valid first"
+        assert len(index) == 1
+
+
+class TestFindSrtChunk:
+
+    def test_returns_text_for_indexed_chunk(self):
+        from congress_videos.modules.youtube.download import _find_srt_chunk
+
+        index = {1: {"chunk_number": 1, "content": "hello world"}}
+        assert _find_srt_chunk(index, 1) == "hello world"
+
+    def test_returns_empty_string_when_chunk_number_absent(self):
+        from congress_videos.modules.youtube.download import _find_srt_chunk
+
+        index = {1: {"chunk_number": 1, "content": "hello world"}}
+        assert _find_srt_chunk(index, 99) == ""
+
+
+class TestAnalyzeSingleChunk:
+
+    def _summary_chunk(self):
+        return {
+            "start_time": "00:00:00",
+            "end_time": "02:00:00",
+            "duration_minutes": 130,
+            "speakers": [],
+            "topics": [],
+            "summary": "Long session",
+        }
+
+    def test_ai_path_returns_single_chapter_entry(self, mocker):
+        """Happy path: AI returns one in-range chapter → is_single_chapter True."""
+        chapters_json = (
+            '{"interesting_chapters": [{"title": "T", "description": "D", '
+            '"start_time": "00:00:00", "end_time": "02:00:00", '
+            '"duration_minutes": 120, "speakers": [], "topics": []}]}'
+        )
+        _patch_completion(mocker, chapters_json)
+
+        from congress_videos.modules.youtube.download import _analyze_single_chunk
+
+        entry = _analyze_single_chunk(
+            1, self._summary_chunk(), "some srt content", 130,
+            min_chapter_duration=15, max_optimal_duration=120,
+        )
+
+        assert entry["chunk_number"] == 1
+        assert entry["skipped_ai_analysis"] is False
+        assert entry["is_single_chapter"] is True
+        assert entry["total_interesting_chapters"] == 1
+
+    def test_empty_llm_result_falls_back(self, mocker):
+        """First fallback path: empty interesting_chapters list."""
+        _patch_completion(mocker, '{"interesting_chapters": []}')
+
+        from congress_videos.modules.youtube.download import _analyze_single_chunk
+
+        entry = _analyze_single_chunk(
+            1, self._summary_chunk(), "some srt content", 130,
+            min_chapter_duration=15, max_optimal_duration=120,
+        )
+
+        assert entry["interesting_chapters"][0]["fallback"] is True
+
+    def test_all_ranges_invalid_falls_back(self, mocker):
+        """Second fallback path: every returned chapter fails range validation."""
+        chapters_json = (
+            '{"interesting_chapters": ['
+            '{"title": "Bad", "start_time": "00:10:00", "end_time": "00:02:00", '
+            '"duration_minutes": 120, "speakers": [], "topics": []}'
+            ']}'
+        )
+        _patch_completion(mocker, chapters_json)
+
+        from congress_videos.modules.youtube.download import _analyze_single_chunk
+
+        entry = _analyze_single_chunk(
+            1, self._summary_chunk(), "some srt content", 130,
+            min_chapter_duration=15, max_optimal_duration=120,
+        )
+
+        assert entry["interesting_chapters"][0]["fallback"] is True
+
+    def test_generic_exception_from_completion_falls_back(self, mocker):
+        """Generic except-handler path: cached_json_completion signals an error."""
+        mocker.patch(
+            "congress_videos.modules.youtube.download.cached_json_completion",
+            return_value={"data": None, "raw_content": "", "error": "boom"},
+        )
+
+        from congress_videos.modules.youtube.download import _analyze_single_chunk
+
+        entry = _analyze_single_chunk(
+            1, self._summary_chunk(), "some srt content", 130,
+            min_chapter_duration=15, max_optimal_duration=120,
+        )
+
+        assert entry["interesting_chapters"][0]["fallback"] is True
+
+    def test_oversized_srt_routes_through_map_reduce(self, mocker):
+        """>LARGE_SRT_THRESHOLD → map_reduce_identify_chapters, not a direct call."""
+        mocker.patch("openai.OpenAI", return_value=MagicMock())
+        mr = mocker.patch(
+            "congress_videos.modules.youtube.map_reduce_chapters."
+            "map_reduce_identify_chapters",
+            return_value=[{
+                "title": "Cap", "start_time": "00:10:00", "end_time": "00:40:00",
+                "duration_minutes": 30,
+            }],
+        )
+
+        from congress_videos.modules.youtube.download import _analyze_single_chunk
+
+        big_content = "00:00:01 " + ("palabra " * 20000)  # >100k chars
+        entry = _analyze_single_chunk(
+            1, self._summary_chunk(), big_content, 130,
+            min_chapter_duration=15, max_optimal_duration=120,
+        )
+
+        assert mr.called
+        assert entry["total_interesting_chapters"] == 1
+
+
+# ---------------------------------------------------------------------------
 # identify_interesting_chapters
 # ---------------------------------------------------------------------------
 

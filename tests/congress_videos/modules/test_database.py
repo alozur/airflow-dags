@@ -385,33 +385,6 @@ class TestUpdateSessionTotalTopics:
 
 
 # --------------------------------------------------------------------------- #
-# update_download_info
-# --------------------------------------------------------------------------- #
-
-class TestUpdateDownloadInfo:
-
-    def test_executes_update_with_all_params(self, db):
-        """All four parameters forwarded in correct order."""
-        instance, mock_cursor = db
-
-        instance.update_download_info("entry-001", "/data/video.mp4", 1024, 300)
-
-        sql, params = mock_cursor.execute.call_args[0]
-        assert "UPDATE" in sql
-        assert "video_file_path" in sql
-        assert params == ("/data/video.mp4", 1024, 300, "entry-001")
-
-    def test_accepts_none_file_size_and_duration(self, db):
-        """Optional args default to None without error."""
-        instance, mock_cursor = db
-
-        instance.update_download_info("entry-002", "/data/video.mp4")
-
-        _, params = mock_cursor.execute.call_args[0]
-        assert params == ("/data/video.mp4", None, None, "entry-002")
-
-
-# --------------------------------------------------------------------------- #
 # save_youtube_chapters_to_db
 # --------------------------------------------------------------------------- #
 

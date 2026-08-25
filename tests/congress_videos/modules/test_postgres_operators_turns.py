@@ -8,6 +8,7 @@ Tests:
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -42,63 +43,6 @@ def mock_db(mocker):
 
 def _make_context(ti, params=None):
     return {"ti": ti, "params": params or {}}
-
-
-# ---------------------------------------------------------------------------
-# get_uploadable_turns
-# ---------------------------------------------------------------------------
-
-
-class TestGetUploadableTurns:
-    """operation='get_uploadable_turns' fetches turns and pushes them via output_xcom_key."""
-
-    def test_calls_get_uploadable_turns_with_limit_1(
-        self, mock_db, mock_task_instance
-    ):
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
-
-        mock_db.get_uploadable_turns.return_value = []
-
-        op = PostgreSQLOperator(
-            task_id="t",
-            operation="get_uploadable_turns",
-            output_xcom_key="uploadable_turns",
-        )
-        op.execute(_make_context(mock_task_instance))
-
-        mock_db.get_uploadable_turns.assert_called_once_with(limit=1)
-
-    def test_returns_turn_rows(self, mock_db, mock_task_instance):
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
-
-        fake_turns = [
-            {"turn_id": 1, "output_path": "/path/t1.mp4", "resolved_name": "Ana G."}
-        ]
-        mock_db.get_uploadable_turns.return_value = fake_turns
-
-        op = PostgreSQLOperator(
-            task_id="t",
-            operation="get_uploadable_turns",
-            output_xcom_key="uploadable_turns",
-        )
-        result = op.execute(_make_context(mock_task_instance))
-
-        assert result == fake_turns
-
-    def test_xcom_push_with_output_key(self, mock_db, mock_task_instance):
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
-
-        fake_turns = [{"turn_id": 5}]
-        mock_db.get_uploadable_turns.return_value = fake_turns
-
-        op = PostgreSQLOperator(
-            task_id="t",
-            operation="get_uploadable_turns",
-            output_xcom_key="uploadable_turns",
-        )
-        op.execute(_make_context(mock_task_instance))
-
-        assert mock_task_instance.xcom_store.get("uploadable_turns") == fake_turns
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +109,28 @@ class TestMarkTurnsUploaded:
 
         mock_db.mark_turns_uploaded.assert_not_called()
         assert result is not None  # returns a result dict
+
+    def test_marked_turn_logs_info(self, mock_db, mock_task_instance, caplog):
+        """A successfully marked turn emits a logger.info, not a bare print() (#205 C3)."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_task_instance.xcom_store["upload_results"] = {
+            "upload_details": [
+                {"turn_id": 7, "youtube_video_id": "yt-info", "success": True},
+            ]
+        }
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="mark_turns_uploaded",
+            xcom_keys={"upload_results": "upload_results"},
+        )
+
+        with caplog.at_level(logging.INFO):
+            op.execute(_make_context(mock_task_instance))
+
+        infos = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert any("turn 7" in r.message and "yt-info" in r.message for r in infos)
 
 
 # ---------------------------------------------------------------------------

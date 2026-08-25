@@ -138,7 +138,6 @@ XCom keys en congress_youtube_chapter_uploader:
     congress_videos/modules/youtube/youtube_ai.py
     congress_videos/modules/youtube/youtube_upload.py
     congress_videos/modules/database.py  (CongressionalVideoDB)
-    congress_videos/modules/thumbnail_generator.py
     congress_videos/modules/video_splitter.py
     congress_videos/modules/web_scraping.py
     congress_videos/modules/speaker_helpers.py
