@@ -150,6 +150,29 @@ class TestExecuteSaveYoutubeChapters:
 
         mock_db.save_youtube_chapters_to_db.assert_called_once()
 
+    def test_no_scored_chapters_logs_warning(
+        self, mock_db, mock_task_instance, make_context, caplog
+    ):
+        """Empty scored_chapters emits a logger.warning, not a bare print() (#205 C3)."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_task_instance.xcom_store["scored_chapters"] = None
+        mock_task_instance.xcom_store["session_date"] = None
+
+        op = PostgreSQLOperator(task_id="t", operation="save_youtube_chapters")
+
+        with caplog.at_level(logging.WARNING):
+            op.execute(
+                make_context(params={"target_date": "2025-05-22"}, ti=mock_task_instance)
+            )
+
+        warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING and r.name == "congress_videos.modules.postgres_operators"
+        ]
+        assert len(warnings) == 1
+        assert "No scored chapters" in warnings[0].message
+
 
 # --------------------------------------------------------------------------- #
 # mark_chapters_uploaded

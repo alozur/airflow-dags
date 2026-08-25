@@ -8,6 +8,7 @@ Tests:
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -108,6 +109,28 @@ class TestMarkTurnsUploaded:
 
         mock_db.mark_turns_uploaded.assert_not_called()
         assert result is not None  # returns a result dict
+
+    def test_marked_turn_logs_info(self, mock_db, mock_task_instance, caplog):
+        """A successfully marked turn emits a logger.info, not a bare print() (#205 C3)."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_task_instance.xcom_store["upload_results"] = {
+            "upload_details": [
+                {"turn_id": 7, "youtube_video_id": "yt-info", "success": True},
+            ]
+        }
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="mark_turns_uploaded",
+            xcom_keys={"upload_results": "upload_results"},
+        )
+
+        with caplog.at_level(logging.INFO):
+            op.execute(_make_context(mock_task_instance))
+
+        infos = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert any("turn 7" in r.message and "yt-info" in r.message for r in infos)
 
 
 # ---------------------------------------------------------------------------

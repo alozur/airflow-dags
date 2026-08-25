@@ -37,12 +37,12 @@ class PostgreSQLOperator(BaseOperator):
             target_date = context["params"].get("target_date")
 
             # Debug logging
-            print(f"DEBUG: scored_chapters type: {type(scored_chapters)}")
-            print(f"DEBUG: session_date_data type: {type(session_date_data)}")
-            print(f"DEBUG: target_date: {target_date}")
+            logger.info(f"DEBUG: scored_chapters type: {type(scored_chapters)}")
+            logger.info(f"DEBUG: session_date_data type: {type(session_date_data)}")
+            logger.info(f"DEBUG: target_date: {target_date}")
 
             if not scored_chapters:
-                print("WARNING: No scored chapters data to save")
+                logger.warning("No scored chapters data to save")
                 result = {'total_videos_saved': 0, 'total_chapters_saved': 0, 'videos': []}
                 return result
 
@@ -57,16 +57,16 @@ class PostgreSQLOperator(BaseOperator):
                     first_video = videos_list[0]
                     session_number = first_video.get('session_number')
                     session_date_str = first_video.get('target_date', target_date)
-                    print(f"DEBUG: Extracted session_number={session_number}, session_date={session_date_str}")
+                    logger.info(f"DEBUG: Extracted session_number={session_number}, session_date={session_date_str}")
                 else:
-                    print("WARNING: No videos in session_date_data")
+                    logger.warning("No videos in session_date_data")
             else:
-                print(f"WARNING: Unexpected session_date_data format: {type(session_date_data)}")
+                logger.warning(f"Unexpected session_date_data format: {type(session_date_data)}")
 
             # Fallback to target_date if no session_date found
             if not session_date_str:
                 session_date_str = target_date
-                print(f"DEBUG: Using target_date as fallback: {session_date_str}")
+                logger.info(f"DEBUG: Using target_date as fallback: {session_date_str}")
 
             # Parse session_date
             from datetime import datetime
@@ -75,7 +75,7 @@ class PostgreSQLOperator(BaseOperator):
             else:
                 session_date_obj = session_date_str
 
-            print(f"DEBUG: Final values - session_number={session_number}, session_date={session_date_obj}")
+            logger.info(f"DEBUG: Final values - session_number={session_number}, session_date={session_date_obj}")
 
             # Call the database function to save chapters
             result = db.save_youtube_chapters_to_db(
@@ -84,7 +84,7 @@ class PostgreSQLOperator(BaseOperator):
                 session_date=session_date_obj
             )
 
-            print(f"✅ Saved {result['total_chapters_saved']} chapters across {result['total_videos_saved']} videos")
+            logger.info(f"✅ Saved {result['total_chapters_saved']} chapters across {result['total_videos_saved']} videos")
 
         elif self.operation == 'check_upload_quota':
             min_relevance_score = context["params"].get("min_relevance_score", 2)
@@ -102,14 +102,14 @@ class PostgreSQLOperator(BaseOperator):
                 "queue_size": queue_size,
                 "turns_pending": turns_pending,
             }
-            print(f"✅ Upload quota: {uploads_today} today ({chapters_uploaded_today} chapters + {turns_uploaded_today} turns), {chapters_pending} chapters + {turns_pending} turns in queue")
+            logger.info(f"✅ Upload quota: {uploads_today} today ({chapters_uploaded_today} chapters + {turns_uploaded_today} turns), {chapters_pending} chapters + {turns_pending} turns in queue")
 
         elif self.operation == 'mark_chapters_uploaded':
             """Mark chapters as uploaded to YouTube after successful upload"""
             upload_results = ti.xcom_pull(key=self.xcom_keys.get('upload_results', 'upload_results'))
 
             if not upload_results or not upload_results.get('upload_details'):
-                print("No upload results to process")
+                logger.info("No upload results to process")
                 result = {'updated_chapters': 0, 'failed_updates': 0, 'details': []}
             else:
                 updated_count = 0
@@ -131,7 +131,7 @@ class PostgreSQLOperator(BaseOperator):
                                 'youtube_video_id': youtube_video_id,
                                 'status': 'updated'
                             })
-                            print(f"✅ Marked chapter {chapter_id} as uploaded: {youtube_video_id}")
+                            logger.info(f"✅ Marked chapter {chapter_id} as uploaded: {youtube_video_id}")
                         except Exception as e:
                             failed_count += 1
                             details.append({
@@ -139,7 +139,7 @@ class PostgreSQLOperator(BaseOperator):
                                 'status': 'failed',
                                 'error': str(e)
                             })
-                            print(f"❌ Failed to mark chapter {chapter_id}: {e}")
+                            logger.error(f"❌ Failed to mark chapter {chapter_id}: {e}")
                     elif not success:
                         if chapter_id:
                             try:
@@ -149,7 +149,7 @@ class PostgreSQLOperator(BaseOperator):
                                     'chapter_id': chapter_id,
                                     'status': 'failure_recorded',
                                 })
-                                print(f"📉 Recorded upload failure for chapter {chapter_id}")
+                                logger.info(f"📉 Recorded upload failure for chapter {chapter_id}")
                             except Exception as e:
                                 failed_count += 1
                                 details.append({
@@ -157,14 +157,13 @@ class PostgreSQLOperator(BaseOperator):
                                     'status': 'failed',
                                     'error': str(e),
                                 })
-                                print(f"❌ Failed to record upload failure for chapter {chapter_id}: {e}")
                                 logger.error(
                                     f"Failed to RECORD upload failure for chapter {chapter_id} in the "
                                     f"database (this attempt's failure count is now uncounted): {e}"
                                 )
                         else:
                             # Defensive: no resolvable chapter_id — cannot target a row, log-and-skip (no DB write)
-                            print("⏭️ Skipping failed upload with no chapter_id")
+                            logger.warning("⏭️ Skipping failed upload with no chapter_id")
                             details.append({
                                 'chapter_id': chapter_id,
                                 'status': 'skipped',
@@ -172,8 +171,10 @@ class PostgreSQLOperator(BaseOperator):
                             })
                     elif success and (not chapter_id or not youtube_video_id):
                         # Debug: upload succeeded but missing tracking fields
-                        print(f"⚠️ Upload succeeded but missing fields: chapter_id={chapter_id}, youtube_video_id={youtube_video_id}")
-                        print(f"   Full upload_detail: {upload_detail}")
+                        logger.warning(
+                            f"⚠️ Upload succeeded but missing fields: chapter_id={chapter_id}, "
+                            f"youtube_video_id={youtube_video_id}. Full upload_detail: {upload_detail}"
+                        )
                         details.append({
                             'chapter_id': chapter_id,
                             'status': 'skipped',
@@ -186,14 +187,14 @@ class PostgreSQLOperator(BaseOperator):
                     'recorded_failures': recorded_failures,
                     'details': details
                 }
-                print(f"✅ Updated {updated_count} chapters, {failed_count} failed, {recorded_failures} failures recorded")
+                logger.info(f"✅ Updated {updated_count} chapters, {failed_count} failed, {recorded_failures} failures recorded")
 
         elif self.operation == 'mark_turns_uploaded':
             """Mark speaker turn videos as uploaded to YouTube after successful upload."""
             upload_results = ti.xcom_pull(key=self.xcom_keys.get('upload_results', 'upload_results'))
 
             if not upload_results or not upload_results.get('upload_details'):
-                print("No turn upload results to process")
+                logger.info("No turn upload results to process")
                 result = {'updated_turns': 0, 'failed_updates': 0, 'details': []}
             else:
                 updated_count = 0
@@ -214,7 +215,7 @@ class PostgreSQLOperator(BaseOperator):
                                 'youtube_video_id': youtube_video_id,
                                 'status': 'updated',
                             })
-                            print(f"✅ Marked turn {turn_id} as uploaded: {youtube_video_id}")
+                            logger.info(f"✅ Marked turn {turn_id} as uploaded: {youtube_video_id}")
                         except Exception as e:
                             failed_count += 1
                             details.append({
@@ -222,7 +223,7 @@ class PostgreSQLOperator(BaseOperator):
                                 'status': 'failed',
                                 'error': str(e),
                             })
-                            print(f"❌ Failed to mark turn {turn_id}: {e}")
+                            logger.error(f"❌ Failed to mark turn {turn_id}: {e}")
                     else:
                         details.append({
                             'turn_id': turn_id,
@@ -235,12 +236,12 @@ class PostgreSQLOperator(BaseOperator):
                     'failed_updates': failed_count,
                     'details': details,
                 }
-                print(f"✅ Marked {updated_count} turns uploaded, {failed_count} failed")
+                logger.info(f"✅ Marked {updated_count} turns uploaded, {failed_count} failed")
 
         elif self.operation == 'get_pending_analytics_checkpoints':
             """Return candidate video chapters for analytics collection."""
             result = db.get_pending_analytics_checkpoints()
-            print(f"✅ Retrieved {len(result)} candidate chapters for analytics")
+            logger.info(f"✅ Retrieved {len(result)} candidate chapters for analytics")
 
         elif self.operation == 'record_analytics_snapshots':
             """Persist each collected (chapter, checkpoint, metrics) snapshot."""
@@ -248,7 +249,7 @@ class PostgreSQLOperator(BaseOperator):
                 key=self.xcom_keys.get('collected', 'collected')
             ) or []
 
-            print(f"DEBUG: recording {len(collected)} analytics snapshots")
+            logger.info(f"DEBUG: recording {len(collected)} analytics snapshots")
 
             for item in collected:
                 db.record_analytics_snapshot(
@@ -257,7 +258,7 @@ class PostgreSQLOperator(BaseOperator):
                     checkpoint=item['checkpoint'],
                     metrics=item['metrics'],
                 )
-                print(
+                logger.info(
                     f"✅ Recorded snapshot: chapter_id={item['chapter_id']} "
                     f"yt_id={item['youtube_video_id']} checkpoint={item['checkpoint']}"
                 )
