@@ -7,6 +7,7 @@ to Reap, waits for job completion via sensor, and downloads all resulting shorts
 """
 
 import logging
+import re
 import os
 from datetime import datetime, timedelta
 
@@ -23,6 +24,8 @@ from utils.env_loader import load_env_if_local
 load_env_if_local()
 
 POSTGRES_SCHEMA = os.getenv('POSTGRES_SCHEMA', 'development')
+
+_SAFE_CLIP_ID_RE = re.compile(r'^[A-Za-z0-9_-]+$')
 
 _TERMINAL_STATES = {'completed', 'failed', 'invalid', 'expired', 'error'}
 _FAILURE_STATES = {'failed', 'invalid', 'expired', 'error'}
@@ -99,6 +102,16 @@ class ReapJobSensor(BaseSensorOperator):
                 clip_id = clip['clip_id']
                 clip_url = clip['clip_url']
                 virality = float(clip['virality_score'])
+
+                # clip_id comes from the external Reap API response and becomes a
+                # filesystem path component — reject anything outside a safe
+                # charset to block path traversal (issue #198).
+                if not clip_id or not _SAFE_CLIP_ID_RE.fullmatch(str(clip_id)):
+                    logging.warning(
+                        "ReapJobSensor: unsafe clip_id %r from Reap API — skipping clip",
+                        clip_id,
+                    )
+                    continue
 
                 if source_video_id is None:
                     logging.warning(

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 import requests
 
+from congress_videos import reap_api
 from congress_videos.reap_api import ReapApiClient, ReapCreditsExhausted
 
 
@@ -360,3 +361,35 @@ class TestDownloadClip:
 
         with open(dest, "rb") as f:
             assert f.read() == b"datamore"
+
+
+class TestRequestTimeouts:
+    """Every HTTP call must carry an explicit timeout (issue #201)."""
+
+    def test_get_upload_url_passes_timeout(self, mocker):
+        mock_post = mocker.patch(
+            "requests.post", return_value=_make_response(200, {"uploadUrl": "u", "uploadId": "i"})
+        )
+        ReapApiClient(api_key="k").get_upload_url("f.mp4")
+        assert mock_post.call_args.kwargs["timeout"] == reap_api.API_TIMEOUT
+
+    def test_get_project_status_passes_timeout(self, mocker):
+        mock_get = mocker.patch(
+            "requests.get", return_value=_make_response(200, {"status": "processing"})
+        )
+        ReapApiClient(api_key="k").get_project_status("p1")
+        assert mock_get.call_args.kwargs["timeout"] == reap_api.API_TIMEOUT
+
+    def test_upload_file_passes_transfer_timeout(self, mocker, tmp_path):
+        f = tmp_path / "v.mp4"
+        f.write_bytes(b"x")
+        mock_put = mocker.patch("requests.put", return_value=_make_response(200))
+        ReapApiClient(api_key="k").upload_file("https://s3/upload", str(f))
+        assert mock_put.call_args.kwargs["timeout"] == reap_api.TRANSFER_TIMEOUT
+
+    def test_download_clip_passes_transfer_timeout(self, mocker, tmp_path):
+        resp = _make_response(200)
+        resp.iter_content.return_value = [b"data"]
+        mock_get = mocker.patch("requests.get", return_value=resp)
+        ReapApiClient(api_key="k").download_clip("https://cdn/c.mp4", str(tmp_path / "d" / "c.mp4"))
+        assert mock_get.call_args.kwargs["timeout"] == reap_api.TRANSFER_TIMEOUT

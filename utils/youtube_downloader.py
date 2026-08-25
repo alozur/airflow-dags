@@ -16,6 +16,11 @@ from utils.codec_detection import detect_video_codec
 
 logger = logging.getLogger(__name__)
 
+# Hard cap for ffmpeg merge subprocesses: stream-copy + AAC audio of a
+# multi-hour session finishes well inside an hour even on the NAS; without a
+# timeout a stalled ffmpeg holds the worker slot forever.
+FFMPEG_MERGE_TIMEOUT_SECS = 3600
+
 # yt-dlp live_status values that correspond to a genuinely-downloadable VOD.
 READY_LIVE_STATUSES = frozenset({"was_live", "not_live"})
 
@@ -202,7 +207,7 @@ def download_with_pytubefix(
                     str(final_path)
                 ]
 
-                merge_result = subprocess.run(merge_cmd, capture_output=True, text=True)
+                merge_result = subprocess.run(merge_cmd, capture_output=True, text=True, timeout=FFMPEG_MERGE_TIMEOUT_SECS)
 
                 if merge_result.returncode == 0 and final_path.exists():
                     # Clean up temp files
@@ -729,7 +734,7 @@ def merge_video_audio_ffmpeg(
         ]
 
         # Run ffmpeg
-        subprocess.run(cmd, check=True, capture_output=True)
+        subprocess.run(cmd, check=True, capture_output=True, timeout=FFMPEG_MERGE_TIMEOUT_SECS)
 
         if Path(output_path).exists():
             result["success"] = True

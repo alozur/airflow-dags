@@ -567,3 +567,79 @@ class TestReapJobSensorCanonicalPath:
 
         mock_path.parent.mkdir.assert_called_once_with(parents=True, exist_ok=True)
         assert call_order.index("mkdir") < call_order.index("download")
+
+
+class TestClipIdValidation:
+    """Unsafe clip ids from the Reap API must never reach the filesystem (issue #198)."""
+
+    def _build_sensor(self):
+        from congress_videos.reap_processor_dag import ReapJobSensor
+        return ReapJobSensor(
+            task_id="wait_for_reap_test",
+            reap_project_id_key="reap_project_id_for_sensor",
+            chapter_id_key="chapter_id_for_sensor",
+            poke_interval=900,
+            timeout=7200,
+            mode="reschedule",
+        )
+
+    def _run_with_clips(self, mocker, clips):
+        sensor = self._build_sensor()
+        context = _make_context({
+            "reap_project_id_for_sensor": "proj-abc",
+            "chapter_id_for_sensor": 42,
+        })
+
+        mock_client_cls = mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
+        mock_client = mock_client_cls.return_value
+        mock_client.get_project_status.return_value = {"status": "completed"}
+        mock_client.get_project_clips.return_value = clips
+        mock_client.download_clip.return_value = None
+
+        mock_db_cls = mocker.patch("congress_videos.reap_processor_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.insert_video_short_clip.return_value = 1
+        mock_db.get_source_video_id_for_chapter.return_value = "src_vid_001"
+
+        mock_path = MagicMock()
+        mock_path.__str__ = MagicMock(side_effect=lambda: "/data/canonical/clip.mp4")
+        mock_path.parent = MagicMock()
+        mocker.patch(
+            "congress_videos.reap_processor_dag.get_chapter_short_file_path",
+            return_value=mock_path,
+        )
+
+        result = sensor.poke(context)
+        return result, mock_client, mock_db
+
+    def test_traversal_clip_id_is_skipped(self, mocker):
+        clips = [
+            {"clip_id": "../../etc/evil", "clip_url": "https://cdn.reap.video/x.mp4", "virality_score": 0.9},
+        ]
+        result, mock_client, mock_db = self._run_with_clips(mocker, clips)
+
+        assert result is True
+        mock_client.download_clip.assert_not_called()
+        mock_db.insert_video_short_clip.assert_not_called()
+
+    def test_safe_sibling_still_processed(self, mocker):
+        clips = [
+            {"clip_id": "../evil", "clip_url": "https://cdn.reap.video/x.mp4", "virality_score": 0.9},
+            {"clip_id": "clip_ok-1", "clip_url": "https://cdn.reap.video/ok.mp4", "virality_score": 0.5},
+        ]
+        result, mock_client, mock_db = self._run_with_clips(mocker, clips)
+
+        assert result is True
+        assert mock_client.download_clip.call_count == 1
+        assert mock_db.insert_video_short_clip.call_count == 1
+        kwargs = mock_db.insert_video_short_clip.call_args.kwargs
+        assert kwargs["reap_clip_id"] == "clip_ok-1"
+
+    @pytest.mark.parametrize("bad_id", ["", None, "a/b", "a\\b", "..", "clip id", "clip;rm"])
+    def test_rejected_charset_variants(self, mocker, bad_id):
+        clips = [
+            {"clip_id": bad_id, "clip_url": "https://cdn.reap.video/x.mp4", "virality_score": 0.9},
+        ]
+        result, mock_client, _ = self._run_with_clips(mocker, clips)
+        assert result is True
+        mock_client.download_clip.assert_not_called()

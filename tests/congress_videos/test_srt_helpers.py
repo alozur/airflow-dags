@@ -839,3 +839,25 @@ class TestWindowSrtBlocks:
         assert len(result) == 1
         assert result[0]["start_secs"] == pytest.approx(0.0)
         assert result[0]["end_secs"] == pytest.approx(8.0)
+
+
+class TestFindSrtVideoIdGuard:
+    """Path-unsafe video ids must short-circuit to None (issue #198)."""
+
+    @pytest.mark.parametrize("bad_id", ["../etc", "a/b", "", "abc 123", "id;rm"])
+    def test_unsafe_video_id_returns_none(self, bad_id):
+        from congress_videos.srt_helpers import find_srt_for_chapter
+        assert find_srt_for_chapter(bad_id, 1) is None
+
+    def test_safe_video_id_still_probes(self, tmp_path):
+        from congress_videos import srt_helpers
+        srt_dir = tmp_path / "vid_123" / "srt_files"
+        srt_dir.mkdir(parents=True)
+        srt_file = srt_dir / "vid_123.srt"
+        srt_file.write_text("1\n00:00:00,000 --> 00:00:01,000\nhola\n")
+        original = srt_helpers.PROJECT_DATA_DIR
+        try:
+            srt_helpers.PROJECT_DATA_DIR = str(tmp_path)
+            assert srt_helpers.find_srt_for_chapter("vid_123", 1) == str(srt_file)
+        finally:
+            srt_helpers.PROJECT_DATA_DIR = original

@@ -29,7 +29,7 @@ x-airflow-common:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
 
     # Database connection (uses AIRFLOW_DB_NAME from .env: airflow_dev_db or airflow_db)
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_password@postgres_shared:5432/${AIRFLOW_DB_NAME:-airflow_db}
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:?AIRFLOW_DB_PASSWORD must be set in .env}@postgres_shared:5432/${AIRFLOW_DB_NAME:-airflow_db}
     AIRFLOW__CORE__FERNET_KEY: "${AIRFLOW__CORE__FERNET_KEY}"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
 
@@ -115,7 +115,7 @@ services:
         chown -R 50000:0 /data
         chown -R 50000:0 /congress_videos
         chmod -R 755 /congress_videos/assets
-        chmod 666 /congress_videos/congress_youtube_token.pickle
+        chmod 600 /congress_videos/congress_youtube_token.pickle
         chmod -R 775 /congress_videos/videos
     volumes:
       - git_dags:/dags
