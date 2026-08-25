@@ -391,6 +391,104 @@ class TestResolveTargetDate:
         assert _resolve_target_date(context) == "2026-08-24"
 
 
+# ---------------------------------------------------------------------------
+# Issue #202b — _slim_transcriptions_for_xcom trims the transcription
+# payload at the XCom boundary (Postgres XCom backend stores every push).
+# ---------------------------------------------------------------------------
+
+class TestSlimTranscriptionsForXcom:
+
+    def test_none_input_passes_through_unchanged(self):
+        from congress_videos.youtube_channel_monitor_dag import _slim_transcriptions_for_xcom
+        assert _slim_transcriptions_for_xcom(None) is None
+
+    def test_non_dict_input_passes_through_unchanged(self):
+        from congress_videos.youtube_channel_monitor_dag import _slim_transcriptions_for_xcom
+        assert _slim_transcriptions_for_xcom("not a dict") == "not a dict"
+
+    def test_preserves_total_transcribed_and_top_level_error(self):
+        from congress_videos.youtube_channel_monitor_dag import _slim_transcriptions_for_xcom
+
+        result = {"total_transcribed": 0, "videos": [], "error": "Whisper API unavailable"}
+        slimmed = _slim_transcriptions_for_xcom(result)
+
+        assert slimmed["total_transcribed"] == 0
+        assert slimmed["error"] == "Whisper API unavailable"
+        assert slimmed["videos"] == []
+
+    def test_chunked_video_drops_chunk_text_keeps_srt_paths(self):
+        from congress_videos.youtube_channel_monitor_dag import _slim_transcriptions_for_xcom
+
+        result = {
+            "total_transcribed": 1,
+            "videos": [{
+                "video_id": "abc123",
+                "video_title": "Sesión Plenaria",
+                "chunked": True,
+                "total_chunks": 2,
+                "successful_transcriptions": 2,
+                "chunks": [
+                    {"success": True, "text": "a" * 5000, "srt_path": "/srt/c1.srt",
+                     "chunk_number": 1, "segments": [{"start": 0, "end": 1, "text": "..."}]},
+                    {"success": True, "text": "b" * 5000, "srt_path": "/srt/c2.srt",
+                     "chunk_number": 2, "segments": [{"start": 1, "end": 2, "text": "..."}]},
+                ],
+            }],
+        }
+
+        slimmed = _slim_transcriptions_for_xcom(result)
+        video = slimmed["videos"][0]
+
+        assert video["video_id"] == "abc123"
+        assert video["chunked"] is True
+        assert video["total_chunks"] == 2
+        assert video["successful_transcriptions"] == 2
+        assert video["srt_paths"] == ["/srt/c1.srt", "/srt/c2.srt"]
+        assert "chunks" not in video
+        assert "text" not in video
+        assert "segments" not in video
+
+    def test_unchunked_video_drops_full_text_keeps_srt_path(self):
+        from congress_videos.youtube_channel_monitor_dag import _slim_transcriptions_for_xcom
+
+        result = {
+            "total_transcribed": 1,
+            "videos": [{
+                "video_id": "xyz789",
+                "chunked": False,
+                "audio_file_path": "/audio/xyz789.webm",
+                "transcription": "c" * 20000,
+                "transcription_success": True,
+                "srt_path": "/srt/xyz789.srt",
+                "transcription_duration": 12.3,
+                "error": None,
+            }],
+        }
+
+        slimmed = _slim_transcriptions_for_xcom(result)
+        video = slimmed["videos"][0]
+
+        assert video["video_id"] == "xyz789"
+        assert video["chunked"] is False
+        assert video["transcription_success"] is True
+        assert video["srt_path"] == "/srt/xyz789.srt"
+        assert "transcription" not in video
+        assert "audio_file_path" not in video
+
+    def test_per_video_error_preserved(self):
+        from congress_videos.youtube_channel_monitor_dag import _slim_transcriptions_for_xcom
+
+        result = {
+            "total_transcribed": 0,
+            "videos": [{"video_id": "err1", "error": "No audio file path"}],
+        }
+
+        slimmed = _slim_transcriptions_for_xcom(result)
+
+        assert slimmed["videos"][0]["error"] == "No audio file path"
+        assert slimmed["videos"][0]["video_id"] == "err1"
+
+
 class TestTargetDateGuardrail:
     """Source-scan guardrails for issue #206: every params-override read site
     must go through _resolve_target_date; the data-field read inside

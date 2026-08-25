@@ -111,6 +111,50 @@ def _resolve_target_date(context) -> str:
     return str(context.get("ds") or datetime.now(timezone.utc).strftime("%Y-%m-%d"))
 
 
+def _slim_transcriptions_for_xcom(result):
+    """Trim transcribe_audio_with_whisper()'s payload before it reaches XCom
+    (issue #202b). The Postgres XCom backend persists every push; full
+    per-chunk transcript text (and the whole-file text on the unchunked
+    path) is dead weight once the SRT sidecar is written to disk — only
+    identifiers, counters, and srt path(s) are needed downstream.
+
+    Non-dict input (e.g. None) passes through unchanged.
+    """
+    if not isinstance(result, dict):
+        return result
+
+    slimmed_videos = []
+    for video in result.get("videos", []):
+        slim = {"video_id": video.get("video_id")}
+        if "video_title" in video:
+            slim["video_title"] = video.get("video_title")
+        slim["chunked"] = video.get("chunked", False)
+
+        if video.get("chunked"):
+            if "total_chunks" in video:
+                slim["total_chunks"] = video["total_chunks"]
+            if "successful_transcriptions" in video:
+                slim["successful_transcriptions"] = video["successful_transcriptions"]
+            srt_paths = [
+                c.get("srt_path") for c in video.get("chunks", []) if c.get("srt_path")
+            ]
+            if srt_paths:
+                slim["srt_paths"] = srt_paths
+        else:
+            if "transcription_success" in video:
+                slim["transcription_success"] = video["transcription_success"]
+            if video.get("srt_path"):
+                slim["srt_path"] = video["srt_path"]
+
+        if video.get("error"):
+            slim["error"] = video["error"]
+        slimmed_videos.append(slim)
+
+    slimmed = dict(result)
+    slimmed["videos"] = slimmed_videos
+    return slimmed
+
+
 with DAG(
     'congress_youtube_channel_monitor',
     default_args=default_args,
@@ -367,10 +411,12 @@ with DAG(
         task_id='transcribe_audio_with_whisper',
         python_callable=lambda ti: xcom_task(
             ti,
-            lambda: yt_channel.transcribe_audio_with_whisper(
-                ti.xcom_pull(key='extracted_audio'),
-                language="es",
-                timeout=3600  # 1 hour timeout per chunk
+            lambda: _slim_transcriptions_for_xcom(
+                yt_channel.transcribe_audio_with_whisper(
+                    ti.xcom_pull(key='extracted_audio'),
+                    language="es",
+                    timeout=3600  # 1 hour timeout per chunk
+                )
             ),
             'transcriptions'
         ),
