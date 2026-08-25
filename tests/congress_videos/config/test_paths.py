@@ -17,7 +17,6 @@ from congress_videos.config.paths import (
     FONT_REGULAR,
     FONTS_DIR,
     PROJECT_DATA_DIR,
-    YOUTUBE_TOKEN_FILE,
     ensure_directory_exists,
     get_chapter_short_file_path,
     get_chapter_shorts_dir,
@@ -51,9 +50,6 @@ class TestModuleConstants:
 
     def test_fonts_dir_ends_with_fonts(self):
         assert FONTS_DIR.endswith("fonts")
-
-    def test_youtube_token_file_ends_with_pickle(self):
-        assert YOUTUBE_TOKEN_FILE.endswith(".pickle")
 
     def test_font_bold_ends_with_ttf(self):
         assert FONT_BOLD.endswith(".ttf")

@@ -9,7 +9,7 @@ OAuth scopes it needs (least privilege). Analytics tokens are read-only.
 
 Local layout (mirrors the runtime youtube_tokens/ tree)::
 
-    youtube_tokens/{channel}/{purpose}.pickle
+    youtube_tokens/{channel}/{purpose}.json
 
 Usage::
 

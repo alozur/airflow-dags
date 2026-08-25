@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pickle
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -74,21 +73,28 @@ class TestValidateUploadConfig:
 
 class TestGetAuthenticatedYoutubeService:
     def test_missing_token_file_raises_file_not_found(self, tmp_path):
-        missing = str(tmp_path / "no_token.pickle")
+        missing = str(tmp_path / "no_token.json")
         with pytest.raises(FileNotFoundError, match="Token file not found"):
             get_authenticated_youtube_service(missing)
 
+    def test_pickle_token_raises_value_error(self, tmp_path):
+        legacy = tmp_path / "token.pickle"
+        legacy.write_bytes(b"placeholder")
+        with pytest.raises(ValueError, match="Only .json tokens"):
+            get_authenticated_youtube_service(str(legacy))
+
     def test_valid_token_file_returns_service(self, mocker, tmp_path):
-        token_file = tmp_path / "token.pickle"
-        # Write placeholder bytes so os.path.exists passes
-        token_file.write_bytes(b"placeholder")
+        token_file = tmp_path / "token.json"
+        token_file.write_text('{"refresh_token": "rt", "scopes": []}')
 
         fake_creds = MagicMock()
         fake_creds.expired = False
         fake_creds.refresh_token = None
 
-        mocker.patch("builtins.open", mocker.mock_open(read_data=b""))
-        mocker.patch("utils.youtube_helpers.pickle.load", return_value=fake_creds)
+        mocker.patch(
+            "utils.youtube_helpers.Credentials.from_authorized_user_info",
+            return_value=fake_creds,
+        )
         fake_service = MagicMock()
         mocker.patch("utils.youtube_helpers.build", return_value=fake_service)
 
@@ -97,16 +103,18 @@ class TestGetAuthenticatedYoutubeService:
         assert service is fake_service
 
     def test_expired_token_is_refreshed(self, mocker, tmp_path):
-        token_file = tmp_path / "token.pickle"
-        token_file.write_bytes(b"placeholder")
+        token_file = tmp_path / "token.json"
+        token_file.write_text('{"refresh_token": "rt", "scopes": []}')
 
         fake_creds = MagicMock()
         fake_creds.expired = True
         fake_creds.refresh_token = "some-refresh-token"
+        fake_creds.to_json.return_value = "{}"
 
-        mocker.patch("builtins.open", mocker.mock_open(read_data=b""))
-        mocker.patch("utils.youtube_helpers.pickle.load", return_value=fake_creds)
-        mocker.patch("utils.youtube_helpers.pickle.dump")
+        mocker.patch(
+            "utils.youtube_helpers.Credentials.from_authorized_user_info",
+            return_value=fake_creds,
+        )
         mocker.patch("utils.youtube_helpers.build")
         mocker.patch("utils.youtube_helpers.Request")
 
