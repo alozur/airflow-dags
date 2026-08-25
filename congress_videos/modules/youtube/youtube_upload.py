@@ -134,8 +134,7 @@ def prepare_chapter_upload_config(
                     }
                 ]
             }
-        thumbnail_results: (optional) Legacy batch results from
-            thumbnail_generator.generate_video_thumbnails.
+        thumbnail_results: (optional) Legacy batch thumbnail results.
             Expected structure:
             {
                 'results': [
