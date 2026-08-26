@@ -29,6 +29,11 @@ Usage::
     airflow dags trigger speaker_turn_videos \\
         --conf '{"limit": 50}'
 
+Selection precedence in ``select_turns`` (issue #231): ``chapter_id``, then
+``video_id``, then an explicitly present ``limit`` key (global backlog
+drain), then — when conf is empty — automatic chapter-aligned selection:
+the whole oldest pending chapter is materialized in one run, uncapped.
+
 Pipeline::
 
     select_turns  (speaker_turns + idempotency filter)
@@ -63,7 +68,6 @@ from utils.postgres_helpers import PostgresConnection
 logger = logging.getLogger(__name__)
 
 DAG_ID = SPEAKER_TURN_VIDEOS_DAG_ID
-DEFAULT_LIMIT = 10
 
 _MEDIA_SUFFIXES = (".mp4", ".mkv", ".webm")
 
@@ -95,16 +99,28 @@ def _find_source_video_any_date(video_id: str) -> str | None:
 def _select_task(**context) -> list[dict]:
     """Fetch speaker turns in scope and filter out already-materialized ones.
 
-    Reads turns by ``chapter_id`` or ``video_id`` from DAG conf. Scoped
-    branches (either key present) select the full chapter/video and filter
-    already-materialized turns with a post-hoc ``speaker_turn_videos`` lookup,
-    so an operator re-running a scoped conf still sees the whole scope.
+    Selection precedence (issue #231): ``chapter_id``, then ``video_id``,
+    then an explicitly present ``limit`` key, then — when conf carries none
+    of those keys — automatic chapter-aligned selection.
 
-    The default (unscoped) branch instead excludes already-materialized turns
-    directly in SQL via ``NOT EXISTS``, so the row cap (``conf["limit"]``,
-    default ``DEFAULT_LIMIT``) applies to PENDING turns only — draining the
-    backlog run after run instead of permanently returning the same N lowest
-    turn_ids once they are materialized (issue #216).
+    Scoped branches (``chapter_id``/``video_id``) select the full chapter or
+    video and filter already-materialized turns with a post-hoc
+    ``speaker_turn_videos`` lookup, so an operator re-running a scoped conf
+    still sees the whole scope. A supplied ``limit`` never caps a scoped
+    result.
+
+    The explicit-limit branch (``"limit" in conf``, distinguishing an
+    explicit ``null`` from an absent key) excludes already-materialized
+    turns directly in SQL via ``NOT EXISTS`` and drains the backlog globally,
+    across chapters, in ascending ``turn_id`` order (issue #216).
+
+    The automatic branch (conf carries none of the three keys) instead
+    selects one complete pending chapter per run: first it chooses the
+    chapter containing the minimum pending ``turn_id``, then it selects
+    every still-pending turn in that chapter, uncapped. Two statements are
+    used deliberately so the second, under PostgreSQL READ COMMITTED,
+    observes a fresh snapshot — a turn materialized between the two
+    statements is excluded from the final batch.
 
     The filtered list is pushed to XCom under key ``"turns"``.
     """
@@ -112,7 +128,6 @@ def _select_task(**context) -> list[dict]:
     conf = (dag_run.conf or {}) if dag_run else {}
     chapter_id = conf.get("chapter_id")
     video_id = conf.get("video_id")
-    limit = conf.get("limit", DEFAULT_LIMIT)
 
     pg = PostgresConnection()
     turns_table = pg.get_qualified_table("speaker_turns")
@@ -124,6 +139,9 @@ def _select_task(**context) -> list[dict]:
         f"SELECT {cols} FROM {turns_table} st "
         f"JOIN {chapters_table} vc ON vc.chapter_id = st.chapter_id"
     )
+    pending_predicate = (
+        f"NOT EXISTS (SELECT 1 FROM {stv_table} v WHERE v.turn_id = st.turn_id)"
+    )
 
     with pg.get_connection() as conn:
         with conn.cursor() as cur:
@@ -133,24 +151,27 @@ def _select_task(**context) -> list[dict]:
                     f"{base} WHERE st.chapter_id = %s ORDER BY st.turn_id",
                     (chapter_id,),
                 )
+                turns = [dict(row) for row in cur.fetchall()]
             elif video_id is not None:
                 cur.execute(
                     f"{base} WHERE vc.video_id = %s ORDER BY st.turn_id",
                     (str(video_id),),
                 )
-            else:
+                turns = [dict(row) for row in cur.fetchall()]
+            elif "limit" in conf:
                 cur.execute(
-                    f"{base} WHERE NOT EXISTS ("
-                    f"SELECT 1 FROM {stv_table} v WHERE v.turn_id = st.turn_id"
-                    f") ORDER BY st.turn_id LIMIT %s",
-                    (limit,),
+                    f"{base} WHERE {pending_predicate} ORDER BY st.turn_id LIMIT %s",
+                    (conf.get("limit"),),
                 )
-            # PostgresConnection uses RealDictCursor: rows are dict-like.
-            turns = [dict(row) for row in cur.fetchall()]
+                turns = [dict(row) for row in cur.fetchall()]
+            else:
+                turns = _select_automatic_chapter(
+                    cur, turns_table, stv_table, base, pending_predicate,
+                )
 
             # Scoped runs select the full chapter/video on purpose, so they
-            # still need the post-hoc filter. The default branch already
-            # filtered in SQL (issue #216).
+            # still need the post-hoc filter. The explicit-limit and
+            # automatic branches already filtered in SQL.
             if scoped and turns:
                 cur.execute(
                     f"SELECT turn_id FROM {stv_table} WHERE turn_id = ANY(%s)",
@@ -162,6 +183,36 @@ def _select_task(**context) -> list[dict]:
     logger.info("speaker_turn_videos: selected %d turn(s) for materialization", len(turns))
     context["ti"].xcom_push(key="turns", value=turns)
     return turns
+
+
+def _select_automatic_chapter(
+    cur, turns_table: str, stv_table: str, base: str, pending_predicate: str,
+) -> list[dict]:
+    """Choose one complete pending chapter, then select its pending turns.
+
+    Two statements: the first picks the chapter containing the minimum
+    pending ``turn_id`` (materialized turns are excluded from that MIN via
+    ``NOT EXISTS``, so they cannot choose or enter the batch); the second
+    re-applies an independent pending-row anti-join for that chapter so a
+    turn materialized between the two statements is excluded (issue #231).
+    """
+    cur.execute(
+        f"SELECT st.chapter_id FROM {turns_table} st "
+        f"WHERE st.turn_id = ("
+        f"SELECT MIN(p.turn_id) FROM {turns_table} p "
+        f"WHERE NOT EXISTS (SELECT 1 FROM {stv_table} v WHERE v.turn_id = p.turn_id)"
+        f")"
+    )
+    chosen = cur.fetchone()
+    if not chosen:
+        return []
+
+    chosen_chapter_id = chosen["chapter_id"]
+    cur.execute(
+        f"{base} WHERE st.chapter_id = %s AND {pending_predicate} ORDER BY st.turn_id",
+        (chosen_chapter_id,),
+    )
+    return [dict(row) for row in cur.fetchall()]
 
 
 def _materialize_task(**context) -> dict:

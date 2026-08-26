@@ -242,66 +242,13 @@ class TestSelectTurns:
 
         assert pushed["turns"] == []
 
-    def test_default_limit_constant_is_ten(self):
-        """DEFAULT_LIMIT must be a named module constant, mirroring speaker_turns_dag.py."""
+    def test_default_limit_constant_removed(self):
+        """DEFAULT_LIMIT must not survive: automatic runs are chapter-aligned, not row-capped."""
         mod = _fresh()
-        assert mod.DEFAULT_LIMIT == 10
-
-    def test_default_branch_not_exists_precedes_limit(self, monkeypatch):
-        """Default branch (no chapter_id/video_id) must filter pending turns in SQL.
-
-        Issue #216: a client-side filter after a hardcoded LIMIT 10 can return
-        an empty list forever once the lowest turn_ids are all materialized.
-        The anti-join must run BEFORE the row cap, in a single query.
-        """
-        mod = _fresh()
-        cur = self._make_pg_mock(
-            monkeypatch, mod,
-            turns_rows=[(61, 10, "vid1", 0.0, 100.0, None)],
-        )
-
-        ti = MagicMock()
-        ti.xcom_push.side_effect = lambda key, value: None
-        mod._select_task(ti=ti, dag_run=MagicMock(conf={}))
-
-        select_sql = cur.execute.call_args_list[0].args[0].lower()
-        assert "not exists" in select_sql
-        assert "speaker_turn_videos" in select_sql
-        assert "v.turn_id = st.turn_id" in select_sql
-        assert select_sql.index("not exists") < select_sql.index("limit"), (
-            "the anti-join must precede LIMIT so the cap applies to PENDING turns"
-        )
-        params = cur.execute.call_args_list[0].args[1]
-        assert params == (10,)
-
-    def test_default_branch_returns_pending_turns_216(self, monkeypatch):
-        """Regression for #216: turns with high turn_ids must be returned once the
-        lowest turn_ids are already materialized — proven here by a mock that
-        returns high turn_ids directly (as the real NOT EXISTS query would),
-        with no second post-hoc filter query able to empty the result.
-        """
-        mod = _fresh()
-        cur = self._make_pg_mock(
-            monkeypatch, mod,
-            turns_rows=[
-                (61, 10, "vid1", 0.0, 100.0, None),
-                (62, 10, "vid1", 100.0, 200.0, None),
-            ],
-        )
-
-        ti = MagicMock()
-        pushed = {}
-        ti.xcom_push.side_effect = lambda key, value: pushed.update({key: value})
-        mod._select_task(ti=ti, dag_run=MagicMock(conf={}))
-
-        returned_ids = [t["turn_id"] for t in pushed["turns"]]
-        assert returned_ids == [61, 62]
-        assert cur.execute.call_count == 1, (
-            "default branch must issue exactly one query — no post-hoc filter query"
-        )
+        assert not hasattr(mod, "DEFAULT_LIMIT")
 
     def test_conf_limit_override_passed_to_sql(self, monkeypatch):
-        """dag_run.conf['limit'] must override DEFAULT_LIMIT and bind via %s."""
+        """An explicitly present dag_run.conf['limit'] key must bind unchanged via %s."""
         mod = _fresh()
         cur = self._make_pg_mock(
             monkeypatch, mod,
@@ -312,8 +259,191 @@ class TestSelectTurns:
         ti.xcom_push.side_effect = lambda key, value: None
         mod._select_task(ti=ti, dag_run=MagicMock(conf={"limit": 50}))
 
-        params = cur.execute.call_args_list[0].args[1]
-        assert params == (50,)
+        assert cur.execute.call_count == 1, "explicit-limit branch must issue exactly one query"
+        assert cur.execute.call_args_list[0].args[1] == (50,)
+
+
+def _row(turn_id, chapter_id=42, video_id="vid1", start=0.0, end=1.0, resolved_name=None):
+    return {"turn_id": turn_id, "chapter_id": chapter_id, "video_id": video_id,
+            "start_seconds": start, "end_seconds": end, "resolved_name": resolved_name}
+
+
+def _wire_cursor(monkeypatch, mod, *, fetchone=None, fetchall=None,
+                  fetchall_side_effect=None, execute_side_effect=None):
+    """Shared mock-cursor wiring for the new selection-precedence test classes below."""
+    cur = MagicMock()
+    cur.fetchone.return_value = fetchone
+    if fetchall_side_effect is not None:
+        cur.fetchall.side_effect = fetchall_side_effect
+    else:
+        cur.fetchall.return_value = fetchall if fetchall is not None else []
+    if execute_side_effect is not None:
+        cur.execute.side_effect = execute_side_effect
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value = cur
+    pg = MagicMock()
+    pg.get_qualified_table.side_effect = lambda name: f"test.{name}"
+    pg.get_connection.return_value.__enter__.return_value = conn
+    monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
+    return cur
+
+
+# ---------------------------------------------------------------------------
+# Chapter-aligned automatic selection (issue #231)
+# ---------------------------------------------------------------------------
+
+class TestAutomaticChapterSelection:
+    """Empty conf (no chapter_id/video_id/limit key) selects the oldest
+    pending chapter and every still-pending turn in it, uncapped.
+    """
+
+    def test_oldest_pending_chapter_returns_all_rows_beyond_former_limit(self, monkeypatch):
+        mod = _fresh()
+        final_rows = [_row(tid) for tid in range(100, 115)]  # 15 rows > former cap of 10
+        cur = _wire_cursor(monkeypatch, mod, fetchone={"chapter_id": 42}, fetchall=final_rows)
+
+        ti = MagicMock()
+        pushed = {}
+        ti.xcom_push.side_effect = lambda key, value: pushed.update({key: value})
+        mod._select_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        returned_ids = [t["turn_id"] for t in pushed["turns"]]
+        assert returned_ids == list(range(100, 115)), (
+            f"expected all 15 pending turns from chapter 42 in ascending order; got {returned_ids}"
+        )
+        assert all(t["chapter_id"] == 42 for t in pushed["turns"]), "no other chapter's turns"
+        assert cur.execute.call_count == 2, "choose chapter, then select its rows"
+        sqls = [c.args[0].lower() for c in cur.execute.call_args_list]
+        assert all("limit" not in sql for sql in sqls), "automatic branch must never cap rows"
+
+    def test_chapter_choice_query_uses_min_over_pending_turns_only(self, monkeypatch):
+        mod = _fresh()
+        cur = _wire_cursor(
+            monkeypatch, mod, fetchone={"chapter_id": 7}, fetchall=[_row(61, chapter_id=7)],
+        )
+
+        mod._select_task(ti=MagicMock(), dag_run=MagicMock(conf={}))
+
+        first_sql = cur.execute.call_args_list[0].args[0].lower()
+        assert "min(" in first_sql, "chapter choice must use MIN(turn_id) over pending rows"
+        assert "not exists" in first_sql and "speaker_turn_videos" in first_sql, (
+            "the MIN subquery must exclude materialized turns via NOT EXISTS"
+        )
+        second_sql = cur.execute.call_args_list[1].args[0].lower()
+        assert "chapter_id = %s" in second_sql
+        assert cur.execute.call_args_list[1].args[1] == (7,)
+
+    def test_final_selection_reapplies_pending_filter_independently(self, monkeypatch):
+        """A turn materialized between the two statements is excluded — proven by a
+        final row count smaller than the chapter's conceptual pending set, with no
+        client-side re-filtering that would reintroduce stale data.
+        """
+        mod = _fresh()
+        final_rows = [_row(61, chapter_id=7), _row(62, chapter_id=7)]  # turn_id=63 raced out
+        cur = _wire_cursor(monkeypatch, mod, fetchone={"chapter_id": 7}, fetchall=final_rows)
+
+        ti = MagicMock()
+        pushed = {}
+        ti.xcom_push.side_effect = lambda key, value: pushed.update({key: value})
+        mod._select_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        assert [t["turn_id"] for t in pushed["turns"]] == [61, 62]
+        second_sql = cur.execute.call_args_list[1].args[0].lower()
+        assert "not exists" in second_sql and "speaker_turn_videos" in second_sql, (
+            "final statement must carry its own independent pending-row anti-join"
+        )
+        assert cur.execute.call_count == 2, "no third query — no scoped post-hoc filter"
+
+    def test_no_pending_rows_returns_empty_list_after_one_statement(self, monkeypatch):
+        mod = _fresh()
+        cur = _wire_cursor(monkeypatch, mod, fetchone=None, fetchall=[])
+
+        ti = MagicMock()
+        pushed = {}
+        ti.xcom_push.side_effect = lambda key, value: pushed.update({key: value})
+        mod._select_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        assert pushed["turns"] == []
+        assert cur.execute.call_count == 1, "the second statement must never be issued"
+
+
+# ---------------------------------------------------------------------------
+# Explicit limit key preserves global backlog drainage (issue #231)
+# ---------------------------------------------------------------------------
+
+class TestExplicitLimitGlobalDrain:
+    def test_positive_limit_spans_multiple_chapters_globally_ordered(self, monkeypatch):
+        mod = _fresh()
+        rows = [_row(10, chapter_id=3, video_id="vidA"), _row(11, chapter_id=9, video_id="vidB")]
+        cur = _wire_cursor(monkeypatch, mod, fetchall=rows)
+
+        ti = MagicMock()
+        pushed = {}
+        ti.xcom_push.side_effect = lambda key, value: pushed.update({key: value})
+        mod._select_task(ti=ti, dag_run=MagicMock(conf={"limit": 5}))
+
+        assert [t["turn_id"] for t in pushed["turns"]] == [10, 11], "chapters must not constrain the drain"
+        assert cur.execute.call_count == 1
+        assert cur.execute.call_args_list[0].args[1] == (5,)
+        assert "chapter_id = %s" not in cur.execute.call_args_list[0].args[0].lower()
+
+    @pytest.mark.parametrize("limit_value,rows,expected_ids", [
+        (0, [], []),
+        (None, [_row(1)], [1]),
+    ])
+    def test_limit_edge_values_bind_unchanged(self, monkeypatch, limit_value, rows, expected_ids):
+        """0 returns no rows; None binds unchanged for an unbounded PostgreSQL LIMIT."""
+        mod = _fresh()
+        cur = _wire_cursor(monkeypatch, mod, fetchall=rows)
+
+        ti = MagicMock()
+        pushed = {}
+        ti.xcom_push.side_effect = lambda key, value: pushed.update({key: value})
+        mod._select_task(ti=ti, dag_run=MagicMock(conf={"limit": limit_value}))
+
+        assert cur.execute.call_args_list[0].args[1] == (limit_value,), "no coercion of the raw value"
+        assert [t["turn_id"] for t in pushed["turns"]] == expected_ids
+
+    def test_negative_limit_propagates_database_error_unhandled(self, monkeypatch):
+        """Invalid limit values retain the existing DB failure — no coercion or fallback."""
+        mod = _fresh()
+        _wire_cursor(monkeypatch, mod, execute_side_effect=ValueError("invalid input syntax for LIMIT"))
+
+        with pytest.raises(ValueError):
+            mod._select_task(ti=MagicMock(), dag_run=MagicMock(conf={"limit": -1}))
+
+
+# ---------------------------------------------------------------------------
+# Scoped precedence: chapter_id > video_id > limit key (issue #231)
+# ---------------------------------------------------------------------------
+
+class TestScopedPrecedenceOverLimit:
+    def test_chapter_id_takes_precedence_over_video_id_and_limit(self, monkeypatch):
+        mod = _fresh()
+        cur = _wire_cursor(monkeypatch, mod, fetchall_side_effect=[[_row(1, chapter_id=10)], []])
+
+        mod._select_task(
+            ti=MagicMock(),
+            dag_run=MagicMock(conf={"chapter_id": 10, "video_id": "other", "limit": 3}),
+        )
+
+        first_sql = cur.execute.call_args_list[0].args[0].lower()
+        assert "st.chapter_id = %s" in first_sql
+        assert cur.execute.call_args_list[0].args[1] == (10,), "video_id and limit must be ignored"
+
+    @pytest.mark.parametrize("conf,expected_params", [
+        ({"chapter_id": 10, "limit": 1}, (10,)),
+        ({"video_id": "vid1", "limit": 1}, ("vid1",)),
+    ])
+    def test_scoped_limit_is_ignored(self, monkeypatch, conf, expected_params):
+        mod = _fresh()
+        cur = _wire_cursor(monkeypatch, mod, fetchall_side_effect=[[_row(1, chapter_id=10)], []])
+
+        mod._select_task(ti=MagicMock(), dag_run=MagicMock(conf=conf))
+
+        first_sql = cur.execute.call_args_list[0].args[0].lower()
+        assert "limit" not in first_sql, "an explicit limit must not cap a scoped result"
+        assert cur.execute.call_args_list[0].args[1] == expected_params
 
 
 # ---------------------------------------------------------------------------
