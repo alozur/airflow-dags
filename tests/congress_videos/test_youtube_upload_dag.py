@@ -2520,3 +2520,128 @@ class TestExtractMetadataTitleDescription:
         title, desc = _extract_metadata_title_description(result)
         assert title == ""
         assert desc == ""
+
+
+# ---------------------------------------------------------------------------
+# Cross-DAG regression: turn_id survives prepare -> upload -> mark (issue #230)
+# ---------------------------------------------------------------------------
+
+
+class TestTurnIdSurvivesUploadRoundTrip:
+    """Regression coverage for issue #230.
+
+    turn_id must flow unbroken through _prepare_upload_config -> the generic
+    uploader's upload_multiple_videos -> the mark_turns_uploaded operator, so
+    the operator's primary turn_id branch fires instead of the output_path
+    fallback. Neither unit-level test suite (youtube_helpers, postgres
+    operators) could catch this on its own — the bug was in the seam between
+    them, which is exactly what this in-process round trip exercises.
+    """
+
+    def test_turn_id_flows_from_prepare_through_upload_to_marking(self, tmp_path, mocker):
+        from congress_videos.youtube_upload_dag import _prepare_upload_config
+        from utils.youtube_helpers import upload_multiple_videos
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        # --- Step 1: prepare upload config for a turn item (sidecar fixture) ---
+        turn_dir = tmp_path / "oradores" / "1"
+        turn_dir.mkdir(parents=True)
+        (turn_dir / "video.mp4").write_bytes(b"fake")
+        (turn_dir / "title.txt").write_text("T", encoding="utf-8")
+        (turn_dir / "description.txt").write_text("D", encoding="utf-8")
+        (turn_dir / "thumbnail.png").write_bytes(b"\x89PNG")
+        (turn_dir / "subtitles.srt").write_text("", encoding="utf-8")
+
+        extraction = {
+            "total_chapters": 1,
+            "successful_extractions": 1,
+            "results": [
+                {
+                    "chapter_id": 100,
+                    "turn_id": 1,
+                    "video_id": "vidXYZ",
+                    "success": True,
+                    "output_path": str(turn_dir / "video.mp4"),
+                    "file_size_mb": None,
+                    "duration_seconds": None,
+                    "error": None,
+                }
+            ],
+        }
+
+        fresh_metadata = {
+            "topic_metadata": [
+                {
+                    "title": {"title": "Round Trip Turn Title"},
+                    "description": {"description": "Round trip turn description."},
+                }
+            ]
+        }
+
+        prepare_store = {
+            "uploadable_item": {
+                "item": {
+                    "turn_id": 1,
+                    "output_path": str(turn_dir / "video.mp4"),
+                    "chapter_id": 100,
+                },
+                "item_type": "turn",
+            },
+            "chapter_extraction_results": extraction,
+            "youtube_metadata_results": fresh_metadata,
+            "thumbnail_result": None,
+        }
+        prepare_ti = _make_ti(prepare_store)
+        context = {"params": {"isTesting": False, "dry_run": False}}
+
+        _prepare_upload_config(prepare_ti, **context)
+
+        upload_config = prepare_ti.xcom_store["upload_config"]
+        assert upload_config["videos"][0]["turn_id"] == 1, (
+            "prepare step must carry turn_id into the upload config"
+        )
+
+        # --- Step 2: upload via the generic uploader's upload_multiple_videos ---
+        mocker.patch(
+            "utils.youtube_helpers.get_authenticated_youtube_service",
+            return_value=mocker.MagicMock(),
+        )
+        mocker.patch(
+            "utils.youtube_helpers.upload_video_to_youtube",
+            return_value={
+                "success": True,
+                "video_id": "yt-round-trip",
+                "video_url": "https://youtu.be/yt-round-trip",
+                "thumbnail_success": None,
+                "error": None,
+            },
+        )
+
+        upload_results = upload_multiple_videos(
+            upload_config["token_file"], upload_config["videos"]
+        )
+
+        assert upload_results["upload_details"][0]["turn_id"] == 1, (
+            "upload_multiple_videos must propagate turn_id into upload_detail"
+        )
+
+        # --- Step 3: mark_turns_uploaded operator reads upload_results from XCom ---
+        mock_db = mocker.MagicMock()
+        mocker.patch(
+            "congress_videos.modules.postgres_operators.CongressionalVideoDB",
+            return_value=mock_db,
+        )
+
+        operator_ti = _make_ti({"upload_results": upload_results})
+        op = PostgreSQLOperator(
+            task_id="mark_turns_uploaded",
+            operation="mark_turns_uploaded",
+            xcom_keys={"upload_results": "upload_results"},
+            output_xcom_key="turn_upload_updates",
+        )
+        op.execute({"ti": operator_ti, "params": {}})
+
+        mock_db.mark_turns_uploaded.assert_called_once_with(
+            turn_id=1, youtube_video_id="yt-round-trip"
+        )
+        mock_db.mark_turns_uploaded_by_output_path.assert_not_called()

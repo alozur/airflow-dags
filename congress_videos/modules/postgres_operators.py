@@ -204,6 +204,7 @@ class PostgreSQLOperator(BaseOperator):
                 for upload_detail in upload_results['upload_details']:
                     turn_id = upload_detail.get('turn_id')
                     youtube_video_id = upload_detail.get('youtube_video_id')
+                    output_path = upload_detail.get('video_file')
                     success = upload_detail.get('success', False)
 
                     if success and turn_id and youtube_video_id:
@@ -214,6 +215,7 @@ class PostgreSQLOperator(BaseOperator):
                                 'turn_id': turn_id,
                                 'youtube_video_id': youtube_video_id,
                                 'status': 'updated',
+                                'matched_by': 'turn_id',
                             })
                             logger.info(f"✅ Marked turn {turn_id} as uploaded: {youtube_video_id}")
                         except Exception as e:
@@ -224,6 +226,46 @@ class PostgreSQLOperator(BaseOperator):
                                 'error': str(e),
                             })
                             logger.error(f"❌ Failed to mark turn {turn_id}: {e}")
+                    elif success and youtube_video_id and output_path:
+                        try:
+                            rows_matched = db.mark_turns_uploaded_by_output_path(
+                                output_path, youtube_video_id
+                            )
+                            if rows_matched:
+                                updated_count += 1
+                                details.append({
+                                    'turn_id': turn_id,
+                                    'youtube_video_id': youtube_video_id,
+                                    'status': 'updated',
+                                    'matched_by': 'output_path',
+                                    'output_path': output_path,
+                                })
+                                logger.info(
+                                    f"✅ Marked turn(s) at output_path={output_path!r} as uploaded: {youtube_video_id}"
+                                )
+                            else:
+                                details.append({
+                                    'turn_id': turn_id,
+                                    'status': 'skipped',
+                                    'reason': 'output_path_not_found',
+                                    'matched_by': 'output_path',
+                                    'output_path': output_path,
+                                })
+                                logger.warning(
+                                    f"⚠️ No turn rows matched output_path={output_path!r}"
+                                )
+                        except Exception as e:
+                            failed_count += 1
+                            details.append({
+                                'turn_id': turn_id,
+                                'status': 'failed',
+                                'error': str(e),
+                                'matched_by': 'output_path',
+                                'output_path': output_path,
+                            })
+                            logger.error(
+                                f"❌ Failed to mark turn(s) at output_path={output_path!r}: {e}"
+                            )
                     else:
                         details.append({
                             'turn_id': turn_id,
