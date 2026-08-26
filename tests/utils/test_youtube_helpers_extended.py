@@ -182,6 +182,72 @@ class TestUploadMultipleVideos:
 
         assert result["upload_details"][0]["chapter_id"] == "ch-99"
 
+    def test_turn_id_included_in_upload_detail(self, tmp_path, mocker):
+        """turn_id from video config is included in upload_detail (issue #230)."""
+        self._make_service(mocker)
+        mocker.patch(
+            "utils.youtube_helpers.upload_video_to_youtube",
+            return_value={
+                "success": True,
+                "video_id": "yt-turn1",
+                "video_url": "https://youtu.be/yt-turn1",
+                "thumbnail_success": None,
+                "error": None,
+            },
+        )
+
+        from utils.youtube_helpers import upload_multiple_videos
+
+        token_file = tmp_path / "token.pkl"
+        token_file.write_bytes(b"fake")
+
+        result = upload_multiple_videos(
+            str(token_file),
+            [
+                {
+                    "video_file": "/data/turn1.mp4",
+                    "title": "Turn Test",
+                    "turn_id": 42,
+                }
+            ],
+        )
+
+        assert result["upload_details"][0]["turn_id"] == 42
+
+    def test_turn_id_is_none_when_omitted(self, tmp_path, mocker):
+        """turn_id is None (not KeyError) for chapter/short uploads that omit it."""
+        self._make_service(mocker)
+        mocker.patch(
+            "utils.youtube_helpers.upload_video_to_youtube",
+            return_value={
+                "success": True,
+                "video_id": "yt-chapter1",
+                "video_url": "https://youtu.be/yt-chapter1",
+                "thumbnail_success": None,
+                "error": None,
+            },
+        )
+
+        from utils.youtube_helpers import upload_multiple_videos
+
+        token_file = tmp_path / "token.pkl"
+        token_file.write_bytes(b"fake")
+
+        result = upload_multiple_videos(
+            str(token_file),
+            [
+                {
+                    "video_file": "/data/chapter1.mp4",
+                    "title": "Chapter Test",
+                    "chapter_id": "ch-1",
+                }
+            ],
+        )
+
+        assert result["upload_details"][0]["turn_id"] is None
+        # Other existing keys stay untouched
+        assert result["upload_details"][0]["chapter_id"] == "ch-1"
+
 
 # ---------------------------------------------------------------------------
 # upload_from_conf

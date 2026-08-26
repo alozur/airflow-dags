@@ -133,6 +133,247 @@ class TestMarkTurnsUploaded:
         assert any("turn 7" in r.message and "yt-info" in r.message for r in infos)
 
 
+class TestMarkTurnsUploadedOutputPathFallback:
+    """operation='mark_turns_uploaded' falls back to output_path when turn_id is missing (#230)."""
+
+    def test_fallback_fires_when_turn_id_missing_and_video_file_present(
+        self, mock_db, mock_task_instance
+    ):
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db.mark_turns_uploaded_by_output_path.return_value = 2
+        mock_task_instance.xcom_store["upload_results"] = {
+            "upload_details": [
+                {
+                    "turn_id": None,
+                    "youtube_video_id": "abc",
+                    "video_file": "/path/turn1.mp4",
+                    "success": True,
+                },
+            ]
+        }
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="mark_turns_uploaded",
+            xcom_keys={"upload_results": "upload_results"},
+            output_xcom_key="turn_upload_updates",
+        )
+        op.execute(_make_context(mock_task_instance))
+
+        mock_db.mark_turns_uploaded.assert_not_called()
+        mock_db.mark_turns_uploaded_by_output_path.assert_called_once_with(
+            "/path/turn1.mp4", "abc"
+        )
+
+    def test_turn_id_wins_when_both_present(self, mock_db, mock_task_instance):
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_task_instance.xcom_store["upload_results"] = {
+            "upload_details": [
+                {
+                    "turn_id": 5,
+                    "youtube_video_id": "abc",
+                    "video_file": "/path/turn1.mp4",
+                    "success": True,
+                },
+            ]
+        }
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="mark_turns_uploaded",
+            xcom_keys={"upload_results": "upload_results"},
+            output_xcom_key="turn_upload_updates",
+        )
+        op.execute(_make_context(mock_task_instance))
+
+        mock_db.mark_turns_uploaded.assert_called_once_with(
+            turn_id=5, youtube_video_id="abc"
+        )
+        mock_db.mark_turns_uploaded_by_output_path.assert_not_called()
+
+    def test_neither_key_is_skipped_without_db_call(self, mock_db, mock_task_instance):
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_task_instance.xcom_store["upload_results"] = {
+            "upload_details": [
+                {
+                    "turn_id": None,
+                    "youtube_video_id": "abc",
+                    "video_file": None,
+                    "success": True,
+                },
+            ]
+        }
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="mark_turns_uploaded",
+            xcom_keys={"upload_results": "upload_results"},
+            output_xcom_key="turn_upload_updates",
+        )
+        result = op.execute(_make_context(mock_task_instance))
+
+        mock_db.mark_turns_uploaded.assert_not_called()
+        mock_db.mark_turns_uploaded_by_output_path.assert_not_called()
+        assert result["details"][0]["status"] == "skipped"
+
+    def test_failed_upload_does_not_trigger_fallback(self, mock_db, mock_task_instance):
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_task_instance.xcom_store["upload_results"] = {
+            "upload_details": [
+                {
+                    "turn_id": None,
+                    "youtube_video_id": "abc",
+                    "video_file": "/path/turn1.mp4",
+                    "success": False,
+                },
+            ]
+        }
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="mark_turns_uploaded",
+            xcom_keys={"upload_results": "upload_results"},
+            output_xcom_key="turn_upload_updates",
+        )
+        op.execute(_make_context(mock_task_instance))
+
+        mock_db.mark_turns_uploaded_by_output_path.assert_not_called()
+
+    def test_details_carry_matched_by_and_output_path_on_fallback(
+        self, mock_db, mock_task_instance
+    ):
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db.mark_turns_uploaded_by_output_path.return_value = 2
+        mock_task_instance.xcom_store["upload_results"] = {
+            "upload_details": [
+                {
+                    "turn_id": None,
+                    "youtube_video_id": "abc",
+                    "video_file": "/path/turn1.mp4",
+                    "success": True,
+                },
+            ]
+        }
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="mark_turns_uploaded",
+            xcom_keys={"upload_results": "upload_results"},
+            output_xcom_key="turn_upload_updates",
+        )
+        result = op.execute(_make_context(mock_task_instance))
+
+        detail = result["details"][0]
+        assert detail["matched_by"] == "output_path"
+        assert detail["output_path"] == "/path/turn1.mp4"
+        assert detail["status"] == "updated"
+
+    def test_details_carry_matched_by_turn_id_on_primary_path(
+        self, mock_db, mock_task_instance
+    ):
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_task_instance.xcom_store["upload_results"] = {
+            "upload_details": [
+                {"turn_id": 1, "youtube_video_id": "abc", "success": True},
+            ]
+        }
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="mark_turns_uploaded",
+            xcom_keys={"upload_results": "upload_results"},
+            output_xcom_key="turn_upload_updates",
+        )
+        result = op.execute(_make_context(mock_task_instance))
+
+        detail = result["details"][0]
+        assert detail["matched_by"] == "turn_id"
+
+    def test_fallback_zero_rows_is_skipped_not_updated(self, mock_db, mock_task_instance):
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db.mark_turns_uploaded_by_output_path.return_value = 0
+        mock_task_instance.xcom_store["upload_results"] = {
+            "upload_details": [
+                {
+                    "turn_id": None,
+                    "youtube_video_id": "abc",
+                    "video_file": "/path/gone.mp4",
+                    "success": True,
+                },
+            ]
+        }
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="mark_turns_uploaded",
+            xcom_keys={"upload_results": "upload_results"},
+            output_xcom_key="turn_upload_updates",
+        )
+        result = op.execute(_make_context(mock_task_instance))
+
+        assert result["updated_turns"] == 0
+        detail = result["details"][0]
+        assert detail["status"] == "skipped"
+        assert detail["reason"] == "output_path_not_found"
+
+    def test_fallback_db_exception_increments_failed_updates(
+        self, mock_db, mock_task_instance
+    ):
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_db.mark_turns_uploaded_by_output_path.side_effect = Exception("db down")
+        mock_task_instance.xcom_store["upload_results"] = {
+            "upload_details": [
+                {
+                    "turn_id": None,
+                    "youtube_video_id": "abc",
+                    "video_file": "/path/turn1.mp4",
+                    "success": True,
+                },
+            ]
+        }
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="mark_turns_uploaded",
+            xcom_keys={"upload_results": "upload_results"},
+            output_xcom_key="turn_upload_updates",
+        )
+        result = op.execute(_make_context(mock_task_instance))
+
+        assert result["failed_updates"] == 1
+        assert result["updated_turns"] == 0
+
+    def test_existing_skip_reason_string_unchanged_for_no_usable_key(
+        self, mock_db, mock_task_instance
+    ):
+        """The pre-existing skip reason string must stay 'upload_failed_or_missing_fields'."""
+        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+
+        mock_task_instance.xcom_store["upload_results"] = {
+            "upload_details": [
+                {"turn_id": None, "youtube_video_id": None, "success": False},
+            ]
+        }
+
+        op = PostgreSQLOperator(
+            task_id="t",
+            operation="mark_turns_uploaded",
+            xcom_keys={"upload_results": "upload_results"},
+            output_xcom_key="turn_upload_updates",
+        )
+        result = op.execute(_make_context(mock_task_instance))
+
+        assert result["details"][0]["reason"] == "upload_failed_or_missing_fields"
+
+
 # ---------------------------------------------------------------------------
 # check_upload_quota — extended with turns_pending
 # ---------------------------------------------------------------------------

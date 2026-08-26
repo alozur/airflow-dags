@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 def _make_conn(rows=None, scalar=None):
     """Return a fake pg_conn context-manager whose cursor returns rows or scalar."""
@@ -283,6 +285,119 @@ class TestMarkTurnsUploadedSiblingMarking:
         assert params == ("vid_abc", 7), (
             f"Params must be (youtube_video_id, turn_id) = ('vid_abc', 7), got {params}"
         )
+
+
+class TestMarkTurnsUploadedByOutputPath:
+    """mark_turns_uploaded_by_output_path is the fallback marking method (issue #230)."""
+
+    def test_where_clause_uses_output_path_equality(self):
+        """UPDATE WHERE must filter by output_path = %s, no subquery."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_turns_uploaded_by_output_path(
+                output_path="/path/turn1.mp4", youtube_video_id="vid1"
+            )
+
+        call_args = cursor.execute.call_args
+        query = call_args[0][0].upper()
+        assert "WHERE OUTPUT_PATH = %S" in query
+        assert "SELECT" not in query, (
+            "output_path fallback must not use a subquery like mark_turns_uploaded"
+        )
+
+    def test_sets_all_three_tracking_columns(self):
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_turns_uploaded_by_output_path(
+                output_path="/path/turn1.mp4", youtube_video_id="vid1"
+            )
+
+        call_args = cursor.execute.call_args
+        query = call_args[0][0].upper()
+        assert "IS_UPLOADED_TO_YOUTUBE" in query
+        assert "TRUE" in query
+        assert "YOUTUBE_VIDEO_ID" in query
+        assert "YOUTUBE_UPLOAD_DATE" in query
+        assert "NOW()" in query or "CURRENT_TIMESTAMP" in query
+
+    def test_params_tuple_is_youtube_video_id_then_output_path(self):
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_turns_uploaded_by_output_path(
+                output_path="/path/turn1.mp4", youtube_video_id="vid_abc"
+            )
+
+        call_args = cursor.execute.call_args
+        params = call_args[0][1]
+        assert params == ("vid_abc", "/path/turn1.mp4"), (
+            f"Params must be (youtube_video_id, output_path), got {params}"
+        )
+
+    def test_returns_cursor_rowcount(self):
+        """Return value must be cur.rowcount, so callers can distinguish 0 rows matched."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        cursor.rowcount = 3
+
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            result = db.mark_turns_uploaded_by_output_path(
+                output_path="/path/grouped.mp4", youtube_video_id="vid1"
+            )
+
+        assert result == 3
+
+    def test_raises_value_error_on_empty_output_path(self):
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            with pytest.raises(ValueError):
+                db.mark_turns_uploaded_by_output_path(
+                    output_path="", youtube_video_id="vid1"
+                )
+
+    def test_raises_value_error_on_none_output_path(self):
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            with pytest.raises(ValueError):
+                db.mark_turns_uploaded_by_output_path(
+                    output_path=None, youtube_video_id="vid1"
+                )
+
+    def test_updates_speaker_turn_videos_table(self):
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_turns_uploaded_by_output_path(
+                output_path="/path/turn1.mp4", youtube_video_id="vid1"
+            )
+
+        call_args = cursor.execute.call_args
+        query = call_args[0][0].upper()
+        assert "SPEAKER_TURN_VIDEOS" in query
 
 
 class TestCountChaptersUploadedTodayUnchanged:

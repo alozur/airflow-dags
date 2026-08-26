@@ -404,6 +404,7 @@ def upload_multiple_videos(
                 "video_file": video_file,
                 "entry_id": video_info.get('entry_id'),  # Include entry_id for database updates
                 "chapter_id": video_info.get('chapter_id'),  # Include chapter_id for chapter uploads
+                "turn_id": video_info.get('turn_id'),  # Include turn_id for speaker turn uploads
                 "video_id": video_info.get('video_id'),  # Include source video_id for reference
                 "success": upload_result.get('success', False),
                 "youtube_video_id": upload_result.get('video_id'),  # Rename to youtube_video_id for clarity

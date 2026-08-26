@@ -1357,6 +1357,55 @@ class CongressionalVideoDB:
                     f"Marked turn {turn_id} as uploaded to YouTube: {youtube_video_id}"
                 )
 
+    def mark_turns_uploaded_by_output_path(
+        self, output_path: str, youtube_video_id: str
+    ) -> int:
+        """Mark ALL speaker turn video rows sharing output_path as uploaded.
+
+        Fallback marking path for when the caller does not have a turn_id
+        (e.g. upload_detail predates issue #230's turn_id propagation fix).
+        Mirrors the ``mark_upload_verified`` output_path predicate (#141).
+
+        Args:
+            output_path: Absolute path to the grouped turn's video.mp4 file.
+            youtube_video_id: YouTube video ID of the uploaded turn video.
+
+        Returns:
+            Number of rows updated (``cur.rowcount``), so callers can detect
+            when no row matched output_path.
+
+        Raises:
+            ValueError: If output_path is falsy (would generate an unbounded
+                ``WHERE output_path = NULL`` update).
+        """
+        if not output_path:
+            raise ValueError(
+                "mark_turns_uploaded_by_output_path: output_path is required"
+            )
+
+        stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {stv_table} SET
+                        is_uploaded_to_youtube = TRUE,
+                        youtube_video_id = %s,
+                        youtube_upload_date = NOW()
+                    WHERE output_path = %s
+                    """,
+                    (youtube_video_id, output_path),
+                )
+                logger.info(
+                    "mark_turns_uploaded_by_output_path: output_path=%r marked "
+                    "uploaded to YouTube: %s (%d rows)",
+                    output_path,
+                    youtube_video_id,
+                    cur.rowcount,
+                )
+                return cur.rowcount
+
     def select_unprepared_turns(self, limit: int = 2) -> List[Dict]:
         """Select speaker turns that have not been prepared yet.
 
