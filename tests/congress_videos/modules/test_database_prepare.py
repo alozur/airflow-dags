@@ -223,3 +223,72 @@ class TestMarkTurnPrepared:
             result = db.mark_turn_prepared(turn_id=1)
 
         assert result is None
+
+
+class TestMarkTurnPreparedSiblingMarking:
+    """mark_turn_prepared must mark ALL siblings sharing output_path, not just turn_id (#237)."""
+
+    def test_where_clause_uses_output_path_subquery(self):
+        """UPDATE WHERE must use output_path = (SELECT output_path ...) not WHERE turn_id = %s."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_turn_prepared(turn_id=42)
+
+        call_args = cursor.execute.call_args
+        query = call_args[0][0].upper()
+        assert "WHERE OUTPUT_PATH = (" in query, (
+            "UPDATE must filter by output_path = (subquery), not by turn_id directly"
+        )
+
+    def test_inner_subquery_selects_output_path(self):
+        """Inner subquery must SELECT output_path FROM the same table."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_turn_prepared(turn_id=42)
+
+        call_args = cursor.execute.call_args
+        query = call_args[0][0].upper()
+        assert "SELECT OUTPUT_PATH FROM" in query, (
+            "SQL must contain inner SELECT output_path FROM <table> WHERE turn_id = %s"
+        )
+
+    def test_qualified_table_name_appears_twice(self):
+        """Qualified table name must appear in both the outer UPDATE and the inner subquery."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        pg_mock.get_qualified_table.side_effect = lambda t: f"development.{t}"
+
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_turn_prepared(turn_id=42)
+
+        call_args = cursor.execute.call_args
+        query = call_args[0][0]
+        count = query.count("development.speaker_turn_videos")
+        assert count >= 2, (
+            f"Qualified table name must appear at least twice (outer + subquery), got {count}"
+        )
+
+    def test_params_tuple_is_single_turn_id_for_subquery(self):
+        """Params must be (turn_id,) — single element, bound to the inner subquery WHERE."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            result = db.mark_turn_prepared(turn_id=42)
+
+        call_args = cursor.execute.call_args
+        params = call_args[0][1]
+        assert params == (42,), f"Params must be (42,), got {params}"
+        assert result is None
