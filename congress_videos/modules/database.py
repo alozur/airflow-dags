@@ -1465,7 +1465,12 @@ class CongressionalVideoDB:
                 return turns
 
     def mark_turn_prepared(self, turn_id: int) -> None:
-        """Set prepared_at = now() for the given speaker_turn_videos row.
+        """Set prepared_at = now() for all speaker_turn_videos rows sharing this
+        turn's output_path.
+
+        Marks **all** ``speaker_turn_videos`` rows sharing this turn's
+        ``output_path`` (grouped turns, issue #129/#237), not just the given
+        ``turn_id``, mirroring ``mark_turns_uploaded``/``mark_turn_resolved``.
 
         Called LAST by the prepare pipeline, only after:
         - All four sidecars (thumbnail.png, title.txt, description.txt, subtitles.srt)
@@ -1475,7 +1480,8 @@ class CongressionalVideoDB:
         Must NOT update is_uploaded_to_youtube (that is the upload gate, not prepare gate).
 
         Args:
-            turn_id: FK / PK of the speaker_turn_videos row to mark prepared.
+            turn_id: FK / PK of any speaker_turn_videos row whose output_path
+                group should be marked prepared.
         """
         stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
 
@@ -1485,11 +1491,18 @@ class CongressionalVideoDB:
                     f"""
                     UPDATE {stv_table}
                     SET prepared_at = NOW()
-                    WHERE turn_id = %s
+                    WHERE output_path = (
+                        SELECT output_path FROM {stv_table} WHERE turn_id = %s
+                    )
                     """,
                     (turn_id,),
                 )
-                logger.info("mark_turn_prepared: turn_id=%d marked prepared", turn_id)
+                logger.info(
+                    "mark_turn_prepared: turn_id=%s marked prepared "
+                    "(%s sibling rows sharing output_path)",
+                    turn_id,
+                    cur.rowcount,
+                )
 
     def mark_turn_resolved(
         self,
