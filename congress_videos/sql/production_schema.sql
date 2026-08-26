@@ -211,15 +211,34 @@ COMMENT ON COLUMN production.video_chapters.last_upload_error IS 'Last recorded 
 COMMENT ON VIEW production.uploadable_chapters IS 'Shows chapters eligible for YouTube upload (relevance_score >= 2)';
 COMMENT ON VIEW production.chapter_statistics IS 'Provides aggregate statistics about chapters by source video';
 
--- View: uploadable_turns (migration 030)
+-- View: uploadable_turns (migration 035)
 -- Shows speaker_turn_videos rows that are PREPARED and not yet uploaded.
--- prepared_at IS NOT NULL gate added by migration 030 (issue #146):
---   turns are surfaced only after speaker_turn_prepare DAG writes all sidecars
---   and ffprobe passes. interest_score added by migration 029.
--- speaker_turn_videos.prepared_at TIMESTAMPTZ added by migration 030.
+-- Cumulative lineage — this block must stay in lockstep with the LATEST view migration
+-- under congress_videos/sql/migrations/ (guarded by tests/congress_videos/sql/test_production_schema.py):
+--   028 DISTINCT ON (stv.output_path) grouped-turn dedup
+--   029 interest_score column + priority ordering
+--   030 stv.prepared_at TIMESTAMPTZ + IS NOT NULL readiness gate (issue #146)
+--   032 NOT stv.is_upload_abandoned gate (issue #141)
+--   034 resolved_participant_slug / speaker_resolution_confidence / speaker_resolution_method
+--   035 group_spans CTE + 300s minimum grouped-clip duration floor (issue #234)
 
 DROP VIEW IF EXISTS production.uploadable_turns;
 CREATE VIEW production.uploadable_turns AS
+WITH group_spans AS (
+    -- Wall-clock span of every materialized turn video, over ALL speaker_turn_videos
+    -- rows sharing an output_path. Grouped clips (issue #129) hold N rows per file.
+    -- This aggregate is deliberately UNFILTERED: the eligibility WHERE below is applied
+    -- after DISTINCT ON (stv.output_path), which keeps a single sibling row per clip.
+    -- Computing the span after those gates (e.g. with MIN/MAX OVER (PARTITION BY ...),
+    -- which Postgres evaluates AFTER WHERE) would collapse it to that one turn's
+    -- narrow window and re-introduce the issue #151 bug class.
+    SELECT stv.output_path,
+           MIN(st.start_seconds) AS group_start_seconds,
+           MAX(st.end_seconds)   AS group_end_seconds
+    FROM production.speaker_turn_videos stv
+    JOIN production.speaker_turns st ON stv.turn_id = st.turn_id
+    GROUP BY stv.output_path
+)
 SELECT * FROM (
     SELECT DISTINCT ON (stv.output_path)
         stv.turn_id,
@@ -229,6 +248,8 @@ SELECT * FROM (
         st.start_seconds,
         st.end_seconds,
         st.interest_score,
+        gs.group_start_seconds,
+        gs.group_end_seconds,
         vc.video_id,
         vc.title AS chapter_title,
         vc.description,
@@ -237,19 +258,28 @@ SELECT * FROM (
         ysv.session_number,
         ysv.session_date,
         stv.materialized_at,
-        stv.prepared_at
+        stv.prepared_at,
+        stv.resolved_participant_slug,
+        stv.speaker_resolution_confidence,
+        stv.speaker_resolution_method
     FROM production.speaker_turn_videos stv
     JOIN production.speaker_turns st ON stv.turn_id = st.turn_id
     JOIN production.video_chapters vc ON st.chapter_id = vc.chapter_id
     JOIN production.youtube_source_videos ysv ON vc.video_id = ysv.video_id
+    JOIN group_spans gs ON gs.output_path = stv.output_path
     WHERE stv.is_uploaded_to_youtube = FALSE
       AND stv.prepared_at IS NOT NULL             -- PREPARE readiness gate (issue #146)
+      AND NOT stv.is_upload_abandoned              -- ABANDON gate (issue #141)
       AND vc.is_uploaded_to_youtube = FALSE
       AND vc.relevance_score >= 2
       AND COALESCE(st.interest_score, 1) >= 1    -- INTEREST_FILTER_THRESHOLD, soft-exclude score 0
     ORDER BY stv.output_path, stv.turn_id
 ) dedup
+-- MIN_TURN_UPLOAD_DURATION_SECONDS = 300 (issue #234): a turn video must last at least
+-- 5 minutes to be worth the single daily 19:00 UTC slot. Documented literal, NOT
+-- runtime-tunable — changing the floor requires a new migration.
+WHERE dedup.group_end_seconds - dedup.group_start_seconds >= 300
 ORDER BY COALESCE(dedup.interest_score, 1) DESC,  -- PRIMARY: interest score (NULL → INTEREST_NEUTRAL=1)
          dedup.relevance_score DESC, dedup.session_date DESC;
 
-COMMENT ON VIEW production.uploadable_turns IS 'Speaker turn videos eligible for YouTube upload — prepared_at IS NOT NULL gate ensures sidecars are ready before upload (issue #146)';
+COMMENT ON VIEW production.uploadable_turns IS 'Speaker turn videos eligible for YouTube upload — prepared_at IS NOT NULL (issue #146), NOT is_upload_abandoned (issue #141), and grouped clip duration >= 300s (issue #234)';
