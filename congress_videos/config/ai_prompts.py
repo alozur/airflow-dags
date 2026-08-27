@@ -53,22 +53,6 @@ REQUISITOS DESCRIPCIÓN:
 Devuelve SOLO el JSON, sin markdown."""
 
 
-# YouTube Title Generation
-YOUTUBE_TITLE_SYSTEM_PROMPT = "Eres un experto en crear títulos atractivos para contenido político español en YouTube."
-
-YOUTUBE_TITLE_USER_PROMPT_TEMPLATE = """
-Genera un título optimizado para YouTube de un vídeo del Congreso de España. El título debe ser:
-- Atractivo y claro para audiencia general
-- Máximo {max_length} caracteres
-- Incluir palabras clave relevantes
-- Evitar jerga política compleja
-
-Contenido del debate: {main_topic_content}
-{speaker_context}
-
-Genera solo el título, sin explicaciones adicionales y sin comillas.
-"""
-
 # YouTube Description Generation
 YOUTUBE_DESCRIPTION_SYSTEM_PROMPT = (
     "Eres un periodista político español experto en comunicar de forma clara y atractiva. "
