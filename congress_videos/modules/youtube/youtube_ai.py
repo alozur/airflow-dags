@@ -13,15 +13,12 @@ from congress_videos.config.ai_prompts import (
     CHAPTER_RELEVANCE_SCORING_USER_PROMPT_TEMPLATE,
     YOUTUBE_DESCRIPTION_SYSTEM_PROMPT,
     YOUTUBE_DESCRIPTION_USER_PROMPT_TEMPLATE,
-    YOUTUBE_TITLE_SYSTEM_PROMPT,
-    YOUTUBE_TITLE_USER_PROMPT_TEMPLATE,
 )
 from congress_videos.modules.speaker_helpers import format_speaker_context
 from congress_videos.modules.web_scraping import construct_session_link
 from utils.ai_helpers import (
     clamp_value,
     generate_chat_completion,
-    truncate_text,
 )
 from utils.llm_cache import cached_json_completion
 from utils.time_utils import format_youtube_timestamp, parse_timestamp
@@ -46,82 +43,6 @@ def _current_date_es() -> str:
     except KeyError:
         # Defensive fallback — should never happen with a valid month (1-12)
         return now.strftime("%Y-%m")
-
-
-def generate_youtube_title(main_topic_content, speakers_info, max_length=100):
-    """
-    Generates a YouTube-optimized title for a congressional video using OpenAI.
-
-    Args:
-        main_topic_content: The main topic/question content
-        speakers_info: List of speaker information including names and roles
-        max_length: Maximum title length (YouTube recommends under 100 characters)
-
-    Returns:
-        Dict with generated title and metadata containing:
-        - title: Generated YouTube title
-        - character_count: Length of generated title
-        - within_limit: Boolean indicating if title is within max_length
-        - error: Error message if generation failed
-    """
-    try:
-        # Prepare speaker context
-        speaker_context = format_speaker_context(speakers_info, max_speakers=3)
-
-        # Format user prompt
-        user_prompt = YOUTUBE_TITLE_USER_PROMPT_TEMPLATE.format(
-            max_length=max_length,
-            main_topic_content=main_topic_content,
-            speaker_context=speaker_context,
-        )
-
-        # Generate title
-        result = generate_chat_completion(
-            system_prompt=YOUTUBE_TITLE_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            model="gpt-3.5-turbo",
-            temperature=0.7,
-            max_tokens=150,
-        )
-
-        if result["error"]:
-            raise Exception(result["error"])
-
-        generated_title = result["content"]
-
-        # Strip any surrounding quotes (single or double)
-        generated_title = generated_title.strip().strip('"').strip("'").strip()
-
-        # Ensure title doesn't exceed max_length
-        if len(generated_title) > max_length:
-            generated_title = truncate_text(generated_title, max_length)
-
-        logging.info(
-            f"Generated YouTube title ({len(generated_title)} chars): {generated_title}"
-        )
-
-        return {
-            "title": generated_title,
-            "character_count": len(generated_title),
-            "within_limit": len(generated_title) <= max_length,
-            "error": None,
-        }
-
-    except Exception as e:
-        error_msg = f"Error generating YouTube title: {str(e)}"
-        logging.error(error_msg)
-
-        # Fallback title
-        fallback_title = "Debate en el Congreso de España"
-        if main_topic_content and "PREGUNTA" in main_topic_content:
-            fallback_title = "Sesión de Control al Gobierno - Congreso"
-
-        return {
-            "title": fallback_title,
-            "character_count": len(fallback_title),
-            "within_limit": True,
-            "error": error_msg,
-        }
 
 
 def generate_youtube_description(
@@ -369,9 +290,9 @@ def generate_youtube_metadata_for_selected_videos(top_videos):
             "duration_estimated": f"{int(duration_minutes)} minutos"
         }
 
-        # Generate title and description
+        # Generate description (issue #245: title is no longer generated here —
+        # the turn upload path sources its title from the thumbnail pipeline).
         logging.info(f"Generating YouTube metadata for chapter {chapter_id}")
-        title_result = generate_youtube_title(main_content, speakers_info)
         description_result = generate_youtube_description(
             main_content, speakers_info, video_metadata, session_number, session_date
         )
@@ -400,7 +321,6 @@ def generate_youtube_metadata_for_selected_videos(top_videos):
         topic_metadata = {
             "chapter_id": chapter_id,
             "video_id": video.get("video_id"),
-            "title": title_result,
             "description": description_result,
             "main_topic_content": chapter_title,
             "session_number": session_number,
@@ -410,8 +330,7 @@ def generate_youtube_metadata_for_selected_videos(top_videos):
             "end_time": video.get("end_time"),
             "speakers": speakers,
             "topics": video.get("topics", []),
-            "generation_success": title_result.get("error") is None
-            and description_result.get("error") is None,
+            "generation_success": description_result.get("error") is None,
         }
 
         metadata_results["topic_metadata"].append(topic_metadata)

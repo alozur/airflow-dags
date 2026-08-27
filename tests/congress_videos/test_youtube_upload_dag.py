@@ -232,38 +232,7 @@ class TestTriggerUploadWithConfig:
 
 
 # ---------------------------------------------------------------------------
-# THRESHOLD_BY_HOUR constant (REQ-THRESH-01/02/03)
-# ---------------------------------------------------------------------------
-
-
-class TestThresholdByHour:
-    def test_constant_exists(self):
-        """THRESHOLD_BY_HOUR is importable from the DAG module."""
-        from congress_videos.youtube_upload_dag import THRESHOLD_BY_HOUR
-
-        assert THRESHOLD_BY_HOUR is not None
-
-    def test_threshold_at_11(self):
-        """11:00 threshold is 10 (REQ-THRESH-01)."""
-        from congress_videos.youtube_upload_dag import THRESHOLD_BY_HOUR
-
-        assert THRESHOLD_BY_HOUR[11] == 10
-
-    def test_threshold_at_14(self):
-        """14:00 threshold is 20 (REQ-THRESH-02)."""
-        from congress_videos.youtube_upload_dag import THRESHOLD_BY_HOUR
-
-        assert THRESHOLD_BY_HOUR[14] == 20
-
-    def test_threshold_at_17(self):
-        """17:00 threshold is 0 (REQ-THRESH-03)."""
-        from congress_videos.youtube_upload_dag import THRESHOLD_BY_HOUR
-
-        assert THRESHOLD_BY_HOUR[17] == 0
-
-
-# ---------------------------------------------------------------------------
-# should_upload function (REQ-GATE-01, REQ-THRESH-01/02/03)
+# should_upload function (REQ-GATE-01)
 # ---------------------------------------------------------------------------
 
 
@@ -286,41 +255,11 @@ def _make_context_for_should_upload(
 
 
 class TestShouldUpload:
-    # 11:00 — threshold 10
-    def test_11_queue_10_is_false(self):
-        """11:00, queue=10 → False (exactly at threshold, not above) (REQ-THRESH-01)."""
-        from congress_videos.youtube_upload_dag import should_upload
-
-        ctx = _make_context_for_should_upload(queue_size=10, hour=11)
-        assert should_upload(**ctx) is False
-
-    def test_11_queue_11_is_true(self):
-        """11:00, queue=11 → True (above threshold) (REQ-THRESH-01)."""
-        from congress_videos.youtube_upload_dag import should_upload
-
-        ctx = _make_context_for_should_upload(queue_size=11, hour=11)
-        assert should_upload(**ctx) is True
-
-    def test_11_queue_5_is_false(self):
-        """11:00, queue=5 → False (below threshold) (REQ-THRESH-01)."""
+    def test_queue_above_zero_is_true_regardless_of_hour(self):
+        """queue=5 at hour=11 → True (gate is queue_size > 0, no hour lookup) (REQ-GATE-01)."""
         from congress_videos.youtube_upload_dag import should_upload
 
         ctx = _make_context_for_should_upload(queue_size=5, hour=11)
-        assert should_upload(**ctx) is False
-
-    # 14:00 — threshold 20
-    def test_14_queue_20_is_false(self):
-        """14:00, queue=20 → False (boundary — exactly at threshold) (REQ-THRESH-02)."""
-        from congress_videos.youtube_upload_dag import should_upload
-
-        ctx = _make_context_for_should_upload(queue_size=20, hour=14)
-        assert should_upload(**ctx) is False
-
-    def test_14_queue_21_is_true(self):
-        """14:00, queue=21 → True (above threshold) (REQ-THRESH-02)."""
-        from congress_videos.youtube_upload_dag import should_upload
-
-        ctx = _make_context_for_should_upload(queue_size=21, hour=14)
         assert should_upload(**ctx) is True
 
     # 17:00 — threshold 0
@@ -2183,11 +2122,11 @@ class TestUploadDagTurnPathRefactor:
             ],
         }
 
-        # Fresh 19:00 AI title in XCom
+        # Fresh 19:00 AI description in XCom; title is sourced from
+        # this run's thumbnail_result, not from youtube_metadata_results (#245).
         fresh_metadata = {
             "topic_metadata": [
                 {
-                    "title": {"title": "TÍTULO FRESCO DESDE XCOM"},
                     "description": {"description": "Desc fresca."},
                 }
             ]
@@ -2204,7 +2143,7 @@ class TestUploadDagTurnPathRefactor:
             },
             "chapter_extraction_results": extraction,
             "youtube_metadata_results": fresh_metadata,
-            "thumbnail_result": None,
+            "thumbnail_result": {"success": True, "title": "TÍTULO FRESCO DESDE XCOM"},
         }
         ti = _make_ti(store)
         context = {"params": {"isTesting": False, "dry_run": False}}
@@ -2254,7 +2193,7 @@ class TestUploadDagTurnPathRefactor:
             },
             "chapter_extraction_results": extraction,
             "youtube_metadata_results": None,
-            "thumbnail_result": None,
+            "thumbnail_result": {"success": True, "title": "T"},
         }
         ti = _make_ti(store)
         context = {"params": {"isTesting": False, "dry_run": False}}
@@ -2313,26 +2252,33 @@ class TestUploadDagTurnPathRefactor:
 
 
 # ---------------------------------------------------------------------------
-# Phase 1.2: _prepare_upload_config for turns overwrites sidecars from XCom
-# Issue #169: fresh 19:00 AI metadata wins over stale on-disk sidecars
+# Issue #245: turn title must come from this run's thumbnail_result XCom;
+# a missing/invalid title blocks the upload instead of publishing a fallback.
 # ---------------------------------------------------------------------------
 
 
-class TestPrepareUploadConfigTurnOverwritesSidecarsFromXcom:
-    """_prepare_upload_config for turns must overwrite title.txt/description.txt
-    from youtube_metadata_results XCom before calling prepare_orador_upload_config.
+class TestPrepareUploadConfigTurnRequiresThumbnailTitle:
+    """_prepare_upload_config for turns must raise when thumbnail_result lacks
+    a valid, non-empty title — never publish a fallback title (issue #245).
     """
 
-    def test_prepare_upload_config_turn_overwrites_sidecars_from_xcom(self, tmp_path):
-        """Stale title.txt on disk is overwritten by fresh AI title from XCom."""
+    @pytest.mark.parametrize(
+        "thumbnail_result",
+        [
+            None,
+            {"success": False, "title": None},
+            {"success": True, "title": ""},
+        ],
+        ids=["missing", "failed", "empty-title"],
+    )
+    def test_raises_and_pushes_no_upload_config(self, tmp_path, thumbnail_result):
         from congress_videos.youtube_upload_dag import _prepare_upload_config
 
         turn_dir = tmp_path / "oradores" / "1"
         turn_dir.mkdir(parents=True)
         (turn_dir / "video.mp4").write_bytes(b"fake")
-        # Stale sidecars from old nightly prepare
-        (turn_dir / "title.txt").write_text("TÍTULO VIEJO", encoding="utf-8")
-        (turn_dir / "description.txt").write_text("Desc vieja.", encoding="utf-8")
+        (turn_dir / "title.txt").write_text("", encoding="utf-8")
+        (turn_dir / "description.txt").write_text("", encoding="utf-8")
         (turn_dir / "thumbnail.png").write_bytes(b"\x89PNG")
         (turn_dir / "subtitles.srt").write_text("", encoding="utf-8")
 
@@ -2341,7 +2287,7 @@ class TestPrepareUploadConfigTurnOverwritesSidecarsFromXcom:
             "successful_extractions": 1,
             "results": [
                 {
-                    "chapter_id": None,
+                    "chapter_id": 100,
                     "turn_id": 1,
                     "video_id": "vidXYZ",
                     "success": True,
@@ -2351,16 +2297,6 @@ class TestPrepareUploadConfigTurnOverwritesSidecarsFromXcom:
                     "error": None,
                 }
             ],
-        }
-
-        # Fresh metadata from the 19:00 AI call
-        fresh_metadata = {
-            "topic_metadata": [
-                {
-                    "title": {"title": "TÍTULO NUEVO FRESCO"},
-                    "description": {"description": "Descripción fresca del turno."},
-                }
-            ]
         }
 
         store = {
@@ -2373,32 +2309,44 @@ class TestPrepareUploadConfigTurnOverwritesSidecarsFromXcom:
                 "item_type": "turn",
             },
             "chapter_extraction_results": extraction,
-            "youtube_metadata_results": fresh_metadata,
-            "thumbnail_result": None,
+            "youtube_metadata_results": {
+                "topic_metadata": [{"description": {"description": "Desc."}}]
+            },
+            "thumbnail_result": thumbnail_result,
         }
         ti = _make_ti(store)
         context = {"params": {"isTesting": False, "dry_run": False}}
 
-        _prepare_upload_config(ti, **context)
+        with pytest.raises(ValueError):
+            _prepare_upload_config(ti, **context)
 
-        config = ti.xcom_store.get("upload_config")
-        assert config is not None
-        videos = config.get("videos", [])
-        assert len(videos) == 1
-        # Fresh XCom title must win over stale on-disk title
-        assert videos[0]["title"] == "TÍTULO NUEVO FRESCO", (
-            f"Expected fresh XCom title 'TÍTULO NUEVO FRESCO', got {videos[0].get('title')!r}"
-        )
+        assert "upload_config" not in ti.xcom_store
 
-    def test_prepare_upload_config_turn_srt_untouched_after_overwrite(self, tmp_path):
-        """subtitles.srt is NOT modified by the metadata overwrite step."""
+
+# ---------------------------------------------------------------------------
+# Phase 1.2: _prepare_upload_config for turns overwrites sidecars from XCom
+# Issue #169/#245: fresh title (thumbnail_result) + fresh description
+# (youtube_metadata_results) win over stale on-disk sidecars
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareUploadConfigTurnOverwritesSidecarsFromXcom:
+    """_prepare_upload_config for turns must overwrite title.txt/description.txt
+    using thumbnail_result's title and youtube_metadata_results' description,
+    before calling prepare_orador_upload_config, leaving subtitles.srt untouched.
+    """
+
+    def test_prepare_upload_config_turn_overwrites_sidecars_from_xcom(self, tmp_path):
+        """Stale title.txt/description.txt are overwritten by fresh XCom data;
+        subtitles.srt is not touched by the overwrite step."""
         from congress_videos.youtube_upload_dag import _prepare_upload_config
 
         turn_dir = tmp_path / "oradores" / "1"
         turn_dir.mkdir(parents=True)
         (turn_dir / "video.mp4").write_bytes(b"fake")
-        (turn_dir / "title.txt").write_text("VIEJO", encoding="utf-8")
-        (turn_dir / "description.txt").write_text("D.", encoding="utf-8")
+        # Stale sidecars from old nightly prepare
+        (turn_dir / "title.txt").write_text("TÍTULO VIEJO", encoding="utf-8")
+        (turn_dir / "description.txt").write_text("Desc vieja.", encoding="utf-8")
         (turn_dir / "thumbnail.png").write_bytes(b"\x89PNG")
         original_srt = "1\n00:00:00,000 --> 00:00:05,000\nSRT intacto.\n\n"
         (turn_dir / "subtitles.srt").write_text(original_srt, encoding="utf-8")
@@ -2420,11 +2368,11 @@ class TestPrepareUploadConfigTurnOverwritesSidecarsFromXcom:
             ],
         }
 
+        # Fresh description from the 19:00 AI call; title comes from thumbnail_result
         fresh_metadata = {
             "topic_metadata": [
                 {
-                    "title": {"title": "NUEVO"},
-                    "description": {"description": "Nueva desc."},
+                    "description": {"description": "Descripción fresca del turno."},
                 }
             ]
         }
@@ -2440,14 +2388,23 @@ class TestPrepareUploadConfigTurnOverwritesSidecarsFromXcom:
             },
             "chapter_extraction_results": extraction,
             "youtube_metadata_results": fresh_metadata,
-            "thumbnail_result": None,
+            "thumbnail_result": {"success": True, "title": "TÍTULO NUEVO FRESCO"},
         }
         ti = _make_ti(store)
         context = {"params": {"isTesting": False, "dry_run": False}}
 
         _prepare_upload_config(ti, **context)
 
-        # SRT must remain untouched
+        config = ti.xcom_store.get("upload_config")
+        assert config is not None
+        videos = config.get("videos", [])
+        assert len(videos) == 1
+        # Fresh thumbnail_result title must win over stale on-disk title
+        assert videos[0]["title"] == "TÍTULO NUEVO FRESCO", (
+            f"Expected fresh title 'TÍTULO NUEVO FRESCO', got {videos[0].get('title')!r}"
+        )
+
+        # subtitles.srt must remain untouched by the sidecar overwrite step
         srt_content = (turn_dir / "subtitles.srt").read_text(encoding="utf-8")
         assert srt_content == original_srt, (
             "subtitles.srt must not be modified by the metadata overwrite step"
@@ -2455,70 +2412,64 @@ class TestPrepareUploadConfigTurnOverwritesSidecarsFromXcom:
 
 
 # ---------------------------------------------------------------------------
-# Phase 1.3: _extract_metadata_title_description helper
-# Issue #169: module-level helper extracts (title, description) from XCom result
+# _extract_metadata_description helper
+# Issue #245: helper is description-only now that generate_youtube_title
+# (and the "title" key in youtube_metadata_results) is gone.
 # ---------------------------------------------------------------------------
 
 
-class TestExtractMetadataTitleDescription:
-    """Unit tests for the pure _extract_metadata_title_description helper (issue #169)."""
+class TestExtractMetadataDescription:
+    """Unit tests for the pure _extract_metadata_description helper (issue #245)."""
 
-    def test_extracts_title_and_description_from_dict_values(self):
-        """Happy path: dict-wrapped title and description are unwrapped correctly."""
-        from congress_videos.youtube_upload_dag import _extract_metadata_title_description
+    def test_extracts_description_from_dict_value(self):
+        """Happy path: dict-wrapped description is unwrapped correctly."""
+        from congress_videos.youtube_upload_dag import _extract_metadata_description
 
         result = {
             "topic_metadata": [
                 {
-                    "title": {"title": "El gran debate"},
                     "description": {"description": "Una descripción detallada."},
                 }
             ]
         }
-        title, desc = _extract_metadata_title_description(result)
-        assert title == "El gran debate"
+        desc = _extract_metadata_description(result)
         assert desc == "Una descripción detallada."
 
-    def test_extracts_title_from_plain_string_values(self):
-        """When title/description values are plain strings (not dicts), they are returned as-is."""
-        from congress_videos.youtube_upload_dag import _extract_metadata_title_description
+    def test_extracts_description_from_plain_string_value(self):
+        """When description value is a plain string (not dict), it is returned as-is."""
+        from congress_videos.youtube_upload_dag import _extract_metadata_description
 
         result = {
             "topic_metadata": [
                 {
-                    "title": "Título plano",
                     "description": "Descripción plana.",
                 }
             ]
         }
-        title, desc = _extract_metadata_title_description(result)
-        assert title == "Título plano"
+        desc = _extract_metadata_description(result)
         assert desc == "Descripción plana."
 
-    def test_returns_empty_strings_when_none_input(self):
-        """None input returns ('', '')."""
-        from congress_videos.youtube_upload_dag import _extract_metadata_title_description
+    def test_returns_empty_string_when_none_input(self):
+        """None input returns ''."""
+        from congress_videos.youtube_upload_dag import _extract_metadata_description
 
-        title, desc = _extract_metadata_title_description(None)
-        assert title == ""
+        desc = _extract_metadata_description(None)
         assert desc == ""
 
-    def test_returns_empty_strings_when_topic_metadata_empty(self):
-        """Empty topic_metadata list returns ('', '')."""
-        from congress_videos.youtube_upload_dag import _extract_metadata_title_description
+    def test_returns_empty_string_when_topic_metadata_empty(self):
+        """Empty topic_metadata list returns ''."""
+        from congress_videos.youtube_upload_dag import _extract_metadata_description
 
         result = {"topic_metadata": []}
-        title, desc = _extract_metadata_title_description(result)
-        assert title == ""
+        desc = _extract_metadata_description(result)
         assert desc == ""
 
-    def test_returns_empty_strings_when_missing_topic_metadata_key(self):
-        """Dict without topic_metadata key returns ('', '')."""
-        from congress_videos.youtube_upload_dag import _extract_metadata_title_description
+    def test_returns_empty_string_when_missing_topic_metadata_key(self):
+        """Dict without topic_metadata key returns ''."""
+        from congress_videos.youtube_upload_dag import _extract_metadata_description
 
         result = {"other_key": "value"}
-        title, desc = _extract_metadata_title_description(result)
-        assert title == ""
+        desc = _extract_metadata_description(result)
         assert desc == ""
 
 
@@ -2572,7 +2523,6 @@ class TestTurnIdSurvivesUploadRoundTrip:
         fresh_metadata = {
             "topic_metadata": [
                 {
-                    "title": {"title": "Round Trip Turn Title"},
                     "description": {"description": "Round trip turn description."},
                 }
             ]
@@ -2589,7 +2539,7 @@ class TestTurnIdSurvivesUploadRoundTrip:
             },
             "chapter_extraction_results": extraction,
             "youtube_metadata_results": fresh_metadata,
-            "thumbnail_result": None,
+            "thumbnail_result": {"success": True, "title": "Round Trip Turn Title"},
         }
         prepare_ti = _make_ti(prepare_store)
         context = {"params": {"isTesting": False, "dry_run": False}}

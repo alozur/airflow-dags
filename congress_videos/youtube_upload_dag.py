@@ -49,8 +49,6 @@ IS_DEVELOPMENT = POSTGRES_SCHEMA == "development"
 # This is a calendar-day cap for long-form chapter uploads; database quota data
 # reports successful uploads_today, while limit=1 remains a selection safeguard.
 DAILY_LONG_FORM_UPLOAD_LIMIT = 1
-# Retain legacy thresholds for manually triggered runs using their logical hours.
-THRESHOLD_BY_HOUR = {11: 10, 14: 20, 17: 0}
 STALE_RUN_TOLERANCE_MINUTES = int(
     os.getenv("CHAPTER_UPLOADER_STALE_RUN_TOLERANCE_MINUTES", "30")
 )
@@ -59,7 +57,7 @@ _THUMBNAIL_RESULT_TASK_ID = "thumbnail_result"
 
 
 def should_upload(**context):
-    """Return True when queue_size strictly exceeds the threshold for this run's hour.
+    """Return True when queue_size is non-empty (queue_size > 0).
 
     Used as the python_callable for t1_skip (ShortCircuitOperator).
     Receives full Airflow context via **context (REQ-GATE-01).
@@ -91,9 +89,7 @@ def should_upload(**context):
         )
         return False
 
-    hour = context["logical_date"].hour
-    threshold = THRESHOLD_BY_HOUR.get(hour, 0)
-    return queue_size > threshold
+    return queue_size > 0
 
 
 # ---------------------------------------------------------------------------
@@ -249,30 +245,32 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
     return config
 
 
-def _extract_metadata_title_description(
+def _extract_metadata_description(
     youtube_metadata_results: dict | None,
-) -> tuple[str, str]:
-    """Extract (title, description) from youtube_metadata_results XCom payload.
+) -> str:
+    """Extract description from youtube_metadata_results XCom payload.
 
-    Handles both dict-wrapped values (``{"title": "..."}`` nested dict) and
-    plain string values. Returns ``("", "")`` on any missing or empty input.
+    Handles both dict-wrapped values (``{"description": "..."}`` nested dict)
+    and plain string values. Returns ``""`` on any missing or empty input.
+
+    Title is NOT extracted here (issue #245): the turn branch of
+    _prepare_upload_config sources the title from this run's thumbnail_result
+    XCom instead, since generate_youtube_metadata_for_selected_videos no
+    longer generates a title.
 
     Args:
         youtube_metadata_results: The XCom value pushed by _generate_youtube_metadata.
-            Shape: ``{"topic_metadata": [{"title": {...}|str, "description": {...}|str}]}``.
+            Shape: ``{"topic_metadata": [{"description": {...}|str}]}``.
 
     Returns:
-        A tuple ``(title, description)`` where both are strings (may be empty).
+        The description as a string (may be empty).
     """
     topic = (youtube_metadata_results or {}).get("topic_metadata") or []
     if not topic:
-        return "", ""
+        return ""
     entry = topic[0]
-    t = entry.get("title") or {}
     d = entry.get("description") or {}
-    title = t.get("title", "") if isinstance(t, dict) else str(t)
-    desc = d.get("description", "") if isinstance(d, dict) else str(d)
-    return title, desc
+    return d.get("description", "") if isinstance(d, dict) else str(d)
 
 
 def _sanitize_row_for_xcom(row: dict) -> dict:
@@ -631,13 +629,32 @@ with (
                 ti.xcom_push(key="upload_config", value=None)
                 return None
 
+            # Issue #245: the turn title comes from THIS run's thumbnail_result XCom,
+            # never from the deprecated metadata title generator or from stale
+            # sidecar file presence. A stale thumbnail.png would otherwise pass
+            # _REQUIRED_SIDECARS and mask a failed thumbnail run.
+            thumbnail_result = ti.xcom_pull(key="thumbnail_result") or {}
+            title = thumbnail_result.get("title")
+            if (
+                thumbnail_result.get("success") is not True
+                or not isinstance(title, str)
+                or not title.strip()
+            ):
+                raise ValueError(
+                    "Turn upload aborted: thumbnail pipeline produced no usable title "
+                    f"(chapter_id={results[0].get('chapter_id')}, "
+                    f"turn_id={results[0].get('turn_id')}, output_path={output_path}); "
+                    "refusing to publish a fallback title (issue #245)."
+                )
+
             # Issue #169: overwrite title.txt/description.txt from fresh 19:00 AI metadata
             # BEFORE prepare_orador_upload_config reads them from disk.
             # This ensures fresh 19:00 AI output wins over any stale prepare-side sidecars.
             from congress_videos.modules.youtube.youtube_upload import _write_orador_sidecars
 
             youtube_metadata_results = ti.xcom_pull(key="youtube_metadata_results")
-            fresh_title, fresh_desc = _extract_metadata_title_description(youtube_metadata_results)
+            fresh_desc = _extract_metadata_description(youtube_metadata_results)
+            fresh_title = title.strip()
             _write_orador_sidecars(output_path, fresh_title, fresh_desc)
             logging.info(
                 "_prepare_upload_config: turn path — overwrote sidecars from XCom metadata, "
