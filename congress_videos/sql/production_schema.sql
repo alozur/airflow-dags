@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS production.youtube_source_videos (
 
     -- Video metadata
     duration_seconds INTEGER,
-    published_at TIMESTAMP,
+    published_at TIMESTAMPTZ,
     channel_id VARCHAR(100),
 
     -- Processing status
@@ -47,11 +47,11 @@ CREATE TABLE IF NOT EXISTS production.youtube_source_videos (
     -- Integrity gate: set to NOW()+12h when ffprobe detects a corrupt/incomplete download.
     -- filter_unprocessed_videos skips rows where download_retry_after > NOW() so the video
     -- is retried after the VOD has had time to finalise on YouTube.
-    download_retry_after TIMESTAMP DEFAULT NULL,
+    download_retry_after TIMESTAMPTZ DEFAULT NULL,
 
     -- Timestamps
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 
     -- Indexes
     CONSTRAINT unique_video_id UNIQUE(video_id)
@@ -91,12 +91,12 @@ CREATE TABLE IF NOT EXISTS production.video_chapters (
     key_speakers TEXT[], -- Key speakers identified by AI
     is_current_topic BOOLEAN DEFAULT FALSE, -- Is this a current/hot topic?
     scoring_error TEXT, -- Error message if scoring failed
-    scored_at TIMESTAMP, -- When scoring was performed
+    scored_at TIMESTAMPTZ, -- When scoring was performed
 
     -- Upload tracking
     is_uploaded_to_youtube BOOLEAN DEFAULT FALSE,
     youtube_video_id VARCHAR(50), -- YouTube video ID once uploaded as separate video
-    youtube_upload_date TIMESTAMP,
+    youtube_upload_date TIMESTAMPTZ,
 
     -- Upload failure tracking (soft-delete after repeated failures)
     upload_attempts INTEGER DEFAULT 0,
@@ -104,8 +104,8 @@ CREATE TABLE IF NOT EXISTS production.video_chapters (
     last_upload_error TEXT,
 
     -- Timestamps
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- ============================================================

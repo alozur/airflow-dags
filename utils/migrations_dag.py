@@ -7,6 +7,24 @@ Tracks applied migrations in a schema_migrations table to ensure idempotency.
 Migrations are discovered from */sql/migrations/*.sql paths relative to the DAG repo root.
 They are applied in alphabetical order — numeric prefixes (001_, 002_, ...) control sequencing.
 
+Numbering gaps (001-003, 014 under congress_videos/sql/migrations/) are expected,
+not missing files: 001-003 predate this numbered-migration convention (the
+original schema was hand-applied), and 014 was allocated then abandoned before
+any commit. Do not "fill" a gap by reusing a skipped number for a new migration.
+
+CREATE INDEX CONCURRENTLY cannot run through this runner: every migration file
+executes inside the implicit transaction opened by its own `get_connection()`
+call (see _apply_pending_migrations), and CONCURRENTLY requires running
+outside any transaction block. Use a plain `CREATE INDEX IF NOT EXISTS`
+instead (precedent: migration 020) and, for large tables, schedule the
+`run_migrations` DAG trigger during the 14:00-20:00 UTC NAS quiet window.
+
+Concurrency: _apply_pending_migrations holds a pg_advisory_lock scoped to the
+target schema (hashtext(schema)) for the whole function, on a dedicated
+autocommit connection with lock_timeout disabled. Two runs against the SAME
+schema serialize; runs against DIFFERENT schemas (dev vs prod share one
+Postgres instance) never block each other.
+
 Trigger: manual only (schedule=None).
 """
 
@@ -24,6 +42,13 @@ from utils.postgres_helpers import PostgresConnection
 load_env_if_local()
 
 DAGS_REPO_PATH = Path(os.getenv('AIRFLOW__CORE__DAGS_FOLDER', '/opt/airflow/dags/repo'))
+
+# Two-int pg_advisory_lock() namespace, ASCII 'MIGR' packed into 32 bits
+# (< 2**31, so it fits the signed int4 the two-arg advisory-lock form takes).
+# Combined with hashtext(schema) as the second key, this scopes the lock to
+# the target schema — dev and prod share one Postgres instance but must
+# never block each other (issue #209).
+_MIGRATION_LOCK_NAMESPACE = 0x4D494752
 
 default_args = {
     'owner': 'airflow',
@@ -52,50 +77,78 @@ def _apply_pending_migrations(**context) -> None:
     pg = PostgresConnection()
     schema = pg.schema
 
-    migration_files = sorted(DAGS_REPO_PATH.glob('*/sql/migrations/*.sql'))
+    # Schema-scoped advisory lock spanning the ENTIRE function, held on a
+    # dedicated connection (issue #209). Dev and prod share one Postgres
+    # instance but write to separate schemas — a git_sync-triggered run
+    # racing a manually-triggered run against the SAME schema must serialize;
+    # runs against DIFFERENT schemas must never wait on each other.
+    with pg.get_connection(statement_timeout_ms=0) as lock_conn:
+        # Autocommit: this connection issues no DDL/DML of its own, so there is
+        # no transaction to keep open — avoids an idle-in-transaction session
+        # for the whole run (migration runs have been observed to take ~12min).
+        lock_conn.autocommit = True
+        with lock_conn.cursor() as cur:
+            # The default per-connection lock_timeout (5s, set via connection
+            # options) would make a blocked pg_advisory_lock call ERROR after
+            # 5s instead of waiting — override it so the second concurrent run
+            # blocks until the first releases the lock.
+            cur.execute("SET lock_timeout = 0")
+            cur.execute(
+                "SELECT pg_advisory_lock(%s, hashtext(%s))",
+                (_MIGRATION_LOCK_NAMESPACE, schema),
+            )
+        logging.info(
+            "Acquired migration advisory lock for schema '%s' (namespace=%d)",
+            schema, _MIGRATION_LOCK_NAMESPACE,
+        )
 
-    if not migration_files:
-        logging.info("No migration files found under %s", DAGS_REPO_PATH)
-        return
+        migration_files = sorted(DAGS_REPO_PATH.glob('*/sql/migrations/*.sql'))
 
-    with pg.get_connection(statement_timeout_ms=0) as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT migration FROM {schema}.schema_migrations")
-            applied = {row['migration'] for row in cur.fetchall()}
+        if not migration_files:
+            logging.info("No migration files found under %s", DAGS_REPO_PATH)
+            return
 
-    logging.info(
-        "Found %d migration file(s), %d already applied",
-        len(migration_files), len(applied),
-    )
-
-    applied_count = 0
-    for path in migration_files:
-        relative = str(path.relative_to(DAGS_REPO_PATH))
-
-        if relative in applied:
-            logging.info("Skip (already applied): %s", relative)
-            continue
-
-        logging.info("Applying: %s", relative)
-        sql = path.read_text()
-
-        # Each migration runs in its own transaction — partial progress is preserved on failure
         with pg.get_connection(statement_timeout_ms=0) as conn:
             with conn.cursor() as cur:
-                cur.execute(f"SET search_path TO {schema}, public")
-                cur.execute(sql)
-                cur.execute(
-                    f"INSERT INTO {schema}.schema_migrations (migration) VALUES (%s)",
-                    (relative,),
-                )
+                cur.execute(f"SELECT migration FROM {schema}.schema_migrations")
+                applied = {row['migration'] for row in cur.fetchall()}
 
-        logging.info("Applied: %s", relative)
-        applied_count += 1
+        logging.info(
+            "Found %d migration file(s), %d already applied",
+            len(migration_files), len(applied),
+        )
 
-    logging.info(
-        "Migrations complete — %d applied, %d skipped",
-        applied_count, len(applied),
-    )
+        applied_count = 0
+        for path in migration_files:
+            relative = str(path.relative_to(DAGS_REPO_PATH))
+
+            if relative in applied:
+                logging.info("Skip (already applied): %s", relative)
+                continue
+
+            logging.info("Applying: %s", relative)
+            sql = path.read_text()
+
+            # Each migration runs in its own transaction — partial progress is preserved on failure
+            with pg.get_connection(statement_timeout_ms=0) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"SET search_path TO {schema}, public")
+                    cur.execute(sql)
+                    cur.execute(
+                        f"INSERT INTO {schema}.schema_migrations (migration) VALUES (%s)",
+                        (relative,),
+                    )
+
+            logging.info("Applied: %s", relative)
+            applied_count += 1
+
+        logging.info(
+            "Migrations complete — %d applied, %d skipped",
+            applied_count, len(applied),
+        )
+    # Lock release is implicit: pg.get_connection's context manager closes
+    # this session on any exit path, and a session-scoped advisory lock dies
+    # with the socket.
 
 
 with DAG(

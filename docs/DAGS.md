@@ -58,7 +58,7 @@ split_srt_by_silence (silencios >= 15s, chunks 10-20 min)
       --> identify_interesting_chapters (GPT-4o-mini)
           --> merge_interesting_chapters
               --> score_chapter_relevance (GPT-4o-mini)
-                  --> save_chapters_to_db (PostgreSQLOperator)
+                  --> save_chapters_to_db (PythonOperator)
 ```
 
 ### Sistema de scoring (0-5)
@@ -108,14 +108,14 @@ los sube a YouTube a traves del DAG generico.
 
 ```
 ensure_data_directory (PythonOperator)
-  --> get_uploadable_chapters (PostgreSQLOperator)
+  --> get_uploadable_chapters (PythonOperator)
       --> generate_youtube_metadata (PythonOperator, GPT-3.5-turbo)
           --> generate_thumbnail_text (PythonOperator, GPT-3.5-turbo, 3-6 palabras max 40 chars)
               --> generate_thumbnails (PythonOperator, Pillow 1280x720)
                   --> extract_chapter_videos (PythonOperator, ffmpeg input-seek + re-encode libx264/aac, frame-accurate; escribe chapter_video.mp4, original intacto)
                       --> prepare_upload_config (PythonOperator)
                           --> trigger_youtube_upload (trigger_dag_api + polling 10s)
-                              --> mark_chapters_uploaded (PostgreSQLOperator)
+                              --> mark_chapters_uploaded (PythonOperator)
 ```
 
 ### Ficheros generados

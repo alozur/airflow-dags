@@ -1456,7 +1456,7 @@ class TestDualQueueWiredIntoDag:
 
     def test_dag_has_get_uploadable_item_task_not_static_chapters_op(self):
         """DAG must have a 'get_uploadable_item' task (PythonOperator), not a
-        PostgreSQLOperator with operation='get_uploadable_chapters'. Wires turn-only queue."""
+        static get_uploadable_chapters lookup. Wires turn-only queue."""
         from congress_videos.youtube_upload_dag import dag
 
         task_ids = {t.task_id for t in dag.tasks}
@@ -1466,7 +1466,7 @@ class TestDualQueueWiredIntoDag:
         )
 
     def test_get_uploadable_item_task_is_python_operator(self):
-        """The get_uploadable_item task must be a PythonOperator (not PostgreSQLOperator)."""
+        """The get_uploadable_item task must be a PythonOperator."""
         from airflow.operators.python import PythonOperator
         from congress_videos.youtube_upload_dag import dag
 
@@ -1474,7 +1474,7 @@ class TestDualQueueWiredIntoDag:
         task = tasks_by_id.get("get_uploadable_item")
         assert task is not None, "get_uploadable_item task must exist"
         assert isinstance(task, PythonOperator), (
-            "get_uploadable_item must be a PythonOperator, not a PostgreSQLOperator"
+            "get_uploadable_item must be a PythonOperator"
         )
 
     def test_get_uploadable_item_is_downstream_of_skip_if_quota_reached(self):
@@ -1545,7 +1545,7 @@ class TestCombinedDailyCap:
 
     def test_uploads_today_includes_turns_and_chapters(self, mocker):
         """When 1 turn and 1 chapter were uploaded today, uploads_today must be 2."""
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+        from congress_videos.youtube_upload_dag import _run_check_upload_quota
 
         mock_db = MagicMock()
         mock_db.count_chapters_uploaded_today.return_value = 1
@@ -1554,42 +1554,22 @@ class TestCombinedDailyCap:
         mock_db.count_pending_uploadable_turns.return_value = 2
 
         mocker.patch(
-            "congress_videos.modules.postgres_operators.CongressionalVideoDB",
+            "congress_videos.modules.database.CongressionalVideoDB",
             return_value=mock_db,
         )
-        mocker.patch.dict(
-            "os.environ",
-            {
-                "POSTGRES_HOST": "localhost",
-                "POSTGRES_PORT": "5432",
-                "POSTGRES_DB": "testdb",
-                "POSTGRES_USER": "testuser",
-                "POSTGRES_PASSWORD": "testpass",
-                "POSTGRES_SCHEMA": "public",
-            },
-        )
 
-        op = PostgreSQLOperator(
-            task_id="check_upload_quota",
-            operation="check_upload_quota",
-            output_xcom_key="upload_quota",
-        )
-        ti = MagicMock()
-        ti.xcom_store = {}
-        ti.xcom_push.side_effect = lambda key, value, **kw: ti.xcom_store.update({key: value})
-        context = {"params": {}, "ti": ti}
+        ti = _make_ti({})
+        result = _run_check_upload_quota(ti, params={})
 
-        op.execute(context)
-
-        result = ti.xcom_store.get("upload_quota")
-        assert result is not None, "upload_quota must be pushed to XCom"
+        stored = ti.xcom_store.get("upload_quota")
+        assert stored is not None, "upload_quota must be pushed to XCom"
         assert result["uploads_today"] == 2, (
             f"uploads_today must be turns (1) + chapters (1) = 2, got {result['uploads_today']}"
         )
 
     def test_uploads_today_zero_when_nothing_uploaded(self, mocker):
         """When no turns and no chapters uploaded today, uploads_today must be 0."""
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+        from congress_videos.youtube_upload_dag import _run_check_upload_quota
 
         mock_db = MagicMock()
         mock_db.count_chapters_uploaded_today.return_value = 0
@@ -1598,39 +1578,18 @@ class TestCombinedDailyCap:
         mock_db.count_pending_uploadable_turns.return_value = 2
 
         mocker.patch(
-            "congress_videos.modules.postgres_operators.CongressionalVideoDB",
+            "congress_videos.modules.database.CongressionalVideoDB",
             return_value=mock_db,
         )
-        mocker.patch.dict(
-            "os.environ",
-            {
-                "POSTGRES_HOST": "localhost",
-                "POSTGRES_PORT": "5432",
-                "POSTGRES_DB": "testdb",
-                "POSTGRES_USER": "testuser",
-                "POSTGRES_PASSWORD": "testpass",
-                "POSTGRES_SCHEMA": "public",
-            },
-        )
 
-        op = PostgreSQLOperator(
-            task_id="check_upload_quota",
-            operation="check_upload_quota",
-            output_xcom_key="upload_quota",
-        )
-        ti = MagicMock()
-        ti.xcom_store = {}
-        ti.xcom_push.side_effect = lambda key, value, **kw: ti.xcom_store.update({key: value})
-        context = {"params": {}, "ti": ti}
+        ti = _make_ti({})
+        result = _run_check_upload_quota(ti, params={})
 
-        op.execute(context)
-
-        result = ti.xcom_store.get("upload_quota")
         assert result["uploads_today"] == 0
 
     def test_uploads_today_chapter_only_when_no_turns_uploaded(self, mocker):
         """When only chapters uploaded today, uploads_today = chapter count."""
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+        from congress_videos.youtube_upload_dag import _run_check_upload_quota
 
         mock_db = MagicMock()
         mock_db.count_chapters_uploaded_today.return_value = 1
@@ -1639,34 +1598,13 @@ class TestCombinedDailyCap:
         mock_db.count_pending_uploadable_turns.return_value = 0
 
         mocker.patch(
-            "congress_videos.modules.postgres_operators.CongressionalVideoDB",
+            "congress_videos.modules.database.CongressionalVideoDB",
             return_value=mock_db,
         )
-        mocker.patch.dict(
-            "os.environ",
-            {
-                "POSTGRES_HOST": "localhost",
-                "POSTGRES_PORT": "5432",
-                "POSTGRES_DB": "testdb",
-                "POSTGRES_USER": "testuser",
-                "POSTGRES_PASSWORD": "testpass",
-                "POSTGRES_SCHEMA": "public",
-            },
-        )
 
-        op = PostgreSQLOperator(
-            task_id="check_upload_quota",
-            operation="check_upload_quota",
-            output_xcom_key="upload_quota",
-        )
-        ti = MagicMock()
-        ti.xcom_store = {}
-        ti.xcom_push.side_effect = lambda key, value, **kw: ti.xcom_store.update({key: value})
-        context = {"params": {}, "ti": ti}
+        ti = _make_ti({})
+        result = _run_check_upload_quota(ti, params={})
 
-        op.execute(context)
-
-        result = ti.xcom_store.get("upload_quota")
         assert result["uploads_today"] == 1
 
 
@@ -1691,7 +1629,7 @@ class TestQueueSizeIncludesTurns:
 
     def test_combined_queue_size_in_check_upload_quota(self, mocker):
         """check_upload_quota queue_size must include turns_pending + chapters pending."""
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
+        from congress_videos.youtube_upload_dag import _run_check_upload_quota
 
         mock_db = MagicMock()
         mock_db.count_chapters_uploaded_today.return_value = 0
@@ -1700,34 +1638,13 @@ class TestQueueSizeIncludesTurns:
         mock_db.count_pending_uploadable_turns.return_value = 3  # 3 turns pending
 
         mocker.patch(
-            "congress_videos.modules.postgres_operators.CongressionalVideoDB",
+            "congress_videos.modules.database.CongressionalVideoDB",
             return_value=mock_db,
         )
-        mocker.patch.dict(
-            "os.environ",
-            {
-                "POSTGRES_HOST": "localhost",
-                "POSTGRES_PORT": "5432",
-                "POSTGRES_DB": "testdb",
-                "POSTGRES_USER": "testuser",
-                "POSTGRES_PASSWORD": "testpass",
-                "POSTGRES_SCHEMA": "public",
-            },
-        )
 
-        op = PostgreSQLOperator(
-            task_id="check_upload_quota",
-            operation="check_upload_quota",
-            output_xcom_key="upload_quota",
-        )
-        ti = MagicMock()
-        ti.xcom_store = {}
-        ti.xcom_push.side_effect = lambda key, value, **kw: ti.xcom_store.update({key: value})
-        context = {"params": {}, "ti": ti}
+        ti = _make_ti({})
+        result = _run_check_upload_quota(ti, params={})
 
-        op.execute(context)
-
-        result = ti.xcom_store.get("upload_quota")
         # queue_size must be chapters(2) + turns(3) = 5
         assert result["queue_size"] == 5, (
             f"queue_size must be chapters_pending(2) + turns_pending(3) = 5, got {result['queue_size']}"
@@ -2490,9 +2407,11 @@ class TestTurnIdSurvivesUploadRoundTrip:
     """
 
     def test_turn_id_flows_from_prepare_through_upload_to_marking(self, tmp_path, mocker):
-        from congress_videos.youtube_upload_dag import _prepare_upload_config
+        from congress_videos.youtube_upload_dag import (
+            _prepare_upload_config,
+            _run_mark_turns_uploaded,
+        )
         from utils.youtube_helpers import upload_multiple_videos
-        from congress_videos.modules.postgres_operators import PostgreSQLOperator
 
         # --- Step 1: prepare upload config for a turn item (sidecar fixture) ---
         turn_dir = tmp_path / "oradores" / "1"
@@ -2575,21 +2494,15 @@ class TestTurnIdSurvivesUploadRoundTrip:
             "upload_multiple_videos must propagate turn_id into upload_detail"
         )
 
-        # --- Step 3: mark_turns_uploaded operator reads upload_results from XCom ---
+        # --- Step 3: mark_turns_uploaded callable reads upload_results from XCom ---
         mock_db = mocker.MagicMock()
         mocker.patch(
-            "congress_videos.modules.postgres_operators.CongressionalVideoDB",
+            "congress_videos.modules.database.CongressionalVideoDB",
             return_value=mock_db,
         )
 
         operator_ti = _make_ti({"upload_results": upload_results})
-        op = PostgreSQLOperator(
-            task_id="mark_turns_uploaded",
-            operation="mark_turns_uploaded",
-            xcom_keys={"upload_results": "upload_results"},
-            output_xcom_key="turn_upload_updates",
-        )
-        op.execute({"ti": operator_ti, "params": {}})
+        _run_mark_turns_uploaded(operator_ti)
 
         mock_db.mark_turns_uploaded.assert_called_once_with(
             turn_id=1, youtube_video_id="yt-round-trip"
