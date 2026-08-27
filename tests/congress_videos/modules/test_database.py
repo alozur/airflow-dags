@@ -746,6 +746,53 @@ class TestCountChaptersUploadedToday:
 
 
 # --------------------------------------------------------------------------- #
+# count_turns_uploaded_today
+# --------------------------------------------------------------------------- #
+
+class TestCountTurnsUploadedToday:
+
+    def test_query_counts_distinct_output_path(self, db):
+        """SQL uses COUNT(DISTINCT output_path), not COUNT(*) (issue #244)."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"count": 0}
+
+        instance.count_turns_uploaded_today()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "COUNT(DISTINCT" in sql
+        assert "output_path" in sql
+        assert "youtube_upload_date" in sql
+        assert "CURRENT_DATE" in sql
+
+    def test_grouped_siblings_count_once(self, db):
+        """N>1 rows sharing one output_path still count as 1 distinct video."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"count": 1}
+
+        result = instance.count_turns_uploaded_today()
+
+        assert result == 1
+
+    def test_two_distinct_videos_count_as_two(self, db):
+        """Rows spanning exactly 2 distinct output_path values return 2."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"count": 2}
+
+        result = instance.count_turns_uploaded_today()
+
+        assert result == 2
+
+    def test_returns_zero_when_fetchone_none(self, db):
+        """Returns 0 gracefully when fetchone returns None."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        result = instance.count_turns_uploaded_today()
+
+        assert result == 0
+
+
+# --------------------------------------------------------------------------- #
 # count_pending_uploadable_chapters
 # --------------------------------------------------------------------------- #
 

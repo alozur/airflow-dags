@@ -1558,9 +1558,25 @@ class CongressionalVideoDB:
         return count
 
     def count_turns_uploaded_today(self) -> int:
-        """Returns the number of speaker turn videos uploaded to YouTube today (UTC date)."""
-        count = self._count_records('speaker_turn_videos', 'youtube_upload_date >= CURRENT_DATE')
-        logger.info(f"Turns uploaded today: {count}")
+        """Returns the number of distinct turn videos uploaded to YouTube today (UTC date).
+
+        Uses COUNT(DISTINCT output_path) because a single grouped video can
+        span multiple speaker_turn_videos rows sharing one output_path
+        (issue #244) — counting rows would over-count uploaded videos.
+        """
+        table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT COUNT(DISTINCT output_path) AS count
+                    FROM {table}
+                    WHERE youtube_upload_date >= CURRENT_DATE
+                    """
+                )
+                result = cur.fetchone()
+                count = result['count'] if result else 0
+        logger.info(f"Turn video(s) uploaded today: {count}")
         return count
 
     # ==================== Post-Upload Verification (issue #141) ====================
