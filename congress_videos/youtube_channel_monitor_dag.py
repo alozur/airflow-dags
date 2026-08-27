@@ -32,7 +32,6 @@ from congress_videos.config.constants import (
 )
 from congress_videos.config import speaker_normalization_config as snc
 from congress_videos.modules import youtube as yt_channel
-from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from congress_videos.modules.vad_helpers import trim_chapter_silence_with_vad
 from utils.airflow_helpers import xcom_task
 from utils.env_loader import load_env_if_local
@@ -632,14 +631,65 @@ with DAG(
 
     # Step 9: Save scored chapters to database
     # Stores YouTube videos and their chapters with relevance scores in PostgreSQL
-    t9_db = PostgreSQLOperator(
+    def _run_save_chapters_to_db(ti, **context):
+        """Save scored YouTube chapter data to the database.
+
+        Pushes XCom key 'db_save_results'.
+        """
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        scored_chapters = ti.xcom_pull(key='scored_chapters')
+        session_date_data = ti.xcom_pull(key='session_date')
+        target_date = _resolve_target_date(context)
+
+        if not scored_chapters:
+            logging.warning("No scored chapters data to save")
+            result = {'total_videos_saved': 0, 'total_chapters_saved': 0, 'videos': []}
+            ti.xcom_push(key='db_save_results', value=result)
+            return result
+
+        # Extract session_number and session_date from session_date_data
+        # Structure: {'total_processed': int, 'videos': [{'video_id': str, 'session_number': int, 'target_date': str, ...}]}
+        session_number = None
+        session_date_str = None
+
+        if session_date_data and isinstance(session_date_data, dict):
+            videos_list = session_date_data.get('videos', [])
+            if videos_list:
+                first_video = videos_list[0]
+                session_number = first_video.get('session_number')
+                session_date_str = first_video.get('target_date', target_date)
+            else:
+                logging.warning("No videos in session_date_data")
+        else:
+            logging.warning("Unexpected session_date_data format: %s", type(session_date_data))
+
+        # Fallback to target_date if no session_date found
+        if not session_date_str:
+            session_date_str = target_date
+
+        # Parse session_date
+        if isinstance(session_date_str, str):
+            session_date_obj = datetime.strptime(session_date_str, "%Y-%m-%d").date()
+        else:
+            session_date_obj = session_date_str
+
+        db = CongressionalVideoDB()
+        result = db.save_youtube_chapters_to_db(
+            scored_chapters_data=scored_chapters,
+            session_number=session_number,
+            session_date=session_date_obj,
+        )
+        logging.info(
+            "Saved %d chapters across %d videos",
+            result['total_chapters_saved'], result['total_videos_saved'],
+        )
+        ti.xcom_push(key='db_save_results', value=result)
+        return result
+
+    t9_db = PythonOperator(
         task_id='save_chapters_to_db',
-        operation='save_youtube_chapters',
-        xcom_keys={
-            'scored_chapters': 'scored_chapters',
-            'session_date': 'session_date'  # Contains session_number and target_date
-        },
-        output_xcom_key='db_save_results'
+        python_callable=_run_save_chapters_to_db,
     )
 
     # End task for when no plenary sessions found

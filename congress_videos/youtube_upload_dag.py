@@ -28,8 +28,8 @@ from airflow.models import XCom
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 
-from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from congress_videos.modules.participants_db import lookup_participant_fuzzy
+from congress_videos.modules.upload_marking import mark_chapter_uploads, mark_turn_uploads
 from congress_videos.srt_helpers import (
     _parse_srt_blocks,
     _srt_timestamp_to_seconds,
@@ -483,10 +483,42 @@ with (
     # Step 1: Check daily upload quota
     # Queries DB for uploads today and pending queue size.
     # Returns {queue_size, uploads_today}.
-    t1_quota = PostgreSQLOperator(
+    def _run_check_upload_quota(ti, **context):
+        """Query DB for uploads today and pending queue size.
+
+        Pushes XCom key 'upload_quota':
+          {'uploads_today', 'queue_size', 'turns_pending'}
+        """
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        db = CongressionalVideoDB()
+        min_relevance_score = context["params"].get("min_relevance_score", 2)
+
+        chapters_uploaded_today = db.count_chapters_uploaded_today()
+        turns_uploaded_today = db.count_turns_uploaded_today()
+        uploads_today = chapters_uploaded_today + turns_uploaded_today
+
+        chapters_pending = db.count_pending_uploadable_chapters(min_relevance_score)
+        turns_pending = db.count_pending_uploadable_turns()
+        queue_size = chapters_pending + turns_pending
+
+        result = {
+            "uploads_today": uploads_today,
+            "queue_size": queue_size,
+            "turns_pending": turns_pending,
+        }
+        logging.info(
+            "Upload quota: %d today (%d chapters + %d turn videos), "
+            "%d chapters + %d turns in queue",
+            uploads_today, chapters_uploaded_today, turns_uploaded_today,
+            chapters_pending, turns_pending,
+        )
+        ti.xcom_push(key="upload_quota", value=result)
+        return result
+
+    t1_quota = PythonOperator(
         task_id="check_upload_quota",
-        operation="check_upload_quota",
-        output_xcom_key="upload_quota",
+        python_callable=_run_check_upload_quota,
     )
 
     # Step 1b: Short-circuit based on queue_size vs time-of-day threshold
@@ -845,19 +877,41 @@ with (
     )
 
     # Step 8: Update database to mark chapters as uploaded
-    t8_db = PostgreSQLOperator(
+    def _run_mark_chapters_uploaded(ti):
+        """Mark chapters as uploaded to YouTube after a successful upload.
+
+        Pushes XCom key 'chapter_upload_updates'.
+        """
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        db = CongressionalVideoDB()
+        upload_results = ti.xcom_pull(key="upload_results")
+        result = mark_chapter_uploads(db, upload_results)
+        ti.xcom_push(key="chapter_upload_updates", value=result)
+        return result
+
+    t8_db = PythonOperator(
         task_id="mark_chapters_uploaded",
-        operation="mark_chapters_uploaded",
-        xcom_keys={"upload_results": "upload_results"},
-        output_xcom_key="chapter_upload_updates",
+        python_callable=_run_mark_chapters_uploaded,
     )
 
     # Step 8c: Mark turn videos as uploaded (runs in parallel with mark_chapters_uploaded)
-    t8_turns = PostgreSQLOperator(
+    def _run_mark_turns_uploaded(ti):
+        """Mark speaker turn videos as uploaded to YouTube after a successful upload.
+
+        Pushes XCom key 'turn_upload_updates'.
+        """
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        db = CongressionalVideoDB()
+        upload_results = ti.xcom_pull(key="upload_results")
+        result = mark_turn_uploads(db, upload_results)
+        ti.xcom_push(key="turn_upload_updates", value=result)
+        return result
+
+    t8_turns = PythonOperator(
         task_id="mark_turns_uploaded",
-        operation="mark_turns_uploaded",
-        xcom_keys={"upload_results": "upload_results"},
-        output_xcom_key="turn_upload_updates",
+        python_callable=_run_mark_turns_uploaded,
     )
 
     # Step 8b: Back-fill youtube_video_id in video_thumbnails

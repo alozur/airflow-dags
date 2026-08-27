@@ -6,7 +6,7 @@ marks verified-good ones for both video_chapters and speaker_turn_videos.
 
 Pipeline:
     1. staleness_guard        — ShortCircuitOperator: skip stale replays.
-    2. select_unverified_uploads — PostgreSQLOperator: fetch candidates (1h–48h window).
+    2. select_unverified_uploads — PythonOperator: fetch candidates (1h–48h window).
     3. verify_and_record      — PythonOperator: oembed gate → Data API fallback,
                                 per-video try/except, MAX_API_CALLS_PER_RUN cap.
 
@@ -22,10 +22,11 @@ from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
 from congress_videos.modules.database import CongressionalVideoDB
-from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from congress_videos.modules.post_upload_verification import (
     MAX_API_CALLS_PER_RUN,
     STALE_RUN_TOLERANCE_MINUTES,
+    VERIFY_WINDOW_MAX_HOURS,
+    VERIFY_WINDOW_MIN_HOURS,
     check_video_status,
 )
 from utils.env_loader import load_env_if_local
@@ -211,6 +212,26 @@ def _verify_and_record(ti, **context) -> dict:
     return result
 
 
+def _run_select_unverified_uploads(ti):
+    """Return uploaded rows whose verification is pending (1h–48h window).
+
+    Pushes XCom key 'candidates'.
+    """
+    db = CongressionalVideoDB()
+    candidates = db.select_unverified_uploads(
+        min_h=VERIFY_WINDOW_MIN_HOURS,
+        max_h=VERIFY_WINDOW_MAX_HOURS,
+    )
+    logging.info(
+        "post_upload_verification: %d candidates in [%dh, %dh] window",
+        len(candidates),
+        VERIFY_WINDOW_MIN_HOURS,
+        VERIFY_WINDOW_MAX_HOURS,
+    )
+    ti.xcom_push(key="candidates", value=candidates)
+    return candidates
+
+
 # ---------------------------------------------------------------------------
 # DAG definition
 # ---------------------------------------------------------------------------
@@ -241,10 +262,9 @@ with DAG(
     )
 
     # t1: Fetch unverified candidates from DB (1h–48h upload window)
-    t1_select = PostgreSQLOperator(
+    t1_select = PythonOperator(
         task_id="select_unverified_uploads",
-        operation="select_unverified_uploads",
-        output_xcom_key="candidates",
+        python_callable=_run_select_unverified_uploads,
     )
 
     # t2: Verify each candidate; write outcomes via CongressionalVideoDB
