@@ -5,7 +5,6 @@ from __future__ import annotations
 from congress_videos.modules.youtube.youtube_ai import (
     build_youtube_chapters_block,
     generate_youtube_description,
-    generate_youtube_title,
     score_chapters_relevance,
 )
 
@@ -57,71 +56,79 @@ def _make_json_error(msg: str = "API failure") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# generate_youtube_title
+# generate_youtube_metadata_for_selected_videos — description-only (issue #245)
+#
+# generate_youtube_title was removed: it silently published a stale/generic
+# fallback title ("Debate en el Congreso de España"), discarding the
+# thumbnail pipeline's already-validated title.
 # ---------------------------------------------------------------------------
 
-class TestGenerateYoutubeTitle:
-    def test_success_returns_generated_title(self, mocker):
-        mocker.patch(
-            "congress_videos.modules.youtube.youtube_ai.generate_chat_completion",
-            return_value=_make_chat_result("Debate sobre Educación Nacional"),
-        )
-        result = generate_youtube_title("Reforma educativa", [])
-        assert result["title"] == "Debate sobre Educación Nacional"
-        assert result["error"] is None
+def _make_top_video(chapter_id: int = 1) -> dict:
+    return {
+        "chapter_id": chapter_id,
+        "chapter_title": "Debate sobre educación",
+        "description": "Descripción del capítulo",
+        "session_number": 42,
+        "session_date": "2026-06-01",
+        "speakers": ["Speaker One"],
+        "duration_minutes": 10,
+        "video_id": "vid-1",
+    }
 
-    def test_success_returns_correct_character_count(self, mocker):
-        title = "Título corto"
-        mocker.patch(
-            "congress_videos.modules.youtube.youtube_ai.generate_chat_completion",
-            return_value=_make_chat_result(title),
-        )
-        result = generate_youtube_title("Contenido", [])
-        assert result["character_count"] == len(title)
 
-    def test_success_within_limit_true_for_short_title(self, mocker):
-        mocker.patch(
-            "congress_videos.modules.youtube.youtube_ai.generate_chat_completion",
-            return_value=_make_chat_result("Short title"),
+class TestGenerateYoutubeMetadataForSelectedVideosDescriptionOnly:
+    def test_topic_metadata_has_no_title_key(self, mocker):
+        from congress_videos.modules.youtube.youtube_ai import (
+            generate_youtube_metadata_for_selected_videos,
         )
-        result = generate_youtube_title("Content", [], max_length=100)
-        assert result["within_limit"] is True
 
-    def test_api_error_returns_fallback_title(self, mocker):
         mocker.patch(
             "congress_videos.modules.youtube.youtube_ai.generate_chat_completion",
-            return_value=_make_chat_error("Rate limit exceeded"),
+            return_value=_make_chat_result("A generated description"),
         )
-        result = generate_youtube_title("Some content", [])
-        assert result["title"] is not None
-        assert len(result["title"]) > 0
-        assert result["error"] is not None
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_ai.construct_session_link",
+            return_value="https://www.congreso.es/link",
+        )
 
-    def test_api_error_fallback_title_contains_congreso_or_gobierno(self, mocker):
-        mocker.patch(
-            "congress_videos.modules.youtube.youtube_ai.generate_chat_completion",
-            return_value=_make_chat_error("Connection error"),
+        metadata_results = generate_youtube_metadata_for_selected_videos(
+            [_make_top_video()]
         )
-        result = generate_youtube_title("Some content", [])
-        assert "Congreso" in result["title"] or "Gobierno" in result["title"]
 
-    def test_title_stripped_of_surrounding_double_quotes(self, mocker):
-        mocker.patch(
-            "congress_videos.modules.youtube.youtube_ai.generate_chat_completion",
-            return_value=_make_chat_result('"Quoted Title"'),
-        )
-        result = generate_youtube_title("Content", [])
-        assert not result["title"].startswith('"')
-        assert not result["title"].endswith('"')
+        topic_metadata = metadata_results["topic_metadata"][0]
+        assert "title" not in topic_metadata
+        assert "description" in topic_metadata
 
-    def test_title_truncated_when_exceeds_max_length(self, mocker):
-        long_title = "A" * 200
+    def test_generation_success_reflects_description_only(self, mocker):
+        from congress_videos.modules.youtube.youtube_ai import (
+            generate_youtube_metadata_for_selected_videos,
+        )
+
         mocker.patch(
             "congress_videos.modules.youtube.youtube_ai.generate_chat_completion",
-            return_value=_make_chat_result(long_title),
+            return_value=_make_chat_result("A generated description"),
         )
-        result = generate_youtube_title("Content", [], max_length=50)
-        assert result["character_count"] <= 50
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_ai.construct_session_link",
+            return_value="https://www.congreso.es/link",
+        )
+
+        metadata_results = generate_youtube_metadata_for_selected_videos(
+            [_make_top_video()]
+        )
+
+        topic_metadata = metadata_results["topic_metadata"][0]
+        assert "title" not in topic_metadata
+        assert topic_metadata["generation_success"] is True
+        assert metadata_results["successful_generations"] == 1
+
+
+def test_generate_youtube_title_removed_from_module():
+    """generate_youtube_title must be absent from the youtube package (issue #245)."""
+    import congress_videos.modules.youtube as youtube_pkg
+
+    assert not hasattr(youtube_pkg, "generate_youtube_title")
+    assert "generate_youtube_title" not in youtube_pkg.__all__
 
 
 # ---------------------------------------------------------------------------

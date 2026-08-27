@@ -58,10 +58,9 @@ def __getattr__(name):
         return locals()[name]
 
     # youtube_ai functions
-    elif name in ['generate_youtube_title', 'generate_youtube_description',
+    elif name in ['generate_youtube_description',
                   'generate_youtube_metadata_for_selected_videos', 'score_chapters_relevance']:
         from .youtube_ai import (
-            generate_youtube_title,
             generate_youtube_description,
             generate_youtube_metadata_for_selected_videos,
             score_chapters_relevance,
@@ -105,7 +104,6 @@ __all__ = [
     'regroup_summarized_chunks',
     'check_source_video_integrity',
     # youtube_ai functions
-    'generate_youtube_title',
     'generate_youtube_description',
     'generate_youtube_metadata_for_selected_videos',
     'score_chapters_relevance',
