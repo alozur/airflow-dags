@@ -112,6 +112,18 @@ class TestMigration036ViewRecreation:
         sql = _sql().upper()
         assert "CREATE VIEW UPLOADABLE_VIDEOS AS" in sql
 
+    def test_uploadable_videos_recreation_guarded_on_legacy_tables(self):
+        """The legacy video_topic pipeline tables never existed in the NAS
+        development/production schemas, so the uploadable_videos recreation
+        must be guarded on to_regclass for all three base tables (design D4)
+        instead of failing the whole transactional migration run."""
+        sql = _sql().upper()
+        create_pos = sql.index("CREATE VIEW UPLOADABLE_VIDEOS AS")
+        guard_region = sql[:create_pos]
+        assert "TO_REGCLASS('UPLOAD_QUEUE')" in guard_region
+        assert "TO_REGCLASS('VIDEO_TOPICS')" in guard_region
+        assert "TO_REGCLASS('CONGRESSIONAL_SESSIONS')" in guard_region
+
     def test_uploadable_chapters_body_matches_021_verbatim(self):
         """The recreated view must select resolved_participant_slug and order
         by session_date DESC NULLS LAST (021's body), and must NOT resurrect
