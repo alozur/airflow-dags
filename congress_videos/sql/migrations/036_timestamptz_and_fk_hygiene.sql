@@ -170,6 +170,17 @@ ORDER BY
     vc.created_at DESC;
 
 -- uploadable_videos — verbatim body from congressional_videos_schema.sql, unqualified.
+-- Guarded (design D4): the legacy video_topic pipeline tables (upload_queue,
+-- video_topics, congressional_sessions) exist only in installs created from the
+-- base schema files — the NAS development/production schemas never created them.
+-- to_regclass resolves through the same search_path the CREATE VIEW would use,
+-- so the view is recreated exactly where its base tables are actually visible.
+DO $guard$
+BEGIN
+    IF to_regclass('upload_queue') IS NOT NULL
+       AND to_regclass('video_topics') IS NOT NULL
+       AND to_regclass('congressional_sessions') IS NOT NULL THEN
+        EXECUTE $view$
 CREATE VIEW uploadable_videos AS
 SELECT
     vt.entry_id,
@@ -198,7 +209,12 @@ WHERE
     AND vt.is_uploaded_to_youtube = FALSE
     AND vt.upload_eligible = TRUE
     AND vt.is_main_topic = TRUE
-ORDER BY effective_priority DESC, uq.queued_at ASC;
+ORDER BY effective_priority DESC, uq.queued_at ASC
+        $view$;
+    ELSE
+        RAISE NOTICE 'Skipping uploadable_videos recreation: legacy base tables absent (schema %)', current_schema();
+    END IF;
+END $guard$;
 
 -- DOWN
 -- Manual psql only — the runner has no automatic rollback.
