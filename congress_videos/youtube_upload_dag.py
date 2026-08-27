@@ -49,8 +49,6 @@ IS_DEVELOPMENT = POSTGRES_SCHEMA == "development"
 # This is a calendar-day cap for long-form chapter uploads; database quota data
 # reports successful uploads_today, while limit=1 remains a selection safeguard.
 DAILY_LONG_FORM_UPLOAD_LIMIT = 1
-# Retain legacy thresholds for manually triggered runs using their logical hours.
-THRESHOLD_BY_HOUR = {11: 10, 14: 20, 17: 0}
 STALE_RUN_TOLERANCE_MINUTES = int(
     os.getenv("CHAPTER_UPLOADER_STALE_RUN_TOLERANCE_MINUTES", "30")
 )
@@ -59,7 +57,7 @@ _THUMBNAIL_RESULT_TASK_ID = "thumbnail_result"
 
 
 def should_upload(**context):
-    """Return True when queue_size strictly exceeds the threshold for this run's hour.
+    """Return True when queue_size is non-empty (queue_size > 0).
 
     Used as the python_callable for t1_skip (ShortCircuitOperator).
     Receives full Airflow context via **context (REQ-GATE-01).
@@ -91,9 +89,7 @@ def should_upload(**context):
         )
         return False
 
-    hour = context["logical_date"].hour
-    threshold = THRESHOLD_BY_HOUR.get(hour, 0)
-    return queue_size > threshold
+    return queue_size > 0
 
 
 # ---------------------------------------------------------------------------
