@@ -20,7 +20,6 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
-from congress_videos.modules.postgres_operators import PostgreSQLOperator
 from utils.env_loader import load_env_if_local
 
 load_env_if_local()
@@ -198,6 +197,47 @@ def _fetch_analytics(ti, **context) -> list:
     return collected
 
 
+def _run_get_pending_checkpoints(ti):
+    """Return candidate video chapters for analytics collection.
+
+    Pushes XCom key 'candidates'.
+    """
+    from congress_videos.modules.database import CongressionalVideoDB
+
+    db = CongressionalVideoDB()
+    result = db.get_pending_analytics_checkpoints()
+    logging.info("video_analytics: retrieved %d candidate chapters", len(result))
+    ti.xcom_push(key="candidates", value=result)
+    return result
+
+
+def _run_record_snapshots(ti):
+    """Persist each collected (chapter, checkpoint, metrics) snapshot.
+
+    Reads the 'collected' XCom pushed by _fetch_analytics. Terminal task —
+    does not push an output XCom.
+    """
+    from congress_videos.modules.database import CongressionalVideoDB
+
+    db = CongressionalVideoDB()
+    collected = ti.xcom_pull(key="collected") or []
+    logging.info("video_analytics: recording %d analytics snapshots", len(collected))
+
+    for item in collected:
+        db.record_analytics_snapshot(
+            chapter_id=item["chapter_id"],
+            youtube_video_id=item["youtube_video_id"],
+            checkpoint=item["checkpoint"],
+            metrics=item["metrics"],
+        )
+        logging.info(
+            "video_analytics: recorded snapshot chapter_id=%s yt_id=%s checkpoint=%s",
+            item["chapter_id"], item["youtube_video_id"], item["checkpoint"],
+        )
+
+    return {"recorded_snapshots": len(collected)}
+
+
 # ---------------------------------------------------------------------------
 # DAG definition
 # ---------------------------------------------------------------------------
@@ -228,10 +268,9 @@ with DAG(
     )
 
     # t1: Fetch candidate chapters from DB (uploaded, non-null yt_id, within 90d)
-    t1_pending = PostgreSQLOperator(
+    t1_pending = PythonOperator(
         task_id="get_pending_checkpoints",
-        operation="get_pending_analytics_checkpoints",
-        output_xcom_key="candidates",
+        python_callable=_run_get_pending_checkpoints,
     )
 
     # t2: Call Analytics API; filter via should_persist(); push 'collected' XCom
@@ -241,10 +280,9 @@ with DAG(
     )
 
     # t3: Persist snapshot rows (ON CONFLICT DO NOTHING keeps it idempotent)
-    t3_record = PostgreSQLOperator(
+    t3_record = PythonOperator(
         task_id="record_snapshots",
-        operation="record_analytics_snapshots",
-        xcom_keys={"collected": "collected"},
+        python_callable=_run_record_snapshots,
     )
 
     t0_staleness >> t1_pending >> t2_fetch >> t3_record

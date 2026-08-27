@@ -127,10 +127,10 @@ XCom keys en congress_youtube_chapter_uploader:
     utils/git_sync_dag.py
     utils/youtube_uploader_dag.py
 
-  Custom Operators layer
-    congress_videos/modules/postgres_operators.py
-    PostgreSQLOperator: encapsula todas las operaciones BBDD,
-    recibe xcom_keys, escribe en output_xcom_key
+  DB task layer
+    Direct CongressionalVideoDB callables inside each DAG (PythonOperator).
+    No custom operator indirection (issue #227): each task pulls its own
+    XCom input, calls the DB method, pushes its own output_xcom_key.
 
   Business logic layer
     congress_videos/modules/youtube/download.py
