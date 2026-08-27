@@ -20,12 +20,24 @@ def _make_mock_pg(schema: str = "development", applied: list[str] | None = None)
     Build a PostgresConnection mock.
 
     Returns (mock_pg, mock_cursor_write) where mock_cursor_write accumulates
-    all execute() calls made during migration writes.
+    all execute() calls made during migration writes. The FIRST connection
+    handed out by `get_connection` is always the advisory-lock connection
+    (`mock_pg._lock_cursor` / `mock_pg._lock_conn` expose it for lock-specific
+    assertions) — every migration-application connection comes after it.
     """
     applied = applied or []
 
     mock_pg = MagicMock()
     mock_pg.schema = schema
+
+    mock_cursor_lock = MagicMock()
+    mock_cursor_lock.__enter__ = MagicMock(return_value=mock_cursor_lock)
+    mock_cursor_lock.__exit__ = MagicMock(return_value=False)
+
+    mock_conn_lock = MagicMock()
+    mock_conn_lock.cursor.return_value = mock_cursor_lock
+    mock_conn_lock.__enter__ = MagicMock(return_value=mock_conn_lock)
+    mock_conn_lock.__exit__ = MagicMock(return_value=False)
 
     mock_cursor_read = MagicMock()
     mock_cursor_read.__enter__ = MagicMock(return_value=mock_cursor_read)
@@ -46,7 +58,11 @@ def _make_mock_pg(schema: str = "development", applied: list[str] | None = None)
     mock_conn_write.__enter__ = MagicMock(return_value=mock_conn_write)
     mock_conn_write.__exit__ = MagicMock(return_value=False)
 
-    mock_pg.get_connection.side_effect = [mock_conn_read] + [mock_conn_write] * 10
+    mock_pg.get_connection.side_effect = (
+        [mock_conn_lock, mock_conn_read] + [mock_conn_write] * 10
+    )
+    mock_pg._lock_conn = mock_conn_lock
+    mock_pg._lock_cursor = mock_cursor_lock
 
     return mock_pg, mock_cursor_write
 
@@ -144,6 +160,8 @@ class TestEnsureMigrationsTable:
 class TestApplyPendingMigrations:
 
     def test_no_migration_files_skips_db(self, mocker, tmp_path):
+        """No migration files: the advisory lock is still acquired (session
+        span covers the whole function), but no read/write connection opens."""
         from utils.migrations_dag import _apply_pending_migrations
 
         mock_pg, _ = _make_mock_pg()
@@ -152,7 +170,7 @@ class TestApplyPendingMigrations:
 
         _apply_pending_migrations()
 
-        mock_pg.get_connection.assert_not_called()
+        assert mock_pg.get_connection.call_count == 1  # lock only, no read/write
 
     def test_already_applied_migration_is_skipped(self, mocker, tmp_path):
         from utils.migrations_dag import _apply_pending_migrations
@@ -166,7 +184,7 @@ class TestApplyPendingMigrations:
 
         _apply_pending_migrations()
 
-        assert mock_pg.get_connection.call_count == 1  # read only, no write
+        assert mock_pg.get_connection.call_count == 2  # lock + read only, no write
 
     def test_pending_migration_is_applied(self, mocker, tmp_path):
         from utils.migrations_dag import _apply_pending_migrations
@@ -180,7 +198,7 @@ class TestApplyPendingMigrations:
 
         _apply_pending_migrations()
 
-        assert mock_pg.get_connection.call_count == 2  # 1 read + 1 write
+        assert mock_pg.get_connection.call_count == 3  # lock + 1 read + 1 write
 
         executed = [c[0][0] for c in mock_cursor_write.execute.call_args_list]
         assert any("SET search_path" in s for s in executed)
@@ -217,7 +235,7 @@ class TestApplyPendingMigrations:
 
         _apply_pending_migrations()
 
-        assert mock_pg.get_connection.call_count == 3  # 1 read + 2 writes
+        assert mock_pg.get_connection.call_count == 4  # lock + 1 read + 2 writes
 
     def test_mixed_applied_and_pending_only_runs_pending(self, mocker, tmp_path):
         from utils.migrations_dag import _apply_pending_migrations
@@ -231,7 +249,7 @@ class TestApplyPendingMigrations:
 
         _apply_pending_migrations()
 
-        assert mock_pg.get_connection.call_count == 2  # 1 read + 1 write
+        assert mock_pg.get_connection.call_count == 3  # lock + 1 read + 1 write
 
     def test_migrations_applied_in_alphabetical_order(self, mocker, tmp_path):
         from utils.migrations_dag import _apply_pending_migrations
@@ -252,6 +270,104 @@ class TestApplyPendingMigrations:
         ]
         recorded = [c[0][1][0] for c in insert_calls]
         assert recorded == sorted(recorded)
+
+
+# ---------------------------------------------------------------------------
+# Advisory lock (issue #209) — schema-scoped, session-spanning
+# ---------------------------------------------------------------------------
+
+class TestAdvisoryLock:
+
+    def test_lock_acquired_on_first_connection_before_any_file_applies(self, mocker, tmp_path):
+        """The advisory lock connection must be the FIRST one opened, and its
+        pg_advisory_lock call must happen before any migration read/write."""
+        from utils.migrations_dag import _apply_pending_migrations
+
+        _create_migration(tmp_path, "001_init.sql")
+        mock_pg, _ = _make_mock_pg(applied=[])
+        mocker.patch("utils.migrations_dag.PostgresConnection", return_value=mock_pg)
+        mocker.patch("utils.migrations_dag.DAGS_REPO_PATH", tmp_path)
+
+        _apply_pending_migrations()
+
+        # The lock connection (first item handed out by get_connection's
+        # side_effect list) must have received the pg_advisory_lock call.
+        lock_calls = [
+            c for c in mock_pg._lock_cursor.execute.call_args_list
+            if "pg_advisory_lock" in c[0][0]
+        ]
+        assert len(lock_calls) == 1
+
+    def test_lock_timeout_set_to_zero_on_lock_connection(self, mocker, tmp_path):
+        from utils.migrations_dag import _apply_pending_migrations
+
+        mock_pg, _ = _make_mock_pg(applied=[])
+        mocker.patch("utils.migrations_dag.PostgresConnection", return_value=mock_pg)
+        mocker.patch("utils.migrations_dag.DAGS_REPO_PATH", tmp_path)
+
+        _apply_pending_migrations()
+
+        executed = [c[0][0] for c in mock_pg._lock_cursor.execute.call_args_list]
+        assert any("SET lock_timeout = 0" in s for s in executed)
+
+    def test_lock_connection_autocommit_enabled(self, mocker, tmp_path):
+        """D7: autocommit avoids an idle-in-transaction session for the run."""
+        from utils.migrations_dag import _apply_pending_migrations
+
+        mock_pg, _ = _make_mock_pg(applied=[])
+        mocker.patch("utils.migrations_dag.PostgresConnection", return_value=mock_pg)
+        mocker.patch("utils.migrations_dag.DAGS_REPO_PATH", tmp_path)
+
+        _apply_pending_migrations()
+
+        assert mock_pg._lock_conn.autocommit is True
+
+    def test_schema_passed_as_query_parameter_not_fstring(self, mocker, tmp_path):
+        """The schema name must never be interpolated directly into the SQL
+        string — it must travel as a bound parameter to hashtext()."""
+        from utils.migrations_dag import _apply_pending_migrations
+
+        mock_pg, _ = _make_mock_pg(schema="development", applied=[])
+        mocker.patch("utils.migrations_dag.PostgresConnection", return_value=mock_pg)
+        mocker.patch("utils.migrations_dag.DAGS_REPO_PATH", tmp_path)
+
+        _apply_pending_migrations()
+
+        lock_call = next(
+            c for c in mock_pg._lock_cursor.execute.call_args_list
+            if "pg_advisory_lock" in c[0][0]
+        )
+        sql_text, params = lock_call[0][0], lock_call[0][1]
+        assert "development" not in sql_text
+        assert "development" in params
+
+    def test_two_different_schemas_pass_different_key_params(self, mocker, tmp_path):
+        """Same namespace, different schema string ⇒ different hashtext() input
+        (dev and prod share one Postgres instance but must not block each other)."""
+        from utils.migrations_dag import _apply_pending_migrations
+
+        mock_pg_dev, _ = _make_mock_pg(schema="development", applied=[])
+        mocker.patch("utils.migrations_dag.PostgresConnection", return_value=mock_pg_dev)
+        mocker.patch("utils.migrations_dag.DAGS_REPO_PATH", tmp_path)
+        _apply_pending_migrations()
+
+        mock_pg_prod, _ = _make_mock_pg(schema="production", applied=[])
+        mocker.patch("utils.migrations_dag.PostgresConnection", return_value=mock_pg_prod)
+        _apply_pending_migrations()
+
+        dev_call = next(
+            c for c in mock_pg_dev._lock_cursor.execute.call_args_list
+            if "pg_advisory_lock" in c[0][0]
+        )
+        prod_call = next(
+            c for c in mock_pg_prod._lock_cursor.execute.call_args_list
+            if "pg_advisory_lock" in c[0][0]
+        )
+        assert dev_call[0][1] != prod_call[0][1]
+        assert dev_call[0][1][1] == "development"
+        assert prod_call[0][1][1] == "production"
+        # Same namespace constant on both
+        assert dev_call[0][1][0] == prod_call[0][1][0]
 
 
 # ---------------------------------------------------------------------------
