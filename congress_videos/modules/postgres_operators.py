@@ -102,7 +102,7 @@ class PostgreSQLOperator(BaseOperator):
                 "queue_size": queue_size,
                 "turns_pending": turns_pending,
             }
-            logger.info(f"✅ Upload quota: {uploads_today} today ({chapters_uploaded_today} chapters + {turns_uploaded_today} turns), {chapters_pending} chapters + {turns_pending} turns in queue")
+            logger.info(f"✅ Upload quota: {uploads_today} today ({chapters_uploaded_today} chapters + {turns_uploaded_today} turn videos), {chapters_pending} chapters + {turns_pending} turns in queue")
 
         elif self.operation == 'mark_chapters_uploaded':
             """Mark chapters as uploaded to YouTube after successful upload"""
