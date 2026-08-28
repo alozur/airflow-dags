@@ -51,10 +51,15 @@ from congress_videos.config.constants import (
 
 from congress_videos.modules.participants_db import lookup_participant_fuzzy
 from congress_videos.modules.sidecar_api_error import SidecarApiError
-from congress_videos.modules.speaker_turns import detect_turns, _upsert_turns
+from congress_videos.modules.speaker_turns import (
+    ANNOUNCEMENT_WINDOW_SECONDS,
+    detect_turns,
+    _upsert_turns,
+)
 from congress_videos.modules.speaker_turns_api import api_diarize_fn, check_diarize_api_health
 from congress_videos.modules.vad_helpers import _find_source_video, extract_audio_wav
 from congress_videos.srt_helpers import _parse_srt_blocks, find_srt_for_chapter
+from utils.llm_cache import cached_json_completion
 from utils.postgres_helpers import PostgresConnection
 from utils.time_utils import parse_timestamp
 
@@ -113,6 +118,7 @@ def run_chapter_turns(
     *,
     diarize_fn=api_diarize_fn,
     name_resolver=lookup_participant_fuzzy,
+    completion_fn=cached_json_completion,
     turns_table: str = "speaker_turns",
 ) -> dict:
     """Detect speaker turns for a single chapter — holds NO database connection.
@@ -156,9 +162,14 @@ def run_chapter_turns(
 
         srt_path = find_srt_for_chapter(video_id, chapter_id, session_date)
         if srt_path:
+            # Lower bound widened by ANNOUNCEMENT_WINDOW_SECONDS (issue #131,
+            # design D2) so a chapter's first turn can see its pre-chapter
+            # announcement. Upper bound stays at end_secs — no leakage into
+            # the next chapter.
             srt_blocks = [
                 b for b in _parse_srt_blocks(srt_path)
-                if b["start_secs"] >= start_secs and b["end_secs"] <= end_secs
+                if b["start_secs"] >= start_secs - ANNOUNCEMENT_WINDOW_SECONDS
+                and b["end_secs"] <= end_secs
             ]
         else:
             logger.warning(
@@ -169,7 +180,9 @@ def run_chapter_turns(
         chapter["_wav_path"] = wav_path
         chapter["_chapter_offset_seconds"] = start_secs
 
-        turns = detect_turns(chapter, srt_blocks, diarize_fn, name_resolver)
+        turns = detect_turns(
+            chapter, srt_blocks, diarize_fn, name_resolver, completion_fn=completion_fn
+        )
         return {"status": "ok", "chapter_id": chapter_id, "turns": turns}
     finally:
         if os.path.exists(wav_path):
