@@ -29,6 +29,11 @@ log = logging.getLogger(__name__)
 # Module-level constants (tunable thresholds)
 # ---------------------------------------------------------------------------
 
+ANNOUNCEMENT_WINDOW_SECONDS: float = 120.0
+"""Backward-only announcement search window, in seconds. Mirrors
+speaker_resolution.INTRO_WINDOW_SECS: announcements always precede the
+speaker they introduce, so the window is [t - window, t], never forward."""
+
 GAP_MERGE_SECONDS: float = 1.0
 """Same-speaker segments closer than this are merged into one."""
 
@@ -110,13 +115,17 @@ _RE_GRACIAS_SENORIA = re.compile(
 def extract_announcement(
     srt_blocks: list[dict],
     t: float,
-    window: float = 30.0,
+    window: float = ANNOUNCEMENT_WINDOW_SECONDS,
 ) -> tuple[str | None, bool]:
-    """Search SRT blocks near time *t* for a president-announcement phrase.
+    """Search SRT blocks preceding time *t* for a president-announcement phrase.
 
-    Scans blocks whose ``[start_secs, end_secs]`` intersects the window
-    ``[t − window, t + window]``. Within that window, prefers the block
-    closest to and before *t* (within 15–30 s) for name capture.
+    Backward-only: scans blocks fully contained in ``[t − window, t]``
+    (mirrors ``speaker_resolution``'s intro-window filter). A block that
+    starts before *t* but ends after it — or that starts after *t* entirely —
+    is never matched: announcements always precede the speaker they
+    introduce, and forward blocks are typically the new speaker's own words,
+    a mis-attribution source. Within the window, prefers the block closest
+    to and before *t* for name capture.
 
     Patterns matched (case-insensitive, accent-tolerant):
     - "Tiene la palabra el señor/la señora <name>" → returns (name, True)
@@ -127,26 +136,18 @@ def extract_announcement(
         (raw_name_or_None, phrase_found)
     """
     lo = t - window
-    hi = t + window
 
-    # Collect blocks that overlap [lo, hi]
+    # Collect blocks fully contained in [lo, t] — backward-only.
     window_blocks = [
         b for b in srt_blocks
-        if b["end_secs"] >= lo and b["start_secs"] <= hi
+        if b["start_secs"] >= lo and b["end_secs"] <= t
     ]
 
     if not window_blocks:
         return (None, False)
 
-    # Sort by proximity: blocks ending closest before t are preferred for name capture.
-    # Prefer blocks that end before t (announcements precede the new speaker).
-    # Within those, prefer the one closest to t.
-    def _sort_key(b: dict) -> tuple[int, float]:
-        if b["end_secs"] <= t:
-            return (0, t - b["end_secs"])  # preceding blocks first, closest last
-        return (1, b["start_secs"] - t)    # following blocks after
-
-    sorted_blocks = sorted(window_blocks, key=_sort_key)
+    # All matches precede t by construction; prefer the one closest to t.
+    sorted_blocks = sorted(window_blocks, key=lambda b: t - b["end_secs"])
 
     # First pass: look for a named announcement in the best (closest preceding) blocks
     best_named: tuple[str | None, bool] | None = None

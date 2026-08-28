@@ -155,12 +155,28 @@ class TestExtractAnnouncement:
         assert name is None
 
     def test_block_outside_window_is_ignored(self):
-        """A matching block more than 30 s before t is outside the default window."""
+        """A matching block ending more than 120 s before t is outside the
+        backward-only default window (issue #131: 30s symmetric -> 120s
+        backward-only, mirroring speaker_resolution.INTRO_WINDOW_SECS)."""
+        from congress_videos.modules.speaker_turns import extract_announcement
+        t = 200.0
+        # 200 - 120 = 80 → block ending at 78 is 121s before t, outside [80, 200)
+        blocks = _make_srt_blocks(
+            (70.0, 78.0, "Tiene la palabra el señor Fuera de ventana"),
+        )
+        name, found = extract_announcement(blocks, t)
+        assert found is False
+        assert name is None
+
+    def test_forward_block_is_never_matched(self):
+        """Backward-only window (issue #131): a block AFTER t must never be
+        matched, even when close in time — forward blocks are the new
+        speaker's own words, a mis-attribution source under the old
+        symmetric +/-30s window."""
         from congress_videos.modules.speaker_turns import extract_announcement
         t = 100.0
-        # 100 - 31 = 69 → outside [70, 130] window
         blocks = _make_srt_blocks(
-            (60.0, 68.0, "Tiene la palabra el señor Fuera de ventana"),
+            (105.0, 110.0, "Tiene la palabra el señor Adelante"),
         )
         name, found = extract_announcement(blocks, t)
         assert found is False
