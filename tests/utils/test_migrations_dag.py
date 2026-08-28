@@ -101,6 +101,81 @@ class TestRunMigrationsDAGLoads:
 
 
 # ---------------------------------------------------------------------------
+# _migration_connection (issue #203 — dedicated DDL migration role)
+# ---------------------------------------------------------------------------
+
+class TestMigrationCredentialResolution:
+
+    def test_both_env_vars_set_overrides_credentials(self, mocker, monkeypatch):
+        """Both MIGRATION_POSTGRES_USER/PASSWORD set -> pg.user/password overridden."""
+        from utils.migrations_dag import _migration_connection
+
+        monkeypatch.setenv("MIGRATION_POSTGRES_USER", "airflow_migrations")
+        monkeypatch.setenv("MIGRATION_POSTGRES_PASSWORD", "migration-secret")
+
+        mock_pg = MagicMock()
+        mock_pg.user = "airflow"
+        mock_pg.password = "airflow-pw"
+        mocker.patch("utils.migrations_dag.PostgresConnection", return_value=mock_pg)
+
+        result = _migration_connection()
+
+        assert result.user == "airflow_migrations"
+        assert result.password == "migration-secret"
+
+    def test_neither_env_var_set_falls_back_to_default(self, mocker, monkeypatch):
+        """Neither env var set (current NAS default) -> credentials untouched."""
+        from utils.migrations_dag import _migration_connection
+
+        monkeypatch.delenv("MIGRATION_POSTGRES_USER", raising=False)
+        monkeypatch.delenv("MIGRATION_POSTGRES_PASSWORD", raising=False)
+
+        mock_pg = MagicMock()
+        mock_pg.user = "airflow"
+        mock_pg.password = "airflow-pw"
+        mocker.patch("utils.migrations_dag.PostgresConnection", return_value=mock_pg)
+
+        result = _migration_connection()
+
+        assert result.user == "airflow"
+        assert result.password == "airflow-pw"
+
+    def test_only_user_set_falls_back_to_default(self, mocker, monkeypatch):
+        """Only MIGRATION_POSTGRES_USER set (no password) -> no partial override."""
+        from utils.migrations_dag import _migration_connection
+
+        monkeypatch.setenv("MIGRATION_POSTGRES_USER", "airflow_migrations")
+        monkeypatch.delenv("MIGRATION_POSTGRES_PASSWORD", raising=False)
+
+        mock_pg = MagicMock()
+        mock_pg.user = "airflow"
+        mock_pg.password = "airflow-pw"
+        mocker.patch("utils.migrations_dag.PostgresConnection", return_value=mock_pg)
+
+        result = _migration_connection()
+
+        assert result.user == "airflow"
+        assert result.password == "airflow-pw"
+
+    def test_only_password_set_falls_back_to_default(self, mocker, monkeypatch):
+        """Only MIGRATION_POSTGRES_PASSWORD set (no user) -> no partial override."""
+        from utils.migrations_dag import _migration_connection
+
+        monkeypatch.delenv("MIGRATION_POSTGRES_USER", raising=False)
+        monkeypatch.setenv("MIGRATION_POSTGRES_PASSWORD", "migration-secret")
+
+        mock_pg = MagicMock()
+        mock_pg.user = "airflow"
+        mock_pg.password = "airflow-pw"
+        mocker.patch("utils.migrations_dag.PostgresConnection", return_value=mock_pg)
+
+        result = _migration_connection()
+
+        assert result.user == "airflow"
+        assert result.password == "airflow-pw"
+
+
+# ---------------------------------------------------------------------------
 # _ensure_migrations_table
 # ---------------------------------------------------------------------------
 
