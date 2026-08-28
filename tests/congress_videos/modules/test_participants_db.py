@@ -259,6 +259,32 @@ class TestLookupParticipantBySlug:
         assert _mod.lookup_participant_by_slug("garcia-anna") is None
 
 
+class TestGetParticipantsRoster:
+    """get_participants_roster() — public wrapper for chapter_speaker_resolution (issue #263).
+
+    A1 amendment: this must NOT collide with CongressParticipantsDB.get_all_participants
+    (class method). It wraps the existing module-level _get_participants_for_lookup().
+    """
+
+    def test_returns_participants_from_lookup_helper(self, monkeypatch):
+        rows = [
+            {"slug": "garcia-ana", "display_name": "García, Ana", "party": "PartyA"},
+            {"slug": "pedro-sanchez", "display_name": "Pedro Sánchez", "party": "PSOE"},
+        ]
+        from congress_videos.modules import participants_db as _mod
+        monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
+
+        result = _mod.get_participants_roster()
+
+        assert result == rows
+
+    def test_empty_roster_returns_empty_list(self, monkeypatch):
+        from congress_videos.modules import participants_db as _mod
+        monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: [])
+
+        assert _mod.get_participants_roster() == []
+
+
 class TestLookupParticipantFuzzy:
     """Tests for lookup_participant_fuzzy.
 
