@@ -12,6 +12,7 @@ This DAG uploads individual chapters from congressional videos to YouTube:
 The uploadable_chapters view filters chapters with:
 - is_uploaded_to_youtube = FALSE
 - relevance_score >= 2 (configurable in view)
+- is_upload_abandoned = FALSE
 - Joined with source video metadata
 
 This allows uploading the most relevant and recent congressional debate chapters
