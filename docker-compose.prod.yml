@@ -11,6 +11,7 @@ networks:
     external: true
   ml_api_network:
     external: true
+    name: ml-apis_ml_api_network
 
 volumes:
   airflow_logs_prod:
@@ -85,6 +86,9 @@ x-airflow-common:
     - airflow_network
     - whisper_network
     - ml_api_network
+  dns:
+    - 8.8.8.8
+    - 1.1.1.1
   mem_limit: 2g
   mem_reservation: 1.5g
 
@@ -121,6 +125,9 @@ services:
       - postgres_infra_network
       - airflow_network
       - whisper_network
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
 
   init-perms:
     image: busybox

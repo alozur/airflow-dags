@@ -5,12 +5,13 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.20.0.0/16
-          gateway: 172.20.0.1
+        - subnet: 192.168.50.0/24
+          gateway: 192.168.50.1
   whisper_network:
     external: true
   ml_api_network:
     external: true
+    name: ml-apis_ml_api_network
 
 volumes:
   airflow_logs:
@@ -85,13 +86,16 @@ x-airflow-common:
     - airflow_network
     - whisper_network
     - ml_api_network
+  dns:
+    - 8.8.8.8
+    - 1.1.1.1
   mem_limit: 1.5g
   mem_reservation: 1g
 
 services:
   init-dags:
     image: alpine/git:latest
-    container_name: airflow-init-dags
+    container_name: airflow-init-dags-dev
     restart: "no"
     entrypoint: ""
     command:
@@ -121,6 +125,9 @@ services:
       - postgres_infra_network
       - airflow_network
       - whisper_network
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
 
   init-perms:
     image: busybox
@@ -145,7 +152,7 @@ services:
 
   airflow-webserver:
     <<: *airflow-common
-    container_name: airflow-webserver
+    container_name: airflow-webserver-dev
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -163,7 +170,7 @@ services:
 
   airflow-scheduler:
     <<: *airflow-common
-    container_name: airflow-scheduler
+    container_name: airflow-scheduler-dev
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -179,7 +186,7 @@ services:
 
   airflow-init:
     <<: *airflow-common
-    container_name: airflow-init
+    container_name: airflow-init-dev
     restart: "no"
     entrypoint: /bin/bash
     command:
