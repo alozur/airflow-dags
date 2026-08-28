@@ -217,6 +217,26 @@ class TestCheckYamnetApiHealth:
         result = check_yamnet_api_health(getter=getter)
         assert result is None
 
+    def test_probes_the_health_endpoint_with_the_default_timeout(self):
+        """The probe must GET <YAMNET_API_URL>/health with timeout=5.
+
+        The other tests inject a getter and assert only on the raised message,
+        so a wrong path (e.g. '/healthz') would 404 on every production run --
+        hard-failing the DAG forever -- while the suite stayed green.
+        """
+        from congress_videos.modules.trim_proposals_api import (
+            YAMNET_API_URL,
+            check_yamnet_api_health,
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        getter = MagicMock(return_value=mock_resp)
+
+        check_yamnet_api_health(getter=getter)
+
+        getter.assert_called_once_with(f"{YAMNET_API_URL}/health", timeout=5)
+
     def test_connection_error_raises_sidecar_api_error_unreachable(self):
         """getter raises requests.ConnectionError → SidecarApiError with 'yamnet-api' and 'unreachable'."""
         from congress_videos.modules.sidecar_api_error import SidecarApiError
