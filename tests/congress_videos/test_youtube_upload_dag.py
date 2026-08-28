@@ -1141,6 +1141,7 @@ def _make_turn_row(
     key_speakers: list | None = None,
     session_number: int = 80,
     session_date: str = "2025-06-10",
+    resolved_participant_slug: str | None = None,
 ) -> dict:
     # Non-zero offset (hours=2) reproduces the psycopg2 TIMESTAMPTZ shape that
     # crashes Airflow's XCom serializer with a ValueError on empty ZoneInfo key.
@@ -1160,6 +1161,7 @@ def _make_turn_row(
         "relevance_score": 4,
         "materialized_at": datetime(2026, 8, 22, 1, 0, tzinfo=_tz_offset),
         "prepared_at": datetime(2026, 8, 22, 0, 0, tzinfo=_tz_offset),
+        "resolved_participant_slug": resolved_participant_slug,
     }
 
 
@@ -1262,6 +1264,66 @@ class TestPrepareThumbnailConfigForTurn:
             result = _prepare_thumbnail_config(turn, MagicMock())
 
         assert "80" in result["session"]
+
+
+class TestPrepareThumbnailConfigForTurnSlugFallback:
+    """resolved_name -> resolved_participant_slug fallback (issue #131),
+    mirroring the chapter branch's slug-first precedence."""
+
+    def test_resolved_name_present_unchanged(self):
+        """resolved_name present -> unchanged; resolved_participant_slug is
+        never consulted even when set."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(
+            resolved_name="Ana García",
+            resolved_participant_slug="lopez-pedro",
+        )
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "garcia-ana"},
+        ) as lookup, patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_by_slug",
+        ) as by_slug:
+            result = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert result["key_speakers"] == ["Ana García"]
+        assert result["slug"] == "garcia-ana"
+        lookup.assert_called_once_with("Ana García")
+        by_slug.assert_not_called()
+
+    def test_empty_resolved_name_falls_back_to_slug(self):
+        """Empty resolved_name + non-empty resolved_participant_slug ->
+        key_speakers/slug derive from resolved_participant_slug."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(
+            resolved_name="",
+            resolved_participant_slug="lopez-pedro",
+        )
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_by_slug",
+            return_value={"slug": "lopez-pedro", "display_name": "Pedro López"},
+        ) as by_slug:
+            result = _prepare_thumbnail_config(turn, MagicMock())
+
+        by_slug.assert_called_once_with("lopez-pedro")
+        assert result["slug"] == "lopez-pedro"
+        assert result["key_speakers"] == ["Pedro López"]
+
+    def test_both_empty_gives_empty_key_speakers_and_none_slug(self):
+        """Both resolved_name and resolved_participant_slug empty ->
+        key_speakers=[] and slug=None, unchanged from current behavior."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn = _make_turn_row(resolved_name="", resolved_participant_slug=None)
+
+        result = _prepare_thumbnail_config(turn, MagicMock())
+
+        assert result["key_speakers"] == []
+        assert result["slug"] is None
 
 
 class TestTurnQueueSelection:

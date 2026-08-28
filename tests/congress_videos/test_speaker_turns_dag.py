@@ -173,7 +173,7 @@ class TestRunChapterTurns:
         monkeypatch.setattr(mod, "_parse_srt_blocks", parse)
         captured = {}
 
-        def fake_detect(chapter, srt_blocks, diarize_fn, name_resolver=None):
+        def fake_detect(chapter, srt_blocks, diarize_fn, name_resolver=None, completion_fn=None):
             captured["srt_blocks"] = srt_blocks
             return []
 
@@ -184,6 +184,67 @@ class TestRunChapterTurns:
         assert result["status"] == "ok"
         assert captured["srt_blocks"] == []  # acoustic-only
         parse.assert_not_called()
+
+    def test_srt_prefilter_widened_by_announcement_window(self, monkeypatch):
+        """SRT pre-filter lower bound widens by ANNOUNCEMENT_WINDOW_SECONDS so
+        a chapter's first turn can see its pre-chapter announcement (issue
+        #131, design D2). Upper bound stays at chapter.end_time — no
+        leakage into the next chapter."""
+        mod = _fresh()
+        monkeypatch.setattr(mod, "_find_source_video", lambda *a, **k: "/v/src.mp4")
+        monkeypatch.setattr(mod, "extract_audio_wav", lambda *a, **k: "/tmp/c.wav")
+        monkeypatch.setattr(mod, "find_srt_for_chapter", lambda *a, **k: "/srt/x.srt")
+        # chapter() below: start_time="00:10:00,000" -> 600s, end_time="00:40:00,000" -> 2400s
+        blocks = [
+            {"start_secs": 510.0, "end_secs": 515.0, "text": "kept (90s before start)"},
+            {"start_secs": 449.0, "end_secs": 450.0, "text": "dropped (150s before start)"},
+            {"start_secs": 2405.0, "end_secs": 2410.0, "text": "dropped (after end)"},
+        ]
+        monkeypatch.setattr(mod, "_parse_srt_blocks", lambda p: blocks)
+        captured = {}
+
+        def fake_detect(chapter, srt_blocks, diarize_fn, name_resolver=None, completion_fn=None):
+            captured["srt_blocks"] = srt_blocks
+            return []
+
+        monkeypatch.setattr(mod, "detect_turns", fake_detect)
+
+        mod.run_chapter_turns(self._chapter())
+
+        texts = {b["text"] for b in captured["srt_blocks"]}
+        assert "kept (90s before start)" in texts
+        assert "dropped (150s before start)" not in texts
+        assert "dropped (after end)" not in texts
+
+    def test_completion_fn_reaches_detect_turns(self, monkeypatch):
+        """The DAG-layer completion_fn kwarg must thread through to
+        detect_turns (issue #131, design D4 — the module never binds an LLM
+        connection itself)."""
+        mod = _fresh()
+        monkeypatch.setattr(mod, "_find_source_video", lambda *a, **k: "/v/src.mp4")
+        monkeypatch.setattr(mod, "extract_audio_wav", lambda *a, **k: "/tmp/c.wav")
+        monkeypatch.setattr(mod, "find_srt_for_chapter", lambda *a, **k: None)
+        captured = {}
+
+        def fake_detect(chapter, srt_blocks, diarize_fn, name_resolver=None, completion_fn=None):
+            captured["completion_fn"] = completion_fn
+            return []
+
+        monkeypatch.setattr(mod, "detect_turns", fake_detect)
+        sentinel = lambda system, user, **kw: {"data": None, "error": None}  # noqa: E731
+
+        mod.run_chapter_turns(self._chapter(), completion_fn=sentinel)
+
+        assert captured["completion_fn"] is sentinel
+
+    def test_default_completion_fn_is_cached_json_completion(self):
+        """Default wiring: run_chapter_turns binds cached_json_completion so
+        production runs never require an explicit kwarg."""
+        import inspect
+
+        mod = _fresh()
+        sig = inspect.signature(mod.run_chapter_turns)
+        assert sig.parameters["completion_fn"].default is mod.cached_json_completion
 
 
 class TestSelectChapters:

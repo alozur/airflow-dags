@@ -155,12 +155,28 @@ class TestExtractAnnouncement:
         assert name is None
 
     def test_block_outside_window_is_ignored(self):
-        """A matching block more than 30 s before t is outside the default window."""
+        """A matching block ending more than 120 s before t is outside the
+        backward-only default window (issue #131: 30s symmetric -> 120s
+        backward-only, mirroring speaker_resolution.INTRO_WINDOW_SECS)."""
+        from congress_videos.modules.speaker_turns import extract_announcement
+        t = 200.0
+        # 200 - 120 = 80 → block ending at 78 is 121s before t, outside [80, 200)
+        blocks = _make_srt_blocks(
+            (70.0, 78.0, "Tiene la palabra el señor Fuera de ventana"),
+        )
+        name, found = extract_announcement(blocks, t)
+        assert found is False
+        assert name is None
+
+    def test_forward_block_is_never_matched(self):
+        """Backward-only window (issue #131): a block AFTER t must never be
+        matched, even when close in time — forward blocks are the new
+        speaker's own words, a mis-attribution source under the old
+        symmetric +/-30s window."""
         from congress_videos.modules.speaker_turns import extract_announcement
         t = 100.0
-        # 100 - 31 = 69 → outside [70, 130] window
         blocks = _make_srt_blocks(
-            (60.0, 68.0, "Tiene la palabra el señor Fuera de ventana"),
+            (105.0, 110.0, "Tiene la palabra el señor Adelante"),
         )
         name, found = extract_announcement(blocks, t)
         assert found is False
@@ -485,6 +501,250 @@ class TestApplyTextGate:
         if turns_short:
             assert turns_short[0].source == turns_long[0].source
             assert turns_short[0].confidence == turns_long[0].confidence
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — LLM fallback (issue #131)
+#
+# Reached only from the "no phrase, different speakers" branch of the text
+# gate — regex/fuzzy resolution and the same-speaker noise drop both take
+# precedence and never invoke completion_fn.
+# ---------------------------------------------------------------------------
+
+def _no_phrase_segment(t=100.0, from_speaker="SPEAKER_00", to_speaker="SPEAKER_01"):
+    return {
+        "start_seconds": t,
+        "end_seconds": t + 30.0,
+        "speaker_label": to_speaker,
+        "from_speaker": from_speaker,
+        "to_speaker": to_speaker,
+        "confirmed_block_duration_seconds": 30.0,
+    }
+
+
+def _intro_blocks(t=100.0):
+    """Ordinary speech, no announcement phrase, well within the 120s window."""
+    return _make_srt_blocks(
+        (t - 40.0, t - 35.0, "Continuamos con el debate sobre presupuestos"),
+    )
+
+
+def _llm_response(speaker_name, confidence=0.9, error=None):
+    if error is not None:
+        return {"data": None, "error": error}
+    return {
+        "data": {"speaker_name": speaker_name, "confidence": confidence, "evidence": "..."},
+        "error": None,
+    }
+
+
+class TestApplyTextGateLlmFallback:
+
+    def test_happy_path_gives_llm_resolved(self):
+        """Roster-validated LLM name -> llm_resolved, confidence=0.85."""
+        from congress_videos.modules.speaker_turns import _apply_text_gate, LLM_RESOLVED_CONFIDENCE
+        t = 100.0
+        segments = [_no_phrase_segment(t)]
+        srt_blocks = _intro_blocks(t)
+
+        def completion_fn(system, user, **kw):
+            return _llm_response("Ana García", 0.90)
+
+        def resolver(name):
+            return {"display_name": "Ana García", "normalized_name": "ana garcia"}
+
+        turns = _apply_text_gate(segments, srt_blocks, resolver, completion_fn=completion_fn)
+        assert len(turns) == 1
+        assert turns[0].source == "llm_resolved"
+        assert turns[0].confidence == pytest.approx(LLM_RESOLVED_CONFIDENCE)
+        assert turns[0].resolved_name == "Ana García"
+
+    def test_resolver_miss_gives_acoustic(self):
+        """LLM name has no roster match -> stays acoustic (anti-hallucination)."""
+        from congress_videos.modules.speaker_turns import _apply_text_gate
+        t = 100.0
+        segments = [_no_phrase_segment(t)]
+        srt_blocks = _intro_blocks(t)
+
+        def completion_fn(system, user, **kw):
+            return _llm_response("Nombre Inventado", 0.90)
+
+        turns = _apply_text_gate(segments, srt_blocks, _null_resolver, completion_fn=completion_fn)
+        assert len(turns) == 1
+        assert turns[0].source == "acoustic"
+        assert turns[0].confidence == pytest.approx(0.50)
+        assert turns[0].resolved_name is None
+
+    def test_confidence_below_threshold_gives_acoustic(self):
+        """Model confidence 0.79 (< TURN_LLM_MIN_CONFIDENCE=0.80) -> acoustic."""
+        from congress_videos.modules.speaker_turns import _apply_text_gate
+        t = 100.0
+        segments = [_no_phrase_segment(t)]
+        srt_blocks = _intro_blocks(t)
+
+        def completion_fn(system, user, **kw):
+            return _llm_response("Ana García", 0.79)
+
+        turns = _apply_text_gate(segments, srt_blocks, _identity_resolver, completion_fn=completion_fn)
+        assert turns[0].source == "acoustic"
+
+    def test_confidence_at_threshold_gives_resolved(self):
+        """Model confidence exactly 0.80 -> resolved (boundary inclusive)."""
+        from congress_videos.modules.speaker_turns import _apply_text_gate
+        t = 100.0
+        segments = [_no_phrase_segment(t)]
+        srt_blocks = _intro_blocks(t)
+
+        def completion_fn(system, user, **kw):
+            return _llm_response("Ana García", 0.80)
+
+        turns = _apply_text_gate(segments, srt_blocks, _identity_resolver, completion_fn=completion_fn)
+        assert turns[0].source == "llm_resolved"
+
+    def test_completion_fn_raises_gives_acoustic(self):
+        """Never-raise contract: an exception from completion_fn -> acoustic."""
+        from congress_videos.modules.speaker_turns import _apply_text_gate
+        t = 100.0
+        segments = [_no_phrase_segment(t)]
+        srt_blocks = _intro_blocks(t)
+
+        def completion_fn(system, user, **kw):
+            raise RuntimeError("OpenAI API error")
+
+        turns = _apply_text_gate(segments, srt_blocks, _identity_resolver, completion_fn=completion_fn)
+        assert turns[0].source == "acoustic"
+
+    def test_error_field_gives_acoustic(self):
+        """completion_fn returns an error field -> acoustic."""
+        from congress_videos.modules.speaker_turns import _apply_text_gate
+        t = 100.0
+        segments = [_no_phrase_segment(t)]
+        srt_blocks = _intro_blocks(t)
+
+        def completion_fn(system, user, **kw):
+            return _llm_response(None, error="invalid json from model")
+
+        turns = _apply_text_gate(segments, srt_blocks, _identity_resolver, completion_fn=completion_fn)
+        assert turns[0].source == "acoustic"
+
+    def test_completion_fn_none_never_called(self):
+        """completion_fn=None (default) -> fallback disabled, no attempt made."""
+        from congress_videos.modules.speaker_turns import _apply_text_gate
+        t = 100.0
+        segments = [_no_phrase_segment(t)]
+        srt_blocks = _intro_blocks(t)
+
+        turns = _apply_text_gate(segments, srt_blocks, _identity_resolver, completion_fn=None)
+        assert turns[0].source == "acoustic"
+
+    def test_empty_intro_window_never_calls_completion_fn(self):
+        """No SRT blocks in the intro window -> completion_fn is never invoked (D9)."""
+        from congress_videos.modules.speaker_turns import _apply_text_gate
+        t = 100.0
+        segments = [_no_phrase_segment(t)]
+        calls = []
+
+        def completion_fn(system, user, **kw):
+            calls.append(1)
+            return _llm_response("Ana García", 0.90)
+
+        turns = _apply_text_gate(segments, [], _identity_resolver, completion_fn=completion_fn)
+        assert len(calls) == 0
+        assert turns[0].source == "acoustic"
+
+    def test_cap_of_two_calls_exactly_twice(self):
+        """max_llm_calls=2 with 3 eligible segments -> completion_fn called exactly twice."""
+        from congress_videos.modules.speaker_turns import _apply_text_gate
+        segments = [
+            _no_phrase_segment(t=100.0, from_speaker="SPEAKER_00", to_speaker="SPEAKER_01"),
+            _no_phrase_segment(t=200.0, from_speaker="SPEAKER_01", to_speaker="SPEAKER_02"),
+            _no_phrase_segment(t=300.0, from_speaker="SPEAKER_02", to_speaker="SPEAKER_03"),
+        ]
+        srt_blocks = _intro_blocks(100.0) + _intro_blocks(200.0) + _intro_blocks(300.0)
+        calls = []
+
+        def completion_fn(system, user, **kw):
+            calls.append(1)
+            return _llm_response(None, 0.0)
+
+        turns = _apply_text_gate(
+            segments, srt_blocks, _null_resolver,
+            completion_fn=completion_fn, max_llm_calls=2,
+        )
+        assert len(calls) == 2
+        assert len(turns) == 3  # all three still produce a turn (acoustic fallback)
+
+    def test_cap_zero_never_calls(self):
+        """max_llm_calls=0 -> fallback fully disabled, completion_fn never invoked."""
+        from congress_videos.modules.speaker_turns import _apply_text_gate
+        t = 100.0
+        segments = [_no_phrase_segment(t)]
+        srt_blocks = _intro_blocks(t)
+        calls = []
+
+        def completion_fn(system, user, **kw):
+            calls.append(1)
+            return _llm_response("Ana García", 0.90)
+
+        turns = _apply_text_gate(
+            segments, srt_blocks, _identity_resolver,
+            completion_fn=completion_fn, max_llm_calls=0,
+        )
+        assert len(calls) == 0
+        assert turns[0].source == "acoustic"
+
+    def test_regex_resolved_turn_never_invokes_llm(self):
+        """A phrase-matched segment resolves via regex/fuzzy — LLM must never
+        override an existing tier (never-override, design D-ordering)."""
+        from congress_videos.modules.speaker_turns import _apply_text_gate
+        t = 100.0
+        segments = [
+            {
+                "start_seconds": t,
+                "end_seconds": t + 30.0,
+                "speaker_label": "SPEAKER_01",
+                "from_speaker": "SPEAKER_00",
+                "to_speaker": "SPEAKER_01",
+                "confirmed_block_duration_seconds": 30.0,
+            }
+        ]
+        srt_blocks = _make_srt_blocks(
+            (80.0, 90.0, "Tiene la palabra el señor García"),
+        )
+        calls = []
+
+        def completion_fn(system, user, **kw):
+            calls.append(1)
+            return _llm_response("Otro Nombre", 0.90)
+
+        def resolver(name):
+            return {"display_name": "Pedro García", "normalized_name": "garcia"}
+
+        turns = _apply_text_gate(segments, srt_blocks, resolver, completion_fn=completion_fn)
+        assert len(calls) == 0
+        assert turns[0].source == "text_named"
+
+
+class TestChapterBoundaryNonRegression:
+    """Design D3: the 120s backward window alone bounds the mis-anchor blast
+    radius to one adjacent announcement. This test guards that a block from
+    the previous chapter (reachable through the widened DAG pre-filter) is
+    never turned into an invented name when it carries no announcement
+    phrase — it must fall through to the LLM fallback or acoustic."""
+
+    def test_preceding_block_without_phrase_never_invents_a_name(self):
+        from congress_videos.modules.speaker_turns import _apply_text_gate
+        t = 50.0  # near the start of the chapter — closest preceding block
+        segments = [_no_phrase_segment(t)]
+        # Ordinary speech from the PREVIOUS chapter, reachable via the
+        # widened pre-filter, carrying no announcement phrase.
+        srt_blocks = _make_srt_blocks(
+            (t - 40.0, t - 35.0, "Continuamos con el debate sobre presupuestos"),
+        )
+        turns = _apply_text_gate(segments, srt_blocks, _null_resolver)
+        assert len(turns) == 1
+        assert turns[0].source == "acoustic"
+        assert turns[0].resolved_name is None
 
 
 # ---------------------------------------------------------------------------
