@@ -445,34 +445,10 @@ def _make_chapter(
 
 
 class TestPrepareThumbnailConfig:
-    def test_resolved_speaker_returns_full_config(self):
-        """Raw speaker is resolved once at the boundary and stored as a slug."""
-        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
-
-        chapter = _make_chapter(
-            chapter_id=42,
-            title="Debate sobre presupuestos",
-            description="Una discusión importante",
-            session_number=80,
-            key_speakers=[{"name": "Ana García"}],
-        )
-        mock_db = MagicMock()
-
-        with patch(
-            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
-            return_value={"slug": "garcia-ana"},
-        ) as lookup:
-            result = _prepare_thumbnail_config(chapter, mock_db)
-
-        assert result["slug"] == "garcia-ana"
-        lookup.assert_called_once_with("Ana García")
-        assert result["domain"] == "congreso"
-        assert result["debate_summary"] != ""
-        assert result["session"] is not None
-        assert result["chapter_id"] == 42
+    """Chapter branch of _prepare_thumbnail_config — read-else-resolve (issue #263)."""
 
     def test_resolved_participant_slug_is_preferred_over_fuzzy(self):
-        """A chapter's resolved_participant_slug wins; no fuzzy lookup is spent."""
+        """A chapter's resolved_participant_slug wins; the resolver is never called."""
         from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
 
         chapter = _make_chapter(
@@ -482,44 +458,70 @@ class TestPrepareThumbnailConfig:
         )
 
         with patch(
-            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
-        ) as lookup:
+            "congress_videos.youtube_upload_dag.resolve_chapter_speakers",
+        ) as resolver:
             result = _prepare_thumbnail_config(chapter, MagicMock())
 
         assert result["slug"] == "margarita-robles-fernandez"
-        lookup.assert_not_called()
+        resolver.assert_not_called()
 
-    def test_falls_back_to_fuzzy_when_no_resolved_slug(self):
-        """Without a resolved slug the raw-speaker fuzzy path still applies."""
+    def test_falls_back_to_llm_resolver_when_no_resolved_slug(self):
+        """Without a resolved slug, the roster-validated resolver is called and its
+        result feeds both the slug and the canonicalized key_speakers."""
+        from congress_videos.modules.chapter_speaker_resolution import (
+            ChapterSpeakerResolution,
+            SpeakerMatch,
+        )
         from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
 
         chapter = _make_chapter(
-            key_speakers=[{"name": "Ana García"}],
+            chapter_id=42,
+            title="Debate sobre presupuestos",
+            description="Una discusión importante",
+            session_number=80,
+            key_speakers=[{"name": "Ana Garcia"}],
             resolved_participant_slug=None,
         )
+        mock_db = MagicMock()
 
-        with patch(
-            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
-            return_value={"slug": "garcia-ana"},
-        ) as lookup:
-            result = _prepare_thumbnail_config(chapter, MagicMock())
+        match = SpeakerMatch(
+            mention="Ana Garcia",
+            participant_slug="garcia-ana",
+            display_name="Ana García",
+            confidence=0.90,
+        )
+        resolution = ChapterSpeakerResolution(matches=(match,), by_mention={"Ana Garcia": match})
+
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.get_participants_roster",
+                return_value=[{"slug": "garcia-ana", "display_name": "Ana García"}],
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag.resolve_chapter_speakers",
+                return_value=resolution,
+            ) as resolver,
+        ):
+            result = _prepare_thumbnail_config(chapter, mock_db)
 
         assert result["slug"] == "garcia-ana"
-        lookup.assert_called_once_with("Ana García")
+        resolver.assert_called_once()
+        assert result["key_speakers"] == [{"name": "Ana García"}]
+        mock_db.mark_chapter_resolved.assert_called_once_with(42, "garcia-ana")
+        assert result["domain"] == "congreso"
+        assert result["debate_summary"] != ""
+        assert result["session"] is not None
+        assert result["chapter_id"] == 42
 
-    def test_lookup_error_sets_slug_to_none(self):
-        """A speaker lookup failure yields slug=None without raising."""
+    def test_resolver_raising_sets_slug_to_none_without_raising(self):
+        """A resolver-path failure yields slug=None; the exception never propagates."""
         from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
 
-        chapter = _make_chapter(
-            key_speakers=[{"name": "Unknown Speaker"}],
-        )
-        # db is not called here; error path is simulated via absent lookup
-        # The function catches LookupError from the name resolution path.
-        # We patch the internal lookup call.
+        chapter = _make_chapter(key_speakers=[{"name": "Ana García"}])
+
         with patch(
-            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
-            side_effect=LookupError("not found"),
+            "congress_videos.youtube_upload_dag.get_participants_roster",
+            side_effect=RuntimeError("db unavailable"),
         ):
             result = _prepare_thumbnail_config(chapter, MagicMock())
 
@@ -527,32 +529,71 @@ class TestPrepareThumbnailConfig:
         assert result["domain"] == "congreso"
 
     def test_unmatched_speaker_sets_slug_to_none(self):
-        """An unmatched raw speaker is nonfatal and leaves the slug unset."""
+        """An unresolved mention is nonfatal and leaves the slug unset."""
+        from congress_videos.modules.chapter_speaker_resolution import ChapterSpeakerResolution
         from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
 
         chapter = _make_chapter(key_speakers=[{"name": "Unknown Speaker"}])
-        with patch(
-            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
-            return_value=None,
-        ) as lookup:
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.get_participants_roster",
+                return_value=[{"slug": "garcia-ana", "display_name": "Ana García"}],
+            ),
+            patch(
+                "congress_videos.youtube_upload_dag.resolve_chapter_speakers",
+                return_value=ChapterSpeakerResolution(),
+            ) as resolver,
+        ):
             result = _prepare_thumbnail_config(chapter, MagicMock())
 
         assert result["slug"] is None
-        lookup.assert_called_once_with("Unknown Speaker")
+        resolver.assert_called_once()
 
-    def test_empty_speakers_sets_slug_to_none(self):
-        """Chapter with no speaker produces slug=None without fuzzy lookup."""
+    def test_empty_speakers_sets_slug_to_none_without_calling_resolver(self):
+        """Chapter with no speaker mentions produces slug=None; resolver is skipped."""
         from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
 
         chapter = _make_chapter(key_speakers=[], speakers=[])
 
         with patch(
-            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy"
-        ) as lookup:
+            "congress_videos.youtube_upload_dag.resolve_chapter_speakers"
+        ) as resolver:
             result = _prepare_thumbnail_config(chapter, MagicMock())
 
         assert result["slug"] is None
-        lookup.assert_not_called()
+        resolver.assert_not_called()
+
+    def test_placeholder_only_speakers_skip_resolver(self):
+        """Chapter whose only speaker mention is a placeholder skips the resolver call."""
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_chapter(key_speakers=[{"name": "Desconocido"}], speakers=[])
+
+        with patch(
+            "congress_videos.youtube_upload_dag.resolve_chapter_speakers"
+        ) as resolver:
+            result = _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert result["slug"] is None
+        resolver.assert_not_called()
+
+    def test_enabled_false_skips_resolver_and_leaves_slug_none(self):
+        """speaker_normalization_config.ENABLED=False disables the resolver call."""
+        from congress_videos.config import speaker_normalization_config as snc
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_chapter(key_speakers=[{"name": "Ana García"}])
+
+        with (
+            patch.object(snc, "ENABLED", False),
+            patch(
+                "congress_videos.youtube_upload_dag.resolve_chapter_speakers"
+            ) as resolver,
+        ):
+            result = _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert result["slug"] is None
+        resolver.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -780,8 +821,8 @@ class TestPrepareThumbnailConfigKeySpeakers:
             key_speakers=[{"name": "Ana Pastor"}],
         )
         with patch(
-            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
-            return_value={"slug": "pastor-ana"},
+            "congress_videos.youtube_upload_dag.get_participants_roster",
+            return_value=[],
         ):
             result = _prepare_thumbnail_config(chapter, MagicMock())
 
@@ -799,8 +840,8 @@ class TestPrepareThumbnailConfigKeySpeakers:
         chapter_without = {k: v for k, v in chapter.items() if k != "key_speakers"}
 
         with patch(
-            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
-            return_value={"slug": "garcia-ana"},
+            "congress_videos.youtube_upload_dag.get_participants_roster",
+            return_value=[],
         ):
             result = _prepare_thumbnail_config(chapter_without, MagicMock())
 
@@ -817,8 +858,8 @@ class TestPrepareThumbnailConfigKeySpeakers:
         chapter["key_speakers"] = None  # explicit None value in the row
 
         with patch(
-            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
-            return_value={"slug": "garcia-ana"},
+            "congress_videos.youtube_upload_dag.get_participants_roster",
+            return_value=[],
         ):
             result = _prepare_thumbnail_config(chapter, MagicMock())
 
@@ -868,8 +909,8 @@ class TestPrepareThumbnailConfigSrtFragment:
 
         with (
             patch(
-                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
-                return_value={"slug": "garcia-ana"},
+                "congress_videos.youtube_upload_dag.get_participants_roster",
+                return_value=[],
             ),
             patch(
                 "congress_videos.youtube_upload_dag.find_srt_for_chapter",
@@ -904,8 +945,8 @@ class TestPrepareThumbnailConfigSrtFragment:
 
         with (
             patch(
-                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
-                return_value={"slug": "garcia-ana"},
+                "congress_videos.youtube_upload_dag.get_participants_roster",
+                return_value=[],
             ),
             patch(
                 "congress_videos.youtube_upload_dag.find_srt_for_chapter",
@@ -928,8 +969,8 @@ class TestPrepareThumbnailConfigSrtFragment:
 
         with (
             patch(
-                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
-                return_value={"slug": "garcia-ana"},
+                "congress_videos.youtube_upload_dag.get_participants_roster",
+                return_value=[],
             ),
             patch(
                 "congress_videos.youtube_upload_dag.find_srt_for_chapter",
@@ -1742,8 +1783,8 @@ class TestPrepareThumbnailConfigThreadsOutputPath:
         chapter = _make_chapter()
 
         with patch(
-            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
-            return_value=None,
+            "congress_videos.youtube_upload_dag.get_participants_roster",
+            return_value=[],
         ):
             config = _prepare_thumbnail_config(chapter, MagicMock())
 
@@ -1952,8 +1993,8 @@ class TestPrepareThumbnailConfigSrtSidecar:
 
         with (
             patch(
-                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
-                return_value={"slug": "garcia-ana"},
+                "congress_videos.youtube_upload_dag.get_participants_roster",
+                return_value=[],
             ),
             patch(
                 "congress_videos.youtube_upload_dag.find_srt_for_chapter",
