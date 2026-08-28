@@ -419,6 +419,7 @@ class TestNormalizeChapterSpeakersSlugFill:
     in the SAME bulk UPDATE that patches speakers/key_speakers/timeline."""
 
     def test_matched_entry_triggers_slug_write_in_same_update(self, mock_db_conn):
+        """Slug fill happens in the SAME UPDATE, from the SAME batched resolver call."""
         mock_conn, mock_cursor = mock_db_conn
 
         resolution = _make_resolution(
@@ -426,7 +427,7 @@ class TestNormalizeChapterSpeakersSlugFill:
         )
 
         roster_patch, resolver_patch = _patched(resolution=resolution)
-        with roster_patch, resolver_patch:
+        with roster_patch, resolver_patch as mock_resolver:
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             normalize_chapter_speakers(
                 42, ["Pedro Sanchez"], ["Pedro Sanchez"], [],
@@ -443,6 +444,7 @@ class TestNormalizeChapterSpeakersSlugFill:
         assert "resolved_participant_slug" in sql
         params = update_calls[0].args[1]
         assert "pedro-sanchez" in params
+        assert mock_resolver.call_count == 1, "no extra resolver calls beyond the one batch"
 
     def test_slug_is_first_accepted_match_in_input_order(self, mock_db_conn):
         """With multiple accepted matches, the slug is the FIRST in input order."""
@@ -482,24 +484,6 @@ class TestNormalizeChapterSpeakersSlugFill:
         assert not update_calls, (
             "UPDATE video_chapters must NOT be called when there is no match"
         )
-
-    def test_resolver_called_exactly_once_for_slug_fill(self, mock_db_conn):
-        """Slug fill is derived from the SAME batched resolver call — no extra calls."""
-        mock_conn, mock_cursor = mock_db_conn
-
-        resolution = _make_resolution(
-            _match("Pedro Sanchez", "pedro-sanchez", "Pedro Sánchez", confidence=0.95)
-        )
-
-        roster_patch, resolver_patch = _patched(resolution=resolution)
-        with roster_patch, resolver_patch as mock_resolver:
-            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
-            normalize_chapter_speakers(
-                42, ["Pedro Sanchez"], [], [],
-                mock_conn, _make_config()
-            )
-
-        assert mock_resolver.call_count == 1
 
 
 # ---------------------------------------------------------------------------
