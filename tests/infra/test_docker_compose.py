@@ -116,6 +116,21 @@ class TestExternalNetworkNameOverride:
 
 
 @pytest.mark.parametrize("path", [DEV_COMPOSE, PROD_COMPOSE], ids=lambda p: p.name)
+class TestMigrationRoleEnvPassthrough:
+    """x-airflow-common must forward MIGRATION_POSTGRES_* into the containers.
+
+    Portainer stack.env values are compose-interpolation inputs only; without
+    these environment entries the migration role never reaches the DAGs and
+    run_migrations silently falls back to the DML-only runtime role (#203).
+    """
+
+    def test_migration_credentials_are_forwarded(self, path: Path):
+        env = _load(path)["x-airflow-common"]["environment"]
+        assert env["MIGRATION_POSTGRES_USER"] == "${MIGRATION_POSTGRES_USER:-}"
+        assert env["MIGRATION_POSTGRES_PASSWORD"] == "${MIGRATION_POSTGRES_PASSWORD:-}"
+
+
+@pytest.mark.parametrize("path", [DEV_COMPOSE, PROD_COMPOSE], ids=lambda p: p.name)
 class TestExplicitDNS:
     """Issue #215: NAS containers need explicit public DNS resolvers."""
 
