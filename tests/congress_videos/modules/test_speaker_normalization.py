@@ -1,14 +1,22 @@
-"""Tests for congress_videos.modules.speaker_normalization — TASK 6 (RED).
+"""Tests for congress_videos.modules.speaker_normalization (issue #263 rewire).
 
-Covers six behavioral scenarios from REQ: speaker_normalization module.
+Step 1 (dirty-name resolution) now delegates to the roster-validated
+resolve_chapter_speakers() instead of the retired
+lookup_participant_fuzzy(threshold=0.90) + cached_json_completion gate.
+Step 0 (institutional-role catalog) and Step 3 (bulk UPDATE) are unaffected.
 All DB and LLM calls are stubbed; no real network or DB needed.
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+
+from congress_videos.modules.chapter_speaker_resolution import (
+    ChapterSpeakerResolution,
+    SpeakerMatch,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -44,26 +52,44 @@ def _make_config(enabled: bool = True, fuzzy_threshold: float = 0.90,
     return cfg
 
 
-def _make_ai_result(decision: str, confidence: float = 0.95, reason: str = "test"):
-    """Return a cached_json_completion-style result dict."""
-    return {
-        "data": {"decision": decision, "confidence": confidence, "reason": reason},
-        "raw_content": "",
-        "error": None,
-    }
+def _make_roster(entries=None):
+    if entries is not None:
+        return entries
+    return [
+        {"slug": "pedro-sanchez", "display_name": "Pedro Sánchez", "party": "PSOE"},
+        {"slug": "ana-ruiz-perez", "display_name": "Ana Ruiz Pérez", "party": "PP"},
+        {"slug": "juan-garcia-lopez", "display_name": "Juan García López", "party": "VOX"},
+    ]
 
 
-def _make_participant(display_name: str, normalized_name: str = "pedro sanchez"):
-    """Return a participant row dict as returned by lookup_participant_fuzzy."""
-    return {
-        "normalized_name": normalized_name,
-        "display_name": display_name,
-        "party": "PartyA",
-        "parliamentary_group": "GroupA",
-        "constituency": "Madrid",
-        "biography": None,
-        "photo_url": None,
-    }
+def _make_resolution(*matches: SpeakerMatch) -> ChapterSpeakerResolution:
+    return ChapterSpeakerResolution(
+        matches=tuple(matches),
+        by_mention={m.mention: m for m in matches},
+    )
+
+
+def _match(mention: str, slug: str, display_name: str, confidence: float = 0.90) -> SpeakerMatch:
+    return SpeakerMatch(
+        mention=mention,
+        participant_slug=slug,
+        display_name=display_name,
+        confidence=confidence,
+    )
+
+
+def _patched(roster=None, resolution=None):
+    """Return the standard patch context for Step 1: roster + resolver."""
+    return (
+        patch(
+            "congress_videos.modules.speaker_normalization.get_participants_roster",
+            return_value=roster if roster is not None else _make_roster(),
+        ),
+        patch(
+            "congress_videos.modules.speaker_normalization.resolve_chapter_speakers",
+            return_value=resolution if resolution is not None else _make_resolution(),
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -71,13 +97,14 @@ def _make_participant(display_name: str, normalized_name: str = "pedro sanchez")
 # ---------------------------------------------------------------------------
 
 class TestConfidentMatch:
-    """T-01 — fuzzy hit + AI match → canonical name replaces dirty name in all fields."""
+    """Roster-validated match → canonical name replaces dirty name in all fields."""
 
     def test_matched_speaker_updates_chapter_fields(self, mock_db_conn):
         mock_conn, mock_cursor = mock_db_conn
 
-        candidate = _make_participant("Pedro Sánchez", "pedro sanchez")
-        ai_result = _make_ai_result("match", confidence=0.95)
+        resolution = _make_resolution(
+            _match("Pedro Sanchez", "pedro-sanchez", "Pedro Sánchez", confidence=0.95)
+        )
 
         chapter_id = 5
         speakers = ["Pedro Sanchez", "Unknown Person"]
@@ -87,31 +114,20 @@ class TestConfidentMatch:
             {"time": "00:02:00", "speaker": "Unknown Person", "content": "Bye"},
         ]
 
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  return_value=candidate) as mock_fuzzy,
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion",
-                  return_value=ai_result) as mock_ai,
-        ):
+        roster_patch, resolver_patch = _patched(resolution=resolution)
+        with roster_patch, resolver_patch as mock_resolver:
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
                 chapter_id, speakers, key_speakers, timeline,
                 mock_conn, _make_config()
             )
 
-        # AI must have been called for the matched dirty name
-        assert mock_ai.called
-
-        # Result reports a correction
+        assert mock_resolver.called
         assert "Pedro Sanchez" in result.corrections
         assert result.corrections["Pedro Sanchez"] == "Pedro Sánchez"
         assert result.updated is True
 
-        # Cache row for matched speaker written via cursor execute
-        # Verify that an upsert was attempted (execute called)
         assert mock_cursor.execute.called
-
-        # The DB UPDATE for video_chapters must have been issued
         calls_sql = [str(c.args[0]).lower() for c in mock_cursor.execute.call_args_list]
         assert any("update" in s and "video_chapters" in s for s in calls_sql), (
             "Expected UPDATE video_chapters to be executed for matched speaker"
@@ -120,15 +136,12 @@ class TestConfidentMatch:
     def test_matched_speaker_cache_row_has_matched_status(self, mock_db_conn):
         mock_conn, mock_cursor = mock_db_conn
 
-        candidate = _make_participant("Pedro Sánchez", "pedro sanchez")
-        ai_result = _make_ai_result("match", confidence=0.95)
+        resolution = _make_resolution(
+            _match("Pedro Sanchez", "pedro-sanchez", "Pedro Sánchez", confidence=0.95)
+        )
 
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  return_value=candidate),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion",
-                  return_value=ai_result),
-        ):
+        roster_patch, resolver_patch = _patched(resolution=resolution)
+        with roster_patch, resolver_patch:
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
                 1, ["Pedro Sanchez"], [], [],
@@ -145,60 +158,33 @@ class TestConfidentMatch:
         """Only the matched dirty name should be corrected; others remain."""
         mock_conn, mock_cursor = mock_db_conn
 
-        def fuzzy_side_effect(name, threshold):
-            if name == "Pedro Sanchez":
-                return _make_participant("Pedro Sánchez", "pedro sanchez")
-            return None
+        resolution = _make_resolution(
+            _match("Pedro Sanchez", "pedro-sanchez", "Pedro Sánchez", confidence=0.95)
+        )
 
-        ai_result = _make_ai_result("match", confidence=0.95)
-
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  side_effect=fuzzy_side_effect),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion",
-                  return_value=ai_result),
-        ):
+        roster_patch, resolver_patch = _patched(resolution=resolution)
+        with roster_patch, resolver_patch:
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
                 1, ["Pedro Sanchez", "Unknown Person"], ["Pedro Sanchez"], [],
                 mock_conn, _make_config()
             )
 
-        # Unknown Person must not appear in corrections
         assert "Unknown Person" not in result.corrections
 
 
 # ---------------------------------------------------------------------------
-# T-02: Fuzzy threshold miss — no AI call
+# T-02 (task 4.2): resolver rejection — no_match cache row, no chapter update
 # ---------------------------------------------------------------------------
 
-class TestFuzzyThresholdMiss:
-    """T-02 — score below FUZZY_THRESHOLD → cached_json_completion NOT called, no_match row."""
+class TestResolverNoMatch:
+    """A mention the resolver does not accept → no_match cache row, no UPDATE."""
 
-    def test_no_ai_call_when_fuzzy_misses(self, mock_db_conn):
+    def test_no_match_cache_row_written_when_resolver_rejects(self, mock_db_conn):
         mock_conn, mock_cursor = mock_db_conn
 
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  return_value=None) as mock_fuzzy,
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion") as mock_ai,
-        ):
-            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
-            result = normalize_chapter_speakers(
-                1, ["Carlos Romero Alias"], [], [],
-                mock_conn, _make_config()
-            )
-
-        mock_ai.assert_not_called()
-
-    def test_no_match_cache_row_written_on_fuzzy_miss(self, mock_db_conn):
-        mock_conn, mock_cursor = mock_db_conn
-
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  return_value=None),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion"),
-        ):
+        roster_patch, resolver_patch = _patched(resolution=_make_resolution())
+        with roster_patch, resolver_patch:
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
                 1, ["Carlos Romero Alias"], [], [],
@@ -208,14 +194,11 @@ class TestFuzzyThresholdMiss:
         assert len(result.cache_rows) == 1
         assert result.cache_rows[0]["status"] == "no_match"
 
-    def test_chapter_not_updated_on_fuzzy_miss(self, mock_db_conn):
+    def test_chapter_not_updated_when_resolver_rejects(self, mock_db_conn):
         mock_conn, mock_cursor = mock_db_conn
 
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  return_value=None),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion"),
-        ):
+        roster_patch, resolver_patch = _patched(resolution=_make_resolution())
+        with roster_patch, resolver_patch:
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
                 1, ["Carlos Romero Alias"], [], [],
@@ -223,111 +206,8 @@ class TestFuzzyThresholdMiss:
             )
 
         assert result.updated is False
-
-        # No UPDATE to video_chapters should have been issued
         calls_sql = [str(c.args[0]).lower() for c in mock_cursor.execute.call_args_list]
         assert not any("update" in s and "video_chapters" in s for s in calls_sql)
-
-
-# ---------------------------------------------------------------------------
-# T-03: AI returns no_match — chapter unchanged
-# ---------------------------------------------------------------------------
-
-class TestAINoMatch:
-    """T-03 — fuzzy hit, but AI returns no_match → no UPDATE, no_match cache row."""
-
-    def test_no_update_when_ai_returns_no_match(self, mock_db_conn):
-        mock_conn, mock_cursor = mock_db_conn
-
-        candidate = _make_participant("Pedro Sánchez", "pedro sanchez")
-        ai_result = _make_ai_result("no_match", confidence=0.3)
-
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  return_value=candidate),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion",
-                  return_value=ai_result),
-        ):
-            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
-            result = normalize_chapter_speakers(
-                1, ["Pedro Sanchez Variant"], [], [],
-                mock_conn, _make_config()
-            )
-
-        assert result.updated is False
-
-        calls_sql = [str(c.args[0]).lower() for c in mock_cursor.execute.call_args_list]
-        assert not any("update" in s and "video_chapters" in s for s in calls_sql)
-
-    def test_no_match_cache_row_written_when_ai_returns_no_match(self, mock_db_conn):
-        mock_conn, mock_cursor = mock_db_conn
-
-        candidate = _make_participant("Pedro Sánchez", "pedro sanchez")
-        ai_result = _make_ai_result("no_match", confidence=0.3)
-
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  return_value=candidate),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion",
-                  return_value=ai_result),
-        ):
-            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
-            result = normalize_chapter_speakers(
-                1, ["Pedro Sanchez Variant"], [], [],
-                mock_conn, _make_config()
-            )
-
-        assert len(result.cache_rows) == 1
-        assert result.cache_rows[0]["status"] == "no_match"
-
-
-# ---------------------------------------------------------------------------
-# T-04: AI returns needs_manual — chapter unchanged
-# ---------------------------------------------------------------------------
-
-class TestAINeedsManual:
-    """T-04 — AI cannot decide → needs_manual cache row, no chapter update."""
-
-    def test_no_update_when_ai_returns_needs_manual(self, mock_db_conn):
-        mock_conn, mock_cursor = mock_db_conn
-
-        candidate = _make_participant("Pedro Sánchez", "pedro sanchez")
-        ai_result = _make_ai_result("needs_manual", confidence=0.5)
-
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  return_value=candidate),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion",
-                  return_value=ai_result),
-        ):
-            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
-            result = normalize_chapter_speakers(
-                1, ["Pedro Ambiguo Real"], [], [],
-                mock_conn, _make_config()
-            )
-
-        assert result.updated is False
-
-    def test_needs_manual_cache_row_written(self, mock_db_conn):
-        mock_conn, mock_cursor = mock_db_conn
-
-        candidate = _make_participant("Pedro Sánchez", "pedro sanchez")
-        ai_result = _make_ai_result("needs_manual", confidence=0.5)
-
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  return_value=candidate),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion",
-                  return_value=ai_result),
-        ):
-            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
-            result = normalize_chapter_speakers(
-                1, ["Pedro Ambiguo Real"], [], [],
-                mock_conn, _make_config()
-            )
-
-        assert len(result.cache_rows) == 1
-        assert result.cache_rows[0]["status"] == "needs_manual"
 
 
 # ---------------------------------------------------------------------------
@@ -335,27 +215,18 @@ class TestAINeedsManual:
 # ---------------------------------------------------------------------------
 
 class TestMultipleSpeakers:
-    """T-05 — three dirty speakers → one cache row per unique dirty name."""
+    """Multiple dirty speakers → one cache row per unique dirty name, batched in one call."""
 
     def test_each_speaker_gets_independent_cache_row(self, mock_db_conn):
         mock_conn, mock_cursor = mock_db_conn
 
-        participant_map = {
-            "Ana Ruiz Pérez": _make_participant("Ana Ruiz Pérez", "ana ruiz perez"),
-            "Juan García López": _make_participant("Juan García López", "juan garcia lopez"),
-        }
+        resolution = _make_resolution(
+            _match("Ana Ruiz Pérez", "ana-ruiz-perez", "Ana Ruiz Pérez"),
+            _match("Juan García López", "juan-garcia-lopez", "Juan García López"),
+        )
 
-        def fuzzy_side(name, threshold):
-            return participant_map.get(name)
-
-        ai_result = _make_ai_result("match", confidence=0.90)
-
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  side_effect=fuzzy_side),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion",
-                  return_value=ai_result),
-        ):
+        roster_patch, resolver_patch = _patched(resolution=resolution)
+        with roster_patch, resolver_patch as mock_resolver:
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
                 7,
@@ -368,23 +239,18 @@ class TestMultipleSpeakers:
 
         # One cache row per unique dirty speaker (all three are real multi-word names)
         assert len(result.cache_rows) == 3
+        # A single batched call resolves all dirty mentions together.
+        assert mock_resolver.call_count == 1
 
     def test_only_matched_speakers_corrected(self, mock_db_conn):
         mock_conn, mock_cursor = mock_db_conn
 
-        def fuzzy_side(name, threshold):
-            if name == "Ana Ruiz Pérez":
-                return _make_participant("Ana Ruiz Pérez", "ana ruiz perez")
-            return None
+        resolution = _make_resolution(
+            _match("Ana Ruiz Pérez", "ana-ruiz-perez", "Ana Ruiz Pérez"),
+        )
 
-        ai_result = _make_ai_result("match", confidence=0.90)
-
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  side_effect=fuzzy_side),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion",
-                  return_value=ai_result),
-        ):
+        roster_patch, resolver_patch = _patched(resolution=resolution)
+        with roster_patch, resolver_patch:
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
                 7,
@@ -401,58 +267,7 @@ class TestMultipleSpeakers:
 
 
 # ---------------------------------------------------------------------------
-# T-06: AI call error — graceful skip, no cache write
-# ---------------------------------------------------------------------------
-
-class TestAICallError:
-    """T-06 — cached_json_completion returns non-None error → skip, no cache row."""
-
-    def test_ai_error_skips_cache_write(self, mock_db_conn):
-        mock_conn, mock_cursor = mock_db_conn
-
-        candidate = _make_participant("Pedro Sánchez", "pedro sanchez")
-        ai_error_result = {"data": None, "raw_content": "", "error": "Timeout"}
-
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  return_value=candidate),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion",
-                  return_value=ai_error_result),
-        ):
-            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
-            result = normalize_chapter_speakers(
-                1, ["Pedro Sanchez"], [], [],
-                mock_conn, _make_config()
-            )
-
-        # No cache row written on error
-        assert len(result.cache_rows) == 0
-
-    def test_ai_error_does_not_update_chapter(self, mock_db_conn):
-        mock_conn, mock_cursor = mock_db_conn
-
-        candidate = _make_participant("Pedro Sánchez", "pedro sanchez")
-        ai_error_result = {"data": None, "raw_content": "", "error": "Timeout"}
-
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  return_value=candidate),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion",
-                  return_value=ai_error_result),
-        ):
-            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
-            result = normalize_chapter_speakers(
-                1, ["Pedro Sanchez"], [], [],
-                mock_conn, _make_config()
-            )
-
-        assert result.updated is False
-        calls_sql = [str(c.args[0]).lower() for c in mock_cursor.execute.call_args_list]
-        assert not any("update" in s and "video_chapters" in s for s in calls_sql)
-
-
-# ---------------------------------------------------------------------------
-# T-08: _dedupe_dirty_speakers drops placeholder names (Task 1.7 RED)
+# T-08: _dedupe_dirty_speakers drops placeholder names (unchanged)
 # ---------------------------------------------------------------------------
 
 class TestDedupeDirtySpeakersPlaceholderFilter:
@@ -531,7 +346,8 @@ class TestDedupeDirtySpeakersPlaceholderFilter:
 
 
 # ---------------------------------------------------------------------------
-# T-09 (Task 2.3 RED): update_chapter_speakers — optional resolved_participant_slug param
+# T-09: update_chapter_speakers — optional resolved_participant_slug param
+# (unchanged — this tests database.py, not the resolution algorithm)
 # ---------------------------------------------------------------------------
 
 class TestUpdateChapterSpeakersSlugParam:
@@ -555,7 +371,6 @@ class TestUpdateChapterSpeakersSlugParam:
             resolved_participant_slug="pedro-sanchez",
         )
 
-        # Find the UPDATE call and assert resolved_participant_slug appears in it
         update_calls = [
             c for c in mock_cursor.execute.call_args_list
             if "UPDATE" in str(c.args[0]).upper() and "video_chapters" in str(c.args[0]).lower()
@@ -565,7 +380,6 @@ class TestUpdateChapterSpeakersSlugParam:
         assert "resolved_participant_slug" in sql, (
             "resolved_participant_slug column must be in the UPDATE SQL"
         )
-        # Verify the slug value is in the params
         params = update_calls[0].args[1]
         assert "pedro-sanchez" in params, (
             "resolved_participant_slug value must be passed as a parameter"
@@ -597,68 +411,70 @@ class TestUpdateChapterSpeakersSlugParam:
 
 
 # ---------------------------------------------------------------------------
-# T-10 (Task 2.5 RED): normalize_chapter_speakers — slug fill on matched entry
+# T-10 (task 4.3 RED): normalize_chapter_speakers — slug is first accepted match
 # ---------------------------------------------------------------------------
 
 class TestNormalizeChapterSpeakersSlugFill:
-    """Task 2.5 RED — normalize_chapter_speakers must write resolved_participant_slug on match.
+    """Task 4.3 — a resolved primary match must write resolved_participant_slug
+    in the SAME bulk UPDATE that patches speakers/key_speakers/timeline."""
 
-    After AI confirms 'match', the function derives the slug from the candidate's
-    normalized_name and writes it via update_chapter_speakers (or direct UPDATE).
-    No LLM call is triggered by the slug fill itself.
-    """
-
-    def test_matched_cache_entry_triggers_slug_write(self, mock_db_conn):
-        """A confirmed 'matched' cache entry must write resolved_participant_slug."""
+    def test_matched_entry_triggers_slug_write_in_same_update(self, mock_db_conn):
         mock_conn, mock_cursor = mock_db_conn
 
-        candidate = _make_participant("Pedro Sánchez", "pedro sanchez")
-        ai_result = _make_ai_result("match", confidence=0.95)
+        resolution = _make_resolution(
+            _match("Pedro Sanchez", "pedro-sanchez", "Pedro Sánchez", confidence=0.95)
+        )
 
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  return_value=candidate),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion",
-                  return_value=ai_result),
-        ):
+        roster_patch, resolver_patch = _patched(resolution=resolution)
+        with roster_patch, resolver_patch:
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             normalize_chapter_speakers(
                 42, ["Pedro Sanchez"], ["Pedro Sanchez"], [],
                 mock_conn, _make_config()
             )
 
-        # The bulk UPDATE on video_chapters must include resolved_participant_slug
         update_calls = [
             c for c in mock_cursor.execute.call_args_list
             if "UPDATE" in str(c.args[0]).upper() and "video_chapters" in str(c.args[0]).lower()
         ]
         assert update_calls, "Expected UPDATE video_chapters to be called"
+        assert len(update_calls) == 1, "speakers/key_speakers/timeline/slug must patch in ONE UPDATE"
         sql = str(update_calls[0].args[0])
-        assert "resolved_participant_slug" in sql, (
-            "resolved_participant_slug must be set in the UPDATE after a matched entry"
-        )
+        assert "resolved_participant_slug" in sql
         params = update_calls[0].args[1]
-        # Slug derived from normalized_name "pedro sanchez" → "pedro-sanchez"
-        assert "pedro-sanchez" in params, (
-            "slug 'pedro-sanchez' must be passed as a parameter in the UPDATE"
+        assert "pedro-sanchez" in params
+
+    def test_slug_is_first_accepted_match_in_input_order(self, mock_db_conn):
+        """With multiple accepted matches, the slug is the FIRST in input order."""
+        mock_conn, mock_cursor = mock_db_conn
+
+        resolution = _make_resolution(
+            _match("Ana Ruiz Pérez", "ana-ruiz-perez", "Ana Ruiz Pérez"),
+            _match("Juan García López", "juan-garcia-lopez", "Juan García López"),
         )
+
+        roster_patch, resolver_patch = _patched(resolution=resolution)
+        with roster_patch, resolver_patch:
+            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
+            result = normalize_chapter_speakers(
+                7, ["Ana Ruiz Pérez", "Juan García López"], [], [],
+                mock_conn, _make_config()
+            )
+
+        assert result.resolved_participant_slug == "ana-ruiz-perez"
 
     def test_unresolved_chapter_slug_stays_null(self, mock_db_conn):
         """When there is no match, resolved_participant_slug must not be written."""
         mock_conn, mock_cursor = mock_db_conn
 
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  return_value=None),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion"),
-        ):
+        roster_patch, resolver_patch = _patched(resolution=_make_resolution())
+        with roster_patch, resolver_patch:
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
-            result = normalize_chapter_speakers(
+            normalize_chapter_speakers(
                 99, ["Unknown Speaker"], [], [],
                 mock_conn, _make_config()
             )
 
-        # No UPDATE should have been issued (no match, no write)
         update_calls = [
             c for c in mock_cursor.execute.call_args_list
             if "UPDATE" in str(c.args[0]).upper() and "video_chapters" in str(c.args[0]).lower()
@@ -667,44 +483,38 @@ class TestNormalizeChapterSpeakersSlugFill:
             "UPDATE video_chapters must NOT be called when there is no match"
         )
 
-    def test_no_llm_call_on_slug_fill_path(self, mock_db_conn):
-        """Slug fill must not trigger any additional LLM calls beyond the match itself."""
+    def test_resolver_called_exactly_once_for_slug_fill(self, mock_db_conn):
+        """Slug fill is derived from the SAME batched resolver call — no extra calls."""
         mock_conn, mock_cursor = mock_db_conn
 
-        candidate = _make_participant("Pedro Sánchez", "pedro sanchez")
-        ai_result = _make_ai_result("match", confidence=0.95)
+        resolution = _make_resolution(
+            _match("Pedro Sanchez", "pedro-sanchez", "Pedro Sánchez", confidence=0.95)
+        )
 
-        with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  return_value=candidate),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion",
-                  return_value=ai_result) as mock_ai,
-        ):
+        roster_patch, resolver_patch = _patched(resolution=resolution)
+        with roster_patch, resolver_patch as mock_resolver:
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             normalize_chapter_speakers(
                 42, ["Pedro Sanchez"], [], [],
                 mock_conn, _make_config()
             )
 
-        # cached_json_completion called exactly once (for the match decision only)
-        assert mock_ai.call_count == 1, (
-            "cached_json_completion must be called exactly once — slug fill is LLM-free"
-        )
+        assert mock_resolver.call_count == 1
 
 
 # ---------------------------------------------------------------------------
-# T-07 (Bonus from task description): ENABLED=False → immediate return
+# ENABLED=False → immediate return
 # ---------------------------------------------------------------------------
 
 class TestEnabledFalse:
-    """ENABLED=False → function returns without any DB or AI calls."""
+    """ENABLED=False → function returns without any DB or resolver calls."""
 
     def test_disabled_config_returns_immediately(self, mock_db_conn):
         mock_conn, mock_cursor = mock_db_conn
 
         with (
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy") as mock_fuzzy,
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion") as mock_ai,
+            patch("congress_videos.modules.speaker_normalization.get_participants_roster") as mock_roster,
+            patch("congress_videos.modules.speaker_normalization.resolve_chapter_speakers") as mock_resolver,
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
@@ -712,8 +522,8 @@ class TestEnabledFalse:
                 mock_conn, _make_config(enabled=False)
             )
 
-        mock_fuzzy.assert_not_called()
-        mock_ai.assert_not_called()
+        mock_roster.assert_not_called()
+        mock_resolver.assert_not_called()
         mock_cursor.execute.assert_not_called()
         assert result.updated is False
         assert result.corrections == {}
@@ -721,7 +531,7 @@ class TestEnabledFalse:
 
 
 # ---------------------------------------------------------------------------
-# T-07: Institutional-role resolution (PR2)
+# Institutional-role resolution (Step 0 — unaffected by the Step 1 rewire)
 # ---------------------------------------------------------------------------
 
 class TestInstitutionalRoleResolution:
@@ -735,8 +545,8 @@ class TestInstitutionalRoleResolution:
         with (
             patch("congress_videos.modules.speaker_normalization.lookup_participant_by_slug",
                   return_value=None),
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy") as mock_fuzzy,
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion") as mock_ai,
+            patch("congress_videos.modules.speaker_normalization.get_participants_roster") as mock_roster,
+            patch("congress_videos.modules.speaker_normalization.resolve_chapter_speakers") as mock_resolver,
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
@@ -745,21 +555,26 @@ class TestInstitutionalRoleResolution:
             )
 
         assert result.corrections["Ministra de Defensa"] == "Robles Fernández, Margarita"
-        # A deterministic role hit must not consult fuzzy matching or the LLM.
-        mock_fuzzy.assert_not_called()
-        mock_ai.assert_not_called()
+        # A deterministic role hit must not consult the roster or the resolver:
+        # the Step-0-wins filter removes it before Step 1 ever runs.
+        mock_roster.assert_not_called()
+        mock_resolver.assert_not_called()
 
     def test_role_mention_prefers_participant_row_display_name(self, mock_db_conn):
         from datetime import date
 
         mock_conn, _ = mock_db_conn
-        row = _make_participant("Puente Santiago, Óscar", "oscar puente santiago")
+        row = {
+            "normalized_name": "oscar puente santiago",
+            "display_name": "Puente Santiago, Óscar",
+            "party": "PartyA",
+        }
 
         with (
             patch("congress_videos.modules.speaker_normalization.lookup_participant_by_slug",
                   return_value=row),
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy"),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion"),
+            patch("congress_videos.modules.speaker_normalization.get_participants_roster"),
+            patch("congress_videos.modules.speaker_normalization.resolve_chapter_speakers"),
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
@@ -774,9 +589,14 @@ class TestInstitutionalRoleResolution:
 
         with (
             patch("congress_videos.modules.speaker_normalization.lookup_participant_by_slug") as mock_slug,
-            patch("congress_videos.modules.speaker_normalization.lookup_participant_fuzzy",
-                  return_value=None),
-            patch("congress_videos.modules.speaker_normalization.cached_json_completion"),
+            patch(
+                "congress_videos.modules.speaker_normalization.get_participants_roster",
+                return_value=[],
+            ),
+            patch(
+                "congress_videos.modules.speaker_normalization.resolve_chapter_speakers",
+                return_value=ChapterSpeakerResolution(),
+            ),
         ):
             from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
             result = normalize_chapter_speakers(
@@ -788,3 +608,113 @@ class TestInstitutionalRoleResolution:
         # mention is left to the placeholder filter, so it is not corrected.
         assert "Ministra de Defensa" not in result.corrections
         mock_slug.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Step-0-wins filter (A2 amendment, task 4.1) — Step 0 corrections never
+# reach Step 1's resolver call.
+# ---------------------------------------------------------------------------
+
+class TestStepZeroWinsFilter:
+    """A mention already corrected by Step 0 (institutional-role catalog) must be
+    excluded from the mentions sent to Step 1's resolve_chapter_speakers call."""
+
+    def test_role_resolved_mention_excluded_from_step_one_mentions(self, mock_db_conn):
+        from datetime import date
+
+        mock_conn, mock_cursor = mock_db_conn
+
+        roster_patch, resolver_patch = _patched(resolution=_make_resolution())
+        with (
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_by_slug",
+                  return_value=None),
+            roster_patch,
+            resolver_patch as mock_resolver,
+        ):
+            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
+            normalize_chapter_speakers(
+                7,
+                ["Ministra de Defensa", "Pedro Sanchez"],
+                [],
+                [],
+                mock_conn,
+                _make_config(),
+                session_date=date(2026, 6, 1),
+            )
+
+        # Step 0 resolves "Ministra de Defensa"; only "Pedro Sanchez" should
+        # reach the Step 1 resolver call.
+        assert mock_resolver.call_count == 1
+        mentions_arg = mock_resolver.call_args[0][0]
+        assert "Ministra de Defensa" not in mentions_arg
+        assert "Pedro Sanchez" in mentions_arg
+
+    def test_step_zero_correction_not_overwritten_by_step_one(self, mock_db_conn):
+        """Even if Step 1's roster happened to also match the role-resolved name,
+        the mention never reaches Step 1, so Step 0's correction is never at risk."""
+        from datetime import date
+
+        mock_conn, mock_cursor = mock_db_conn
+
+        roster_patch, resolver_patch = _patched(resolution=_make_resolution())
+        with (
+            patch("congress_videos.modules.speaker_normalization.lookup_participant_by_slug",
+                  return_value=None),
+            roster_patch,
+            resolver_patch,
+        ):
+            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
+            result = normalize_chapter_speakers(
+                7, ["Ministra de Defensa"], [], [],
+                mock_conn, _make_config(), session_date=date(2026, 6, 1),
+            )
+
+        assert result.corrections["Ministra de Defensa"] == "Robles Fernández, Margarita"
+
+
+# ---------------------------------------------------------------------------
+# Participants roster fetch failure — degrade gracefully, never raise
+# (task 4.4)
+# ---------------------------------------------------------------------------
+
+class TestParticipantsFetchFailure:
+    """get_participants_roster() raising must degrade to no corrections, no raise."""
+
+    def test_roster_fetch_failure_yields_no_corrections(self, mock_db_conn):
+        mock_conn, mock_cursor = mock_db_conn
+
+        with (
+            patch(
+                "congress_videos.modules.speaker_normalization.get_participants_roster",
+                side_effect=RuntimeError("db unavailable"),
+            ),
+            patch(
+                "congress_videos.modules.speaker_normalization.resolve_chapter_speakers",
+                return_value=ChapterSpeakerResolution(),
+            ) as mock_resolver,
+        ):
+            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
+            result = normalize_chapter_speakers(
+                1, ["Pedro Sanchez"], [], [],
+                mock_conn, _make_config()
+            )
+
+        assert result.corrections == {}
+        assert result.updated is False
+        # Degrades to an empty roster; the resolver is still called but with []
+        # participants, and it returns nothing to correct.
+        mock_resolver.assert_called_once_with(["Pedro Sanchez"], [])
+
+    def test_roster_fetch_failure_does_not_raise(self, mock_db_conn):
+        mock_conn, mock_cursor = mock_db_conn
+
+        with patch(
+            "congress_videos.modules.speaker_normalization.get_participants_roster",
+            side_effect=RuntimeError("db unavailable"),
+        ):
+            from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
+            # Must not raise.
+            normalize_chapter_speakers(
+                1, ["Pedro Sanchez"], [], [],
+                mock_conn, _make_config()
+            )

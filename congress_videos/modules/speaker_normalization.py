@@ -20,18 +20,16 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from congress_videos.config.ai_prompts import (
-    SPEAKER_MATCH_SYSTEM_PROMPT,
-    SPEAKER_MATCH_USER_PROMPT_TEMPLATE,
+from congress_videos.modules.chapter_speaker_resolution import (
+    MAX_MENTIONS_PER_CALL,
+    resolve_chapter_speakers,
 )
 from congress_videos.modules.institutional_role_resolver import CatalogLoader
 from congress_videos.modules.participants_db import (
+    get_participants_roster,
     lookup_participant_by_slug,
-    lookup_participant_fuzzy,
 )
-from congress_videos.modules.participants_ingestion import normalize_member_name
 from congress_videos.modules.speaker_placeholders import is_placeholder
-from utils.llm_cache import cached_json_completion
 
 logger = logging.getLogger(__name__)
 
@@ -188,19 +186,6 @@ def _apply_corrections_to_timeline(
     return result
 
 
-def _build_user_prompt(dirty_name: str, candidate: dict, context_enabled: bool) -> str:
-    """Build the user prompt for the speaker-match AI call."""
-    context_block = ""
-    if context_enabled:
-        context_block = ""  # no timeline snippet available at this level
-    return SPEAKER_MATCH_USER_PROMPT_TEMPLATE.format(
-        dirty_name=dirty_name,
-        display_name=candidate.get("display_name", ""),
-        normalized_name=candidate.get("normalized_name", ""),
-        context_block=context_block,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -216,16 +201,22 @@ def normalize_chapter_speakers(
 ) -> NormalizationResult:
     """Normalize dirty speaker strings for a single chapter.
 
-    For each unique dirty speaker name found across ``speakers``,
-    ``key_speakers``, and ``timeline[].speaker``:
+    Step 0 (institutional-role catalog, point-in-time) runs first and always
+    wins: any mention it corrects is excluded from Step 1. Step 1 batches the
+    remaining unique dirty speaker names found across ``speakers``,
+    ``key_speakers``, and ``timeline[].speaker`` into ONE call to
+    ``resolve_chapter_speakers`` (roster-validated, issue #263) instead of the
+    retired ``lookup_participant_fuzzy(threshold=0.90)`` hard gate:
 
-    1. Call ``lookup_participant_fuzzy``; if no candidate → upsert ``no_match``.
-    2. If a candidate exists, call ``cached_json_completion`` with the
-       speaker-match prompt; if ``error`` is non-None → skip (no cache write).
-    3. Parse ``result['data']``; upsert cache row with mapped status.
-    4. On ``matched`` → record correction ``dirty → display_name``.
-    5. After the loop: if any corrections, patch all three arrays Python-side and
-       issue a single ``UPDATE video_chapters``.
+    1. Fetch the current participant roster via ``get_participants_roster``;
+       on failure, degrade to an empty roster (no corrections, never raise).
+    2. Call ``resolve_chapter_speakers(dirty, participants)`` once.
+    3. For each dirty mention: an accepted match upserts a ``matched`` cache
+       row and records the correction; anything else upserts ``no_match``.
+    4. The slug is the FIRST accepted match, in input order (dirty_names
+       order — Step 0's slug, if already set, is never overwritten).
+    5. After the loop: if any corrections, patch all three arrays Python-side
+       and issue a single ``UPDATE video_chapters``.
 
     Args:
         chapter_id: PK of the video_chapters row.
@@ -233,8 +224,8 @@ def normalize_chapter_speakers(
         key_speakers: Raw list of key speaker names from the chapter.
         timeline:     List of timeline dicts (each with a 'speaker' key).
         db_conn:      Open psycopg2 connection (caller manages lifecycle).
-        config:       Config module / namespace with ENABLED, FUZZY_THRESHOLD,
-                      AI_MODEL, CONTEXT_ENABLED.
+        config:       Config module / namespace with ENABLED (FUZZY_THRESHOLD
+                      and AI_MODEL are no longer consulted by Step 1).
 
     Returns:
         :class:`NormalizationResult` with corrections, cache_rows, and updated flag.
@@ -283,82 +274,59 @@ def normalize_chapter_speakers(
                     raw, role_name, chapter_id,
                 )
 
-        # Step 1: fuzzy + LLM pipeline over the placeholder-filtered dirty names.
-        dirty_names = _dedupe_dirty_speakers(speakers, key_speakers, timeline)
-        for dirty in dirty_names:
-            # Step 1a: fuzzy lookup
-            candidate = lookup_participant_fuzzy(dirty, threshold=config.FUZZY_THRESHOLD)
-            if candidate is None:
-                logger.debug(
-                    "normalize_chapter_speakers: no fuzzy match for %r (chapter %d)",
-                    dirty, chapter_id,
-                )
-                _upsert_cache_row(cursor, chapter_id, dirty, "no_match")
-                result.cache_rows.append({"dirty_speaker": dirty, "status": "no_match"})
-                continue
-
-            # Step 2: AI verification
-            user_prompt = _build_user_prompt(dirty, candidate, config.CONTEXT_ENABLED)
-            ai_response = cached_json_completion(
-                SPEAKER_MATCH_SYSTEM_PROMPT,
-                user_prompt,
-                model=config.AI_MODEL,
-            )
-
-            if ai_response.get("error") is not None:
+        # Step 1: roster-validated resolver over the placeholder-filtered dirty
+        # names, EXCLUDING anything Step 0 already corrected (Step-0-wins).
+        dirty_names = [
+            n for n in _dedupe_dirty_speakers(speakers, key_speakers, timeline)
+            if n not in result.corrections
+        ]
+        if dirty_names:
+            try:
+                participants = get_participants_roster()
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "normalize_chapter_speakers: AI error for %r (chapter %d): %s",
-                    dirty, chapter_id, ai_response["error"],
+                    "normalize_chapter_speakers: participant roster fetch failed "
+                    "(chapter %d): %s — degrading to no Step 1 corrections",
+                    chapter_id, exc,
                 )
-                # Graceful skip — no cache write per design
-                continue
+                participants = []
 
-            data = ai_response.get("data") or {}
-            decision = data.get("decision", "no_match")
-            confidence = data.get("confidence")
+            resolution = resolve_chapter_speakers(
+                dirty_names[:MAX_MENTIONS_PER_CALL], participants
+            )
+            for dirty in dirty_names:
+                match = resolution.by_mention.get(dirty)
+                if match is None:
+                    logger.debug(
+                        "normalize_chapter_speakers: no resolver match for %r (chapter %d)",
+                        dirty, chapter_id,
+                    )
+                    _upsert_cache_row(cursor, chapter_id, dirty, "no_match")
+                    result.cache_rows.append({"dirty_speaker": dirty, "status": "no_match"})
+                    continue
 
-            # Map AI decision to cache status
-            if decision == "match":
-                canonical = candidate["display_name"]
-                normalized_name = candidate.get("normalized_name") or ""
                 _upsert_cache_row(
                     cursor, chapter_id, dirty,
                     status="matched",
-                    canonical_speaker=canonical,
-                    participant_normalized_name=normalized_name or None,
-                    confidence_score=confidence,
+                    canonical_speaker=match.display_name,
+                    participant_normalized_name=match.participant_slug.replace("-", " "),
+                    confidence_score=match.confidence,
                 )
                 result.cache_rows.append({
                     "dirty_speaker": dirty,
                     "status": "matched",
-                    "canonical_speaker": canonical,
-                    "confidence_score": confidence,
+                    "canonical_speaker": match.display_name,
+                    "confidence_score": match.confidence,
                 })
-                result.corrections[dirty] = canonical
-                # Derive slug LLM-free from the authoritative normalized_name.
-                # slug = REPLACE(normalized_name, ' ', '-') — same formula as migration 018.
-                # Record only the first matched speaker's slug for this chapter.
-                if result.resolved_participant_slug is None and normalized_name:
-                    result.resolved_participant_slug = normalized_name.replace(" ", "-")
+                result.corrections[dirty] = match.display_name
+                # Slug = the first accepted match, in dirty_names (input) order.
+                # Step 0's slug, when already set, is never overwritten here.
+                if result.resolved_participant_slug is None:
+                    result.resolved_participant_slug = match.participant_slug
                 logger.info(
                     "normalize_chapter_speakers: matched %r -> %r (chapter %d, confidence=%.2f)",
-                    dirty, canonical, chapter_id, confidence or 0.0,
+                    dirty, match.display_name, chapter_id, match.confidence,
                 )
-            elif decision == "needs_manual":
-                _upsert_cache_row(
-                    cursor, chapter_id, dirty,
-                    status="needs_manual",
-                    confidence_score=confidence,
-                )
-                result.cache_rows.append({"dirty_speaker": dirty, "status": "needs_manual"})
-            else:
-                # no_match or unknown
-                _upsert_cache_row(
-                    cursor, chapter_id, dirty,
-                    status="no_match",
-                    confidence_score=confidence,
-                )
-                result.cache_rows.append({"dirty_speaker": dirty, "status": "no_match"})
 
         # Step 3: bulk UPDATE video_chapters if any corrections were recorded
         if result.corrections:
