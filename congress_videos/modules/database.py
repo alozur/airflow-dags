@@ -1103,6 +1103,39 @@ class CongressionalVideoDB:
                     method,
                 )
 
+    def mark_chapter_resolved(self, chapter_id: int, slug: str) -> None:
+        """Never-override write-back of a resolved chapter speaker slug (issue #263).
+
+        Guarded UPDATE that only fills a NULL resolved_participant_slug —
+        the upload seam is a lower-trust second chance and must never
+        override a slug already written by the monitor-time seam.
+
+        Args:
+            chapter_id: PK of the video_chapters row.
+            slug: Roster-validated participant slug from
+                :func:`chapter_speaker_resolution.resolve_chapter_speakers`.
+        """
+        chapters_table = self.pg_conn.get_qualified_table('video_chapters')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {chapters_table}
+                    SET resolved_participant_slug = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE chapter_id = %s
+                      AND resolved_participant_slug IS NULL
+                    """,
+                    (slug, chapter_id),
+                )
+                logger.info(
+                    "mark_chapter_resolved: chapter_id=%s → slug=%r (rowcount=%d)",
+                    chapter_id,
+                    slug,
+                    cur.rowcount,
+                )
+
     def count_pending_uploadable_turns(self) -> int:
         """Returns the count of speaker turn videos pending upload."""
         count = self._count_records('uploadable_turns')

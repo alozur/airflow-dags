@@ -122,6 +122,73 @@ class TestMarkTurnResolved:
 
 
 # ---------------------------------------------------------------------------
+# mark_chapter_resolved (issue #263)
+# ---------------------------------------------------------------------------
+
+class TestMarkChapterResolved:
+    """mark_chapter_resolved(chapter_id, slug) never-override write-back."""
+
+    def test_sql_updates_resolved_participant_slug(self):
+        """UPDATE must set resolved_participant_slug."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_chapter_resolved(42, "edurne-uriarte-bengoechea")
+
+        query = cursor.execute.call_args[0][0].upper()
+        assert "RESOLVED_PARTICIPANT_SLUG" in query
+
+    def test_sql_guards_with_is_null(self):
+        """UPDATE WHERE must guard with resolved_participant_slug IS NULL (never-override)."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_chapter_resolved(42, "edurne-uriarte-bengoechea")
+
+        query = cursor.execute.call_args[0][0].upper()
+        assert "RESOLVED_PARTICIPANT_SLUG IS NULL" in query.replace("\n", " ")
+
+    def test_sql_filters_by_chapter_id(self):
+        """UPDATE WHERE must filter by chapter_id."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_chapter_resolved(42, "edurne-uriarte-bengoechea")
+
+        query = cursor.execute.call_args[0][0].upper()
+        assert "CHAPTER_ID" in query and "WHERE" in query
+
+    def test_sql_passes_slug_and_chapter_id_params(self):
+        """UPDATE params must be (slug, chapter_id)."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_chapter_resolved(42, "edurne-uriarte-bengoechea")
+
+        params = cursor.execute.call_args[0][1]
+        assert params == ("edurne-uriarte-bengoechea", 42)
+
+    def test_returns_none(self):
+        """mark_chapter_resolved must return None (void operation)."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            result = db.mark_chapter_resolved(42, "edurne-uriarte-bengoechea")
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
 # select_unprepared_turns — resolution columns
 # ---------------------------------------------------------------------------
 
