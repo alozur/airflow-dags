@@ -125,10 +125,15 @@ class TestMigration036ViewRecreation:
         assert "TO_REGCLASS('CONGRESSIONAL_SESSIONS')" in guard_region
 
     def test_uploadable_chapters_body_matches_021_verbatim(self):
-        """The recreated view must select resolved_participant_slug and order
+        """036 pins 021's view body verbatim BY DESIGN — this is a mechanical
+        view recreation forced by the ALTER ... TYPE dependency (see module
+        docstring), not a policy decision about the abandoned-chapter gate.
+        The recreated view must select resolved_participant_slug and order
         by session_date DESC NULLS LAST (021's body), and must NOT resurrect
-        011's is_upload_abandoned gate in EXECUTABLE SQL (explanatory comment
-        prose mentioning the rejected gate is allowed)."""
+        011's is_upload_abandoned gate in EXECUTABLE SQL here (explanatory
+        comment prose mentioning the gate is allowed). This is a 036-scoped
+        invariant only: migration 038 restores the gate on top of this body
+        — see test_migration_038.py."""
         sql = _sql().upper()
         assert "VC.RESOLVED_PARTICIPANT_SLUG" in sql
         assert "SESSION_DATE DESC NULLS LAST" in sql
