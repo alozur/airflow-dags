@@ -1,0 +1,31 @@
+name: Dependency Vulnerability Audit
+
+# Informational, scheduled scan of the uv-managed dependency set (issue #207).
+# A failing audit only fails THIS workflow run — it never gates unrelated
+# pull requests or pushes to other branches.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+  push:
+    paths:
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/pip-audit.yml"
+  workflow_dispatch: {}
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Export locked requirements (no hashes, no lockfile/pyproject.toml mutation)
+        run: uv export --frozen --format requirements-txt --no-hashes -o requirements-audit.txt
+
+      - name: Run pip-audit against the resolved dependency set
+        run: uvx pip-audit -r requirements-audit.txt

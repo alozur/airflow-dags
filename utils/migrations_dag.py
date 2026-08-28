@@ -50,6 +50,33 @@ DAGS_REPO_PATH = Path(os.getenv('AIRFLOW__CORE__DAGS_FOLDER', '/opt/airflow/dags
 # never block each other (issue #209).
 _MIGRATION_LOCK_NAMESPACE = 0x4D494752
 
+# Dedicated DDL migration role (issue #203) — least-privilege split from the
+# per-environment runtime role. Both-or-neither: a partially configured stack
+# must never authenticate as a half-provisioned role.
+MIGRATION_USER_ENV = 'MIGRATION_POSTGRES_USER'
+MIGRATION_PASSWORD_ENV = 'MIGRATION_POSTGRES_PASSWORD'
+
+
+def _migration_connection() -> PostgresConnection:
+    """PostgresConnection bound to the DDL migration role when fully provisioned.
+
+    Falls back to the standard POSTGRES_USER/PASSWORD role (utils/postgres_helpers.py)
+    when MIGRATION_POSTGRES_USER/PASSWORD are unset or only partially set — this keeps
+    the current NAS default (no migration role provisioned yet) working unchanged.
+    """
+    pg = PostgresConnection()
+    user = os.getenv(MIGRATION_USER_ENV)
+    password = os.getenv(MIGRATION_PASSWORD_ENV)
+    if user and password:
+        pg.user, pg.password = user, password
+        logging.info("Migrations using dedicated role '%s'", user)
+    else:
+        logging.info(
+            "%s/%s unset or partial — using POSTGRES_USER", MIGRATION_USER_ENV, MIGRATION_PASSWORD_ENV
+        )
+    return pg
+
+
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
@@ -59,7 +86,7 @@ default_args = {
 
 
 def _ensure_migrations_table() -> None:
-    pg = PostgresConnection()
+    pg = _migration_connection()
     schema = pg.schema
     with pg.get_connection(statement_timeout_ms=0) as conn:
         with conn.cursor() as cur:
@@ -74,7 +101,7 @@ def _ensure_migrations_table() -> None:
 
 
 def _apply_pending_migrations(**context) -> None:
-    pg = PostgresConnection()
+    pg = _migration_connection()
     schema = pg.schema
 
     # Schema-scoped advisory lock spanning the ENTIRE function, held on a

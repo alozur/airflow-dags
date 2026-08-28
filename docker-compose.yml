@@ -5,12 +5,13 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.20.0.0/16
-          gateway: 172.20.0.1
+        - subnet: 192.168.50.0/24
+          gateway: 192.168.50.1
   whisper_network:
     external: true
   ml_api_network:
     external: true
+    name: ml-apis_ml_api_network
 
 volumes:
   airflow_logs:
@@ -66,6 +67,12 @@ x-airflow-common:
     GITHUB_TOKEN: "${GITHUB_TOKEN}"
     GITHUB_REPO: "${GITHUB_REPO}"
     GIT_SYNC_BRANCH: "${GIT_SYNC_BRANCH:-dev}"
+    # GIT_ASKPASS backs authentication for a tokenless remote URL (issue #207).
+    # /opt/airflow/dags/.git-askpass.sh is one level ABOVE
+    # AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags/repo, so DagBag never scans
+    # it and `git reset --hard` in the repo worktree never clobbers it.
+    GIT_ASKPASS: /opt/airflow/dags/.git-askpass.sh
+    GIT_TERMINAL_PROMPT: "0"
   volumes:
     - airflow_logs:/opt/airflow/logs
     - airflow_plugins:/opt/airflow/plugins
@@ -79,16 +86,34 @@ x-airflow-common:
     - airflow_network
     - whisper_network
     - ml_api_network
+  dns:
+    - 8.8.8.8
+    - 1.1.1.1
   mem_limit: 1.5g
   mem_reservation: 1g
 
 services:
   init-dags:
     image: alpine/git:latest
-    container_name: airflow-init-dags
+    container_name: airflow-init-dags-dev
     restart: "no"
     entrypoint: ""
-    command: ["sh", "-c", "git config --global --add safe.directory /dags/repo && if [ -d /dags/repo/.git ]; then cd /dags/repo && git remote set-url origin https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${GITHUB_REPO}.git && git fetch origin && git reset --hard origin/${GIT_SYNC_BRANCH:-dev}; else git clone --depth 1 --branch ${GIT_SYNC_BRANCH:-dev} https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${GITHUB_REPO}.git /dags/repo; fi"]
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        printf '#!/bin/sh\nexec echo "$$GITHUB_TOKEN"\n' > /dags/.git-askpass.sh
+        chmod 0700 /dags/.git-askpass.sh
+        export GIT_ASKPASS=/dags/.git-askpass.sh GIT_TERMINAL_PROMPT=0
+        REMOTE="https://$$GITHUB_USER@github.com/$$GITHUB_USER/$$GITHUB_REPO.git"
+        git config --global --add safe.directory /dags/repo
+        if [ -d /dags/repo/.git ]; then
+          cd /dags/repo && git remote set-url origin "$$REMOTE" \
+            && git fetch origin && git reset --hard "origin/$$GIT_SYNC_BRANCH"
+        else
+          git clone --depth 1 --branch "$$GIT_SYNC_BRANCH" "$$REMOTE" /dags/repo
+        fi
     environment:
       GITHUB_USER: "${GITHUB_USER}"
       GITHUB_TOKEN: "${GITHUB_TOKEN}"
@@ -100,6 +125,9 @@ services:
       - postgres_infra_network
       - airflow_network
       - whisper_network
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
 
   init-perms:
     image: busybox
@@ -124,7 +152,7 @@ services:
 
   airflow-webserver:
     <<: *airflow-common
-    container_name: airflow-webserver
+    container_name: airflow-webserver-dev
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -142,7 +170,7 @@ services:
 
   airflow-scheduler:
     <<: *airflow-common
-    container_name: airflow-scheduler
+    container_name: airflow-scheduler-dev
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -158,7 +186,7 @@ services:
 
   airflow-init:
     <<: *airflow-common
-    container_name: airflow-init
+    container_name: airflow-init-dev
     restart: "no"
     entrypoint: /bin/bash
     command:
