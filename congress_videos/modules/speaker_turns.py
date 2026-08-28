@@ -16,11 +16,16 @@ NEVER used as an acceptance threshold.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Callable
 
+from congress_videos.config.ai_prompts import (
+    TURN_NAME_RESOLUTION_SYSTEM_PROMPT,
+    TURN_NAME_RESOLUTION_USER_TEMPLATE,
+)
 from congress_videos.modules.sidecar_api_error import SidecarApiError
 
 log = logging.getLogger(__name__)
@@ -28,6 +33,11 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Module-level constants (tunable thresholds)
 # ---------------------------------------------------------------------------
+
+ANNOUNCEMENT_WINDOW_SECONDS: float = 120.0
+"""Backward-only announcement search window, in seconds. Mirrors
+speaker_resolution.INTRO_WINDOW_SECS: announcements always precede the
+speaker they introduce, so the window is [t - window, t], never forward."""
 
 GAP_MERGE_SECONDS: float = 1.0
 """Same-speaker segments closer than this are merged into one."""
@@ -37,6 +47,19 @@ PINGPONG_B_MAX_SECONDS: float = 5.0
 
 PINGPONG_RETURN_SECONDS: float = 10.0
 """Maximum gap between end-of-B and start-of-return-A for collapse."""
+
+LLM_RESOLVED_CONFIDENCE: float = 0.85
+"""Fixed persisted confidence for source='llm_resolved' (not the model's own
+number) — keeps the discrete ladder 0.95/0.85/0.80/0.50 comparable across
+sources."""
+
+TURN_LLM_MIN_CONFIDENCE: float = 0.80
+"""Minimum model self-confidence required to accept an LLM name candidate."""
+
+TURN_LLM_MAX_CALLS_PER_CHAPTER: int = int(os.getenv("TURN_LLM_MAX_CALLS_PER_CHAPTER", "12"))
+"""Per-chapter cap on LLM fallback calls. ``0`` disables the fallback
+entirely — the sole runtime kill switch (no deploy required, restart the
+worker after changing the env var)."""
 
 # ---------------------------------------------------------------------------
 # Turn dataclass
@@ -53,7 +76,8 @@ class Turn:
         speaker_label: Acoustic cluster label (e.g. "SPEAKER_01").
         resolved_name: Canonical participant display_name, or None.
         confidence: Attribution confidence in [0.0, 1.0].
-        source: One of "text_named", "text_confirmed", or "acoustic".
+        source: One of "text_named" (0.95), "llm_resolved" (0.85),
+            "text_confirmed" (0.80), or "acoustic" (0.50).
     """
 
     start_seconds: float
@@ -110,13 +134,17 @@ _RE_GRACIAS_SENORIA = re.compile(
 def extract_announcement(
     srt_blocks: list[dict],
     t: float,
-    window: float = 30.0,
+    window: float = ANNOUNCEMENT_WINDOW_SECONDS,
 ) -> tuple[str | None, bool]:
-    """Search SRT blocks near time *t* for a president-announcement phrase.
+    """Search SRT blocks preceding time *t* for a president-announcement phrase.
 
-    Scans blocks whose ``[start_secs, end_secs]`` intersects the window
-    ``[t − window, t + window]``. Within that window, prefers the block
-    closest to and before *t* (within 15–30 s) for name capture.
+    Backward-only: scans blocks fully contained in ``[t − window, t]``
+    (mirrors ``speaker_resolution``'s intro-window filter). A block that
+    starts before *t* but ends after it — or that starts after *t* entirely —
+    is never matched: announcements always precede the speaker they
+    introduce, and forward blocks are typically the new speaker's own words,
+    a mis-attribution source. Within the window, prefers the block closest
+    to and before *t* for name capture.
 
     Patterns matched (case-insensitive, accent-tolerant):
     - "Tiene la palabra el señor/la señora <name>" → returns (name, True)
@@ -127,26 +155,18 @@ def extract_announcement(
         (raw_name_or_None, phrase_found)
     """
     lo = t - window
-    hi = t + window
 
-    # Collect blocks that overlap [lo, hi]
+    # Collect blocks fully contained in [lo, t] — backward-only.
     window_blocks = [
         b for b in srt_blocks
-        if b["end_secs"] >= lo and b["start_secs"] <= hi
+        if b["start_secs"] >= lo and b["end_secs"] <= t
     ]
 
     if not window_blocks:
         return (None, False)
 
-    # Sort by proximity: blocks ending closest before t are preferred for name capture.
-    # Prefer blocks that end before t (announcements precede the new speaker).
-    # Within those, prefer the one closest to t.
-    def _sort_key(b: dict) -> tuple[int, float]:
-        if b["end_secs"] <= t:
-            return (0, t - b["end_secs"])  # preceding blocks first, closest last
-        return (1, b["start_secs"] - t)    # following blocks after
-
-    sorted_blocks = sorted(window_blocks, key=_sort_key)
+    # All matches precede t by construction; prefer the one closest to t.
+    sorted_blocks = sorted(window_blocks, key=lambda b: t - b["end_secs"])
 
     # First pass: look for a named announcement in the best (closest preceding) blocks
     best_named: tuple[str | None, bool] | None = None
@@ -302,6 +322,91 @@ def _merge_same_name(turns: list[Turn]) -> list[Turn]:
 
 
 # ---------------------------------------------------------------------------
+# LLM fallback (reached only after regex+fuzzy fail — issue #131)
+# ---------------------------------------------------------------------------
+
+
+def _llm_resolve_name(
+    srt_blocks: list[dict],
+    t: float,
+    name_resolver: Callable[[str], dict | None],
+    completion_fn: Callable | None,
+) -> str | None:
+    """Ask the LLM to identify the speaker announced before time *t*.
+
+    Returns the canonical participant ``display_name``, or ``None``. NEVER
+    raises — any failure keeps the caller's acoustic outcome. Rejection
+    ladder: ``completion_fn is None`` (fallback disabled) | empty intro
+    window (D9 — free correctness+cost win) | exception from completion_fn |
+    ``response["error"]`` set | missing/blank ``speaker_name`` | non-float or
+    ``< TURN_LLM_MIN_CONFIDENCE`` confidence | ``name_resolver(name) is
+    None`` (anti-hallucination roster validation, D5) → all return ``None``.
+
+    Args:
+        srt_blocks: SRT blocks for the chapter window.
+        t: Segment start time to search backward from.
+        name_resolver: Callable mapping a raw name str to a participant dict
+            or None. Same boundary used by the regex/fuzzy text_named path.
+        completion_fn: Injectable LLM call, ``None`` disables the fallback.
+    """
+    if completion_fn is None:
+        return None
+
+    lo = t - ANNOUNCEMENT_WINDOW_SECONDS
+    intro_blocks = [
+        b for b in srt_blocks
+        if b["start_secs"] >= lo and b["end_secs"] <= t
+    ]
+    if not intro_blocks:
+        return None
+
+    intro_text = "\n".join(b["text"] for b in intro_blocks)
+    user_prompt = TURN_NAME_RESOLUTION_USER_TEMPLATE.format(intro_text=intro_text)
+
+    try:
+        response = completion_fn(
+            TURN_NAME_RESOLUTION_SYSTEM_PROMPT,
+            user_prompt,
+            model="gpt-4o-mini",
+            temperature=0.0,
+            max_tokens=200,
+        )
+    except Exception as exc:  # noqa: BLE001 never raise
+        log.warning(
+            "_llm_resolve_name: completion_fn raised (%s: %s) — falling back to acoustic",
+            type(exc).__name__, exc,
+        )
+        return None
+
+    if response.get("error") or not response.get("data"):
+        log.debug("_llm_resolve_name: completion error: %s", response.get("error"))
+        return None
+
+    data = response["data"]
+    raw_name = data.get("speaker_name")
+    confidence = data.get("confidence")
+
+    if not raw_name:
+        return None
+
+    try:
+        confidence = float(confidence)
+    except (TypeError, ValueError):
+        log.debug("_llm_resolve_name: invalid confidence %r", confidence)
+        return None
+
+    if confidence < TURN_LLM_MIN_CONFIDENCE:
+        return None
+
+    resolved = name_resolver(raw_name)
+    if resolved is None:
+        log.debug("_llm_resolve_name: hallucinated name %r — no roster match", raw_name)
+        return None
+
+    return resolved.get("display_name") or raw_name
+
+
+# ---------------------------------------------------------------------------
 # Text gate (assigns source/confidence, drops noise)
 # ---------------------------------------------------------------------------
 
@@ -310,6 +415,8 @@ def _apply_text_gate(
     segments: list[dict],
     srt_blocks: list[dict],
     name_resolver: Callable[[str], dict | None],
+    completion_fn: Callable | None = None,
+    max_llm_calls: int | None = None,
 ) -> list[Turn]:
     """Evaluate each segment against the SRT announcement window.
 
@@ -317,6 +424,9 @@ def _apply_text_gate(
     - Calls ``extract_announcement`` on the segment's ``start_seconds``.
     - Routes source/confidence per design table.
     - Drops same-speaker noise (both sides same label, no phrase).
+    - When regex/fuzzy resolution fails (no phrase, different speakers),
+      tries the LLM fallback (issue #131) before giving up to acoustic —
+      never overrides an existing text_named/text_confirmed tier.
     - Builds ``Turn`` instances. Never reads ``confirmed_block_duration_seconds``
       as a threshold.
 
@@ -324,11 +434,20 @@ def _apply_text_gate(
         segments: Postprocessed segment dicts.
         srt_blocks: SRT blocks for the chapter window.
         name_resolver: Callable mapping a raw name str to a participant dict or None.
+        completion_fn: Injectable LLM call for the fallback. ``None`` (default)
+            disables the fallback entirely.
+        max_llm_calls: Per-chapter cap on LLM fallback calls. Defaults to
+            ``TURN_LLM_MAX_CALLS_PER_CHAPTER`` (read at call time, so tests
+            can monkeypatch the module constant).
 
     Returns:
         List of Turn instances.
     """
+    if max_llm_calls is None:
+        max_llm_calls = TURN_LLM_MAX_CALLS_PER_CHAPTER
+
     turns: list[Turn] = []
+    llm_calls_made = 0
 
     for seg in segments:
         t = seg["start_seconds"]
@@ -359,10 +478,22 @@ def _apply_text_gate(
             if from_speaker and to_speaker and from_speaker == to_speaker:
                 # Same speaker on both sides, no phrase → noise, drop
                 continue
-            # Different speakers → acoustic fallback
+            # Different speakers, regex/fuzzy failed → try the LLM fallback
+            # before giving up to acoustic (issue #131).
             resolved_name = None
             source = "acoustic"
             confidence = 0.50
+            if completion_fn is not None and llm_calls_made < max_llm_calls:
+                def _counting_completion_fn(system, user, **kw):
+                    nonlocal llm_calls_made
+                    llm_calls_made += 1
+                    return completion_fn(system, user, **kw)
+
+                llm_name = _llm_resolve_name(srt_blocks, t, name_resolver, _counting_completion_fn)
+                if llm_name is not None:
+                    resolved_name = llm_name
+                    source = "llm_resolved"
+                    confidence = LLM_RESOLVED_CONFIDENCE
 
         end_seconds = seg.get("end_seconds", t)
         turns.append(Turn(
@@ -387,6 +518,7 @@ def detect_turns(
     srt_blocks: list[dict],
     diarize_fn: DiarizeFn,
     name_resolver: Callable[[str], dict | None] | None = None,
+    completion_fn: Callable | None = None,
 ) -> list[Turn]:
     """Detect speaker-turn boundaries within a video chapter.
 
@@ -406,6 +538,10 @@ def detect_turns(
                       confirmed_block_duration_seconds}].
         name_resolver: Callable mapping raw name → participant dict or None.
                        Defaults to lookup_participant_fuzzy from participants_db.
+        completion_fn: Injectable LLM call for the text-gate fallback
+                       (issue #131). ``None`` (default) disables the
+                       fallback — the module never opens an LLM connection
+                       directly; the caller (DAG layer) binds this.
 
     Returns:
         Ordered list of Turn instances.
@@ -454,7 +590,7 @@ def detect_turns(
     # Postprocessing pipeline
     segments = _merge_gaps(segments)
     segments = _collapse_pingpong(segments)
-    turns = _apply_text_gate(segments, srt_blocks, name_resolver)
+    turns = _apply_text_gate(segments, srt_blocks, name_resolver, completion_fn=completion_fn)
     turns = _merge_same_name(turns)
 
     return turns

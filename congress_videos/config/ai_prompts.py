@@ -321,6 +321,37 @@ SPEAKER_RESOLUTION_USER_TEMPLATE = (
 )
 
 
+# Turn Name Resolution — LLM fallback for congress_videos.modules.speaker_turns
+# (issue #131). Reached only when the regex/fuzzy text gate fails to attribute
+# a speaker turn from its president-announcement window. Returns a free-text
+# name, later validated through lookup_participant_fuzzy — this prompt has NO
+# roster and must never be treated as authoritative on its own.
+# Output JSON: {"speaker_name": str|null, "confidence": float, "evidence": str}
+TURN_NAME_RESOLUTION_SYSTEM_PROMPT = (
+    "You are a speaker-attribution assistant for the Spanish Congress of Deputies. "
+    "You receive a short transcript window immediately BEFORE a new speaker turn "
+    "begins (the president's introduction). Identify the full name of the speaker "
+    "being announced, if any.\n\n"
+    "Rules:\n"
+    "- Respond with ONLY valid JSON and nothing else.\n"
+    "- speaker_name is the full name exactly as announced in the transcript, "
+    "or null if no speaker is clearly announced.\n"
+    "- confidence is a float between 0.0 and 1.0 reflecting how certain you are.\n"
+    "- evidence is a short string (one sentence) quoting the key phrase that led "
+    "to your decision.\n\n"
+    'JSON schema: {"speaker_name": "<full name as announced, or null>", '
+    '"confidence": <0.0-1.0>, "evidence": "<one sentence>"}'
+)
+
+TURN_NAME_RESOLUTION_USER_TEMPLATE = (
+    "INTRO WINDOW (transcript up to 120 seconds before the turn starts):\n"
+    "{intro_text}\n\n"
+    "Identify the speaker being announced. Return ONLY valid JSON:\n"
+    '{{"speaker_name": "<full name as announced, or null>", '
+    '"confidence": <float 0.0-1.0>, "evidence": "<key phrase from the transcript>"}}'
+)
+
+
 # Interest scoring — rates a parliamentary excerpt 0–10 for YouTube newsworthiness.
 # Named constant so SQL comments and tests can reference it by name.
 # See srt_helpers.py: INTEREST_FILTER_THRESHOLD, INTEREST_NEUTRAL.
