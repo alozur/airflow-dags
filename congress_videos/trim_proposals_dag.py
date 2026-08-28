@@ -35,11 +35,15 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 
 from congress_videos.config.paths import DOWNLOADS_DIR
+from congress_videos.modules.sidecar_api_error import SidecarApiError
 from congress_videos.modules.trim_proposals import (
     _upsert_proposals,
     generate_trim_proposals,
 )
-from congress_videos.modules.trim_proposals_api import api_yamnet_fn
+from congress_videos.modules.trim_proposals_api import (
+    api_yamnet_fn,
+    check_yamnet_api_health,
+)
 from congress_videos.modules.vad_helpers import extract_audio_wav
 from utils.postgres_helpers import PostgresConnection
 
@@ -220,6 +224,7 @@ def _select_task(**context) -> list[dict]:
 
 def _process_task(**context) -> dict:
     turns = context["ti"].xcom_pull(key="turns", task_ids="select_turns") or []
+    check_yamnet_api_health()  # fail fast on outage before DB/WAV work
     summary = {"processed": 0, "skipped": 0, "proposals": 0}
     pg = PostgresConnection()
     proposals_table = pg.get_qualified_table("speaker_turn_trim_proposals")
@@ -230,6 +235,12 @@ def _process_task(**context) -> dict:
                     result = run_turn_proposals(
                         turn, cur, proposals_table=proposals_table
                     )
+                except SidecarApiError:  # noqa: BLE001 mid-run drop → fail loud
+                    logger.exception(
+                        "turn %s: yamnet-api outage — failing task",
+                        turn.get("turn_id"),
+                    )
+                    raise
                 except Exception:  # noqa: BLE001 — one bad turn must not sink the run
                     logger.exception(
                         "turn %s failed — skipping", turn.get("turn_id")

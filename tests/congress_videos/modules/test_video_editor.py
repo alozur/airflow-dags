@@ -544,6 +544,54 @@ class TestValidateEditorInput:
         with pytest.raises((ValueError, KeyError)):
             validate_editor_input(conf)
 
+    def test_second_overlay_error_uses_zero_based_index(self, mocker) -> None:
+        """Overlay indices in error messages are 0-based: the SECOND overlay
+        (list index 1) must report 'Overlay[1]', not 'Overlay[2]'."""
+        from congress_videos.modules.video_editor import validate_editor_input
+
+        mocker.patch("os.path.exists", return_value=True)
+        conf = {
+            **_VALID_CONF,
+            "overlays": [
+                dict(_VALID_OVERLAY),
+                {"tipo": "extracto_sesion", "tiempo_inicio": 0.0, "tiempo_fin": 5.0},
+            ],
+        }
+        with pytest.raises(ValueError, match=r"Overlay\[1\]"):
+            validate_editor_input(conf)
+
+    def test_neither_source_path_nor_id_pair_raises_value_error(self, mocker) -> None:
+        """Omitting both source forms must raise ValueError.
+
+        The XOR source rule has two violating sides. The "both present" side is
+        covered by test_both_source_path_and_video_id_raises_value_error; this
+        locks the "neither present" side.
+        """
+        from congress_videos.modules.video_editor import validate_editor_input
+
+        mocker.patch("os.path.exists", return_value=True)
+        conf = {k: v for k, v in _VALID_CONF.items() if k != "source_path"}
+        with pytest.raises(
+            ValueError,
+            match=r"One of 'source_path' or \('video_id' \+ 'chapter_id'\) is required\.",
+        ):
+            validate_editor_input(conf)
+
+    def test_missing_overlays_key_raises_value_error(self, mocker) -> None:
+        """An absent 'overlays' key is distinct from an empty 'overlays' list.
+
+        test_empty_overlays_raises_value_error covers the empty-list case; this
+        locks the key-entirely-absent case and its distinct message.
+        """
+        from congress_videos.modules.video_editor import validate_editor_input
+
+        mocker.patch("os.path.exists", return_value=True)
+        conf = {k: v for k, v in _VALID_CONF.items() if k != "overlays"}
+        with pytest.raises(
+            ValueError, match=r"Missing required conf key: 'overlays'"
+        ):
+            validate_editor_input(conf)
+
 
 # ---------------------------------------------------------------------------
 # T-08: TestApplyOverlays — REQ-07
