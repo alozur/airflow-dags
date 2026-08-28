@@ -39,7 +39,6 @@ with DAG(
         task_id="configure_git",
         bash_command=f"""
             cd {DAGS_REPO_PATH}
-            git config --local credential.helper store
             git config --local user.email "airflow@localhost"
             git config --local user.name "Airflow Git Sync"
         """,

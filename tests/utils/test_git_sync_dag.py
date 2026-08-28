@@ -43,3 +43,15 @@ class TestGitSyncDAGLoads:
 
         trigger = dag.get_task("trigger_migrations")
         assert trigger.wait_for_completion is False
+
+
+class TestGitSyncCredentialHygiene:
+    """Issue #207: no vestigial `credential.helper store` — authentication
+    now flows entirely through GIT_ASKPASS set on the container environment,
+    the same tokenless-URL flow init-dags establishes."""
+
+    def test_configure_git_has_no_credential_helper(self):
+        from utils.git_sync_dag import dag
+
+        configure = dag.get_task("configure_git")
+        assert "credential.helper" not in configure.bash_command
