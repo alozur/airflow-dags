@@ -145,6 +145,16 @@ def _get_participants_for_lookup() -> list[dict]:
 # Module-level lookup API
 # ---------------------------------------------------------------------------
 
+def get_participants_roster() -> list[dict]:
+    """Public roster accessor for chapter_speaker_resolution (issue #263).
+
+    Thin wrapper over :func:`_get_participants_for_lookup`. Named distinctly
+    from :meth:`CongressParticipantsDB.get_all_participants` (class method,
+    above) to avoid a collision between a module-level function and a class
+    method that share a name — see the ratified A1 amendment.
+    """
+    return _get_participants_for_lookup()
+
 def lookup_participant(name: str) -> dict | None:
     """
     Look up a participant by name using exact normalized_name match.

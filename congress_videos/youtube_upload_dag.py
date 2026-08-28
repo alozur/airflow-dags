@@ -29,10 +29,14 @@ from airflow.models import XCom
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 
+from congress_videos.config import speaker_normalization_config as snc
+from congress_videos.modules.chapter_speaker_resolution import resolve_chapter_speakers
 from congress_videos.modules.participants_db import (
+    get_participants_roster,
     lookup_participant_by_slug,
     lookup_participant_fuzzy,
 )
+from congress_videos.modules.speaker_placeholders import is_placeholder
 from congress_videos.modules.upload_marking import mark_chapter_uploads, mark_turn_uploads
 from congress_videos.srt_helpers import (
     _parse_srt_blocks,
@@ -101,31 +105,84 @@ def should_upload(**context):
 # ---------------------------------------------------------------------------
 
 
-def _resolve_speaker_name(chapter: dict) -> str | None:
-    """Extract the first speaker name from key_speakers or speakers.
+def _speaker_mentions_from_entries(entries: list) -> list[str]:
+    """Extract raw name strings from a list of dict-or-str speaker entries."""
+    names = []
+    for entry in entries or []:
+        name = entry.get("name") if isinstance(entry, dict) else entry
+        if name:
+            names.append(name)
+    return names
+
+
+def _resolve_chapter_speaker(chapter: dict, key_speakers: list, db) -> tuple[str | None, list]:
+    """Resolve a chapter's primary speaker via the roster-validated resolver.
+
+    Second-chance resolution for chapters that slipped monitor-time
+    resolution (issue #263). Extracts mentions from key_speakers first,
+    then speakers, filters placeholders, dedupes, and calls
+    resolve_chapter_speakers against the current participant roster. On a
+    primary match, persists the slug (never-override write) and returns a
+    canonicalized key_speakers list so title and photo derive from the same
+    resolver call.
+
+    This function NEVER raises: any internal error yields
+    ``(None, key_speakers)`` unchanged.
 
     Args:
-        chapter: Chapter dict from the uploadable_chapters view.
+        chapter: Chapter row dict (must contain 'chapter_id').
+        key_speakers: The chapter's raw key_speakers list.
+        db: CongressionalVideoDB instance used for the write-back.
 
     Returns:
-        Speaker name string, or None when no speakers are present.
-
-    Raises:
-        LookupError: Re-raised from downstream participant lookup callers.
-        ValueError: Re-raised from downstream participant lookup callers.
+        ``(participant_slug | None, key_speakers)`` — key_speakers is
+        canonicalized in place only when a primary match is found.
     """
-    key_speakers = chapter.get("key_speakers") or []
-    speakers = chapter.get("speakers") or []
+    try:
+        raw_names = (
+            _speaker_mentions_from_entries(key_speakers)
+            + _speaker_mentions_from_entries(chapter.get("speakers"))
+        )
 
-    # Prefer key_speakers; fall back to speakers
-    if key_speakers:
-        first = key_speakers[0]
-        # key_speakers entries may be dicts {"name": "..."} or plain strings
-        return first["name"] if isinstance(first, dict) else first
-    if speakers:
-        first = speakers[0]
-        return first["name"] if isinstance(first, dict) else first
-    return None
+        mentions: list[str] = []
+        seen: set[str] = set()
+        for name in raw_names:
+            if not is_placeholder(name) and name not in seen:
+                mentions.append(name)
+                seen.add(name)
+
+        if not mentions:
+            return None, key_speakers
+
+        participants = get_participants_roster()
+        resolution = resolve_chapter_speakers(mentions, participants)
+        primary = resolution.primary
+        if primary is None:
+            return None, key_speakers
+
+        chapter_id = chapter.get("chapter_id")
+        if chapter_id is not None:
+            db.mark_chapter_resolved(chapter_id, primary.participant_slug)
+
+        canonical_key_speakers = []
+        for entry in key_speakers or []:
+            name = entry.get("name") if isinstance(entry, dict) else entry
+            match = resolution.by_mention.get(name) if name else None
+            if match is None:
+                canonical_key_speakers.append(entry)
+            elif isinstance(entry, dict):
+                canonical_key_speakers.append({**entry, "name": match.display_name})
+            else:
+                canonical_key_speakers.append(match.display_name)
+
+        return primary.participant_slug, canonical_key_speakers
+    except Exception as exc:
+        logging.warning(
+            "_resolve_chapter_speaker: unexpected exception for chapter_id=%s: %s — slug=None",
+            chapter.get("chapter_id"),
+            exc,
+        )
+        return None, key_speakers
 
 
 def _prepare_thumbnail_config(chapter: dict, db) -> dict:
@@ -204,26 +261,14 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
                         exc,
                     )
     else:
-        # Chapter path: preserve existing behaviour.
-        # Prefer the authoritative slug written by speaker normalization (fuzzy or
-        # institutional-role resolution). Fall back to a raw-speaker fuzzy match only
-        # when the chapter was never resolved. Fuzzy matching stays confined to this
-        # boundary; downstream thumbnail code receives only the stable slug.
+        # Chapter path: read the authoritative slug written by monitor-time
+        # resolution first (issue #263). Only when it is NULL does this seam
+        # call the roster-validated resolver as a second chance — the raw
+        # lookup_participant_fuzzy fallback is retired for chapters.
         key_speakers = chapter.get("key_speakers") or []
         slug = chapter.get("resolved_participant_slug") or None
-        if not slug:
-            try:
-                raw_speaker = _resolve_speaker_name(chapter)
-                participant = lookup_participant_fuzzy(raw_speaker) if raw_speaker else None
-                slug = participant.get("slug") if participant else None
-            except Exception as exc:
-                logging.warning(
-                    "_prepare_thumbnail_config: speaker resolution failed for "
-                    "chapter_id=%s: %s — setting slug=None",
-                    chapter_id,
-                    exc,
-                )
-                slug = None
+        if not slug and snc.ENABLED:
+            slug, key_speakers = _resolve_chapter_speaker(chapter, key_speakers, db)
 
     config = {
         "chapter_id": chapter_id,

@@ -668,6 +668,37 @@ ESCALA FINAL (suma automática de puntos):
 
 IMPORTANTE: Sé objetivo y evalúa la relevancia real para el público español general, no solo para expertos en política."""
 
+# Chapter Speaker Resolution — resolves chapter speaker mentions against a full
+# participant roster in one batched call (issue #263). Consumed identically by
+# the monitor-time normalization step and the upload-time thumbnail-config step
+# so both seams derive the same canonical name and slug from one resolver call.
+# Output JSON: {"matches": [{"mention": str, "participant_slug": str|null,
+#                             "confidence": float, "evidence": str}, ...]}
+# participant_slug MUST be taken verbatim from the provided roster or null.
+CHAPTER_SPEAKER_RESOLUTION_SYSTEM_PROMPT = (
+    "You are a name-normalization assistant for the Spanish Congress of Deputies. "
+    "You receive raw speaker mentions extracted from a chapter transcript. They may "
+    "carry honorifics (Señor/Señora), split or misspelled surnames, or role phrases. "
+    "For each mention decide which known participant it refers to.\n\n"
+    "Rules:\n"
+    "- Respond with ONLY valid JSON and nothing else.\n"
+    "- participant_slug MUST be copied EXACTLY from the provided list, or null.\n"
+    "- Return exactly one entry per input mention, echoing the mention verbatim.\n"
+    "- confidence is a float 0.0-1.0; evidence is one short sentence.\n\n"
+    'JSON schema: {"matches": [{"mention": "<verbatim>", '
+    '"participant_slug": "<slug or null>", "confidence": <0.0-1.0>, '
+    '"evidence": "<one sentence>"}]}'
+)
+
+CHAPTER_SPEAKER_RESOLUTION_USER_TEMPLATE = (
+    "SPEAKER MENTIONS (one per line):\n"
+    "{mention_block}\n\n"
+    "KNOWN PARTICIPANTS (slug | display_name | party — one per line):\n"
+    "{participant_roster}\n\n"
+    'Return ONLY valid JSON: {{"matches": [...]}}'
+)
+
+
 # Speaker Normalization — match a dirty speaker string to a congress_participants candidate
 SPEAKER_MATCH_SYSTEM_PROMPT = (
     "You are a speaker-name disambiguation assistant for the Spanish Congress of Deputies. "
