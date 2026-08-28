@@ -2456,6 +2456,26 @@ class TestExtractLapidaryQuote:
         result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
         assert result is None
 
+    def test_omitted_completion_fn_resolves_the_real_helper(self, mocker):
+        """Omitting completion_fn must fall back to generate_chat_completion.
+
+        Every other test in this class injects an explicit stub, leaving the
+        default-resolution branch unexercised. This locks it: the real helper
+        is imported lazily from utils.ai_helpers and called exactly once.
+        """
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        real_fn = mocker.patch(
+            "utils.ai_helpers.generate_chat_completion",
+            return_value={"content": "1", "error": None},
+        )
+
+        fragment = "esto es una prueba seria. vamos a votar ya"
+        result = extract_lapidary_quote(fragment)
+
+        real_fn.assert_called_once()
+        assert result == "esto es una prueba seria"
+
 
 # ---------------------------------------------------------------------------
 # T-08: art_direct srt_fragment override (Phase 3)
