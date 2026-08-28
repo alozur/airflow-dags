@@ -1,13 +1,8 @@
 """Tests for migration 039 — extend speaker_turns.source CHECK constraint to
-allow 'llm_resolved' (issue #131).
-
-Reads the SQL file statically and asserts structural properties. No DB
-connection required (mirrors test_migration_038.py pattern).
-
-Amendment W2 (design-amendments, orchestrator-ratified): migration 022
-declares the ``source`` CHECK inline, so Postgres auto-names it
-``speaker_turns_source_check``. The correct idempotent mechanism is
-DROP CONSTRAINT IF EXISTS + ADD CONSTRAINT (constraint replacement), NOT a
+allow 'llm_resolved' (issue #131). Static SQL assertions, no DB connection
+(mirrors test_migration_038.py). Amendment W2 (orchestrator-ratified): 022's
+CHECK is auto-named speaker_turns_source_check, so the idempotent mechanism
+here is DROP CONSTRAINT IF EXISTS + ADD CONSTRAINT, NOT a
 pg_constraint-guarded DO-block — this file asserts that DROP+ADD shape.
 """
 from __future__ import annotations
@@ -39,12 +34,10 @@ class TestMigration039FileExists:
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
     def test_filename_sorts_after_038(self):
-        migrations_dir = MIGRATION_PATH.parent
-        names = sorted(p.name for p in migrations_dir.glob("*.sql"))
-        assert "039_extend_speaker_turns_source.sql" in names
-        idx_039 = names.index("039_extend_speaker_turns_source.sql")
-        idx_038 = names.index("038_restore_chapter_abandoned_gate.sql")
-        assert idx_039 > idx_038
+        names = sorted(p.name for p in MIGRATION_PATH.parent.glob("*.sql"))
+        assert names.index(MIGRATION_PATH.name) > names.index(
+            "038_restore_chapter_abandoned_gate.sql"
+        )
 
 
 class TestMigration039ConstraintShape:
@@ -75,13 +68,10 @@ class TestMigration039ConstraintShape:
 
     def test_drop_precedes_add_on_speaker_turns(self):
         sql = _executable_sql().upper()
+        assert "ALTER TABLE SPEAKER_TURNS" in sql
         drop_idx = sql.index("DROP CONSTRAINT IF EXISTS SPEAKER_TURNS_SOURCE_CHECK")
         add_idx = sql.index("ADD CONSTRAINT SPEAKER_TURNS_SOURCE_CHECK")
         assert drop_idx < add_idx
-
-    def test_alters_speaker_turns_table(self):
-        sql = _executable_sql().upper()
-        assert "ALTER TABLE SPEAKER_TURNS" in sql
 
 
 class TestMigration039DownBlock:
@@ -114,25 +104,13 @@ class TestMigration039DownBlock:
 
 
 class TestMigration039Hygiene:
+    """Bare CREATE/DROP/INSERT hygiene is already covered for every migration
+    file by tests/utils/test_migrations_dag.py's parametrized
+    TestMigrationIdempotency (which includes this file automatically) — only
+    the schema-qualification check is asserted here to avoid duplication."""
 
     def test_no_schema_qualification(self):
         sql = _sql()
         assert not re.search(r"\bpublic\.\w+", sql), "Must not use public.-qualified names"
         assert not re.search(r"\bdevelopment\.\w+", sql), "Must not use development.-qualified names"
         assert not re.search(r"\bproduction\.\w+", sql), "Must not use production.-qualified names"
-
-    def test_no_bare_create_table(self):
-        sql = _sql()
-        assert not re.search(r"\bCREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS\b)", sql, re.IGNORECASE)
-
-    def test_no_bare_create_index(self):
-        sql = _sql()
-        assert not re.search(r"\bCREATE\s+INDEX\s+(?!IF\s+NOT\s+EXISTS\b)", sql, re.IGNORECASE)
-
-    def test_no_bare_drop_table(self):
-        sql = _sql()
-        assert not re.search(r"\bDROP\s+TABLE\s+(?!IF\s+EXISTS\b)", sql, re.IGNORECASE)
-
-    def test_no_seed_inserts(self):
-        sql = _sql()
-        assert not re.search(r"\bINSERT\s+INTO\b", sql, re.IGNORECASE)
