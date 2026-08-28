@@ -397,6 +397,37 @@ El workflow `.github/workflows/github_sync_main_development.yml` hace merge fast
 
 ---
 
+## 12.1 Canales de despliegue: git_sync vs Portainer (#203 / #207 / #215)
+
+El despliegue en el NAS usa **dos canales independientes**. Confundirlos es la causa más común de "hice el cambio pero no se aplicó":
+
+| Canal | Qué gobierna | Cómo se aplica |
+|-------|--------------|-----------------|
+| **git_sync** | El código de las DAGs (`congress_videos/`, `utils/`, etc.) | Automático: `init-dags` hace `git reset --hard` en cada `docker compose up`; manual: triggear `git_sync_dag` desde la UI o CLI |
+| **Portainer** | La topología del stack (`docker-compose.yml` / `docker-compose.prod.yml`) y las variables de entorno (`.env`) | Manual: pegar el contenido actualizado del compose en el stack de Portainer (modo *paste* o *Repository*) y redeploy |
+
+Un cambio en `docker-compose.yml` (redes, roles de base de datos, `dns:`, nombres de contenedor) **nunca** llega al NAS por `git_sync` — ese canal solo actualiza el checkout dentro del volumen `git_dags`, no la definición del stack que ejecuta Docker Compose. Ese tipo de cambio requiere pegar el fichero actualizado en Portainer y volver a desplegar el stack correspondiente.
+
+### Checklist de cutover (roles de base de datos #203 + PAT de GitHub #207)
+
+Los scripts de `congress_videos/sql/grant_permissions*.sql` son **aditivos**: crean roles nuevos sin tocar los permisos ni el `LOGIN` del rol legado `airflow`. El corte a los roles nuevos es un procedimiento manual, en este orden:
+
+1. **Merge + git_sync** — sin cambio de comportamiento todavía (URL de git sin token + `askpass`; las variables de migración siguen sin definir, por lo que se sigue usando el rol legado `airflow`).
+2. **Superusuario en Postgres del NAS**: ejecutar ambos scripts de grants (`grant_permissions.sql` en `development`, `grant_permissions_production.sql` en `production`) y después `ALTER ROLE <rol> PASSWORD '<valor-del-vault>';` para `airflow_dev`, `airflow_prod` y `airflow_migrations`.
+3. **Stack Portainer de dev**: configurar `POSTGRES_USER=airflow_dev` y `MIGRATION_POSTGRES_USER`/`MIGRATION_POSTGRES_PASSWORD`; redeploy; verificar que `run_migrations` y un DAG con escritura a base de datos corren limpios.
+4. **Stack Portainer de prod**: repetir el paso anterior con `airflow_prod`; verificar.
+5. **Solo después de verificar dev y prod**: ejecutar el `REVOKE` acotado a esquema (únicamente `development` y `production`) sobre los grants legados de `airflow`. **No** ejecutar `ALTER ROLE airflow NOLOGIN` ni tocar las bases de datos de metadatos `airflow_db`/`airflow_dev_db` — `airflow` sigue siendo el rol de login de la base de datos de metadatos de Airflow (`SQL_ALCHEMY_CONN`, sin cambios en este proceso).
+6. **GitHub**: reemplazar el PAT clásico `repo` por un token *fine-grained* con permiso `Contents: Read-only`; actualizar `GITHUB_TOKEN` en ambos stacks de Portainer.
+
+Antes de aplicar cualquier compose actualizado en Portainer, confirmar que renderiza correctamente:
+
+```bash
+docker compose -f docker-compose.yml config
+docker compose -f docker-compose.prod.yml config
+```
+
+---
+
 ## 13. Troubleshooting
 
 ### Los DAGs no aparecen en la UI

@@ -85,6 +85,71 @@ class TestUntouchedMetadataConnection:
         )
 
 
+class TestDevContainerNamesSuffixedDev:
+    """Issue #215: dev stack container names must be suffixed `-dev` to match
+    the live NAS topology (dev + prod share one Docker host)."""
+
+    def test_every_declared_container_name_ends_dev(self):
+        config = _load(DEV_COMPOSE)
+        names = [
+            service["container_name"]
+            for service in config["services"].values()
+            if "container_name" in service
+        ]
+        assert names, "No container_name declared in docker-compose.yml"
+        for name in names:
+            assert name.endswith("-dev"), f"{name} must end with -dev"
+
+
+@pytest.mark.parametrize("path", [DEV_COMPOSE, PROD_COMPOSE], ids=lambda p: p.name)
+class TestExternalNetworkNameOverride:
+    """Issue #215: ml_api_network must declare its live external name
+    explicitly, matching the ml-apis stack's actual Compose project name."""
+
+    def test_ml_api_network_has_explicit_name(self, path: Path):
+        config = _load(path)
+        network = config["networks"]["ml_api_network"]
+        assert network == {"external": True, "name": "ml-apis_ml_api_network"}, (
+            f"{path.name}: ml_api_network must be {{external: True, "
+            f"name: 'ml-apis_ml_api_network'}}, got {network}"
+        )
+
+
+@pytest.mark.parametrize("path", [DEV_COMPOSE, PROD_COMPOSE], ids=lambda p: p.name)
+class TestExplicitDNS:
+    """Issue #215: NAS containers need explicit public DNS resolvers."""
+
+    def test_x_airflow_common_has_dns(self, path: Path):
+        config = _load(path)
+        assert config["x-airflow-common"].get("dns") == ["8.8.8.8", "1.1.1.1"]
+
+    def test_init_dags_has_dns(self, path: Path):
+        config = _load(path)
+        assert config["services"]["init-dags"].get("dns") == ["8.8.8.8", "1.1.1.1"]
+
+
+class TestDevNetworkSubnetMatchesLiveValue:
+    """Issue #215: the dev bridge network's ipam subnet must match the
+    verified live NAS value (was a stale placeholder)."""
+
+    def test_dev_subnet_is_192_168_50_0_24(self):
+        config = _load(DEV_COMPOSE)
+        ipam_config = config["networks"]["airflow_network"]["ipam"]["config"][0]
+        assert ipam_config["subnet"] == "192.168.50.0/24"
+        assert ipam_config["gateway"] == "192.168.50.1"
+
+
+class TestProdNetworkSubnetUnchanged:
+    """D9 regression guard: the prod subnet already matches the live value —
+    this change must not touch it."""
+
+    def test_prod_subnet_stays_172_24_0_0_16(self):
+        config = _load(PROD_COMPOSE)
+        ipam_config = config["networks"]["airflow_network"]["ipam"]["config"][0]
+        assert ipam_config["subnet"] == "172.24.0.0/16"
+        assert ipam_config["gateway"] == "172.24.0.1"
+
+
 class TestTestComposeUntouchedSurface:
     """docker-compose.test.yml is a separate e2e stack. It must stay
     structurally uncoupled from the git-sync/GITHUB_TOKEN surface touched by
