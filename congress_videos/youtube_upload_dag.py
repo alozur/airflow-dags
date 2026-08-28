@@ -29,7 +29,10 @@ from airflow.models import XCom
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 
-from congress_videos.modules.participants_db import lookup_participant_fuzzy
+from congress_videos.modules.participants_db import (
+    lookup_participant_by_slug,
+    lookup_participant_fuzzy,
+)
 from congress_videos.modules.upload_marking import mark_chapter_uploads, mark_turn_uploads
 from congress_videos.srt_helpers import (
     _parse_srt_blocks,
@@ -164,9 +167,9 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
         # Turn path: anchor key_speakers to the turn's own speaker (resolved_name).
         # Use resolved_name directly for the fuzzy slug lookup.
         resolved_name = chapter.get("resolved_name") or ""
-        key_speakers = [resolved_name] if resolved_name else []
-        slug = None
         if resolved_name:
+            key_speakers = [resolved_name]
+            slug = None
             try:
                 participant = lookup_participant_fuzzy(resolved_name)
                 slug = participant.get("slug") if participant else None
@@ -179,6 +182,27 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
                     exc,
                 )
                 slug = None
+        else:
+            # Fallback to the AI-resolved slug persisted on the turn row
+            # (resolved_participant_slug, issue #131 LLM name resolution) —
+            # mirrors the chapter branch's slug-first precedence below.
+            fallback_slug = chapter.get("resolved_participant_slug") or None
+            slug = fallback_slug
+            key_speakers = []
+            if fallback_slug:
+                try:
+                    participant = lookup_participant_by_slug(fallback_slug)
+                    if participant and participant.get("display_name"):
+                        key_speakers = [participant["display_name"]]
+                except Exception as exc:
+                    logging.warning(
+                        "_prepare_thumbnail_config: turn slug lookup failed for "
+                        "turn_id=%s resolved_participant_slug=%r: %s — "
+                        "key_speakers stays empty",
+                        chapter.get("turn_id"),
+                        fallback_slug,
+                        exc,
+                    )
     else:
         # Chapter path: preserve existing behaviour.
         # Prefer the authoritative slug written by speaker normalization (fuzzy or
