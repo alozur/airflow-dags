@@ -544,6 +544,22 @@ class TestValidateEditorInput:
         with pytest.raises((ValueError, KeyError)):
             validate_editor_input(conf)
 
+    def test_second_overlay_error_uses_zero_based_index(self, mocker) -> None:
+        """Overlay indices in error messages are 0-based: the SECOND overlay
+        (list index 1) must report 'Overlay[1]', not 'Overlay[2]'."""
+        from congress_videos.modules.video_editor import validate_editor_input
+
+        mocker.patch("os.path.exists", return_value=True)
+        conf = {
+            **_VALID_CONF,
+            "overlays": [
+                dict(_VALID_OVERLAY),
+                {"tipo": "extracto_sesion", "tiempo_inicio": 0.0, "tiempo_fin": 5.0},
+            ],
+        }
+        with pytest.raises(ValueError, match=r"Overlay\[1\]"):
+            validate_editor_input(conf)
+
 
 # ---------------------------------------------------------------------------
 # T-08: TestApplyOverlays — REQ-07
