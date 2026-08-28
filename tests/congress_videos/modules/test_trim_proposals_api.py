@@ -193,3 +193,94 @@ class TestNoSubprocessInTrimProposalsApi:
         source = inspect.getsource(tpa)
         assert "import subprocess" not in source
         assert "subprocess.run" not in source
+
+
+# ---------------------------------------------------------------------------
+# Phase: check_yamnet_api_health (issue #179)
+# ---------------------------------------------------------------------------
+
+class TestCheckYamnetApiHealth:
+    """Health probe that raises SidecarApiError on any failure condition.
+
+    The getter is injected so no real network connection is ever made.
+    """
+
+    def test_healthy_200_returns_without_raising(self):
+        """getter returns HTTP 200 → check_yamnet_api_health returns None without raising."""
+        from congress_videos.modules.trim_proposals_api import check_yamnet_api_health
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        getter = MagicMock(return_value=mock_resp)
+
+        # Must not raise
+        result = check_yamnet_api_health(getter=getter)
+        assert result is None
+
+    def test_probes_the_health_endpoint_with_the_default_timeout(self):
+        """The probe must GET <YAMNET_API_URL>/health with timeout=5.
+
+        The other tests inject a getter and assert only on the raised message,
+        so a wrong path (e.g. '/healthz') would 404 on every production run --
+        hard-failing the DAG forever -- while the suite stayed green.
+        """
+        from congress_videos.modules.trim_proposals_api import (
+            YAMNET_API_URL,
+            check_yamnet_api_health,
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        getter = MagicMock(return_value=mock_resp)
+
+        check_yamnet_api_health(getter=getter)
+
+        getter.assert_called_once_with(f"{YAMNET_API_URL}/health", timeout=5)
+
+    def test_connection_error_raises_sidecar_api_error_unreachable(self):
+        """getter raises requests.ConnectionError → SidecarApiError with 'yamnet-api' and 'unreachable'."""
+        from congress_videos.modules.sidecar_api_error import SidecarApiError
+        from congress_videos.modules.trim_proposals_api import check_yamnet_api_health
+
+        def failing_getter(url, timeout):
+            raise requests.exceptions.ConnectionError("Connection refused")
+
+        with pytest.raises(SidecarApiError) as exc_info:
+            check_yamnet_api_health(getter=failing_getter)
+
+        message = str(exc_info.value)
+        assert "yamnet-api" in message
+        assert "unreachable" in message
+
+    def test_timeout_raises_sidecar_api_error_with_timeout_substring(self):
+        """getter raises requests.Timeout → SidecarApiError with 'yamnet-api' AND 'timeout'.
+
+        Dedicated test row — proves the Timeout branch fires BEFORE the generic
+        RequestException branch (which would produce 'unreachable', not 'timeout').
+        """
+        from congress_videos.modules.sidecar_api_error import SidecarApiError
+        from congress_videos.modules.trim_proposals_api import check_yamnet_api_health
+
+        def timeout_getter(url, timeout):
+            raise requests.exceptions.Timeout()
+
+        with pytest.raises(SidecarApiError) as exc_info:
+            check_yamnet_api_health(getter=timeout_getter)
+
+        message = str(exc_info.value)
+        assert "yamnet-api" in message
+        assert "timeout" in message
+
+    def test_non_200_status_raises_sidecar_api_error_with_status_code(self):
+        """getter returns HTTP 503 → SidecarApiError with '503' in message."""
+        from congress_videos.modules.sidecar_api_error import SidecarApiError
+        from congress_videos.modules.trim_proposals_api import check_yamnet_api_health
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 503
+        getter = MagicMock(return_value=mock_resp)
+
+        with pytest.raises(SidecarApiError) as exc_info:
+            check_yamnet_api_health(getter=getter)
+
+        assert "503" in str(exc_info.value)

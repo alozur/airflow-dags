@@ -575,24 +575,11 @@ def _get_source_dimensions(source_path: str) -> tuple[int, int] | None:
 _REQUIRED_OVERLAY_KEYS = ("tipo", "tiempo_inicio", "tiempo_fin", "titulo")
 
 
-def validate_editor_input(conf: dict) -> None:
-    """Validate the DAG run conf dict for the video editor.
-
-    Checks:
-        - ``domain`` key is present.
-        - ``overlays`` key is present and non-empty.
-        - Exactly one of ``source_path`` OR (``video_id`` + ``chapter_id``).
-        - Each overlay has all required keys and valid time ordering.
-        - The ``tipo`` in each overlay exists in the domain config.
-        - The ``fontfile`` for every referenced ``tipo`` exists on disk.
-
-    Args:
-        conf: DAG run conf dict.
+def _validate_source_selection(conf: dict) -> None:
+    """Validate top-level required keys and the source XOR constraint.
 
     Raises:
         ValueError: On missing/invalid required keys or XOR source violation.
-        ConfigError: On unknown domain or unknown tipo.
-        FileNotFoundError: When the font file referenced by a tipo is absent.
     """
     # Required top-level key: domain
     if "domain" not in conf:
@@ -618,42 +605,75 @@ def validate_editor_input(conf: dict) -> None:
             "One of 'source_path' or ('video_id' + 'chapter_id') is required."
         )
 
+
+def _validate_overlay(overlay: dict, index: int, tipos_cfg: dict) -> None:
+    """Validate a single overlay dict: required keys, time ordering, tipo, fonts.
+
+    Raises:
+        ValueError: On missing required fields, invalid time ordering, or
+            unknown tipo.
+        FileNotFoundError: When the font file referenced by the tipo is absent.
+    """
+    # Required overlay keys
+    for key in _REQUIRED_OVERLAY_KEYS:
+        if key not in overlay:
+            raise ValueError(
+                f"Overlay[{index}] is missing required field: '{key}'"
+            )
+
+    # Time ordering
+    t_start = _parse_time(overlay["tiempo_inicio"])
+    t_end = _parse_time(overlay["tiempo_fin"])
+    if t_end <= t_start:
+        raise ValueError(
+            f"Overlay[{index}]: 'tiempo_fin' ({t_end}) must be greater than "
+            f"'tiempo_inicio' ({t_start})"
+        )
+
+    # Tipo must exist in domain config
+    tipo = overlay["tipo"]
+    if tipo not in tipos_cfg:
+        raise ValueError(
+            f"Overlay[{index}]: unknown tipo {tipo!r}. "
+            f"Available tipos: {list(tipos_cfg.keys())}"
+        )
+
+    # Font file(s) must exist on disk; pillow tipos may have fontfile_sub too.
+    for font_key in ("fontfile", "fontfile_sub"):
+        font_path = tipos_cfg[tipo].get(font_key)
+        if font_path and not os.path.exists(font_path):
+            raise FileNotFoundError(
+                f"Font file for tipo {tipo!r} ({font_key}) not found: {font_path}"
+            )
+
+
+def validate_editor_input(conf: dict) -> None:
+    """Validate the DAG run conf dict for the video editor.
+
+    Checks:
+        - ``domain`` key is present.
+        - ``overlays`` key is present and non-empty.
+        - Exactly one of ``source_path`` OR (``video_id`` + ``chapter_id``).
+        - Each overlay has all required keys and valid time ordering.
+        - The ``tipo`` in each overlay exists in the domain config.
+        - The ``fontfile`` for every referenced ``tipo`` exists on disk.
+
+    Args:
+        conf: DAG run conf dict.
+
+    Raises:
+        ValueError: On missing/invalid required keys or XOR source violation.
+        ConfigError: On unknown domain or unknown tipo.
+        FileNotFoundError: When the font file referenced by a tipo is absent.
+    """
+    _validate_source_selection(conf)
+
     # Domain config lookup — raises ConfigError for unknown domain
     domain_cfg = get_domain_config(conf["domain"])
     tipos_cfg = domain_cfg["tipos"]
 
-    for i, overlay in enumerate(overlays):
-        # Required overlay keys
-        for key in _REQUIRED_OVERLAY_KEYS:
-            if key not in overlay:
-                raise ValueError(
-                    f"Overlay[{i}] is missing required field: '{key}'"
-                )
-
-        # Time ordering
-        t_start = _parse_time(overlay["tiempo_inicio"])
-        t_end = _parse_time(overlay["tiempo_fin"])
-        if t_end <= t_start:
-            raise ValueError(
-                f"Overlay[{i}]: 'tiempo_fin' ({t_end}) must be greater than "
-                f"'tiempo_inicio' ({t_start})"
-            )
-
-        # Tipo must exist in domain config
-        tipo = overlay["tipo"]
-        if tipo not in tipos_cfg:
-            raise ValueError(
-                f"Overlay[{i}]: unknown tipo {tipo!r}. "
-                f"Available tipos: {list(tipos_cfg.keys())}"
-            )
-
-        # Font file(s) must exist on disk; pillow tipos may have fontfile_sub too.
-        for font_key in ("fontfile", "fontfile_sub"):
-            font_path = tipos_cfg[tipo].get(font_key)
-            if font_path and not os.path.exists(font_path):
-                raise FileNotFoundError(
-                    f"Font file for tipo {tipo!r} ({font_key}) not found: {font_path}"
-                )
+    for i, overlay in enumerate(conf["overlays"]):
+        _validate_overlay(overlay, i, tipos_cfg)
 
 
 # ---------------------------------------------------------------------------

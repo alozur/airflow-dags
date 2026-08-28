@@ -19,6 +19,8 @@ import logging
 from dataclasses import dataclass
 from typing import Callable
 
+from congress_videos.modules.sidecar_api_error import SidecarApiError
+
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -251,6 +253,8 @@ def generate_trim_proposals(
     # --- Applause path ---
     try:
         applause_rounds: list[dict] = yamnet_fn(wav_path, offset)
+    except SidecarApiError:
+        raise  # infra outage → escalate to DAG loop (task failure)
     except Exception as exc:
         log.warning(
             "trim_proposals.yamnet_fn.failed turn_id=%s wav_path=%s error=%s",

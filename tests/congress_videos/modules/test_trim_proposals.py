@@ -235,6 +235,44 @@ class TestSilenceGaps:
 # ---------------------------------------------------------------------------
 
 
+class TestGenerateTrimProposalsSidecarFailure:
+    """yamnet_fn failures must be classified: infra loud, data silent."""
+
+    def test_sidecar_api_error_propagates_not_swallowed(self):
+        """yamnet_fn raises SidecarApiError -> generate_trim_proposals must
+        re-raise it, NOT log-and-continue with an empty applause list.
+
+        Without this, a yamnet-api outage is absorbed here and the caller
+        persists silence-only proposals and reports success, so the DAG-level
+        `except SidecarApiError: raise` never fires. Mirrors
+        test_speaker_turns.py::test_sidecar_api_error_propagates_not_returns_empty.
+        """
+        from congress_videos.modules.sidecar_api_error import SidecarApiError
+
+        turn = _turn(turn_id=1, start=0.0, end=60.0)
+        vad_fn = _stub_vad([(0.0, 60.0)])
+
+        def failing_yamnet(wav_path, offset):
+            raise SidecarApiError("yamnet-api unreachable")
+
+        with pytest.raises(SidecarApiError):
+            generate_trim_proposals(turn, "/fake/audio.wav", vad_fn, failing_yamnet)
+
+    def test_non_sidecar_error_is_still_swallowed(self):
+        """A non-infra yamnet_fn failure stays a graceful degradation: the
+        applause path is skipped and silence proposals are still returned."""
+        turn = _turn(turn_id=2, start=0.0, end=60.0)
+        vad_fn = _stub_vad([(0.0, 20.0), (40.0, 60.0)])
+
+        def failing_yamnet(wav_path, offset):
+            raise ValueError("unexpected API shape")
+
+        proposals = generate_trim_proposals(
+            turn, "/fake/audio.wav", vad_fn, failing_yamnet, min_duration_secs=1.0
+        )
+        assert [p.kind for p in proposals] == ["silence"]
+
+
 class TestGenerateTrimProposalsSilence:
 
     def test_full_voiced_no_silence_proposals(self):

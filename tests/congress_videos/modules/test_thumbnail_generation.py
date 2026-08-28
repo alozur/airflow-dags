@@ -2456,6 +2456,26 @@ class TestExtractLapidaryQuote:
         result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
         assert result is None
 
+    def test_omitted_completion_fn_resolves_the_real_helper(self, mocker):
+        """Omitting completion_fn must fall back to generate_chat_completion.
+
+        Every other test in this class injects an explicit stub, leaving the
+        default-resolution branch unexercised. This locks it: the real helper
+        is imported lazily from utils.ai_helpers and called exactly once.
+        """
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        real_fn = mocker.patch(
+            "utils.ai_helpers.generate_chat_completion",
+            return_value={"content": "1", "error": None},
+        )
+
+        fragment = "esto es una prueba seria. vamos a votar ya"
+        result = extract_lapidary_quote(fragment)
+
+        real_fn.assert_called_once()
+        assert result == "esto es una prueba seria"
+
 
 # ---------------------------------------------------------------------------
 # T-08: art_direct srt_fragment override (Phase 3)
@@ -3185,3 +3205,194 @@ class TestGenerateTitlePromptInjection:
         assert "no hay ponentes identificados" in prompt.lower(), (
             "Nameless instruction must appear when key_speakers=[]"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #228: characterization tests locking the C901 split's invariance
+#
+# These tests must pass BOTH before and after the extraction of
+# extract_lapidary_quote / art_direct / generate_title into module-level
+# private helpers — they are the behaviour-preservation proof for that pure
+# refactor. Additions only; no existing assertion above this point is edited.
+# ---------------------------------------------------------------------------
+
+
+class TestLapidaryIndexZeroSentinelGuard:
+    """Locks the highest-risk seam: index 0 (the first candidate) must never
+    be dropped by a truthiness check on the parsed index.
+
+    The LLM's single most likely answer is "1", which parses to a 0-based
+    index of 0. An orchestrator written as `if not idx: return None` would
+    silently discard this common, successful result. The correct guard is
+    `if idx is None: return None`.
+    """
+
+    def test_llm_index_one_maps_to_zero_based_candidate_zero(self):
+        """LLM content '1' → 1-based index 1 → 0-based idx=0 → candidates[0] returned, not None."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        def fake_fn(**_kw):
+            return {"content": "1", "error": None}
+
+        # Two candidates survive filtering; the LLM picks the first (idx=0).
+        fragment = "esto es una prueba seria. vamos a votar ya"
+        result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
+
+        assert result is not None, (
+            "idx=0 must not be treated as falsy and silently dropped"
+        )
+        assert result == "esto es una prueba seria"
+
+    def test_llm_index_one_among_multiple_candidates_returns_first(self):
+        """With 3+ surviving candidates, LLM content '1' still returns candidates[0]."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        def fake_fn(**_kw):
+            return {"content": "1", "error": None}
+
+        fragment = (
+            "vamos a votar ya. "
+            "esto es una prueba seria. "
+            "nunca vamos a ceder aqui"
+        )
+        result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
+
+        assert result == "vamos a votar ya"
+
+
+class TestLapidaryCandidateFilteringSentinel:
+    """Locks the empty-candidates-list sentinel: [] must short-circuit to
+    None without invoking the LLM ranker at all."""
+
+    def test_all_candidates_filtered_returns_none_without_llm_call(self):
+        """Every clause fails min/max word bounds → candidates=[] → None, no LLM call."""
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        called = []
+
+        def fake_fn(**_kw):
+            called.append(True)
+            return {"content": "1", "error": None}
+
+        # Single-word clauses fail the default min_words=3 bound.
+        fragment = "si. no. tal vez"
+        result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
+
+        assert result is None
+        assert called == [], (
+            "completion_fn must not be invoked when the candidate list is empty"
+        )
+
+
+class TestReorderingGuardReprompt:
+    """Locks the `_choose_reprompt_instruction` elif ordering: a title that
+    matches multiple trigger conditions must always resolve to branch 1
+    (question) — reordering the chain would change which instruction fires.
+    """
+
+    def test_question_and_too_long_title_yields_question_instruction(self, mocker) -> None:
+        """A title that is both >90 chars AND a question must trigger the question rewrite, not the length one."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        long_question = "¿" + "Qué va a pasar con las pensiones y el futuro del país " * 3 + "?"
+        assert len(long_question) > 90, "fixture must exceed TITLE_MAX_CHARS"
+        valid_second = "Sánchez anuncia medidas económicas"
+        captured_prompts: list[str] = []
+        call_count = {"n": 0}
+
+        def _side_effect(system_prompt, user_prompt, **kwargs):
+            call_count["n"] += 1
+            captured_prompts.append(user_prompt)
+            if call_count["n"] == 1:
+                return {"data": {"title": long_question}, "error": None}
+            return {"data": {"title": valid_second}, "error": None}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side_effect,
+        )
+        cfg = _make_cfg()
+        best = {"style": "A", "prompt": "debate"}
+        result = generate_title("Debate summary", best, cfg)
+
+        assert call_count["n"] == 2
+        assert "el título es una pregunta" in captured_prompts[1].lower(), (
+            "Question branch must win over the too-long branch"
+        )
+        assert "demasiado largo" not in captured_prompts[1].lower(), (
+            "Length instruction must NOT fire when the title is also a question"
+        )
+        assert result == valid_second
+
+    def test_all_caps_and_question_title_yields_question_instruction(self, mocker) -> None:
+        """A title that is both ALL-CAPS AND a question must trigger the question rewrite, not the caps one."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        caps_question = "¿QUÉ VA A PASAR CON LAS PENSIONES?"
+        valid_second = "Sánchez anuncia medidas económicas"
+        captured_prompts: list[str] = []
+        call_count = {"n": 0}
+
+        def _side_effect(system_prompt, user_prompt, **kwargs):
+            call_count["n"] += 1
+            captured_prompts.append(user_prompt)
+            if call_count["n"] == 1:
+                return {"data": {"title": caps_question}, "error": None}
+            return {"data": {"title": valid_second}, "error": None}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side_effect,
+        )
+        cfg = _make_cfg()
+        best = {"style": "A", "prompt": "debate"}
+        result = generate_title("Debate summary", best, cfg)
+
+        assert call_count["n"] == 2
+        assert "el título es una pregunta" in captured_prompts[1].lower(), (
+            "Question branch must win over the all-caps branch"
+        )
+        assert "está todo en mayúsculas" not in captured_prompts[1].lower(), (
+            "All-caps instruction must NOT fire when the title is also a question"
+        )
+        assert result == valid_second
+
+    def test_too_long_and_all_caps_title_yields_length_instruction(self, mocker) -> None:
+        """A title that is both >90 chars AND ALL-CAPS must trigger the length
+        rewrite, not the caps one.
+
+        The other two tests pin branch 1 against branches 2 and 3; this pins
+        branch 2 against branch 3, the one remaining unlocked edge of the chain.
+        """
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        long_caps = "SANCHEZ ANUNCIA MEDIDAS ECONOMICAS PARA EL FUTURO DE LAS PENSIONES Y EL EMPLEO EN ESPANA HOY"
+        assert len(long_caps) > 90, "fixture must exceed TITLE_MAX_CHARS"
+        assert long_caps.isupper(), "fixture must be all-caps"
+        valid_second = "Sánchez anuncia medidas económicas"
+        captured_prompts: list[str] = []
+        call_count = {"n": 0}
+
+        def _side_effect(system_prompt, user_prompt, **kwargs):
+            call_count["n"] += 1
+            captured_prompts.append(user_prompt)
+            if call_count["n"] == 1:
+                return {"data": {"title": long_caps}, "error": None}
+            return {"data": {"title": valid_second}, "error": None}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side_effect,
+        )
+        cfg = _make_cfg()
+        best = {"style": "A", "prompt": "debate"}
+        result = generate_title("Debate summary", best, cfg)
+
+        assert call_count["n"] == 2
+        assert "demasiado largo" in captured_prompts[1].lower(), (
+            "Too-long branch must win over the all-caps branch"
+        )
+        assert "está todo en mayúsculas" not in captured_prompts[1].lower(), (
+            "All-caps instruction must NOT fire when the title is also too long"
+        )
+        assert result == valid_second

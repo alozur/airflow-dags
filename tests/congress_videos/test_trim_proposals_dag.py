@@ -182,6 +182,8 @@ class TestProcessTask:
         pg = MagicMock()
         pg.get_connection.return_value.__enter__.return_value = conn
         monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
+        # Probe must be no-op so this data-error test is not affected by infra check
+        monkeypatch.setattr(mod, "check_yamnet_api_health", lambda **k: None)
 
         def fake_run(turn, cursor, **k):
             tid = turn["turn_id"]
@@ -201,3 +203,55 @@ class TestProcessTask:
 
         assert summary == {"processed": 1, "skipped": 2, "proposals": 3}
         conn.commit.assert_called_once()
+
+
+class TestProcessTaskFailFast:
+    """Verify _process_task fails loud on yamnet-api infra errors (issue #179)."""
+
+    def _ti_with(self, turns):
+        ti = MagicMock()
+        ti.xcom_pull.return_value = turns
+        return {"ti": ti}
+
+    def test_infra_down_before_loop_raises_and_skips_turns(self, monkeypatch):
+        """check_yamnet_api_health raises SidecarApiError → _process_task raises;
+        PostgresConnection is never constructed and run_turn_proposals is never called."""
+        from congress_videos.modules.sidecar_api_error import SidecarApiError
+        mod = _fresh()
+
+        monkeypatch.setattr(
+            mod, "check_yamnet_api_health",
+            lambda **k: (_ for _ in ()).throw(SidecarApiError("yamnet-api unreachable")),
+        )
+        pg_ctor_mock = MagicMock()
+        monkeypatch.setattr(mod, "PostgresConnection", pg_ctor_mock)
+        run_turn_proposals_mock = MagicMock()
+        monkeypatch.setattr(mod, "run_turn_proposals", run_turn_proposals_mock)
+
+        with pytest.raises(SidecarApiError):
+            mod._process_task(**self._ti_with([{"turn_id": 1}]))
+
+        pg_ctor_mock.assert_not_called()
+        run_turn_proposals_mock.assert_not_called()
+
+    def test_midrun_sidecar_error_fails_task_not_skips(self, monkeypatch):
+        """Probe ok, run_turn_proposals raises SidecarApiError for a turn →
+        _process_task raises (not skips); conn.commit is never reached."""
+        from congress_videos.modules.sidecar_api_error import SidecarApiError
+        mod = _fresh()
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = MagicMock()
+        pg = MagicMock()
+        pg.get_connection.return_value.__enter__.return_value = conn
+        monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
+        monkeypatch.setattr(mod, "check_yamnet_api_health", lambda **k: None)
+
+        def raising_run(turn, cursor, **k):
+            raise SidecarApiError("yamnet-api dropped connection mid-run")
+
+        monkeypatch.setattr(mod, "run_turn_proposals", raising_run)
+
+        with pytest.raises(SidecarApiError):
+            mod._process_task(**self._ti_with([{"turn_id": 5}]))
+
+        conn.commit.assert_not_called()
