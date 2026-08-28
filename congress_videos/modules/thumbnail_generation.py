@@ -15,6 +15,7 @@ No direct OpenAI SDK calls — all AI calls go through
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import re
 from pathlib import Path
@@ -107,6 +108,84 @@ _LAPIDARY_STOP_WORDS = frozenset(
 _LAPIDARY_SPLIT_RE = re.compile(r"[.!?;,]\s+")
 
 
+def _extract_candidate_clauses(
+    srt_fragment: str, max_chars: int, min_words: int, max_words: int
+) -> list[str]:
+    """Split srt_fragment on clause boundaries and filter to lapidary candidates.
+
+    Filters by word count, character length, leading Spanish stop-words, and
+    case-insensitive de-duplication. Returns candidates in original order.
+    """
+    # 1. Split on clause boundaries.
+    clauses = _LAPIDARY_SPLIT_RE.split(srt_fragment)
+
+    # 2. Filter by word count and character length.
+    candidates: list[str] = []
+    seen_lower: set[str] = set()
+    for clause in clauses:
+        clause = clause.strip()
+        if not clause:
+            continue
+        words = clause.split()
+        if not (min_words <= len(words) <= max_words):
+            continue
+        if len(clause) > max_chars:
+            continue
+        # 3. Discard when first token is a Spanish stop-word (case-insensitive).
+        if words[0].lower() in _LAPIDARY_STOP_WORDS:
+            continue
+        # 4. Deduplicate case-insensitively.
+        lower = clause.lower()
+        if lower in seen_lower:
+            continue
+        seen_lower.add(lower)
+        candidates.append(clause)
+
+    return candidates
+
+
+def _rank_candidates_via_llm(candidates: list[str], completion_fn) -> str:
+    """Build the numbered candidate prompt and return the LLM's stripped content."""
+    # 6. Build numbered list and call the LLM ranker.
+    numbered = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(candidates))
+    user_prompt = LAPIDARY_RANKING_USER_TEMPLATE.format(candidates=numbered)
+
+    response = completion_fn(
+        system_prompt=LAPIDARY_RANKING_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        model="gpt-4o-mini",
+        temperature=0.2,
+        max_tokens=5,
+    )
+
+    content: str = (response or {}).get("content") or ""
+    return content.strip()
+
+
+def _parse_ranked_index(content: str, candidate_count: int) -> int | None:
+    """Parse a 1-based ranked index out of the LLM's content, 0-based and bounds-checked.
+
+    Returns None on "NONE", unparseable content, or an out-of-range index.
+    """
+    if content.upper() == "NONE":
+        return None
+
+    # 7. Parse 1-based index.
+    match = re.search(r"\d+", content)
+    if not match:
+        return None
+
+    try:
+        idx = int(match.group()) - 1
+    except (ValueError, AttributeError):
+        return None
+
+    if idx < 0 or idx >= candidate_count:
+        return None
+
+    return idx
+
+
 def extract_lapidary_quote(
     srt_fragment: str,
     max_chars: int = 40,
@@ -141,64 +220,13 @@ def extract_lapidary_quote(
     if not srt_fragment:
         return None
 
-    # 1. Split on clause boundaries.
-    clauses = _LAPIDARY_SPLIT_RE.split(srt_fragment)
-
-    # 2. Filter by word count and character length.
-    candidates: list[str] = []
-    seen_lower: set[str] = set()
-    for clause in clauses:
-        clause = clause.strip()
-        if not clause:
-            continue
-        words = clause.split()
-        if not (min_words <= len(words) <= max_words):
-            continue
-        if len(clause) > max_chars:
-            continue
-        # 3. Discard when first token is a Spanish stop-word (case-insensitive).
-        if words[0].lower() in _LAPIDARY_STOP_WORDS:
-            continue
-        # 4. Deduplicate case-insensitively.
-        lower = clause.lower()
-        if lower in seen_lower:
-            continue
-        seen_lower.add(lower)
-        candidates.append(clause)
-
-    # 5. No candidates → return None without calling the LLM.
+    candidates = _extract_candidate_clauses(srt_fragment, max_chars, min_words, max_words)
     if not candidates:
         return None
 
-    # 6. Build numbered list and call the LLM ranker.
-    numbered = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(candidates))
-    user_prompt = LAPIDARY_RANKING_USER_TEMPLATE.format(candidates=numbered)
-
-    response = completion_fn(
-        system_prompt=LAPIDARY_RANKING_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        model="gpt-4o-mini",
-        temperature=0.2,
-        max_tokens=5,
-    )
-
-    content: str = (response or {}).get("content") or ""
-    content = content.strip()
-
-    if content.upper() == "NONE":
-        return None
-
-    # 7. Parse 1-based index.
-    match = re.search(r"\d+", content)
-    if not match:
-        return None
-
-    try:
-        idx = int(match.group()) - 1
-    except (ValueError, AttributeError):
-        return None
-
-    if idx < 0 or idx >= len(candidates):
+    content = _rank_candidates_via_llm(candidates, completion_fn)
+    idx = _parse_ranked_index(content, len(candidates))
+    if idx is None:
         return None
 
     return candidates[idx]
@@ -229,6 +257,78 @@ def _real_speakers(key_speakers: list | None) -> list[str]:
         if name.lower() in SPEAKER_PLACEHOLDERS:
             continue
         result.append(name)
+    return result
+
+
+def _build_art_direction_prompt(
+    debate_summary: str,
+    previous_brief: dict | None,
+    sibling_briefs: list[str] | None,
+    extra_instruction: str = "",
+) -> str:
+    """Build the art-direction user prompt, injecting retry/sibling/extra blocks."""
+    user_prompt = ART_DIRECTION_USER_PROMPT_TEMPLATE.format(
+        debate_summary=debate_summary
+    )
+    if previous_brief is not None:
+        retry_instruction = ART_DIRECTION_RETRY_INSTRUCTION.format(
+            previous_brief_json=json.dumps(previous_brief, ensure_ascii=False)
+        )
+        user_prompt += f"\n\n{retry_instruction}"
+    if sibling_briefs:
+        sibling_list = "\n".join(f"- {b}" for b in sibling_briefs)
+        sibling_block = ART_DIRECTION_SIBLING_INSTRUCTION.format(
+            sibling_list=sibling_list
+        )
+        user_prompt += f"\n\n{sibling_block}"
+    if extra_instruction:
+        user_prompt += f"\n\nINSTRUCCIÓN ADICIONAL: {extra_instruction}"
+    return user_prompt
+
+
+def _call_art_direction_api(user_prompt: str) -> Optional[dict]:
+    """Call generate_json_completion and return validated brief data, or None."""
+    try:
+        result = generate_json_completion(
+            system_prompt=ART_DIRECTION_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            model="gpt-4o-mini",
+            max_tokens=400,
+            temperature=0.7,
+        )
+    except Exception as exc:
+        logger.warning("art_direct: generate_json_completion raised: %s", exc)
+        return None
+
+    if result.get("error"):
+        logger.warning("art_direct: API error: %s", result["error"])
+        return None
+
+    data = result.get("data") or {}
+    if not all(key in data for key in _ART_BRIEF_REQUIRED_KEYS):
+        return None
+    return data
+
+
+def _finalize_brief(brief: dict, srt_fragment: str | None) -> dict:
+    """Fill defaults, coerce archetype, strip 'http', and apply the SRT lapidary override.
+
+    Takes ownership of ``brief`` via setdefault/__setitem__ — callers must not
+    reference ``brief`` after this call.
+    """
+    brief.setdefault("logo", "")
+    brief["archetype"] = _coerce_archetype(brief.get("archetype"))
+    result = {
+        key: value.replace("http", "") if isinstance(value, str) else value
+        for key, value in brief.items()
+    }
+
+    # SRT lapidary override: replace the invented text with a verbatim quote.
+    if srt_fragment is not None:
+        quote = extract_lapidary_quote(srt_fragment)
+        if quote is not None:
+            result["text"] = quote
+
     return result
 
 
@@ -264,52 +364,19 @@ def art_direct(
             with the verbatim SRT quote.  ``None`` (default) leaves the
             existing invented-from-summary flow fully unchanged.
     """
-    import json
-
-    def _call_api(extra_instruction: str = "") -> Optional[dict]:
-        user_prompt = ART_DIRECTION_USER_PROMPT_TEMPLATE.format(
-            debate_summary=debate_summary
-        )
-        if previous_brief is not None:
-            retry_instruction = ART_DIRECTION_RETRY_INSTRUCTION.format(
-                previous_brief_json=json.dumps(previous_brief, ensure_ascii=False)
-            )
-            user_prompt += f"\n\n{retry_instruction}"
-        if sibling_briefs:
-            sibling_list = "\n".join(f"- {b}" for b in sibling_briefs)
-            sibling_block = ART_DIRECTION_SIBLING_INSTRUCTION.format(
-                sibling_list=sibling_list
-            )
-            user_prompt += f"\n\n{sibling_block}"
-        if extra_instruction:
-            user_prompt += f"\n\nINSTRUCCIÓN ADICIONAL: {extra_instruction}"
-        try:
-            result = generate_json_completion(
-                system_prompt=ART_DIRECTION_SYSTEM_PROMPT,
-                user_prompt=user_prompt,
-                model="gpt-4o-mini",
-                max_tokens=400,
-                temperature=0.7,
-            )
-        except Exception as exc:
-            logger.warning("art_direct: generate_json_completion raised: %s", exc)
-            return None
-
-        if result.get("error"):
-            logger.warning("art_direct: API error: %s", result["error"])
-            return None
-
-        data = result.get("data") or {}
-        if not all(key in data for key in _ART_BRIEF_REQUIRED_KEYS):
-            return None
-        return data
-
-    brief = _call_api()
+    brief = _call_art_direction_api(
+        _build_art_direction_prompt(debate_summary, previous_brief, sibling_briefs)
+    )
     if brief is None:
-        brief = _call_api(
-            extra_instruction=(
-                "Asegúrate de devolver un JSON con EXACTAMENTE los campos: "
-                "text, background, person, mood."
+        brief = _call_art_direction_api(
+            _build_art_direction_prompt(
+                debate_summary,
+                previous_brief,
+                sibling_briefs,
+                extra_instruction=(
+                    "Asegúrate de devolver un JSON con EXACTAMENTE los campos: "
+                    "text, background, person, mood."
+                ),
             )
         )
 
@@ -319,20 +386,7 @@ def art_direct(
         )
         brief = dict(_DEFAULT_ART_BRIEF)
 
-    brief.setdefault("logo", "")
-    brief["archetype"] = _coerce_archetype(brief.get("archetype"))
-    result = {
-        key: value.replace("http", "") if isinstance(value, str) else value
-        for key, value in brief.items()
-    }
-
-    # SRT lapidary override: replace the invented text with a verbatim quote.
-    if srt_fragment is not None:
-        quote = extract_lapidary_quote(srt_fragment)
-        if quote is not None:
-            result["text"] = quote
-
-    return result
+    return _finalize_brief(brief, srt_fragment)
 
 
 def resolve_participant_photo(slug: str, cfg: dict) -> dict:
@@ -435,6 +489,123 @@ def choose_best_option(options: list[dict]) -> dict:
     return {**best, "is_chosen": True}
 
 
+def _is_all_caps_title(title: str) -> bool:
+    """True when the title has letters but none of them are lowercase.
+
+    Party acronyms alone (e.g. "PSOE") do not false-positive a real
+    title because a normally-cased title always contains lowercase
+    letters, whereas an all-caps title has none.
+    """
+    return any(c.isalpha() for c in title) and not any(c.islower() for c in title)
+
+
+def _is_valid_title(title: str) -> bool:
+    """True when title passes the length/emoji/forbidden-chars/caps/question checks."""
+    if len(title) > TITLE_MAX_CHARS:
+        return False
+    if _EMOJI_RE.search(title):
+        return False
+    if _FORBIDDEN_CHARS_RE.search(title):
+        return False
+    if _is_all_caps_title(title):
+        return False
+    if title.strip().startswith("¿") or "?" in title:
+        return False
+    return True
+
+
+def _sanitise_title(title: str) -> str:
+    """Strip emojis, forbidden chars, and question marks, then truncate to TITLE_MAX_CHARS."""
+    cleaned = _EMOJI_RE.sub("", title)
+    cleaned = _FORBIDDEN_CHARS_RE.sub("", cleaned)
+    cleaned = cleaned.replace("¿", "").replace("?", "")
+    cleaned = cleaned.strip().strip('"').strip("'")
+    return cleaned[:TITLE_MAX_CHARS]
+
+
+def _build_title_prompt(
+    summary: str,
+    best: dict,
+    sibling_titles: list[str] | None,
+    key_speakers: list | None,
+    extra_instruction: str = "",
+) -> str:
+    """Build the title user prompt, injecting sibling/speaker/extra instruction blocks."""
+    style_text = best.get("style", "")
+    prompt_text = best.get("prompt", "")
+
+    user_prompt = THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE.format(
+        summary=summary,
+        style=style_text,
+        prompt=prompt_text,
+    )
+    if sibling_titles:
+        sibling_list = "\n".join(f"- {t}" for t in sibling_titles)
+        sibling_block = THUMBNAIL_TITLE_SIBLING_INSTRUCTION.format(
+            sibling_list=sibling_list
+        )
+        user_prompt += f"\n\n{sibling_block}"
+    real = _real_speakers(key_speakers)
+    if real:
+        user_prompt += "\n\n" + THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION.format(
+            speaker_list=", ".join(real)
+        )
+    else:
+        # Falsy key_speakers (None / []) and all-placeholder lists both map
+        # to the nameless format — this is the hard guarantee that prevents
+        # the model from hallucinating politician names when no real speaker
+        # is identified.
+        user_prompt += f"\n\n{THUMBNAIL_TITLE_NAMELESS_INSTRUCTION}"
+    if extra_instruction:
+        user_prompt += f"\n\nINSTRUCCIÓN ADICIONAL: {extra_instruction}"
+    return user_prompt
+
+
+def _request_title(user_prompt: str) -> Optional[str]:
+    """Call generate_json_completion and return the stripped title, or None."""
+    result = generate_json_completion(
+        system_prompt=THUMBNAIL_TITLE_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        model="gpt-4o-mini",
+        max_tokens=120,
+        temperature=0.7,
+    )
+    if result.get("error"):
+        logger.warning("generate_title: OpenAI error: %s", result["error"])
+        return None
+    data = result.get("data") or {}
+    raw = data.get("title", "")
+    return raw.strip().strip('"').strip("'") if raw else None
+
+
+def _choose_reprompt_instruction(title: str | None) -> str:
+    """Select the re-prompt instruction for an invalid first title.
+
+    Branch order is load-bearing: question > too-long > all-caps > default
+    (forbidden characters / falsy title). Do not reorder.
+    """
+    # Determine re-prompt instruction
+    if title and (title.strip().startswith("¿") or "?" in title):
+        instruction = (
+            "El título es una pregunta. Reescríbelo como titular declarativo de noticias: "
+            "[Nombre] + verbo + complemento, sin signos de interrogación."
+        )
+    elif title and len(title) > TITLE_MAX_CHARS:
+        instruction = f"El título es demasiado largo. Máximo {TITLE_MAX_CHARS} caracteres."
+    elif title and _is_all_caps_title(title):
+        instruction = (
+            "El título está todo en mayúsculas. Usa capitalización normal en "
+            "español (solo la primera letra y nombres propios en mayúscula), "
+            "respetando las siglas de partidos (PSOE, PP, VOX)."
+        )
+    else:
+        instruction = (
+            "El título contiene caracteres no permitidos (emojis, #, @, |, ~, ^). "
+            "Elimínalos y devuelve un título limpio."
+        )
+    return instruction
+
+
 def generate_title(
     summary: str,
     best: dict,
@@ -464,116 +635,26 @@ def generate_title(
     Returns:
         A YouTube title string (≤90 chars, no emojis, no forbidden chars, no question marks).
     """
-
-    def _is_all_caps(title: str) -> bool:
-        """True when the title has letters but none of them are lowercase.
-
-        Party acronyms alone (e.g. "PSOE") do not false-positive a real
-        title because a normally-cased title always contains lowercase
-        letters, whereas an all-caps title has none.
-        """
-        return any(c.isalpha() for c in title) and not any(
-            c.islower() for c in title
-        )
-
-    def _is_valid(title: str) -> bool:
-        if len(title) > TITLE_MAX_CHARS:
-            return False
-        if _EMOJI_RE.search(title):
-            return False
-        if _FORBIDDEN_CHARS_RE.search(title):
-            return False
-        if _is_all_caps(title):
-            return False
-        if title.strip().startswith("¿") or "?" in title:
-            return False
-        return True
-
-    def _sanitise(title: str) -> str:
-        """Strip emojis, forbidden chars, and question marks, then truncate to TITLE_MAX_CHARS."""
-        cleaned = _EMOJI_RE.sub("", title)
-        cleaned = _FORBIDDEN_CHARS_RE.sub("", cleaned)
-        cleaned = cleaned.replace("¿", "").replace("?", "")
-        cleaned = cleaned.strip().strip('"').strip("'")
-        return cleaned[:TITLE_MAX_CHARS]
-
-    def _call_openai(extra_instruction: str = "") -> Optional[str]:
-        style_text = best.get("style", "")
-        prompt_text = best.get("prompt", "")
-
-        user_prompt = THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE.format(
-            summary=summary,
-            style=style_text,
-            prompt=prompt_text,
-        )
-        if sibling_titles:
-            sibling_list = "\n".join(f"- {t}" for t in sibling_titles)
-            sibling_block = THUMBNAIL_TITLE_SIBLING_INSTRUCTION.format(
-                sibling_list=sibling_list
-            )
-            user_prompt += f"\n\n{sibling_block}"
-        real = _real_speakers(key_speakers)
-        if real:
-            user_prompt += "\n\n" + THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION.format(
-                speaker_list=", ".join(real)
-            )
-        else:
-            # Falsy key_speakers (None / []) and all-placeholder lists both map
-            # to the nameless format — this is the hard guarantee that prevents
-            # the model from hallucinating politician names when no real speaker
-            # is identified.
-            user_prompt += f"\n\n{THUMBNAIL_TITLE_NAMELESS_INSTRUCTION}"
-        if extra_instruction:
-            user_prompt += f"\n\nINSTRUCCIÓN ADICIONAL: {extra_instruction}"
-
-        result = generate_json_completion(
-            system_prompt=THUMBNAIL_TITLE_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            model="gpt-4o-mini",
-            max_tokens=120,
-            temperature=0.7,
-        )
-        if result.get("error"):
-            logger.warning("generate_title: OpenAI error: %s", result["error"])
-            return None
-        data = result.get("data") or {}
-        raw = data.get("title", "")
-        return raw.strip().strip('"').strip("'") if raw else None
-
     # First attempt
-    title = _call_openai()
+    title = _request_title(_build_title_prompt(summary, best, sibling_titles, key_speakers))
 
-    if title and _is_valid(title):
+    if title and _is_valid_title(title):
         return title
 
-    # Determine re-prompt instruction
-    if title and (title.strip().startswith("¿") or "?" in title):
-        instruction = (
-            "El título es una pregunta. Reescríbelo como titular declarativo de noticias: "
-            "[Nombre] + verbo + complemento, sin signos de interrogación."
-        )
-    elif title and len(title) > TITLE_MAX_CHARS:
-        instruction = f"El título es demasiado largo. Máximo {TITLE_MAX_CHARS} caracteres."
-    elif title and _is_all_caps(title):
-        instruction = (
-            "El título está todo en mayúsculas. Usa capitalización normal en "
-            "español (solo la primera letra y nombres propios en mayúscula), "
-            "respetando las siglas de partidos (PSOE, PP, VOX)."
-        )
-    else:
-        instruction = (
-            "El título contiene caracteres no permitidos (emojis, #, @, |, ~, ^). "
-            "Elimínalos y devuelve un título limpio."
-        )
+    instruction = _choose_reprompt_instruction(title)
 
     # Second attempt
-    second = _call_openai(extra_instruction=instruction)
-    if second and _is_valid(second):
+    second = _request_title(
+        _build_title_prompt(
+            summary, best, sibling_titles, key_speakers, extra_instruction=instruction
+        )
+    )
+    if second and _is_valid_title(second):
         return second
 
     # Fallback: sanitise whatever we have
     candidate = second or title or ""
-    sanitised = _sanitise(candidate)
+    sanitised = _sanitise_title(candidate)
     logger.warning(
         "generate_title: both OpenAI attempts returned invalid titles — "
         "sanitised fallback applied: %r (original: %r)",
