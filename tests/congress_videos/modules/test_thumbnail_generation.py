@@ -3316,7 +3316,7 @@ class TestReorderingGuardReprompt:
         result = generate_title("Debate summary", best, cfg)
 
         assert call_count["n"] == 2
-        assert "interrogaci" in captured_prompts[1].lower(), (
+        assert "el título es una pregunta" in captured_prompts[1].lower(), (
             "Question branch must win over the too-long branch"
         )
         assert "demasiado largo" not in captured_prompts[1].lower(), (
@@ -3349,10 +3349,50 @@ class TestReorderingGuardReprompt:
         result = generate_title("Debate summary", best, cfg)
 
         assert call_count["n"] == 2
-        assert "interrogaci" in captured_prompts[1].lower(), (
+        assert "el título es una pregunta" in captured_prompts[1].lower(), (
             "Question branch must win over the all-caps branch"
         )
         assert "está todo en mayúsculas" not in captured_prompts[1].lower(), (
             "All-caps instruction must NOT fire when the title is also a question"
+        )
+        assert result == valid_second
+
+    def test_too_long_and_all_caps_title_yields_length_instruction(self, mocker) -> None:
+        """A title that is both >90 chars AND ALL-CAPS must trigger the length
+        rewrite, not the caps one.
+
+        The other two tests pin branch 1 against branches 2 and 3; this pins
+        branch 2 against branch 3, the one remaining unlocked edge of the chain.
+        """
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        long_caps = "SANCHEZ ANUNCIA MEDIDAS ECONOMICAS PARA EL FUTURO DE LAS PENSIONES Y EL EMPLEO EN ESPANA HOY"
+        assert len(long_caps) > 90, "fixture must exceed TITLE_MAX_CHARS"
+        assert long_caps.isupper(), "fixture must be all-caps"
+        valid_second = "Sánchez anuncia medidas económicas"
+        captured_prompts: list[str] = []
+        call_count = {"n": 0}
+
+        def _side_effect(system_prompt, user_prompt, **kwargs):
+            call_count["n"] += 1
+            captured_prompts.append(user_prompt)
+            if call_count["n"] == 1:
+                return {"data": {"title": long_caps}, "error": None}
+            return {"data": {"title": valid_second}, "error": None}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side_effect,
+        )
+        cfg = _make_cfg()
+        best = {"style": "A", "prompt": "debate"}
+        result = generate_title("Debate summary", best, cfg)
+
+        assert call_count["n"] == 2
+        assert "demasiado largo" in captured_prompts[1].lower(), (
+            "Too-long branch must win over the all-caps branch"
+        )
+        assert "está todo en mayúsculas" not in captured_prompts[1].lower(), (
+            "All-caps instruction must NOT fire when the title is also too long"
         )
         assert result == valid_second
