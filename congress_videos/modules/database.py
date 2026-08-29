@@ -60,6 +60,47 @@ def filter_shorts_by_source_cooldown(
     return eligible
 
 
+def pending_shorts_candidate_sql(shorts_table: str, chapters_table: str) -> str:
+    """Candidate query for get_pending_shorts. Params: (tier1_limit, min_virality_score, row_limit).
+
+    Ranks each chapter's downloaded, non-abandoned clips (uploaded and
+    pending alike) by virality score, then caps how many of them can be
+    Tier 1 per chapter. Only after tiers are computed does the outer query
+    filter down to the still-pending, upload-eligible rows.
+    """
+    return f"""
+                    WITH ranked AS (
+                        SELECT
+                            vs.*,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY vs.chapter_id
+                                ORDER BY vs.reap_virality_score DESC NULLS LAST,
+                                         vs.id ASC
+                            ) AS chapter_rank
+                        FROM {shorts_table} vs
+                        WHERE vs.reap_status = 'downloaded'
+                          AND vs.is_upload_abandoned = FALSE
+                    )
+                    SELECT
+                        ranked.*,
+                        CASE WHEN ranked.chapter_rank <= %s THEN 1 ELSE 2 END AS tier,
+                        vc.video_id
+                    FROM ranked
+                    JOIN {chapters_table} vc ON vc.chapter_id = ranked.chapter_id
+                    WHERE ranked.is_uploaded = FALSE
+                      AND ranked.is_upload_abandoned = FALSE
+                      AND ranked.local_file_path IS NOT NULL
+                      AND ranked.reap_status = 'downloaded'
+                      AND (ranked.reap_virality_score >= %s OR ranked.reap_virality_score IS NULL)
+                      AND vc.youtube_upload_date IS NOT NULL
+                    ORDER BY tier ASC,
+                             vc.youtube_upload_date DESC NULLS LAST,
+                             ranked.reap_virality_score DESC NULLS LAST,
+                             ranked.id ASC
+                    LIMIT %s
+                """
+
+
 class CongressionalVideoDB:
     """Database operations for congressional video management"""
 
@@ -711,10 +752,26 @@ class CongressionalVideoDB:
         Get downloaded Shorts clips that are ready for YouTube upload.
 
         Only returns clips whose parent long-form video (chapter) is already
-        uploaded to YouTube. Clips are ordered by the chapter's YouTube upload
-        date descending (most recently uploaded long-form video first), then by
-        virality score descending as a tie-breaker within the same long-form
-        video. Only clips with a local file present are returned.
+        uploaded to YouTube. Each chapter's downloaded, non-abandoned clips
+        are ranked by virality score and capped at SHORTS_TIER1_PER_CHAPTER_LIMIT
+        Tier-1 slots; the rest fall to Tier 2. Tier is the PRIMARY sort key,
+        then the chapter's YouTube upload date descending (most recently
+        uploaded long-form video first), then virality score descending as a
+        tie-breaker within the same tier and long-form video. Only clips with
+        a local file present are returned.
+
+        The per-chapter ranking universe deliberately INCLUDES clips that are
+        already uploaded (`is_uploaded = TRUE`): an upload permanently
+        consumes its chapter's Tier-1 slot. Ranking pending-only clips would
+        make the cap inert, since ranks would recompute after every upload
+        and the chapter would perpetually re-present 3 fresh Tier-1
+        candidates, draining its whole batch before other chapters get a
+        turn — the exact bug this method fixes. `local_file_path` and
+        `min_virality_score` are applied only in the OUTER query, after tiers
+        are computed, so tier assignment stays independent of the runtime
+        virality threshold. Tier-2 rows are never abandoned, deleted, or
+        hard-filtered; they remain selectable as a fallback whenever the
+        fetched window has no Tier-1 row left.
 
         Additionally applies a per-source-video cool-down: a candidate is
         excluded when fewer than SHORTS_SOURCE_VIDEO_COOLDOWN shorts from
@@ -732,9 +789,9 @@ class CongressionalVideoDB:
             min_virality_score: Minimum virality score threshold (default 0.0)
 
         Returns:
-            List of video_shorts records (each including a `video_id` key for
-            its parent source video) ordered by parent chapter
-            youtube_upload_date DESC, then reap_virality_score DESC
+            List of video_shorts records (each including `video_id`,
+            `chapter_rank`, and `tier` keys) ordered by tier ASC, then parent
+            chapter youtube_upload_date DESC, then reap_virality_score DESC
         """
         shorts_table = self.pg_conn.get_qualified_table('video_shorts')
         chapters_table = self.pg_conn.get_qualified_table('video_chapters')
@@ -757,20 +814,10 @@ class CongressionalVideoDB:
                 """, (SHORTS_UPLOAD_HISTORY_LIMIT,))
                 upload_history = cur.fetchall()
 
-                cur.execute(f"""
-                    SELECT vs.*, vc.video_id
-                    FROM {shorts_table} vs
-                    JOIN {chapters_table} vc ON vc.chapter_id = vs.chapter_id
-                    WHERE vs.is_uploaded = FALSE
-                      AND vs.is_upload_abandoned = FALSE
-                      AND vs.local_file_path IS NOT NULL
-                      AND vs.reap_status = 'downloaded'
-                      AND (vs.reap_virality_score >= %s OR vs.reap_virality_score IS NULL)
-                      AND vc.youtube_upload_date IS NOT NULL
-                    ORDER BY vc.youtube_upload_date DESC NULLS LAST,
-                             vs.reap_virality_score DESC NULLS LAST
-                    LIMIT %s
-                """, (min_virality_score, SHORTS_PENDING_CANDIDATE_LIMIT))
+                cur.execute(
+                    pending_shorts_candidate_sql(shorts_table, chapters_table),
+                    (SHORTS_TIER1_PER_CHAPTER_LIMIT, min_virality_score, SHORTS_PENDING_CANDIDATE_LIMIT),
+                )
                 candidates = cur.fetchall()
 
                 eligible = filter_shorts_by_source_cooldown(candidates, upload_history)
