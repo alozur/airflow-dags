@@ -8,6 +8,7 @@ import pytest
 
 from congress_videos.modules.database import (
     SHORTS_PENDING_CANDIDATE_LIMIT,
+    SHORTS_TIER1_PER_CHAPTER_LIMIT,
     SHORTS_UPLOAD_HISTORY_LIMIT,
     filter_shorts_by_source_cooldown,
 )
@@ -483,6 +484,112 @@ class TestGetPendingShorts:
         assert result == [{"id": 2, "video_id": "cold"}]
         info_messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
         assert any("blocked 1" in m.lower() for m in info_messages)
+
+    def test_candidate_query_ranks_clips_per_chapter(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.side_effect = [[], []]
+
+        instance.get_pending_shorts()
+
+        candidate_sql = mock_cursor.execute.call_args_list[1][0][0]
+        assert "ROW_NUMBER() OVER" in candidate_sql
+        assert "PARTITION BY vs.chapter_id" in candidate_sql
+        assert "AS chapter_rank" in candidate_sql
+
+    def test_tier1_limit_is_first_candidate_param(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.side_effect = [[], []]
+
+        instance.get_pending_shorts(min_virality_score=0.6)
+
+        candidate_params = mock_cursor.execute.call_args_list[1][0][1]
+        assert candidate_params == (
+            SHORTS_TIER1_PER_CHAPTER_LIMIT,
+            0.6,
+            SHORTS_PENDING_CANDIDATE_LIMIT,
+        )
+
+    def test_rank_universe_includes_uploaded_clips(self, db):
+        """The ranking CTE must not filter on is_uploaded, local_file_path, or
+        the virality threshold — those apply only in the outer query, AFTER
+        tiers are computed (R4/R8). Ranking pending-only would make the
+        per-chapter cap inert: ranks recompute after each upload and the
+        chapter perpetually re-presents 3 fresh Tier-1 clips."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.side_effect = [[], []]
+
+        instance.get_pending_shorts()
+
+        candidate_sql = mock_cursor.execute.call_args_list[1][0][0]
+        cte_sql = candidate_sql.split("FROM ranked", 1)[0]
+        assert "is_uploaded" not in cte_sql
+        assert "local_file_path" not in cte_sql
+        assert "reap_virality_score >=" not in cte_sql
+
+    def test_tier_is_primary_sort_key(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.side_effect = [[], []]
+
+        instance.get_pending_shorts()
+
+        candidate_sql = mock_cursor.execute.call_args_list[1][0][0]
+        order_by_clause = candidate_sql[candidate_sql.rfind("ORDER BY"):]
+        assert order_by_clause.index("tier") < order_by_clause.index("youtube_upload_date")
+
+    def test_outer_where_predicates_unchanged(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.side_effect = [[], []]
+
+        instance.get_pending_shorts()
+
+        candidate_sql = mock_cursor.execute.call_args_list[1][0][0]
+        outer_sql = candidate_sql.split("FROM ranked", 1)[1]
+        predicates = [
+            "is_uploaded = FALSE",
+            "is_upload_abandoned = FALSE",
+            "local_file_path IS NOT NULL",
+            "reap_status = 'downloaded'",
+            "reap_virality_score >= %s OR",
+            "youtube_upload_date IS NOT NULL",
+        ]
+        for predicate in predicates:
+            assert predicate in outer_sql
+
+    def test_tier2_row_returned_when_no_tier1_available(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.side_effect = [
+            [],
+            [{"id": 1, "video_id": "A", "tier": 2}],
+        ]
+
+        result = instance.get_pending_shorts(limit=1)
+
+        assert result == [{"id": 1, "video_id": "A", "tier": 2}]
+
+    def test_python_preserves_database_tier_order(self, db):
+        instance, mock_cursor = db
+        candidates = [
+            {"id": 1, "video_id": "A", "tier": 1},
+            {"id": 2, "video_id": "B", "tier": 2},
+        ]
+        mock_cursor.fetchall.side_effect = [[], candidates]
+
+        result = instance.get_pending_shorts(limit=1)
+
+        assert result == [candidates[0]]
+
+    def test_strict_skip_preserved_with_tiers(self, db, caplog):
+        instance, mock_cursor = db
+        history = [{"video_id": "V"}]
+        candidates = [{"id": 1, "video_id": "V", "tier": 1}]
+        mock_cursor.fetchall.side_effect = [history, candidates]
+
+        with caplog.at_level(logging.INFO, logger="congress_videos.modules.database"):
+            result = instance.get_pending_shorts()
+
+        assert result == []
+        info_messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        assert any("cooling down" in m.lower() for m in info_messages)
 
 
 # --------------------------------------------------------------------------- #
