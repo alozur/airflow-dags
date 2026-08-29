@@ -15,6 +15,7 @@ SHORTS_UPLOAD_ABANDON_THRESHOLD = 3   # 3rd recorded failure excludes the short
 SHORTS_SOURCE_VIDEO_COOLDOWN = 5      # other-video upload events before V is eligible again
 SHORTS_UPLOAD_HISTORY_LIMIT = 50      # bounded upload-history window
 SHORTS_PENDING_CANDIDATE_LIMIT = 200  # candidate over-fetch before the Python cool-down filter
+SHORTS_TIER1_PER_CHAPTER_LIMIT = 3    # Tier-1 upload slots per source chapter
 
 
 def filter_shorts_by_source_cooldown(
