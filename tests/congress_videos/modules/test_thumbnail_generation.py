@@ -3396,3 +3396,55 @@ class TestReorderingGuardReprompt:
             "All-caps instruction must NOT fire when the title is also too long"
         )
         assert result == valid_second
+
+
+# ---------------------------------------------------------------------------
+# Issue #279: resolved-photo grounding exception in art_direct
+# ---------------------------------------------------------------------------
+
+
+class TestResolvedPhotoInstructionConstant:
+    """Phase 1: ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION constant contract.
+
+    This is a pure structural check (constant definition) — triangulation is
+    limited to two format() calls with different names, since there is no
+    branching logic to exercise.
+    """
+
+    def test_constant_exists_and_is_a_string(self) -> None:
+        """ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION must exist as a non-empty string."""
+        from congress_videos.config.ai_prompts import (
+            ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION,
+        )
+
+        assert isinstance(ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION, str)
+        assert ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION.strip()
+
+    def test_constant_is_format_able_with_speaker_name(self) -> None:
+        """The constant must accept a speaker_name placeholder via str.format."""
+        from congress_videos.config.ai_prompts import (
+            ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION,
+        )
+
+        formatted = ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION.format(
+            speaker_name="Viviane Ogou i Corbi"
+        )
+        assert "Viviane Ogou i Corbi" in formatted
+
+    def test_constant_formats_a_different_name_too(self) -> None:
+        """Triangulation: a second, different name must also interpolate correctly."""
+        from congress_videos.config.ai_prompts import (
+            ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION,
+        )
+
+        formatted = ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION.format(
+            speaker_name="Cervera Pinar"
+        )
+        assert "Cervera Pinar" in formatted
+
+    def test_system_prompt_unchanged_by_new_constant(self) -> None:
+        """Adding the new constant must not alter ART_DIRECTION_SYSTEM_PROMPT."""
+        from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+
+        assert "nunca el ponente" in ART_DIRECTION_SYSTEM_PROMPT
+        assert "sexo gramatical de los ponentes" in ART_DIRECTION_SYSTEM_PROMPT
