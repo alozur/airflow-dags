@@ -3448,3 +3448,103 @@ class TestResolvedPhotoInstructionConstant:
 
         assert "nunca el ponente" in ART_DIRECTION_SYSTEM_PROMPT
         assert "sexo gramatical de los ponentes" in ART_DIRECTION_SYSTEM_PROMPT
+
+
+class TestResolvedPhotoSpeakerName:
+    """Phase 2: resolved_photo_speaker_name(photo_data, key_speakers) activation gate.
+
+    Gate contract: returns a real name only when photo_data.get("source") ==
+    "photo" AND at least one real (non-placeholder) name exists in
+    key_speakers. Every other combination returns None.
+    """
+
+    def test_photo_source_with_real_name_returns_name(self) -> None:
+        """source='photo' + a real key_speakers name → returns that name."""
+        from congress_videos.modules.thumbnail_generation import (
+            resolved_photo_speaker_name,
+        )
+
+        result = resolved_photo_speaker_name(
+            {"source": "photo"}, ["Viviane Ogou i Corbi"]
+        )
+        assert result == "Viviane Ogou i Corbi"
+
+    def test_photo_source_with_dict_speaker_returns_name(self) -> None:
+        """Triangulation: dict-shaped key_speakers entries resolve the same way."""
+        from congress_videos.modules.thumbnail_generation import (
+            resolved_photo_speaker_name,
+        )
+
+        result = resolved_photo_speaker_name(
+            {"source": "photo"}, [{"name": "Cervera Pinar"}]
+        )
+        assert result == "Cervera Pinar"
+
+    def test_party_logo_source_returns_none(self) -> None:
+        """source='party_logo' must return None regardless of key_speakers."""
+        from congress_videos.modules.thumbnail_generation import (
+            resolved_photo_speaker_name,
+        )
+
+        result = resolved_photo_speaker_name(
+            {"source": "party_logo"}, ["Viviane Ogou i Corbi"]
+        )
+        assert result is None
+
+    def test_source_none_string_returns_none(self) -> None:
+        """source='none' must return None."""
+        from congress_videos.modules.thumbnail_generation import (
+            resolved_photo_speaker_name,
+        )
+
+        result = resolved_photo_speaker_name(
+            {"source": "none"}, ["Viviane Ogou i Corbi"]
+        )
+        assert result is None
+
+    def test_empty_photo_data_returns_none(self) -> None:
+        """photo_data={} must return None."""
+        from congress_videos.modules.thumbnail_generation import (
+            resolved_photo_speaker_name,
+        )
+
+        assert resolved_photo_speaker_name({}, ["Viviane Ogou i Corbi"]) is None
+
+    def test_none_photo_data_returns_none(self) -> None:
+        """photo_data=None must return None."""
+        from congress_videos.modules.thumbnail_generation import (
+            resolved_photo_speaker_name,
+        )
+
+        assert resolved_photo_speaker_name(None, ["Viviane Ogou i Corbi"]) is None
+
+    def test_placeholder_only_key_speakers_returns_none(self) -> None:
+        """source='photo' but every key_speakers entry is a placeholder → None."""
+        from congress_videos.modules.thumbnail_generation import (
+            resolved_photo_speaker_name,
+        )
+
+        result = resolved_photo_speaker_name(
+            {"source": "photo"}, ["Interviniente no identificado"]
+        )
+        assert result is None
+
+    def test_key_speakers_none_returns_none(self) -> None:
+        """source='photo' but key_speakers=None → None."""
+        from congress_videos.modules.thumbnail_generation import (
+            resolved_photo_speaker_name,
+        )
+
+        assert resolved_photo_speaker_name({"source": "photo"}, None) is None
+
+    def test_multiple_real_names_returns_first(self) -> None:
+        """source='photo' with multiple real names → returns the first one."""
+        from congress_videos.modules.thumbnail_generation import (
+            resolved_photo_speaker_name,
+        )
+
+        result = resolved_photo_speaker_name(
+            {"source": "photo"},
+            ["Interviniente no identificado", "Cervera Pinar", "Ana Pastor"],
+        )
+        assert result == "Cervera Pinar"
