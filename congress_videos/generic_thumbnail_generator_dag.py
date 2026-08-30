@@ -55,6 +55,7 @@ from congress_videos.modules.thumbnail_generation import (
     generate_title,
     persist_results,
     resolve_participant_photo,
+    resolved_photo_speaker_name,
 )
 from congress_videos.modules.thumbnail_prompt import build_pikzels_prompt
 
@@ -136,12 +137,16 @@ def _task_art_direction(ti: TaskInstance, **context: object) -> dict:
     """Generate the art-direction brief shared by both thumbnail options."""
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
     history: dict = ti.xcom_pull(task_ids="fetch_recent_history") or {}
+    photo_data: dict = ti.xcom_pull(task_ids="resolve_participant_photo") or {}
     domain_cfg = get_domain_config(conf["domain"])
     return art_direct(
         conf["debate_summary"],
         domain_cfg,
         sibling_briefs=history.get("briefs") or None,
         srt_fragment=conf.get("srt_fragment"),
+        resolved_speaker_name=resolved_photo_speaker_name(
+            photo_data, conf.get("key_speakers")
+        ),
     )
 
 
@@ -348,12 +353,16 @@ def _task_art_direction_retry(ti: TaskInstance, **context: object) -> dict:
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
     previous_brief: dict = ti.xcom_pull(task_ids="art_direction") or {}
     history: dict = ti.xcom_pull(task_ids="fetch_recent_history") or {}
+    photo_data: dict = ti.xcom_pull(task_ids="resolve_participant_photo") or {}
     domain_cfg = get_domain_config(conf["domain"])
     return art_direct(
         conf["debate_summary"],
         domain_cfg,
         previous_brief=previous_brief,
         sibling_briefs=history.get("briefs") or None,
+        resolved_speaker_name=resolved_photo_speaker_name(
+            photo_data, conf.get("key_speakers")
+        ),
     )
 
 
