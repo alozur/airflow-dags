@@ -3548,3 +3548,151 @@ class TestResolvedPhotoSpeakerName:
             ["Interviniente no identificado", "Cervera Pinar", "Ana Pastor"],
         )
         assert result == "Cervera Pinar"
+
+
+class TestArtDirectResolvedPhotoInstruction:
+    """Phase 3: art_direct(..., resolved_speaker_name=) prompt injection,
+    ordering against retry/sibling blocks, and the byte-identical no-op
+    guarantee when no speaker name is resolved.
+    """
+
+    def _make_cfg(self) -> dict:
+        return {
+            "styles": [
+                {"label": "option_a", "layout": "A"},
+                {"label": "option_b", "layout": "B"},
+            ],
+            "participants_lookup": lambda slug: None,
+            "party_logo_map": None,
+        }
+
+    def _valid_brief_response(self) -> dict:
+        return {
+            "data": {
+                "text": "RETRATO REAL",
+                "background": "pasillo del Congreso",
+                "person": "Cervera Pinar, expresión seria",
+                "mood": "seriedad",
+            },
+            "error": None,
+        }
+
+    def _capture(self, mocker) -> list:
+        captured_prompts: list[str] = []
+
+        def _side(system_prompt, user_prompt, **kw):
+            captured_prompts.append(user_prompt)
+            return self._valid_brief_response()
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side,
+        )
+        return captured_prompts
+
+    def test_name_given_injects_resolved_photo_block(self, mocker) -> None:
+        """resolved_speaker_name set → prompt contains the block naming that speaker."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        captured_prompts = self._capture(mocker)
+        art_direct(
+            "Debate sobre presupuesto",
+            self._make_cfg(),
+            resolved_speaker_name="Cervera Pinar",
+        )
+
+        assert captured_prompts, "generate_json_completion must be called"
+        assert "EXCEPCIÓN DE IDENTIDAD" in captured_prompts[0]
+        assert "Cervera Pinar" in captured_prompts[0]
+
+    def test_none_resolved_speaker_name_is_byte_identical_to_baseline(
+        self, mocker
+    ) -> None:
+        """resolved_speaker_name=None (default) → prompt matches the pre-change baseline exactly."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        baseline_prompts = self._capture(mocker)
+        art_direct("Debate sobre presupuesto", self._make_cfg())
+
+        with_none_prompts = self._capture(mocker)
+        art_direct(
+            "Debate sobre presupuesto",
+            self._make_cfg(),
+            resolved_speaker_name=None,
+        )
+
+        assert baseline_prompts[0] == with_none_prompts[0]
+        assert "EXCEPCIÓN DE IDENTIDAD" not in baseline_prompts[0]
+
+    def test_empty_string_resolved_speaker_name_is_byte_identical_to_baseline(
+        self, mocker
+    ) -> None:
+        """resolved_speaker_name='' → prompt matches the pre-change baseline exactly."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        baseline_prompts = self._capture(mocker)
+        art_direct("Debate sobre presupuesto", self._make_cfg())
+
+        with_empty_prompts = self._capture(mocker)
+        art_direct(
+            "Debate sobre presupuesto",
+            self._make_cfg(),
+            resolved_speaker_name="",
+        )
+
+        assert baseline_prompts[0] == with_empty_prompts[0]
+        assert "EXCEPCIÓN DE IDENTIDAD" not in with_empty_prompts[0]
+
+    def test_photo_block_ordered_after_retry_block(self, mocker) -> None:
+        """previous_brief set + name → both retry and photo blocks present, photo after retry."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        captured_prompts = self._capture(mocker)
+        previous_brief = {
+            "text": "ANTERIOR",
+            "background": "hemiciclo",
+            "person": "político",
+            "mood": "tensión",
+        }
+        art_direct(
+            "Debate sobre presupuesto",
+            self._make_cfg(),
+            previous_brief=previous_brief,
+            resolved_speaker_name="Cervera Pinar",
+        )
+
+        prompt = captured_prompts[0]
+        assert "REINTENTO" in prompt
+        assert "EXCEPCIÓN DE IDENTIDAD" in prompt
+        assert prompt.index("EXCEPCIÓN DE IDENTIDAD") > prompt.index("REINTENTO")
+
+    def test_photo_block_ordered_after_sibling_block(self, mocker) -> None:
+        """sibling_briefs set + name → photo block appears after the sibling block."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        captured_prompts = self._capture(mocker)
+        art_direct(
+            "Debate sobre presupuesto",
+            self._make_cfg(),
+            sibling_briefs=["brief A sobre plaza pública"],
+            resolved_speaker_name="Cervera Pinar",
+        )
+
+        prompt = captured_prompts[0]
+        assert "NO REPITAS" in prompt
+        assert "EXCEPCIÓN DE IDENTIDAD" in prompt
+        assert prompt.index("EXCEPCIÓN DE IDENTIDAD") > prompt.index("NO REPITAS")
+
+    def test_no_resolved_speaker_name_never_yields_identity_language(
+        self, mocker
+    ) -> None:
+        """resolved_speaker_name=None (e.g. party-logo/placeholder gate result)
+        must never inject 'the person in the photo' identity language."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        captured_prompts = self._capture(mocker)
+        art_direct("Debate sobre presupuesto", self._make_cfg())
+
+        prompt = captured_prompts[0]
+        assert "FOTOGRAFÍA REAL" not in prompt
+        assert "EXCEPCIÓN DE IDENTIDAD" not in prompt
