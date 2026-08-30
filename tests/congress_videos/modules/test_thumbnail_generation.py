@@ -3404,43 +3404,22 @@ class TestReorderingGuardReprompt:
 
 
 class TestResolvedPhotoInstructionConstant:
-    """Phase 1: ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION constant contract.
+    """Phase 1: ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION constant contract."""
 
-    This is a pure structural check (constant definition) — triangulation is
-    limited to two format() calls with different names, since there is no
-    branching logic to exercise.
-    """
-
-    def test_constant_exists_and_is_a_string(self) -> None:
-        """ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION must exist as a non-empty string."""
+    def test_constant_is_a_nonempty_format_able_string(self) -> None:
+        """Exists as a non-empty string and interpolates distinct speaker names."""
         from congress_videos.config.ai_prompts import (
             ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION,
         )
 
         assert isinstance(ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION, str)
         assert ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION.strip()
-
-    def test_constant_is_format_able_with_speaker_name(self) -> None:
-        """The constant must accept a speaker_name placeholder via str.format."""
-        from congress_videos.config.ai_prompts import (
-            ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION,
-        )
-
-        formatted = ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION.format(
+        assert "Viviane Ogou i Corbi" in ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION.format(
             speaker_name="Viviane Ogou i Corbi"
         )
-        assert "Viviane Ogou i Corbi" in formatted
-
-    def test_constant_formats_a_different_name_too(self) -> None:
-        """Triangulation: a second, different name must also interpolate correctly."""
-        from congress_videos.config.ai_prompts import (
-            ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION,
-        )
-
-        formatted = ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION.format(
+        assert "Cervera Pinar" in ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION.format(
             speaker_name="Cervera Pinar"
         )
-        assert "Cervera Pinar" in formatted
 
     def test_system_prompt_unchanged_by_new_constant(self) -> None:
         """Adding the new constant must not alter ART_DIRECTION_SYSTEM_PROMPT."""
@@ -3459,83 +3438,19 @@ class TestResolvedPhotoSpeakerName:
     """
 
     def test_photo_source_with_real_name_returns_name(self) -> None:
-        """source='photo' + a real key_speakers name → returns that name."""
+        """source='photo' + a real key_speakers name (string or dict) → returns it."""
         from congress_videos.modules.thumbnail_generation import (
             resolved_photo_speaker_name,
         )
 
-        result = resolved_photo_speaker_name(
-            {"source": "photo"}, ["Viviane Ogou i Corbi"]
+        assert (
+            resolved_photo_speaker_name({"source": "photo"}, ["Viviane Ogou i Corbi"])
+            == "Viviane Ogou i Corbi"
         )
-        assert result == "Viviane Ogou i Corbi"
-
-    def test_photo_source_with_dict_speaker_returns_name(self) -> None:
-        """Triangulation: dict-shaped key_speakers entries resolve the same way."""
-        from congress_videos.modules.thumbnail_generation import (
-            resolved_photo_speaker_name,
+        assert (
+            resolved_photo_speaker_name({"source": "photo"}, [{"name": "Cervera Pinar"}])
+            == "Cervera Pinar"
         )
-
-        result = resolved_photo_speaker_name(
-            {"source": "photo"}, [{"name": "Cervera Pinar"}]
-        )
-        assert result == "Cervera Pinar"
-
-    def test_party_logo_source_returns_none(self) -> None:
-        """source='party_logo' must return None regardless of key_speakers."""
-        from congress_videos.modules.thumbnail_generation import (
-            resolved_photo_speaker_name,
-        )
-
-        result = resolved_photo_speaker_name(
-            {"source": "party_logo"}, ["Viviane Ogou i Corbi"]
-        )
-        assert result is None
-
-    def test_source_none_string_returns_none(self) -> None:
-        """source='none' must return None."""
-        from congress_videos.modules.thumbnail_generation import (
-            resolved_photo_speaker_name,
-        )
-
-        result = resolved_photo_speaker_name(
-            {"source": "none"}, ["Viviane Ogou i Corbi"]
-        )
-        assert result is None
-
-    def test_empty_photo_data_returns_none(self) -> None:
-        """photo_data={} must return None."""
-        from congress_videos.modules.thumbnail_generation import (
-            resolved_photo_speaker_name,
-        )
-
-        assert resolved_photo_speaker_name({}, ["Viviane Ogou i Corbi"]) is None
-
-    def test_none_photo_data_returns_none(self) -> None:
-        """photo_data=None must return None."""
-        from congress_videos.modules.thumbnail_generation import (
-            resolved_photo_speaker_name,
-        )
-
-        assert resolved_photo_speaker_name(None, ["Viviane Ogou i Corbi"]) is None
-
-    def test_placeholder_only_key_speakers_returns_none(self) -> None:
-        """source='photo' but every key_speakers entry is a placeholder → None."""
-        from congress_videos.modules.thumbnail_generation import (
-            resolved_photo_speaker_name,
-        )
-
-        result = resolved_photo_speaker_name(
-            {"source": "photo"}, ["Interviniente no identificado"]
-        )
-        assert result is None
-
-    def test_key_speakers_none_returns_none(self) -> None:
-        """source='photo' but key_speakers=None → None."""
-        from congress_videos.modules.thumbnail_generation import (
-            resolved_photo_speaker_name,
-        )
-
-        assert resolved_photo_speaker_name({"source": "photo"}, None) is None
 
     def test_multiple_real_names_returns_first(self) -> None:
         """source='photo' with multiple real names → returns the first one."""
@@ -3549,22 +3464,34 @@ class TestResolvedPhotoSpeakerName:
         )
         assert result == "Cervera Pinar"
 
+    def test_gate_closed_returns_none_for_non_activating_inputs(self) -> None:
+        """Every combination that must NOT activate the exception returns None:
+        party_logo source, source='none', empty/None photo_data, placeholder-only
+        or None key_speakers — even when paired with an otherwise-real name.
+        """
+        from congress_videos.modules.thumbnail_generation import (
+            resolved_photo_speaker_name,
+        )
+
+        real_speaker = ["Viviane Ogou i Corbi"]
+        assert resolved_photo_speaker_name({"source": "party_logo"}, real_speaker) is None
+        assert resolved_photo_speaker_name({"source": "none"}, real_speaker) is None
+        assert resolved_photo_speaker_name({}, real_speaker) is None
+        assert resolved_photo_speaker_name(None, real_speaker) is None
+        assert (
+            resolved_photo_speaker_name(
+                {"source": "photo"}, ["Interviniente no identificado"]
+            )
+            is None
+        )
+        assert resolved_photo_speaker_name({"source": "photo"}, None) is None
+
 
 class TestArtDirectResolvedPhotoInstruction:
     """Phase 3: art_direct(..., resolved_speaker_name=) prompt injection,
     ordering against retry/sibling blocks, and the byte-identical no-op
     guarantee when no speaker name is resolved.
     """
-
-    def _make_cfg(self) -> dict:
-        return {
-            "styles": [
-                {"label": "option_a", "layout": "A"},
-                {"label": "option_b", "layout": "B"},
-            ],
-            "participants_lookup": lambda slug: None,
-            "party_logo_map": None,
-        }
 
     def _valid_brief_response(self) -> dict:
         return {
@@ -3596,103 +3523,62 @@ class TestArtDirectResolvedPhotoInstruction:
 
         captured_prompts = self._capture(mocker)
         art_direct(
-            "Debate sobre presupuesto",
-            self._make_cfg(),
-            resolved_speaker_name="Cervera Pinar",
+            "Debate sobre presupuesto", _make_cfg(), resolved_speaker_name="Cervera Pinar"
         )
 
         assert captured_prompts, "generate_json_completion must be called"
         assert "EXCEPCIÓN DE IDENTIDAD" in captured_prompts[0]
         assert "Cervera Pinar" in captured_prompts[0]
 
-    def test_none_resolved_speaker_name_is_byte_identical_to_baseline(
+    def test_none_or_empty_resolved_speaker_name_is_byte_identical_to_baseline(
         self, mocker
     ) -> None:
-        """resolved_speaker_name=None (default) → prompt matches the pre-change baseline exactly."""
+        """resolved_speaker_name unset, None, or '' → prompt matches the
+        pre-change baseline exactly, with no identity-exception language."""
         from congress_videos.modules.thumbnail_generation import art_direct
 
         baseline_prompts = self._capture(mocker)
-        art_direct("Debate sobre presupuesto", self._make_cfg())
+        art_direct("Debate sobre presupuesto", _make_cfg())
+        baseline = baseline_prompts[0]
+        assert "EXCEPCIÓN DE IDENTIDAD" not in baseline
+        assert "FOTOGRAFÍA REAL" not in baseline
 
-        with_none_prompts = self._capture(mocker)
-        art_direct(
-            "Debate sobre presupuesto",
-            self._make_cfg(),
-            resolved_speaker_name=None,
-        )
+        for value in (None, ""):
+            variant_prompts = self._capture(mocker)
+            art_direct(
+                "Debate sobre presupuesto", _make_cfg(), resolved_speaker_name=value
+            )
+            assert variant_prompts[0] == baseline
 
-        assert baseline_prompts[0] == with_none_prompts[0]
-        assert "EXCEPCIÓN DE IDENTIDAD" not in baseline_prompts[0]
-
-    def test_empty_string_resolved_speaker_name_is_byte_identical_to_baseline(
-        self, mocker
-    ) -> None:
-        """resolved_speaker_name='' → prompt matches the pre-change baseline exactly."""
+    def test_photo_block_ordered_after_retry_and_sibling_blocks(self, mocker) -> None:
+        """Photo block appears after BOTH the retry block (previous_brief set)
+        and the sibling block (sibling_briefs set), independently."""
         from congress_videos.modules.thumbnail_generation import art_direct
 
-        baseline_prompts = self._capture(mocker)
-        art_direct("Debate sobre presupuesto", self._make_cfg())
-
-        with_empty_prompts = self._capture(mocker)
-        art_direct(
-            "Debate sobre presupuesto",
-            self._make_cfg(),
-            resolved_speaker_name="",
-        )
-
-        assert baseline_prompts[0] == with_empty_prompts[0]
-        assert "EXCEPCIÓN DE IDENTIDAD" not in with_empty_prompts[0]
-
-    def test_photo_block_ordered_after_retry_block(self, mocker) -> None:
-        """previous_brief set + name → both retry and photo blocks present, photo after retry."""
-        from congress_videos.modules.thumbnail_generation import art_direct
-
-        captured_prompts = self._capture(mocker)
         previous_brief = {
             "text": "ANTERIOR",
             "background": "hemiciclo",
             "person": "político",
             "mood": "tensión",
         }
+        retry_prompts = self._capture(mocker)
         art_direct(
             "Debate sobre presupuesto",
-            self._make_cfg(),
+            _make_cfg(),
             previous_brief=previous_brief,
             resolved_speaker_name="Cervera Pinar",
         )
+        retry_prompt = retry_prompts[0]
+        assert "REINTENTO" in retry_prompt and "EXCEPCIÓN DE IDENTIDAD" in retry_prompt
+        assert retry_prompt.index("EXCEPCIÓN DE IDENTIDAD") > retry_prompt.index("REINTENTO")
 
-        prompt = captured_prompts[0]
-        assert "REINTENTO" in prompt
-        assert "EXCEPCIÓN DE IDENTIDAD" in prompt
-        assert prompt.index("EXCEPCIÓN DE IDENTIDAD") > prompt.index("REINTENTO")
-
-    def test_photo_block_ordered_after_sibling_block(self, mocker) -> None:
-        """sibling_briefs set + name → photo block appears after the sibling block."""
-        from congress_videos.modules.thumbnail_generation import art_direct
-
-        captured_prompts = self._capture(mocker)
+        sibling_prompts = self._capture(mocker)
         art_direct(
             "Debate sobre presupuesto",
-            self._make_cfg(),
+            _make_cfg(),
             sibling_briefs=["brief A sobre plaza pública"],
             resolved_speaker_name="Cervera Pinar",
         )
-
-        prompt = captured_prompts[0]
-        assert "NO REPITAS" in prompt
-        assert "EXCEPCIÓN DE IDENTIDAD" in prompt
-        assert prompt.index("EXCEPCIÓN DE IDENTIDAD") > prompt.index("NO REPITAS")
-
-    def test_no_resolved_speaker_name_never_yields_identity_language(
-        self, mocker
-    ) -> None:
-        """resolved_speaker_name=None (e.g. party-logo/placeholder gate result)
-        must never inject 'the person in the photo' identity language."""
-        from congress_videos.modules.thumbnail_generation import art_direct
-
-        captured_prompts = self._capture(mocker)
-        art_direct("Debate sobre presupuesto", self._make_cfg())
-
-        prompt = captured_prompts[0]
-        assert "FOTOGRAFÍA REAL" not in prompt
-        assert "EXCEPCIÓN DE IDENTIDAD" not in prompt
+        sibling_prompt = sibling_prompts[0]
+        assert "NO REPITAS" in sibling_prompt and "EXCEPCIÓN DE IDENTIDAD" in sibling_prompt
+        assert sibling_prompt.index("EXCEPCIÓN DE IDENTIDAD") > sibling_prompt.index("NO REPITAS")
