@@ -24,6 +24,7 @@ from typing import Optional
 import requests
 
 from congress_videos.config.ai_prompts import (
+    ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION,
     ART_DIRECTION_RETRY_INSTRUCTION,
     ART_DIRECTION_SIBLING_INSTRUCTION,
     ART_DIRECTION_SYSTEM_PROMPT,
@@ -260,13 +261,40 @@ def _real_speakers(key_speakers: list | None) -> list[str]:
     return result
 
 
+def resolved_photo_speaker_name(
+    photo_data: dict | None, key_speakers: list | None
+) -> str | None:
+    """Return the speaker name to ground art_direct's 'person' field on, or None.
+
+    Activation gate (issue #279): a real, non-placeholder speaker name is
+    returned only when ``photo_data`` indicates a genuinely resolved
+    participant photo (``source == "photo"``) AND at least one real name
+    survives ``_real_speakers``. A party-logo source, an absent/empty photo
+    result, or a placeholder-only ``key_speakers`` list all return None so
+    that ``art_direct`` falls back to its default relatable-citizen framing.
+
+    Args:
+        photo_data: The XCom result from ``resolve_participant_photo``, or None.
+        key_speakers: List of speaker entries (strings or dicts with a
+            ``name`` key), or None.
+
+    Returns:
+        The first real speaker name when the gate opens; otherwise None.
+    """
+    if not photo_data or photo_data.get("source") != "photo":
+        return None
+    real = _real_speakers(key_speakers)
+    return real[0] if real else None
+
+
 def _build_art_direction_prompt(
     debate_summary: str,
     previous_brief: dict | None,
     sibling_briefs: list[str] | None,
     extra_instruction: str = "",
+    resolved_speaker_name: str | None = None,
 ) -> str:
-    """Build the art-direction user prompt, injecting retry/sibling/extra blocks."""
+    """Build the art-direction user prompt, injecting retry/sibling/photo/extra blocks."""
     user_prompt = ART_DIRECTION_USER_PROMPT_TEMPLATE.format(
         debate_summary=debate_summary
     )
@@ -281,6 +309,11 @@ def _build_art_direction_prompt(
             sibling_list=sibling_list
         )
         user_prompt += f"\n\n{sibling_block}"
+    if resolved_speaker_name:
+        photo_block = ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION.format(
+            speaker_name=resolved_speaker_name
+        )
+        user_prompt += f"\n\n{photo_block}"
     if extra_instruction:
         user_prompt += f"\n\nINSTRUCCIÓN ADICIONAL: {extra_instruction}"
     return user_prompt
@@ -343,6 +376,7 @@ def art_direct(
     previous_brief: dict | None = None,
     sibling_briefs: list[str] | None = None,
     srt_fragment: str | None = None,
+    resolved_speaker_name: str | None = None,
 ) -> dict:
     """Generate an art-direction brief for a Pikzels thumbnail via OpenAI.
 
@@ -363,9 +397,20 @@ def art_direct(
             if it returns a non-None string, ``brief["text"]`` is overridden
             with the verbatim SRT quote.  ``None`` (default) leaves the
             existing invented-from-summary flow fully unchanged.
+        resolved_speaker_name: When truthy (issue #279), injects
+            ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION so the brief's 'person'
+            field describes this specific, real speaker instead of the
+            default relatable-citizen framing. None or "" (default) leaves
+            the prompt byte-identical to the pre-change behavior. Callers
+            should derive this via ``resolved_photo_speaker_name()``.
     """
     brief = _call_art_direction_api(
-        _build_art_direction_prompt(debate_summary, previous_brief, sibling_briefs)
+        _build_art_direction_prompt(
+            debate_summary,
+            previous_brief,
+            sibling_briefs,
+            resolved_speaker_name=resolved_speaker_name,
+        )
     )
     if brief is None:
         brief = _call_art_direction_api(
@@ -377,6 +422,7 @@ def art_direct(
                     "Asegúrate de devolver un JSON con EXACTAMENTE los campos: "
                     "text, background, person, mood."
                 ),
+                resolved_speaker_name=resolved_speaker_name,
             )
         )
 

@@ -203,6 +203,22 @@ ART_DIRECTION_RETRY_INSTRUCTION = (
     "Brief anterior (NO repitas este enfoque): {previous_brief_json}"
 )
 
+# USER-prompt only. Injected when resolve_participant_photo returned
+# source == "photo" AND a real (non-placeholder) speaker name exists.
+# Per-call exception to the #54/#79 system-prompt defaults, which stay verbatim.
+ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION = (
+    "EXCEPCIÓN DE IDENTIDAD (prevalece sobre cualquier regla anterior sobre la persona): "
+    "se adjunta una FOTOGRAFÍA REAL de {speaker_name} como imagen de referencia. "
+    "El campo 'person' debe describir a {speaker_name} como único sujeto humano principal: "
+    "respeta el sexo, la edad y el aspecto que muestra la fotografía, no los deduzcas del resumen. "
+    "NO inventes un ciudadano, espectador ni ninguna otra persona, y no añadas figuras adicionales; "
+    "evita el arquetipo 'careo', que exige dos figuras. "
+    "Mantén el resto del brief (text, background, mood, regla de tercios y esquina inferior derecha "
+    "libre) según las reglas generales. Esta excepción anula, solo para esta miniatura, la regla de "
+    "'nunca el ponente' y la política de audiencia para elegir sexo y edad; cualquier indicación de "
+    "variar el tipo de persona se aplica al fondo, al texto y al mood, nunca a la identidad."
+)
+
 
 # Thumbnail Title Generation (Pikzels + OpenAI pipeline)
 

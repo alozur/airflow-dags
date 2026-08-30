@@ -141,6 +141,7 @@ def test_art_direction_task_delegates_to_art_direct(mocker) -> None:
         domain_cfg,
         sibling_briefs=None,
         srt_fragment=None,
+        resolved_speaker_name=None,
     )
 
 
@@ -160,7 +161,71 @@ def test_art_direction_task_forwards_srt_fragment_when_present(mocker) -> None:
         domain_cfg,
         sibling_briefs=None,
         srt_fragment="Hay que tener cara señoría",
+        resolved_speaker_name=None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #279: resolved-photo gating wired into both art_direction DAG tasks
+# ---------------------------------------------------------------------------
+
+
+class TestArtDirectionResolvedPhotoWiring:
+    """_task_art_direction pulls resolve_participant_photo + conf.key_speakers
+    and forwards the derived name (or None) to art_direct as resolved_speaker_name.
+    """
+
+    def test_photo_source_and_real_speaker_forwards_name(self, mocker) -> None:
+        """source='photo' + real key_speakers name → resolved_speaker_name is that name."""
+        dag_mod = importlib.import_module("congress_videos.generic_thumbnail_generator_dag")
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF_WITH_SPEAKERS,
+                "fetch_recent_history": None,
+                "resolve_participant_photo": {"source": "photo"},
+            }
+        )
+        domain_cfg = {"styles": []}
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=domain_cfg)
+        art_direct = mocker.patch.object(
+            dag_mod, "art_direct", return_value={"text": "BRIEF"}
+        )
+
+        dag_mod._task_art_direction(ti)
+
+        art_direct.assert_called_once_with(
+            _FAKE_CONF_WITH_SPEAKERS["debate_summary"],
+            domain_cfg,
+            sibling_briefs=None,
+            srt_fragment=None,
+            resolved_speaker_name="Cervera Pinar",
+        )
+
+    def test_non_activating_gate_inputs_forward_none(self, mocker) -> None:
+        """party_logo source and placeholder-only key_speakers both forward None,
+        even though each is individually paired with an otherwise-activating input.
+        """
+        dag_mod = importlib.import_module("congress_videos.generic_thumbnail_generator_dag")
+        domain_cfg = {"styles": []}
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=domain_cfg)
+
+        for conf, photo_data in (
+            (_FAKE_CONF_WITH_SPEAKERS, {"source": "party_logo"}),
+            (_FAKE_CONF_WITH_PLACEHOLDER_SPEAKERS, {"source": "photo"}),
+        ):
+            ti = _make_fake_ti(
+                {
+                    "validate_input": conf,
+                    "fetch_recent_history": None,
+                    "resolve_participant_photo": photo_data,
+                }
+            )
+            art_direct = mocker.patch.object(
+                dag_mod, "art_direct", return_value={"text": "BRIEF"}
+            )
+            dag_mod._task_art_direction(ti)
+            _, kwargs = art_direct.call_args
+            assert kwargs["resolved_speaker_name"] is None
 
 
 class TestDagTaskIds:
@@ -402,6 +467,17 @@ _FAKE_CONF = {
     "session": "Pleno 2026-07-31",
     "domain": "congreso",
     "slug": "garcia-lopez-maria",
+}
+
+# Issue #279: fixtures for the resolved-photo art-direction gating tests.
+_FAKE_CONF_WITH_SPEAKERS = {
+    **_FAKE_CONF,
+    "key_speakers": ["Cervera Pinar"],
+}
+
+_FAKE_CONF_WITH_PLACEHOLDER_SPEAKERS = {
+    **_FAKE_CONF,
+    "key_speakers": ["Interviniente no identificado"],
 }
 
 _FAKE_STYLES = [
@@ -934,6 +1010,54 @@ class TestTaskArtDirectionRetry:
 
         result = dag_mod._task_art_direction_retry(ti)
         assert result == expected
+
+    def test_photo_source_and_real_speaker_forwards_name(self, mocker) -> None:
+        """Issue #279: retry task applies the same resolved-photo gating as the primary path."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF_WITH_SPEAKERS,
+                "art_direction": _FAKE_ART_BRIEF,
+                "fetch_recent_history": None,
+                "resolve_participant_photo": {"source": "photo"},
+            }
+        )
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mock_art_direct = mocker.patch.object(
+            dag_mod, "art_direct", return_value={"text": "NUEVO"}
+        )
+
+        dag_mod._task_art_direction_retry(ti)
+
+        _, kwargs = mock_art_direct.call_args
+        assert kwargs["resolved_speaker_name"] == "Cervera Pinar"
+
+    def test_non_activating_gate_inputs_forward_none(self, mocker) -> None:
+        """Issue #279: party_logo source and placeholder-only key_speakers both
+        forward None on the retry path, matching the primary-path gating."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+
+        for conf, photo_data in (
+            (_FAKE_CONF_WITH_SPEAKERS, {"source": "party_logo"}),
+            (_FAKE_CONF_WITH_PLACEHOLDER_SPEAKERS, {"source": "photo"}),
+        ):
+            ti = _make_fake_ti(
+                {
+                    "validate_input": conf,
+                    "art_direction": _FAKE_ART_BRIEF,
+                    "fetch_recent_history": None,
+                    "resolve_participant_photo": photo_data,
+                }
+            )
+            mock_art_direct = mocker.patch.object(
+                dag_mod, "art_direct", return_value={"text": "NUEVO"}
+            )
+            dag_mod._task_art_direction_retry(ti)
+            _, kwargs = mock_art_direct.call_args
+            assert kwargs["resolved_speaker_name"] is None
 
 
 # ---------------------------------------------------------------------------
