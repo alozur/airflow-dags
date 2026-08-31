@@ -490,6 +490,211 @@ class TestWriteTurnSidecarsGroupedRange:
         assert len(content) > 0, "Single-turn SRT must be non-empty for overlapping block"
 
 
+class TestWriteTurnSidecarsKeepIntervalsBranch:
+    """_write_turn_sidecars branches to the multi-window retime when a valid,
+    non-empty keep_intervals is present on the row (issue #143). Falls back
+    to the legacy group_start/group_end single window on NULL/missing/
+    malformed values."""
+
+    def _make_turn(self, tmp_path, keep_intervals=None, **overrides) -> dict:
+        video_dir = tmp_path / f"turn_{overrides.get('turn_id', 1)}"
+        video_dir.mkdir(exist_ok=True)
+        turn = {
+            "turn_id": 1,
+            "output_path": str(video_dir / "video.mp4"),
+            "chapter_id": 10,
+            "resolved_name": "Speaker",
+            "start_seconds": 0.0,
+            "end_seconds": 75.0,
+            "group_start_seconds": 0.0,
+            "group_end_seconds": 75.0,
+            "video_id": "vidXYZ",
+            "session_date": "2026-01-01",
+        }
+        turn["keep_intervals"] = keep_intervals
+        turn.update(overrides)
+        return turn
+
+    def test_multi_interval_calls_window_srt_blocks_multi_not_single(self, tmp_path):
+        """len(keep_intervals) > 1 → _window_srt_blocks_multi is used, never
+        the legacy single-window _window_srt_blocks call."""
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        turn = self._make_turn(tmp_path, keep_intervals=[[0.0, 30.0], [36.0, 80.0]])
+
+        multi_calls = []
+        single_calls = []
+
+        with (
+            patch("congress_videos.srt_helpers.find_srt_for_chapter", return_value="/fake/src.srt"),
+            patch("congress_videos.srt_helpers._parse_srt_blocks", return_value=[]),
+            patch(
+                "congress_videos.srt_helpers._window_srt_blocks_multi",
+                side_effect=lambda blocks, intervals: multi_calls.append(intervals) or [],
+            ),
+            patch(
+                "congress_videos.srt_helpers._window_srt_blocks",
+                side_effect=lambda blocks, ws, we: single_calls.append((ws, we)) or [],
+            ),
+        ):
+            _write_turn_sidecars(turn)
+
+        assert len(multi_calls) == 1, "must call _window_srt_blocks_multi exactly once"
+        assert multi_calls[0] == [(0.0, 30.0), (36.0, 80.0)]
+        assert single_calls == [], "must never call the single-window path when len(keep_intervals)>1"
+
+    def test_edge_excision_single_interval_uses_persisted_bounds_not_raw_group_span(self, tmp_path):
+        """A collapsed single keep interval from edge-only excision (issue #143
+        D6) is narrower than the raw group span — the SRT window MUST come
+        from the persisted interval, not group_start/group_end, or captions
+        would misalign with the actually-cut video."""
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        # Group span is [0, 75) but the persisted single keep interval — after
+        # edge excision collapsed it — is the narrower [5, 70).
+        turn = self._make_turn(
+            tmp_path,
+            keep_intervals=[[5.0, 70.0]],
+            group_start_seconds=0.0,
+            group_end_seconds=75.0,
+        )
+
+        captured = []
+
+        with (
+            patch("congress_videos.srt_helpers.find_srt_for_chapter", return_value="/fake/src.srt"),
+            patch("congress_videos.srt_helpers._parse_srt_blocks", return_value=[]),
+            patch(
+                "congress_videos.srt_helpers._window_srt_blocks_multi",
+                side_effect=lambda blocks, intervals: captured.append(intervals) or [],
+            ),
+        ):
+            _write_turn_sidecars(turn)
+
+        assert captured == [[(5.0, 70.0)]], (
+            f"must retime from the persisted keep interval [5,70), not the raw "
+            f"group span [0,75); got: {captured}"
+        )
+
+    def test_multi_interval_vad_trim_applied_to_first_and_last_only(self, tmp_path):
+        """VAD trim narrows the FIRST interval's start and the LAST interval's
+        end; interior interval boundaries are untouched."""
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        turn = self._make_turn(
+            tmp_path, keep_intervals=[[0.0, 30.0], [36.0, 80.0]]
+        )
+
+        captured = []
+
+        with (
+            patch("congress_videos.srt_helpers.find_srt_for_chapter", return_value="/fake/src.srt"),
+            patch("congress_videos.srt_helpers._parse_srt_blocks", return_value=[]),
+            patch(
+                "congress_videos.srt_helpers._window_srt_blocks_multi",
+                side_effect=lambda blocks, intervals: captured.append(intervals) or [],
+            ),
+        ):
+            _write_turn_sidecars(turn, trim_start_secs=2.0, trim_end_secs=3.0)
+
+        assert captured == [[(2.0, 30.0), (36.0, 77.0)]], (
+            f"first interval start +2.0, last interval end -3.0, middle boundaries "
+            f"untouched; got: {captured}"
+        )
+
+    def test_missing_keep_intervals_falls_back_to_legacy_group_window(self, tmp_path):
+        """turn.get('keep_intervals') is None (pre-#143 row) → legacy
+        single-window path, never _window_srt_blocks_multi."""
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        turn = self._make_turn(tmp_path, keep_intervals=None)
+
+        multi_calls = []
+        single_calls = []
+
+        with (
+            patch("congress_videos.srt_helpers.find_srt_for_chapter", return_value="/fake/src.srt"),
+            patch("congress_videos.srt_helpers._parse_srt_blocks", return_value=[]),
+            patch(
+                "congress_videos.srt_helpers._window_srt_blocks_multi",
+                side_effect=lambda blocks, intervals: multi_calls.append(intervals) or [],
+            ),
+            patch(
+                "congress_videos.srt_helpers._window_srt_blocks",
+                side_effect=lambda blocks, ws, we: single_calls.append((ws, we)) or [],
+            ),
+        ):
+            _write_turn_sidecars(turn)
+
+        assert multi_calls == []
+        assert single_calls == [(0.0, 75.0)]
+
+    def test_malformed_keep_intervals_string_falls_back_without_raising(self, tmp_path):
+        """A non-JSON string value must fall back to the legacy path rather
+        than raising."""
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        turn = self._make_turn(tmp_path, keep_intervals="not-json")
+
+        single_calls = []
+
+        with (
+            patch("congress_videos.srt_helpers.find_srt_for_chapter", return_value="/fake/src.srt"),
+            patch("congress_videos.srt_helpers._parse_srt_blocks", return_value=[]),
+            patch(
+                "congress_videos.srt_helpers._window_srt_blocks",
+                side_effect=lambda blocks, ws, we: single_calls.append((ws, we)) or [],
+            ),
+        ):
+            _write_turn_sidecars(turn)  # must not raise
+
+        assert single_calls == [(0.0, 75.0)]
+
+    def test_empty_list_keep_intervals_falls_back_to_legacy_window(self, tmp_path):
+        """keep_intervals=[] (degenerate all-procedural marker row) falls
+        back to the legacy path rather than producing an empty SRT via the
+        multi-window branch — defensive, this row is never selected by
+        select_unprepared_turns in practice (is_procedural=TRUE excludes it)."""
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        turn = self._make_turn(tmp_path, keep_intervals=[])
+
+        single_calls = []
+
+        with (
+            patch("congress_videos.srt_helpers.find_srt_for_chapter", return_value="/fake/src.srt"),
+            patch("congress_videos.srt_helpers._parse_srt_blocks", return_value=[]),
+            patch(
+                "congress_videos.srt_helpers._window_srt_blocks",
+                side_effect=lambda blocks, ws, we: single_calls.append((ws, we)) or [],
+            ),
+        ):
+            _write_turn_sidecars(turn)
+
+        assert single_calls == [(0.0, 75.0)]
+
+    def test_json_string_keep_intervals_is_parsed(self, tmp_path):
+        """A JSON-encoded string (as psycopg2 may return for JSONB in some
+        configurations) must be parsed, not treated as malformed."""
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        turn = self._make_turn(tmp_path, keep_intervals="[[0.0, 30.0], [36.0, 80.0]]")
+
+        captured = []
+
+        with (
+            patch("congress_videos.srt_helpers.find_srt_for_chapter", return_value="/fake/src.srt"),
+            patch("congress_videos.srt_helpers._parse_srt_blocks", return_value=[]),
+            patch(
+                "congress_videos.srt_helpers._window_srt_blocks_multi",
+                side_effect=lambda blocks, intervals: captured.append(intervals) or [],
+            ),
+        ):
+            _write_turn_sidecars(turn)
+
+        assert captured == [[(0.0, 30.0), (36.0, 80.0)]]
+
+
 class TestIntegrityCheckUsesFFmpeg:
     """_run_ffmpeg_decode_check must invoke ffmpeg -f null, NOT ffprobe.
 
