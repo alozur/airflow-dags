@@ -852,6 +852,157 @@ class TestSpeakerResolutionStep:
         mock_sidecars.assert_called_once()
 
 
+class TestPromotionHook:
+    """Rule 4 (issue #282): promote_turn_type_to_qa fires after a
+    resolution when the pre-patch resolved_name and the newly resolved
+    display_name are two distinct real (non-placeholder, non-NULL) names.
+    """
+
+    def _make_participants(self):
+        return [{"slug": "alberto-gonzalez", "display_name": "Alberto Gonzalez", "party": "PP"}]
+
+    def test_promotion_called_when_names_differ(self):
+        """Pre-patch name real, new name real, and they differ -> promote."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turn = _make_turn(1, "/data/v1.mp4")
+        turn["resolved_name"] = "Pedro Sanchez"
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = [turn]
+
+        resolution_result = {"participant_slug": "alberto-gonzalez", "confidence": 0.92, "evidence": "..."}
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
+
+    def test_promotion_not_called_when_pre_patch_name_is_none(self):
+        """Pre-patch resolved_name is None -> no promotion (nothing to compare against)."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turn = _make_turn(1, "/data/v1.mp4")
+        turn["resolved_name"] = None
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = [turn]
+
+        resolution_result = {"participant_slug": "alberto-gonzalez", "confidence": 0.92, "evidence": "..."}
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        mock_db.promote_turn_type_to_qa.assert_not_called()
+
+    def test_promotion_not_called_when_pre_patch_name_is_placeholder(self):
+        """Pre-patch resolved_name is a known placeholder -> no promotion."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turn = _make_turn(1, "/data/v1.mp4")
+        turn["resolved_name"] = "desconocido"
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = [turn]
+
+        resolution_result = {"participant_slug": "alberto-gonzalez", "confidence": 0.92, "evidence": "..."}
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        mock_db.promote_turn_type_to_qa.assert_not_called()
+
+    def test_promotion_not_called_when_names_are_equal_casefolded(self):
+        """Same person under a different case -> not two distinct names -> no promotion."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turn = _make_turn(1, "/data/v1.mp4")
+        turn["resolved_name"] = "ALBERTO GONZALEZ"
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = [turn]
+
+        resolution_result = {"participant_slug": "alberto-gonzalez", "confidence": 0.92, "evidence": "..."}
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        mock_db.promote_turn_type_to_qa.assert_not_called()
+
+    def test_promotion_not_called_when_new_name_is_placeholder(self):
+        """New resolution slug maps to a placeholder-ish display_name -> no promotion."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turn = _make_turn(1, "/data/v1.mp4")
+        turn["resolved_name"] = "Pedro Sanchez"
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = [turn]
+
+        participants = [{"slug": "desconocido-slug", "display_name": "Desconocido", "party": "N/A"}]
+        resolution_result = {"participant_slug": "desconocido-slug", "confidence": 0.92, "evidence": "..."}
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=participants),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        mock_db.promote_turn_type_to_qa.assert_not_called()
+
+    def test_promotion_exception_does_not_block_preparation(self):
+        """A promotion failure logs a warning and never blocks preparation
+        (it lives inside the existing resolution try/except)."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turn = _make_turn(1, "/data/v1.mp4")
+        turn["resolved_name"] = "Pedro Sanchez"
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = [turn]
+        mock_db.promote_turn_type_to_qa.side_effect = RuntimeError("db boom")
+
+        resolution_result = {"participant_slug": "alberto-gonzalez", "confidence": 0.92, "evidence": "..."}
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars") as mock_sidecars,
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        mock_sidecars.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # Phase 3 RED tests: _write_turn_sidecars window adjustment (issue #175)
 # ---------------------------------------------------------------------------

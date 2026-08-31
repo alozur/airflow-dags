@@ -134,7 +134,10 @@ def _select_task(**context) -> list[dict]:
     chapters_table = pg.get_qualified_table("video_chapters")
     stv_table = pg.get_qualified_table("speaker_turn_videos")
     # video_id lives on video_chapters, not speaker_turns; join to resolve it.
-    cols = "st.turn_id, st.chapter_id, vc.video_id, st.start_seconds, st.end_seconds, st.resolved_name"
+    cols = (
+        "st.turn_id, st.chapter_id, vc.video_id, st.start_seconds, st.end_seconds, "
+        "st.resolved_name, st.speaker_label"
+    )
     base = (
         f"SELECT {cols} FROM {turns_table} st "
         f"JOIN {chapters_table} vc ON vc.chapter_id = st.chapter_id"
@@ -257,6 +260,7 @@ def _materialize_task(**context) -> dict:
         resolved_by_id: dict[int, str | None] = {
             t["turn_id"]: t.get("resolved_name") for t in turns
         }
+        turn_rows_by_id: dict[int, dict] = {t["turn_id"]: t for t in turns}
         plans = plan_turn_materialization(turns, approved_trims)
 
         for plan in plans:
@@ -284,7 +288,7 @@ def _materialize_task(**context) -> dict:
                 / "video.mp4"
             )
 
-            turn_type = classify_turn_type(plan.turn_ids, resolved_by_id)
+            turn_type = classify_turn_type(plan.turn_ids, resolved_by_id, turn_rows_by_id)
 
             try:
                 codec = get_cached_codec(source_path, codec_cache)

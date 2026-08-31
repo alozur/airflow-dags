@@ -220,6 +220,26 @@ class TestSelectTurns:
             f"_select_task must include st.resolved_name in SELECT; got: {select_sql}"
         )
 
+    def test_select_includes_speaker_label(self, monkeypatch):
+        """_select_task SQL must include st.speaker_label so classify_turn_type
+        can use real acoustic labels instead of freezing on unresolved names
+        (issue #282)."""
+        mod = _fresh()
+        cur = self._make_pg_mock(
+            monkeypatch, mod,
+            turns_rows=[(1, 10, "vid1", 0.0, 100.0, None)],
+            already_materialized_ids=[],
+        )
+
+        ti = MagicMock()
+        ti.xcom_push.side_effect = lambda key, value: None
+        mod._select_task(ti=ti, dag_run=MagicMock(conf={"chapter_id": 10}))
+
+        select_sql = cur.execute.call_args_list[0].args[0].lower()
+        assert "speaker_label" in select_sql, (
+            f"_select_task must include st.speaker_label in SELECT; got: {select_sql}"
+        )
+
     def test_no_turns_when_all_already_materialized(self, monkeypatch):
         """chapter_id-scoped branch: post-hoc filter drops every already-materialized turn."""
         mod = _fresh()
@@ -769,6 +789,64 @@ class TestMaterializeTurns:
         assert len(turn_types) == 1, (
             f"All grouped rows must share one turn_type; got distinct values: {turn_types}"
         )
+
+    def test_classify_turn_type_called_with_row_map(self, monkeypatch):
+        """classify_turn_type must receive 3 positional args including a
+        turn_id -> row map built from the selected turns (issue #282)."""
+        mod = _fresh()
+        plan_mock = MagicMock()
+        plan_mock.turn_ids = (7,)
+        plan_mock.keep_intervals = (MagicMock(start=600.0, end=700.0),)
+        plan_mock.needs_reencode = False
+        plan_mock.output_turn_id = 7
+        plan_mock.chapter_id = 3
+
+        turns = [self._turn(turn_id=7, resolved_name=None)]
+        cur, ti = self._make_materialize_mocks(monkeypatch, mod, plan_mock, turns)
+
+        classify_mock = MagicMock(return_value="monologue")
+        monkeypatch.setattr(mod, "classify_turn_type", classify_mock)
+
+        mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        classify_mock.assert_called_once()
+        call_args = classify_mock.call_args.args
+        assert len(call_args) == 3, (
+            f"classify_turn_type must receive 3 positional args; got: {call_args}"
+        )
+        turn_ids_arg, resolved_by_id_arg, turn_rows_by_id_arg = call_args
+        assert 7 in turn_rows_by_id_arg
+        assert turn_rows_by_id_arg[7]["turn_id"] == 7
+
+    def test_two_label_group_with_null_names_yields_qa_in_insert(self, monkeypatch):
+        """Grouped plan with 2 distinct speaker_label values and NULL
+        resolved_names -> INSERT must carry turn_type='qa' via the
+        label-first rule (issue #282), even though the legacy name rule
+        alone would have frozen it at 'monologue'."""
+        mod = _fresh()
+        plan_mock = MagicMock()
+        plan_mock.turn_ids = (7, 8)
+        plan_mock.keep_intervals = (MagicMock(start=600.0, end=700.0),)
+        plan_mock.needs_reencode = False
+        plan_mock.output_turn_id = 7
+        plan_mock.chapter_id = 3
+
+        turns = [
+            self._turn(turn_id=7, resolved_name=None, start=600.0, end=650.0),
+            self._turn(turn_id=8, resolved_name=None, start=650.0, end=700.0),
+        ]
+        turns[0]["speaker_label"] = "SPEAKER_00"
+        turns[1]["speaker_label"] = "SPEAKER_01"
+        cur, ti = self._make_materialize_mocks(monkeypatch, mod, plan_mock, turns)
+
+        mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        insert_calls = [c for c in cur.execute.call_args_list if "INSERT" in str(c).upper()]
+        assert insert_calls, "Expected at least one INSERT"
+        for c in insert_calls:
+            assert c.args[1][2] == "qa", (
+                f"2-label group with NULL names -> qa; got: {c.args[1][2]!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
