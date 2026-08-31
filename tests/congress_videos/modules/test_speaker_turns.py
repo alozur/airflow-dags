@@ -58,13 +58,13 @@ class TestModuleConstants:
         from congress_videos.modules.speaker_turns import GAP_MERGE_SECONDS
         assert GAP_MERGE_SECONDS == 1.0
 
-    def test_pingpong_b_max_seconds(self):
-        from congress_videos.modules.speaker_turns import PINGPONG_B_MAX_SECONDS
-        assert PINGPONG_B_MAX_SECONDS == 5.0
+    def test_min_segment_duration_seconds(self):
+        from congress_videos.modules.speaker_turns import MIN_SEGMENT_DURATION_SECONDS
+        assert MIN_SEGMENT_DURATION_SECONDS == 1.0
 
-    def test_pingpong_return_seconds(self):
-        from congress_videos.modules.speaker_turns import PINGPONG_RETURN_SECONDS
-        assert PINGPONG_RETURN_SECONDS == 10.0
+    def test_foreign_interruption_max_seconds(self):
+        from congress_videos.modules.speaker_turns import FOREIGN_INTERRUPTION_MAX_SECONDS
+        assert FOREIGN_INTERRUPTION_MAX_SECONDS == 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +224,31 @@ def _seg(start, end, label, resolved_name=None):
     }
 
 
+def _chapter_263_segments():
+    """Real turns 200-210 from chapter 263 / video 4htFnCncrkw (issue #283).
+
+    Turns 202-206 are the alternating chain of sub-second diarization blips
+    (SPEAKER_03 interruptions of 0.08s/0.017s, plus a 0.15s SPEAKER_01 blip)
+    that caused turn_id=205 (17ms) to be picked as the group's representative
+    turn and mis-anchor the 120s announcement window. Turn 207 is the real
+    21.8s SPEAKER_00 interruption that must NOT collapse. Turn 209 is a
+    0.5s blip absorbed into turn 208 without disturbing turn 210.
+    """
+    return [
+        _seg(8707.14, 8800.00, "SPEAKER_01"),    # 200
+        _seg(8800.00, 8870.00, "SPEAKER_01"),    # 201
+        _seg(8870.00, 8934.683, "SPEAKER_01"),   # 202
+        _seg(8934.683, 8934.763, "SPEAKER_03"),  # 203 (0.08s blip)
+        _seg(8934.763, 8934.913, "SPEAKER_01"),  # 204 (0.15s blip)
+        _seg(8934.913, 8934.930, "SPEAKER_03"),  # 205 (0.017s blip)
+        _seg(8934.930, 9158.630, "SPEAKER_01"),  # 206 (223.7s)
+        _seg(9158.610, 9180.410, "SPEAKER_00"),  # 207 (21.8s — must survive)
+        _seg(9180.400, 9453.900, "SPEAKER_04"),  # 208
+        _seg(9453.900, 9454.400, "SPEAKER_01"),  # 209 (0.5s blip)
+        _seg(9461.160, 9844.560, "SPEAKER_04"),  # 210
+    ]
+
+
 class TestMergeGaps:
 
     def test_gap_under_threshold_merged(self):
@@ -264,44 +289,309 @@ class TestMergeGaps:
         assert _merge_gaps([]) == []
 
 
-class TestCollapsePingpong:
+class TestDropMicroSegments:
 
-    def test_short_b_segment_collapsed(self):
-        """A(60s)→B(4s)→A(90s) where B < PINGPONG_B_MAX_SECONDS → single A."""
-        from congress_videos.modules.speaker_turns import _collapse_pingpong
+    def test_leading_blip_dropped_outright(self):
+        """First segment duration < 1.0s with no predecessor -> dropped outright."""
+        from congress_videos.modules.speaker_turns import _drop_micro_segments
+        segs = [
+            _seg(0.0, 0.5, "SPEAKER_00"),   # 0.5 s blip, no predecessor
+            _seg(0.5, 60.0, "SPEAKER_01"),
+        ]
+        result = _drop_micro_segments(segs)
+        assert len(result) == 1
+        assert result[0]["speaker_label"] == "SPEAKER_01"
+        assert result[0]["start_seconds"] == 0.5
+        assert result[0]["end_seconds"] == 60.0
+
+    def test_mid_blip_absorbed_extends_predecessor_end(self):
+        """A mid-stream blip is dropped and the predecessor's end_seconds
+        extends to cover the blip's span."""
+        from congress_videos.modules.speaker_turns import _drop_micro_segments
+        segs = [
+            _seg(0.0, 60.0, "SPEAKER_01"),
+            _seg(60.0, 60.5, "SPEAKER_02"),  # 0.5 s blip
+            _seg(60.5, 120.0, "SPEAKER_01"),
+        ]
+        result = _drop_micro_segments(segs)
+        assert len(result) == 2
+        assert result[0]["speaker_label"] == "SPEAKER_01"
+        assert result[0]["start_seconds"] == 0.0
+        assert result[0]["end_seconds"] == 60.5  # absorbed the blip's span
+        assert result[1]["speaker_label"] == "SPEAKER_01"
+        assert result[1]["start_seconds"] == 60.5
+        assert result[1]["end_seconds"] == 120.0
+
+    def test_trailing_blip_absorbed_leaves_no_time_hole(self):
+        """Last segment is a blip with a predecessor -> absorbed, no time hole."""
+        from congress_videos.modules.speaker_turns import _drop_micro_segments
+        segs = [
+            _seg(0.0, 60.0, "SPEAKER_01"),
+            _seg(60.0, 60.3, "SPEAKER_02"),  # trailing 0.3 s blip
+        ]
+        result = _drop_micro_segments(segs)
+        assert len(result) == 1
+        assert result[0]["end_seconds"] == 60.3
+
+    def test_exactly_one_second_segment_kept(self):
+        """Duration exactly 1.0s (strict <) -> kept, untouched."""
+        from congress_videos.modules.speaker_turns import _drop_micro_segments
+        segs = [_seg(0.0, 1.0, "SPEAKER_00")]
+        result = _drop_micro_segments(segs)
+        assert len(result) == 1
+        assert result[0]["start_seconds"] == 0.0
+        assert result[0]["end_seconds"] == 1.0
+
+    def test_consecutive_blip_run_absorbed_into_one_predecessor(self):
+        """Multiple consecutive sub-second blips all absorb into the same
+        predecessor, chaining forward."""
+        from congress_videos.modules.speaker_turns import _drop_micro_segments
+        segs = [
+            _seg(0.0, 60.0, "SPEAKER_01"),
+            _seg(60.0, 60.2, "SPEAKER_02"),
+            _seg(60.2, 60.5, "SPEAKER_03"),
+            _seg(60.5, 60.9, "SPEAKER_02"),
+            _seg(60.9, 120.0, "SPEAKER_04"),
+        ]
+        result = _drop_micro_segments(segs)
+        assert len(result) == 2
+        assert result[0]["end_seconds"] == 60.9
+        assert result[1]["start_seconds"] == 60.9
+        assert result[1]["end_seconds"] == 120.0
+
+    def test_all_blips_returns_empty(self):
+        """Every segment sub-second with no predecessor ever established -> []."""
+        from congress_videos.modules.speaker_turns import _drop_micro_segments
+        segs = [
+            _seg(0.0, 0.3, "SPEAKER_00"),
+            _seg(0.3, 0.6, "SPEAKER_01"),
+        ]
+        result = _drop_micro_segments(segs)
+        assert result == []
+
+    def test_empty_input(self):
+        """Empty list -> empty list."""
+        from congress_videos.modules.speaker_turns import _drop_micro_segments
+        assert _drop_micro_segments([]) == []
+
+    def test_single_non_blip_unchanged(self):
+        """Single segment >= 1.0s -> returned unchanged."""
+        from congress_videos.modules.speaker_turns import _drop_micro_segments
+        segs = [_seg(10.0, 70.0, "SPEAKER_00")]
+        result = _drop_micro_segments(segs)
+        assert len(result) == 1
+        assert result[0]["start_seconds"] == 10.0
+        assert result[0]["end_seconds"] == 70.0
+
+    def test_input_dicts_not_mutated(self):
+        """Original segment dicts passed in must not be mutated."""
+        from congress_videos.modules.speaker_turns import _drop_micro_segments
+        original = _seg(0.0, 60.0, "SPEAKER_01")
+        blip = _seg(60.0, 60.5, "SPEAKER_02")
+        segs = [original, blip]
+        _drop_micro_segments(segs)
+        assert original["end_seconds"] == 60.0
+        assert blip["end_seconds"] == 60.5
+
+
+class TestCollapseForeignRuns:
+
+    def test_single_short_foreign_segment_collapsed(self):
+        """A(60s)→B(4s)→A(90s), aggregate span 4s < 10.0 → single A."""
+        from congress_videos.modules.speaker_turns import _collapse_foreign_runs
         segs = [
             _seg(0.0, 60.0, "A"),
-            _seg(60.0, 64.0, "B"),    # 4 s < 5.0
-            _seg(64.0, 154.0, "A"),   # return gap 0s < 10.0
+            _seg(60.0, 64.0, "B"),    # span 4 s < 10.0
+            _seg(64.0, 154.0, "A"),
         ]
-        result = _collapse_pingpong(segs)
+        result = _collapse_foreign_runs(segs)
         assert len(result) == 1
         assert result[0]["speaker_label"] == "A"
         assert result[0]["start_seconds"] == 0.0
         assert result[0]["end_seconds"] == 154.0
 
-    def test_b_over_max_not_collapsed(self):
-        """A(60s)→B(6s)→A where B >= PINGPONG_B_MAX_SECONDS → not collapsed."""
-        from congress_videos.modules.speaker_turns import _collapse_pingpong
+    def test_mid_range_single_interruption_now_collapses(self):
+        """A(60s)→B(6s)→A: under the retired 5s per-segment cap this survived;
+        under the new 10s aggregate-span rule it now collapses (Sc.8)."""
+        from congress_videos.modules.speaker_turns import _collapse_foreign_runs
         segs = [
             _seg(0.0, 60.0, "A"),
-            _seg(60.0, 66.0, "B"),    # 6 s >= 5.0
+            _seg(60.0, 66.0, "B"),    # span 6 s < 10.0
             _seg(66.0, 156.0, "A"),
         ]
-        result = _collapse_pingpong(segs)
+        result = _collapse_foreign_runs(segs)
+        assert len(result) == 1
+        assert result[0]["speaker_label"] == "A"
+        assert result[0]["end_seconds"] == 156.0
+
+    def test_foreign_span_over_max_not_collapsed(self):
+        """A(60s)→B(10.5s)→A: aggregate span >= 10.0 → not collapsed."""
+        from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+        segs = [
+            _seg(0.0, 60.0, "A"),
+            _seg(60.0, 70.5, "B"),    # span 10.5 s >= 10.0
+            _seg(70.5, 160.0, "A"),
+        ]
+        result = _collapse_foreign_runs(segs)
+        assert len(result) == 3
+
+    def test_exactly_ten_seconds_span_survives(self):
+        """Aggregate span exactly 10.0s (strict <) → not collapsed."""
+        from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+        segs = [
+            _seg(0.0, 60.0, "A"),
+            _seg(60.0, 70.0, "B"),    # span exactly 10.0 s
+            _seg(70.0, 160.0, "A"),
+        ]
+        result = _collapse_foreign_runs(segs)
         assert len(result) == 3
 
     def test_empty_input(self):
         """Empty list → empty list."""
-        from congress_videos.modules.speaker_turns import _collapse_pingpong
-        assert _collapse_pingpong([]) == []
+        from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+        assert _collapse_foreign_runs([]) == []
 
     def test_single_segment_unchanged(self):
         """Single segment → returned unchanged."""
-        from congress_videos.modules.speaker_turns import _collapse_pingpong
+        from congress_videos.modules.speaker_turns import _collapse_foreign_runs
         segs = [_seg(0.0, 60.0, "A")]
-        result = _collapse_pingpong(segs)
+        result = _collapse_foreign_runs(segs)
         assert len(result) == 1
+
+    def test_cascading_chain_collapses_to_one_segment(self):
+        """A→B→A→B→A, each foreign leg short and each return gap short →
+        the whole chain cascades into a single A (the i += 3 regression:
+        the old algorithm skipped past the first collapsed triple and never
+        re-tested it against what followed)."""
+        from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+        segs = [
+            _seg(0.0, 60.0, "A"),
+            _seg(60.0, 60.5, "B"),     # 0.5 s foreign
+            _seg(60.5, 120.0, "A"),    # brief return
+            _seg(120.0, 120.3, "B"),   # 0.3 s foreign
+            _seg(120.3, 180.0, "A"),
+        ]
+        result = _collapse_foreign_runs(segs)
+        assert len(result) == 1
+        assert result[0]["speaker_label"] == "A"
+        assert result[0]["start_seconds"] == 0.0
+        assert result[0]["end_seconds"] == 180.0
+
+    def test_mixed_speaker_run_within_span_collapses(self):
+        """A→B→C→A: the foreign run need not share one label, only the
+        aggregate span from the run's first to last segment matters."""
+        from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+        segs = [
+            _seg(0.0, 60.0, "A"),
+            _seg(60.0, 63.0, "B"),
+            _seg(63.0, 66.0, "C"),
+            _seg(66.0, 150.0, "A"),   # aggregate span 66.0 - 60.0 = 6.0s < 10.0
+        ]
+        result = _collapse_foreign_runs(segs)
+        assert len(result) == 1
+        assert result[0]["speaker_label"] == "A"
+        assert result[0]["end_seconds"] == 150.0
+
+    def test_differing_bound_labels_survive(self):
+        """A→B→C with no return to A's label → not collapsed (no anchor
+        return found before the list ends)."""
+        from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+        segs = [
+            _seg(0.0, 60.0, "A"),
+            _seg(60.0, 63.0, "B"),
+            _seg(63.0, 120.0, "C"),
+        ]
+        result = _collapse_foreign_runs(segs)
+        assert len(result) == 3
+
+    def test_tail_run_with_no_return_survives(self):
+        """A foreign run at the tail with nothing to return to → survives
+        as-is."""
+        from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+        segs = [
+            _seg(0.0, 60.0, "A"),
+            _seg(60.0, 63.0, "B"),
+        ]
+        result = _collapse_foreign_runs(segs)
+        assert len(result) == 2
+
+    def test_list_starting_foreign_survives(self):
+        """First segment establishes the initial anchor — nothing precedes
+        it to collapse against, so no run is ever attempted around it."""
+        from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+        segs = [
+            _seg(0.0, 3.0, "B"),
+            _seg(3.0, 60.0, "A"),
+            _seg(60.0, 120.0, "A"),
+        ]
+        result = _collapse_foreign_runs(segs)
+        assert [s["speaker_label"] for s in result] == ["B", "A", "A"]
+
+    def test_long_alternation_only_qualifying_runs_collapse(self):
+        """A realistic multi-speaker debate: several separate foreign runs,
+        each individually spanning < 10s, plus one run >= 10s interleaved —
+        only the qualifying runs collapse; the long one survives (Sc.7)."""
+        from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+        segs = [
+            _seg(0.0, 100.0, "X"),
+            _seg(100.0, 103.0, "Y"),     # run 1: span 3s < 10 -> collapses
+            _seg(103.0, 200.0, "X"),
+            _seg(200.0, 215.0, "Y"),     # run 2: span 15s >= 10 -> survives
+            _seg(215.0, 300.0, "X"),
+            _seg(300.0, 305.0, "Y"),     # run 3: span 5s < 10 -> collapses
+            _seg(305.0, 400.0, "X"),
+        ]
+        result = _collapse_foreign_runs(segs)
+        # run 1 and run 3 collapse into their surrounding X stretches;
+        # run 2 (>=10s) remains a standalone Y segment.
+        assert [s["speaker_label"] for s in result] == ["X", "Y", "X"]
+        assert result[0]["start_seconds"] == 0.0
+        assert result[0]["end_seconds"] == 200.0
+        assert result[1]["speaker_label"] == "Y"
+        assert result[1]["start_seconds"] == 200.0
+        assert result[1]["end_seconds"] == 215.0
+        assert result[2]["start_seconds"] == 215.0
+        assert result[2]["end_seconds"] == 400.0
+
+
+class TestChapter263Regression:
+    """Real-data regression for issue #283: turns 200-210 of chapter 263.
+
+    Runs the postprocessing pipeline in order (drop micro-segments -> merge
+    gaps -> collapse foreign runs) and asserts the mis-anchoring blip chain
+    is fully absorbed while the real 21.8s interruption (turn 207) survives.
+    """
+
+    def test_chapter_263_regression(self):
+        from congress_videos.modules.speaker_turns import (
+            _collapse_foreign_runs,
+            _drop_micro_segments,
+            _merge_gaps,
+        )
+
+        segments = _chapter_263_segments()
+        segments = _drop_micro_segments(segments)
+        segments = _merge_gaps(segments)
+        segments = _collapse_foreign_runs(segments)
+
+        assert len(segments) == 4
+
+        assert segments[0]["speaker_label"] == "SPEAKER_01"
+        assert segments[0]["start_seconds"] == pytest.approx(8707.14)
+        assert segments[0]["end_seconds"] == pytest.approx(9158.63)
+
+        assert segments[1]["speaker_label"] == "SPEAKER_00"
+        assert segments[1]["start_seconds"] == pytest.approx(9158.61)
+        assert segments[1]["end_seconds"] == pytest.approx(9180.41)
+        assert segments[1]["end_seconds"] - segments[1]["start_seconds"] == pytest.approx(21.8)
+
+        assert segments[2]["speaker_label"] == "SPEAKER_04"
+        assert segments[2]["start_seconds"] == pytest.approx(9180.40)
+        assert segments[2]["end_seconds"] == pytest.approx(9454.40)
+
+        assert segments[3]["speaker_label"] == "SPEAKER_04"
+        assert segments[3]["start_seconds"] == pytest.approx(9461.16)
+        assert segments[3]["end_seconds"] == pytest.approx(9844.56)
 
 
 class TestMergeSameName:

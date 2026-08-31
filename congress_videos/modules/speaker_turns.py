@@ -42,11 +42,14 @@ speaker they introduce, so the window is [t - window, t], never forward."""
 GAP_MERGE_SECONDS: float = 1.0
 """Same-speaker segments closer than this are merged into one."""
 
-PINGPONG_B_MAX_SECONDS: float = 5.0
-"""Maximum B-segment duration for A→B→A ping-pong collapse."""
+MIN_SEGMENT_DURATION_SECONDS: float = 1.0
+"""Segments shorter than this are acoustic blips: dropped, their span absorbed
+by the previous kept segment. Measured as end_seconds - start_seconds; never
+confirmed_block_duration_seconds."""
 
-PINGPONG_RETURN_SECONDS: float = 10.0
-"""Maximum gap between end-of-B and start-of-return-A for collapse."""
+FOREIGN_INTERRUPTION_MAX_SECONDS: float = 10.0
+"""Maximum aggregate span of a run of consecutive foreign segments bounded by
+the same speaker_label on both sides before the run is collapsed away."""
 
 LLM_RESOLVED_CONFIDENCE: float = 0.85
 """Fixed persisted confidence for source='llm_resolved' (not the model's own
@@ -207,6 +210,34 @@ def extract_announcement(
 # ---------------------------------------------------------------------------
 
 
+def _drop_micro_segments(segments: list[dict]) -> list[dict]:
+    """Drop sub-second segments, absorbing their span into the predecessor.
+
+    Any segment whose duration (``end_seconds - start_seconds``) is strictly
+    less than ``MIN_SEGMENT_DURATION_SECONDS`` is treated as an acoustic blip:
+    it never survives as its own segment. Its span is absorbed by extending
+    the previous KEPT segment's ``end_seconds`` to the blip's ``end_seconds``,
+    preserving the contiguous tiling built upstream. A leading blip with no
+    predecessor yet established is dropped outright — nothing absorbs it.
+
+    Args:
+        segments: Segment dicts ordered by ``start_seconds``, with keys
+                  ``start_seconds`` and ``end_seconds`` at minimum.
+
+    Returns:
+        New list with sub-second segments removed. Input dicts are never
+        mutated.
+    """
+    result: list[dict] = []
+    for seg in segments:
+        if seg["end_seconds"] - seg["start_seconds"] >= MIN_SEGMENT_DURATION_SECONDS:
+            result.append(dict(seg))
+        elif result:
+            result[-1] = {**result[-1], "end_seconds": seg["end_seconds"]}
+        # else: leading blip with no predecessor -> dropped outright
+    return result
+
+
 def _merge_gaps(segments: list[dict]) -> list[dict]:
     """Merge adjacent same-label segments separated by less than GAP_MERGE_SECONDS.
 
@@ -236,50 +267,56 @@ def _merge_gaps(segments: list[dict]) -> list[dict]:
     return result
 
 
-def _collapse_pingpong(segments: list[dict]) -> list[dict]:
-    """Collapse A→B→A ping-pong patterns where B is short.
+def _collapse_foreign_runs(segments: list[dict]) -> list[dict]:
+    """Collapse runs of short foreign segments bounded by the same label.
 
-    Collapses the triple when:
-    - ``B_duration < PINGPONG_B_MAX_SECONDS``
-    - ``gap_between_B_end_and_A_return < PINGPONG_RETURN_SECONDS``
+    For a run of one or more consecutive segments whose ``speaker_label``
+    differs from the preceding kept (anchor) segment, if the run eventually
+    returns to the anchor's label, the run's aggregate span
+    (``last_foreign.end_seconds - first_foreign.start_seconds``) is compared
+    against ``FOREIGN_INTERRUPTION_MAX_SECONDS``. When the span qualifies,
+    the run collapses into the anchor (which stays as ``out[-1]``), and the
+    sweep continues from just past the returning segment — re-testing the
+    now-extended anchor against whatever comes next, so chains of qualifying
+    runs cascade into a single merged segment. A run with no return to the
+    anchor's label before the list ends is left untouched. Foreign segments
+    within a run need not all share one label; only the two bounding
+    stretches must carry the identical ``speaker_label``.
 
     Args:
         segments: Segment dicts ordered by ``start_seconds``.
 
     Returns:
-        New list with collapsed patterns. Input dicts are never mutated.
+        New list with collapsed runs. Input dicts are never mutated.
     """
     if len(segments) < 3:
-        return list(segments)
+        return [dict(s) for s in segments]
 
-    result: list[dict] = []
+    out: list[dict] = []
     i = 0
-
     while i < len(segments):
-        if i + 2 < len(segments):
-            a1 = segments[i]
-            b = segments[i + 1]
-            a2 = segments[i + 2]
+        cur = segments[i]
+        if not out or cur["speaker_label"] == out[-1]["speaker_label"]:
+            out.append(dict(cur))
+            i += 1
+            continue
 
-            b_duration = b["end_seconds"] - b["start_seconds"]
-            return_gap = a2["start_seconds"] - b["end_seconds"]
+        anchor = out[-1]
+        j = i
+        while j < len(segments) and segments[j]["speaker_label"] != anchor["speaker_label"]:
+            j += 1
 
-            if (
-                a1["speaker_label"] == a2["speaker_label"]
-                and a1["speaker_label"] != b["speaker_label"]
-                and b_duration < PINGPONG_B_MAX_SECONDS
-                and return_gap < PINGPONG_RETURN_SECONDS
-            ):
-                # Collapse: merge a1 and a2 into one, skip b
-                merged = {**a1, "end_seconds": a2["end_seconds"]}
-                result.append(merged)
-                i += 3
+        if j < len(segments):
+            span = segments[j - 1]["end_seconds"] - segments[i]["start_seconds"]
+            if span < FOREIGN_INTERRUPTION_MAX_SECONDS:
+                out[-1] = {**anchor, "end_seconds": segments[j]["end_seconds"]}
+                i = j + 1
                 continue
 
-        result.append(segments[i])
+        out.append(dict(cur))
         i += 1
 
-    return result
+    return out
 
 
 def _merge_same_name(turns: list[Turn]) -> list[Turn]:
@@ -522,8 +559,8 @@ def detect_turns(
 ) -> list[Turn]:
     """Detect speaker-turn boundaries within a video chapter.
 
-    Orchestrates: diarize_fn → gap-merge → ping-pong collapse → text gate
-    → same-name merge. Returns Turn[].
+    Orchestrates: diarize_fn → drop micro-segments → gap-merge → foreign-run
+    collapse → text gate → same-name merge. Returns Turn[].
 
     Never touches Airflow context, DB, or Docker directly. All
     side-effecting collaborators are injected.
@@ -588,8 +625,9 @@ def detect_turns(
         segments.append(seg)
 
     # Postprocessing pipeline
+    segments = _drop_micro_segments(segments)
     segments = _merge_gaps(segments)
-    segments = _collapse_pingpong(segments)
+    segments = _collapse_foreign_runs(segments)
     turns = _apply_text_gate(segments, srt_blocks, name_resolver, completion_fn=completion_fn)
     turns = _merge_same_name(turns)
 
