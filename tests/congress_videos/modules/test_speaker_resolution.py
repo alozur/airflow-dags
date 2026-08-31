@@ -333,3 +333,111 @@ class TestResolveSpeakerSlugCaseSensitivity:
             result = resolve_speaker(turn, participants, completion_fn=fake_completion)
 
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Rule 3 (issue #283) — intro-window anchor on group_start_seconds
+# ---------------------------------------------------------------------------
+
+class TestIntroWindowAnchor:
+
+    def test_group_start_seconds_anchors_intro_window(self):
+        """group_start_seconds anchors the 120s intro look-back window, not
+        the representative turn's own start_seconds (issue #283 rule 3)."""
+        from congress_videos.modules.speaker_resolution import resolve_speaker
+
+        turn = _make_turn(start_seconds=400.0)
+        turn["group_start_seconds"] = 100.0
+        participants = _make_participants(["pedro-sanchez"])
+        # Block near t=95 is inside the NEW window [max(0,100-120),100)=[0,100)
+        # but far outside the OLD window [400-120,400)=[280,400).
+        blocks = _make_blocks([
+            (90.0, 95.0, "Tiene la palabra el diputado Sanchez"),
+        ])
+        captured = {}
+
+        def fake_completion(system, user, **kw):
+            captured["user"] = user
+            return _ok_completion("pedro-sanchez", 0.95)
+
+        with (
+            patch("congress_videos.modules.speaker_resolution.find_srt_for_chapter", return_value="/fake/src.srt"),
+            patch("congress_videos.modules.speaker_resolution._parse_srt_blocks", return_value=blocks),
+        ):
+            result = resolve_speaker(turn, participants, completion_fn=fake_completion)
+
+        assert result is not None
+        assert "diputado Sanchez" in captured["user"]
+
+    def test_missing_group_start_seconds_key_behaves_as_today(self):
+        """No group_start_seconds key -> identical to pre-fix behaviour
+        (anchors on start_seconds), matching every existing call site."""
+        from congress_videos.modules.speaker_resolution import resolve_speaker
+
+        turn = _make_turn(start_seconds=300.0)
+        assert "group_start_seconds" not in turn
+        participants = _make_participants(["pedro-sanchez"])
+        blocks = _make_blocks([(200.0, 210.0, "Tiene la palabra")])
+
+        def fake_completion(system, user, **kw):
+            return _ok_completion("pedro-sanchez", 0.95)
+
+        with (
+            patch("congress_videos.modules.speaker_resolution.find_srt_for_chapter", return_value="/fake/src.srt"),
+            patch("congress_videos.modules.speaker_resolution._parse_srt_blocks", return_value=blocks),
+        ):
+            result = resolve_speaker(turn, participants, completion_fn=fake_completion)
+
+        assert result is not None
+        assert result["participant_slug"] == "pedro-sanchez"
+
+    def test_group_start_seconds_none_falls_back_to_start_seconds(self):
+        """group_start_seconds present but None -> falls back to
+        start_seconds (explicit `is not None` check, not a truthy `or`, so a
+        legitimate 0.0 would be honoured too)."""
+        from congress_videos.modules.speaker_resolution import resolve_speaker
+
+        turn = _make_turn(start_seconds=300.0)
+        turn["group_start_seconds"] = None
+        participants = _make_participants(["pedro-sanchez"])
+        blocks = _make_blocks([(200.0, 210.0, "Tiene la palabra")])
+
+        def fake_completion(system, user, **kw):
+            return _ok_completion("pedro-sanchez", 0.95)
+
+        with (
+            patch("congress_videos.modules.speaker_resolution.find_srt_for_chapter", return_value="/fake/src.srt"),
+            patch("congress_videos.modules.speaker_resolution._parse_srt_blocks", return_value=blocks),
+        ):
+            result = resolve_speaker(turn, participants, completion_fn=fake_completion)
+
+        assert result is not None
+        assert result["participant_slug"] == "pedro-sanchez"
+
+    def test_forward_turn_context_window_stays_pinned_to_start_seconds(self):
+        """The forward turn-context window remains anchored on the
+        representative turn's own start_seconds/end_seconds, unaffected by
+        the group_start_seconds intro-window change."""
+        from congress_videos.modules.speaker_resolution import resolve_speaker
+
+        turn = _make_turn(start_seconds=400.0, end_seconds=600.0)
+        turn["group_start_seconds"] = 100.0
+        participants = _make_participants(["pedro-sanchez"])
+        # Block at start_seconds + 10 must remain in the turn-context window.
+        blocks = _make_blocks([
+            (410.0, 420.0, "Señor presidente, comienzo mi intervención"),
+        ])
+        captured = {}
+
+        def fake_completion(system, user, **kw):
+            captured["user"] = user
+            return _ok_completion("pedro-sanchez", 0.95)
+
+        with (
+            patch("congress_videos.modules.speaker_resolution.find_srt_for_chapter", return_value="/fake/src.srt"),
+            patch("congress_videos.modules.speaker_resolution._parse_srt_blocks", return_value=blocks),
+        ):
+            result = resolve_speaker(turn, participants, completion_fn=fake_completion)
+
+        assert result is not None
+        assert "comienzo mi intervención" in captured["user"]
