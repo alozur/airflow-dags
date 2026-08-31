@@ -318,10 +318,14 @@ SPEAKER_RESOLUTION_SYSTEM_PROMPT = (
     "- The participant_slug field MUST be copied EXACTLY from the provided list, "
     "or set to null if you cannot attribute with confidence.\n"
     "- confidence is a float between 0.0 and 1.0 reflecting how certain you are.\n"
-    "- evidence is a short string (one sentence) quoting the key phrase that led "
-    "to your decision.\n\n"
+    "- evidence MUST be a verbatim quote copied directly from the intro window "
+    "or turn window text above — never paraphrase, summarize, or invent it.\n"
+    "- If you cannot quote a verbatim phrase from the provided text that "
+    "supports your attribution, you MUST return participant_slug as null. "
+    "Do not fabricate a name or an evidence quote just to produce an answer; "
+    "an honest null is always preferred over a fabricated attribution.\n\n"
     'JSON schema: {"participant_slug": "<slug from list or null>", '
-    '"confidence": <0.0-1.0>, "evidence": "<one sentence>"}'
+    '"confidence": <0.0-1.0>, "evidence": "<verbatim quote from the text above>"}'
 )
 
 SPEAKER_RESOLUTION_USER_TEMPLATE = (

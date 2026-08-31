@@ -16,12 +16,16 @@ scheduler constructs, so this module is safe to parse under the scheduler.
 from __future__ import annotations
 
 import logging
+import unicodedata
 from typing import Callable
+
+from rapidfuzz import fuzz
 
 from congress_videos.config.ai_prompts import (
     SPEAKER_RESOLUTION_SYSTEM_PROMPT,
     SPEAKER_RESOLUTION_USER_TEMPLATE,
 )
+from congress_videos.modules.announcement_patterns import has_announcement_phrase
 from congress_videos.srt_helpers import _parse_srt_blocks, find_srt_for_chapter
 
 logger = logging.getLogger(__name__)
@@ -38,6 +42,50 @@ TURN_CONTEXT_SECS: int = 60
 
 SPEAKER_RESOLUTION_MIN_CONFIDENCE: float = 0.80
 """Minimum model confidence required to accept a resolution result."""
+
+EVIDENCE_MIN_PARTIAL_RATIO: int = 85
+"""Minimum rapidfuzz partial_ratio between normalized evidence and the
+normalized model-visible text for a candidate's evidence to be accepted."""
+
+EVIDENCE_MIN_NORMALIZED_CHARS: int = 12
+"""Evidence shorter than this many normalized characters is rejected
+outright, without computing partial_ratio."""
+
+REQUIRE_ANNOUNCEMENT_PHRASE: bool = True
+"""Kill switch (issue #284): when True, resolve_speaker refuses to call
+completion_fn unless intro_text or turn_text contains a presiding-officer
+announcement phrase. Flip to False to fully revert the pre-gate."""
+
+
+# ---------------------------------------------------------------------------
+# Evidence normalization / verification (issue #284)
+# ---------------------------------------------------------------------------
+
+def _normalize_for_evidence(text: str) -> str:
+    """casefold -> NFD -> drop combining marks -> collapse whitespace."""
+    folded = text.casefold()
+    decomposed = unicodedata.normalize("NFD", folded)
+    stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return " ".join(stripped.split())
+
+
+def _evidence_supported(evidence: str | None, source_text: str) -> bool:
+    """False when evidence is None/blank, shorter than
+    EVIDENCE_MIN_NORMALIZED_CHARS normalized chars, or its normalized form's
+    rapidfuzz partial_ratio against the normalized source_text is below
+    EVIDENCE_MIN_PARTIAL_RATIO. Never raises: non-str evidence is rejected
+    rather than crashing on ``.casefold()``.
+    """
+    if not evidence or not isinstance(evidence, str):
+        return False
+
+    normalized_evidence = _normalize_for_evidence(evidence)
+    if len(normalized_evidence) < EVIDENCE_MIN_NORMALIZED_CHARS:
+        return False
+
+    normalized_text = _normalize_for_evidence(source_text)
+    ratio = fuzz.partial_ratio(normalized_evidence, normalized_text)
+    return ratio >= EVIDENCE_MIN_PARTIAL_RATIO
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +208,19 @@ def _resolve_speaker_inner(
     intro_text = "\n".join(b["text"] for b in intro_blocks) if intro_blocks else "(no intro)"
     turn_text = "\n".join(b["text"] for b in turn_blocks) if turn_blocks else "(no turn context)"
 
+    # Announcement pre-gate (issue #284): refuse to call completion_fn at
+    # all unless the presiding officer's announcement phrase appears
+    # somewhere in the model-visible text. Calling an LLM with no textual
+    # basis for attribution invites a hallucinated name.
+    combined_text = f"{intro_text}\n{turn_text}"
+    if REQUIRE_ANNOUNCEMENT_PHRASE and not has_announcement_phrase(combined_text):
+        logger.info(
+            "resolve_speaker: no announcement phrase in intro+turn text for "
+            "turn_id=%s — skipping LLM call",
+            turn.get("turn_id"),
+        )
+        return None
+
     # Serialize participant roster: slug | display_name | party
     roster_lines = [
         f"{p['slug']} | {p.get('display_name', '')} | {p.get('party', '')}"
@@ -224,6 +285,18 @@ def _resolve_speaker_inner(
             "resolve_speaker: confidence %.2f < %.2f for turn_id=%s — returning None",
             confidence,
             SPEAKER_RESOLUTION_MIN_CONFIDENCE,
+            turn.get("turn_id"),
+        )
+        return None
+
+    # Evidence verification (issue #284): independent of self-reported
+    # confidence — a candidate whose evidence cannot be located in the
+    # model-visible text is rejected even at confidence 0.99. Runs last so
+    # every earlier return path/log line above stays byte-identical.
+    if not _evidence_supported(evidence, combined_text):
+        logger.info(
+            "resolve_speaker: evidence not locatable in model-visible text "
+            "for turn_id=%s — returning None",
             turn.get("turn_id"),
         )
         return None

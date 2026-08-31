@@ -122,6 +122,82 @@ class TestMarkTurnResolved:
 
 
 # ---------------------------------------------------------------------------
+# promote_turn_type_to_qa (issue #282 rule 4)
+# ---------------------------------------------------------------------------
+
+class TestPromoteTurnTypeToQa:
+    """promote_turn_type_to_qa(output_path) — promote-only monologue->qa write-back."""
+
+    def test_sql_sets_turn_type_to_qa(self):
+        """UPDATE must set turn_type = 'qa'."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        cursor.rowcount = 1
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.promote_turn_type_to_qa("/data/turns/1/video.mp4")
+
+        query = cursor.execute.call_args[0][0].upper().replace("\n", " ")
+        assert "TURN_TYPE = 'QA'" in query, f"must SET turn_type='qa'; got: {query}"
+
+    def test_sql_guards_with_monologue_where_clause(self):
+        """UPDATE WHERE must guard with turn_type = 'monologue' (promote-only)."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        cursor.rowcount = 1
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.promote_turn_type_to_qa("/data/turns/1/video.mp4")
+
+        query = cursor.execute.call_args[0][0].upper().replace("\n", " ")
+        assert "TURN_TYPE = 'MONOLOGUE'" in query, (
+            f"must guard promotion on the current value being 'monologue'; got: {query}"
+        )
+
+    def test_sql_filters_by_output_path(self):
+        """UPDATE WHERE must filter by output_path, and pass it as the sole param."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        cursor.rowcount = 1
+        output_path = "/data/turns/1/video.mp4"
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.promote_turn_type_to_qa(output_path)
+
+        query = cursor.execute.call_args[0][0].upper()
+        params = cursor.execute.call_args[0][1]
+        assert "OUTPUT_PATH" in query and "WHERE" in query
+        assert params == (output_path,)
+
+    def test_returns_rowcount(self):
+        """promote_turn_type_to_qa must return the UPDATE's rowcount."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        cursor.rowcount = 3
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            result = db.promote_turn_type_to_qa("/data/turns/1/video.mp4")
+
+        assert result == 3
+
+    def test_second_call_is_idempotent_noop(self):
+        """A repeated call for an already-'qa' output_path affects zero rows."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        cursor.rowcount = 0
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            result = db.promote_turn_type_to_qa("/data/turns/1/video.mp4")
+
+        assert result == 0
+
+
+# ---------------------------------------------------------------------------
 # mark_chapter_resolved (issue #263)
 # ---------------------------------------------------------------------------
 

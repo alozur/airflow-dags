@@ -415,44 +415,68 @@ class TestModuleConstants:
 # ---------------------------------------------------------------------------
 
 
+def _rows(turn_ids: list[int], label: str = "SPEAKER_00") -> dict[int, dict]:
+    """Build a turn_rows_by_id map where EVERY turn shares one speaker_label.
+
+    The label path is therefore always inconclusive (<2 distinct substantial
+    labels survive), so it returns None and classify_turn_type falls through
+    to the name-based rule — letting the existing name-rule assertions below
+    keep governing the asserted outcome (issue #282, task 3.1).
+    """
+    rows: dict[int, dict] = {}
+    for i, tid in enumerate(turn_ids):
+        start = float(i * 10)
+        rows[tid] = {
+            "start_seconds": start,
+            "end_seconds": start + 5.0,
+            "speaker_label": label,
+        }
+    return rows
+
+
 class TestClassifyTurnType:
-    """Unit tests for classify_turn_type (pure function, no I/O)."""
+    """Unit tests for classify_turn_type (pure function, no I/O).
+
+    3-arg signature (issue #282): turn_rows_by_id is now required. Every
+    row here shares one speaker_label via _rows(), so the label path is
+    inconclusive and the pre-existing name-based rule governs each outcome.
+    """
 
     def test_single_turn_is_monologue(self):
         """A group of exactly one turn always yields 'monologue'."""
         resolved = {1: "Maria Lopez"}
-        assert classify_turn_type([1], resolved) == MONOLOGUE
+        assert classify_turn_type([1], resolved, _rows([1])) == MONOLOGUE
 
     def test_all_null_resolved_names_is_monologue(self):
         """All-NULL resolved_names (all unknown) → 'monologue'."""
         resolved = {1: None, 2: None, 3: None}
-        assert classify_turn_type([1, 2, 3], resolved) == MONOLOGUE
+        assert classify_turn_type([1, 2, 3], resolved, _rows([1, 2, 3])) == MONOLOGUE
 
     def test_all_placeholder_names_is_monologue(self):
         """All placeholder resolved_names → 'monologue'."""
         resolved = {1: "desconocido", 2: "unknown", 3: "(no especificado)"}
-        assert classify_turn_type([1, 2, 3], resolved) == MONOLOGUE
+        assert classify_turn_type([1, 2, 3], resolved, _rows([1, 2, 3])) == MONOLOGUE
 
     def test_one_real_plus_unknowns_is_monologue(self):
         """One real name + several NULL/placeholder → 'monologue'."""
         resolved = {1: "Pedro Sanchez", 2: None, 3: "desconocido", 4: None}
-        assert classify_turn_type([1, 2, 3, 4], resolved) == MONOLOGUE
+        assert classify_turn_type([1, 2, 3, 4], resolved, _rows([1, 2, 3, 4])) == MONOLOGUE
 
     def test_two_distinct_real_names_is_qa(self):
         """Two distinct non-placeholder, non-NULL names → 'qa'."""
         resolved = {1: "Pedro Sanchez", 2: "Alberto Gonzalez"}
-        assert classify_turn_type([1, 2], resolved) == QA
+        assert classify_turn_type([1, 2], resolved, _rows([1, 2])) == QA
 
     def test_two_turns_same_real_name_is_monologue(self):
         """Repeated real name does not count as two distinct speakers → 'monologue'."""
         resolved = {1: "Pedro Sanchez", 2: "Pedro Sanchez"}
-        assert classify_turn_type([1, 2], resolved) == MONOLOGUE
+        assert classify_turn_type([1, 2], resolved, _rows([1, 2])) == MONOLOGUE
 
     def test_role_only_placeholder_skipped(self):
         """Role-only string (e.g. 'Portavoz del grupo') is a placeholder → skipped."""
         # 'Portavoz del grupo' matches _ROLE_ONLY_RE → placeholder → monologue
         resolved = {1: "Pedro Sanchez", 2: "Portavoz del grupo"}
-        assert classify_turn_type([1, 2], resolved) == MONOLOGUE
+        assert classify_turn_type([1, 2], resolved, _rows([1, 2])) == MONOLOGUE
 
     def test_constants_have_correct_values(self):
         """MONOLOGUE and QA module constants must have the string values they document."""
@@ -462,7 +486,125 @@ class TestClassifyTurnType:
     def test_mixed_real_and_placeholder_with_two_real_is_qa(self):
         """Two distinct real names even when some turns are placeholder → 'qa'."""
         resolved = {1: "Pedro Sanchez", 2: None, 3: "Alberto Gonzalez"}
-        assert classify_turn_type([1, 2, 3], resolved) == QA
+        assert classify_turn_type([1, 2, 3], resolved, _rows([1, 2, 3])) == QA
+
+
+class TestClassifyTurnTypeLabelRules:
+    """Label-first classification rules fed by real speaker_label/duration
+    data (issue #282). The label path takes priority over the name-based
+    fallback whenever >=2 substantial distinct labels survive noise
+    filtering (drop_micro_segments -> collapse_foreign_runs, D4)."""
+
+    def test_two_substantial_labels_with_null_names_is_qa(self):
+        """>=2 distinct substantial labels -> 'qa' even with all-NULL names."""
+        rows = {
+            1: {"start_seconds": 0.0, "end_seconds": 10.0, "speaker_label": "SPEAKER_00"},
+            2: {"start_seconds": 10.0, "end_seconds": 20.0, "speaker_label": "SPEAKER_01"},
+        }
+        resolved = {1: None, 2: None}
+        assert classify_turn_type([1, 2], resolved, rows) == QA
+
+    def test_sub_second_blip_label_excluded(self):
+        """A label surviving only via a <1s segment never counts as substantial."""
+        rows = {
+            1: {"start_seconds": 0.0, "end_seconds": 10.0, "speaker_label": "SPEAKER_00"},
+            2: {"start_seconds": 10.0, "end_seconds": 10.5, "speaker_label": "SPEAKER_01"},
+            3: {"start_seconds": 10.5, "end_seconds": 20.0, "speaker_label": "SPEAKER_00"},
+        }
+        resolved = {1: None, 2: None, 3: None}
+        assert classify_turn_type([1, 2, 3], resolved, rows) == MONOLOGUE
+
+    def test_foreign_run_under_10s_collapses_to_name_rule(self):
+        """A <10s foreign run bounded by the same label collapses away, leaving
+        1 distinct label -> falls through to the (inconclusive) name rule."""
+        rows = {
+            1: {"start_seconds": 0.0, "end_seconds": 10.0, "speaker_label": "A"},
+            2: {"start_seconds": 10.0, "end_seconds": 15.0, "speaker_label": "B"},
+            3: {"start_seconds": 15.0, "end_seconds": 25.0, "speaker_label": "A"},
+        }
+        resolved = {1: None, 2: None, 3: None}
+        assert classify_turn_type([1, 2, 3], resolved, rows) == MONOLOGUE
+
+    def test_chained_foreign_runs_cascade(self):
+        """A chain of qualifying <10s foreign runs must all collapse into the
+        anchor label, not just the first one."""
+        rows = {
+            1: {"start_seconds": 0.0, "end_seconds": 10.0, "speaker_label": "A"},
+            2: {"start_seconds": 10.0, "end_seconds": 13.0, "speaker_label": "B"},
+            3: {"start_seconds": 13.0, "end_seconds": 20.0, "speaker_label": "A"},
+            4: {"start_seconds": 20.0, "end_seconds": 23.0, "speaker_label": "C"},
+            5: {"start_seconds": 23.0, "end_seconds": 30.0, "speaker_label": "A"},
+        }
+        resolved = {1: None, 2: None, 3: None, 4: None, 5: None}
+        assert classify_turn_type([1, 2, 3, 4, 5], resolved, rows) == MONOLOGUE
+
+    def test_decimal_seconds_handled(self):
+        """Postgres NUMERIC seconds (decimal.Decimal) must not raise; two
+        distinct substantial labels still yield 'qa'."""
+        rows = {
+            1: {"start_seconds": Decimal("0.0"), "end_seconds": Decimal("10.0"), "speaker_label": "A"},
+            2: {"start_seconds": Decimal("10.0"), "end_seconds": Decimal("20.0"), "speaker_label": "B"},
+        }
+        resolved = {1: None, 2: None}
+        assert classify_turn_type([1, 2], resolved, rows) == QA
+
+    def test_missing_row_falls_back_to_name_rule(self):
+        """turn_ids absent from turn_rows_by_id are excluded from the label
+        path; fewer than 2 usable rows -> falls through to the name rule."""
+        rows = {
+            1: {"start_seconds": 0.0, "end_seconds": 10.0, "speaker_label": "A"},
+        }
+        resolved = {1: None, 2: "Pedro Sanchez", 3: "Alberto Gonzalez"}
+        assert classify_turn_type([1, 2, 3], resolved, rows) == QA
+
+    def test_none_or_blank_label_ignored(self):
+        """None or blank speaker_label rows are excluded from the label path."""
+        rows = {
+            1: {"start_seconds": 0.0, "end_seconds": 10.0, "speaker_label": None},
+            2: {"start_seconds": 10.0, "end_seconds": 20.0, "speaker_label": ""},
+            3: {"start_seconds": 20.0, "end_seconds": 30.0, "speaker_label": "A"},
+        }
+        resolved = {1: "Pedro Sanchez", 2: None, 3: "Alberto Gonzalez"}
+        assert classify_turn_type([1, 2, 3], resolved, rows) == QA
+
+    def test_two_labels_plus_one_real_name_never_monologue(self):
+        """The label path wins outright when it qualifies — a single real
+        name among the group must never pull the result back to monologue."""
+        rows = {
+            1: {"start_seconds": 0.0, "end_seconds": 10.0, "speaker_label": "A"},
+            2: {"start_seconds": 10.0, "end_seconds": 20.0, "speaker_label": "B"},
+        }
+        resolved = {1: "Pedro Sanchez", 2: None}
+        assert classify_turn_type([1, 2], resolved, rows) == QA
+
+
+class TestClassifyTurnTypeChapter263Regression:
+    """Regression for issue #282 using the REAL turns 202-210 shape from
+    chapter 263 / video 4htFnCncrkw (same source data as the #283 postproc
+    fixture in test_speaker_turns.py's _chapter_263_segments()). Pre-fix,
+    classify_turn_type never read speaker_label/duration, so this
+    label-diverse, names-never-resolved group was frozen at 'monologue'."""
+
+    def test_chapter_263_turns_202_210_regression(self):
+        turn_ids = list(range(202, 211))
+        real_segments = [
+            (8870.00, 8934.683, "SPEAKER_01"),   # 202
+            (8934.683, 8934.763, "SPEAKER_03"),  # 203 (0.08s blip)
+            (8934.763, 8934.913, "SPEAKER_01"),  # 204 (0.15s blip)
+            (8934.913, 8934.930, "SPEAKER_03"),  # 205 (0.017s blip)
+            (8934.930, 9158.630, "SPEAKER_01"),  # 206 (223.7s)
+            (9158.610, 9180.410, "SPEAKER_00"),  # 207 (21.8s — must survive)
+            (9180.400, 9453.900, "SPEAKER_04"),  # 208
+            (9453.900, 9454.400, "SPEAKER_01"),  # 209 (0.5s blip)
+            (9461.160, 9844.560, "SPEAKER_04"),  # 210
+        ]
+        rows = {
+            tid: {"start_seconds": s, "end_seconds": e, "speaker_label": label}
+            for tid, (s, e, label) in zip(turn_ids, real_segments)
+        }
+        resolved_by_id = {tid: None for tid in turn_ids}  # names never resolved (the bug symptom)
+
+        assert classify_turn_type(turn_ids, resolved_by_id, rows) == QA
 
 
 class TestDecimalInputs:

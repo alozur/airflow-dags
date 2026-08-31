@@ -26,9 +26,24 @@ from congress_videos.config.ai_prompts import (
     TURN_NAME_RESOLUTION_SYSTEM_PROMPT,
     TURN_NAME_RESOLUTION_USER_TEMPLATE,
 )
+from congress_videos.modules.announcement_patterns import (
+    RE_GRACIAS_SENORIA,
+    RE_NAMED,
+    RE_SU_SENORIA,
+)
 from congress_videos.modules.sidecar_api_error import SidecarApiError
 
 log = logging.getLogger(__name__)
+
+__all__ = [
+    "Turn",
+    "detect_turns",
+    "extract_announcement",
+    "drop_micro_segments",
+    "collapse_foreign_runs",
+    "MIN_SEGMENT_DURATION_SECONDS",
+    "FOREIGN_INTERRUPTION_MAX_SECONDS",
+]
 
 # ---------------------------------------------------------------------------
 # Module-level constants (tunable thresholds)
@@ -111,23 +126,12 @@ def _normalize_text(text: str) -> str:
     return unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode("ascii")
 
 
-# Pattern capturing the name after "el señor / la señora"
-_RE_NAMED = re.compile(
-    r"tiene\s+la\s+palabra\s+(?:el\s+se[nñ]or|la\s+se[nñ]ora)\s+"
-    r"(?P<name>[\wÀ-ɏ.\- ]+?)(?:[.,]|\s*$)",
-    re.IGNORECASE,
-)
-
-# Phrase-only patterns (no name captured)
-_RE_SU_SENORIA = re.compile(
-    r"tiene\s+la\s+palabra\s+su\s+se[nñ]or[íi]a",
-    re.IGNORECASE,
-)
-
-_RE_GRACIAS_SENORIA = re.compile(
-    r"gracias,?\s+se[nñ]or[íi]a",
-    re.IGNORECASE,
-)
+# Back-compat private aliases (issue #284): the three patterns now live in
+# announcement_patterns.py, shared with speaker_resolution.py. These names
+# stay importable and identical (same compiled objects) for existing callers.
+_RE_NAMED = RE_NAMED
+_RE_SU_SENORIA = RE_SU_SENORIA
+_RE_GRACIAS_SENORIA = RE_GRACIAS_SENORIA
 
 # ---------------------------------------------------------------------------
 # President-announcement extractor (pure)
@@ -317,6 +321,14 @@ def _collapse_foreign_runs(segments: list[dict]) -> list[dict]:
         i += 1
 
     return out
+
+
+# Public aliases (issue #282): materialization.py's classify_turn_type
+# reuses these #283 noise filters instead of duplicating them. Same
+# functions, same objects — the private names above stay the primary
+# call sites within this module and keep their 46 existing test references.
+drop_micro_segments = _drop_micro_segments
+collapse_foreign_runs = _collapse_foreign_runs
 
 
 def _merge_same_name(turns: list[Turn]) -> list[Turn]:

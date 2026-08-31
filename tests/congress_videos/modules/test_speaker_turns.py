@@ -1296,3 +1296,52 @@ class TestDetectTurnsPropagation:
 
         result = detect_turns(self._make_chapter(), [], empty_diarize, lambda n: None)
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Public filter aliases (issue #282) — materialization.py reuses these
+# instead of duplicating the #283 noise filters.
+# ---------------------------------------------------------------------------
+
+class TestPublicFilterAliases:
+
+    def test_drop_micro_segments_alias_is_same_object(self):
+        from congress_videos.modules.speaker_turns import (
+            _drop_micro_segments,
+            drop_micro_segments,
+        )
+
+        assert drop_micro_segments is _drop_micro_segments
+
+    def test_collapse_foreign_runs_alias_is_same_object(self):
+        from congress_videos.modules.speaker_turns import (
+            _collapse_foreign_runs,
+            collapse_foreign_runs,
+        )
+
+        assert collapse_foreign_runs is _collapse_foreign_runs
+
+    def test_min_segment_duration_seconds_exported(self):
+        from congress_videos.modules import speaker_turns
+
+        assert "MIN_SEGMENT_DURATION_SECONDS" in speaker_turns.__all__
+        assert speaker_turns.MIN_SEGMENT_DURATION_SECONDS == 1.0
+
+    def test_foreign_interruption_max_seconds_exported(self):
+        from congress_videos.modules import speaker_turns
+
+        assert "FOREIGN_INTERRUPTION_MAX_SECONDS" in speaker_turns.__all__
+        assert speaker_turns.FOREIGN_INTERRUPTION_MAX_SECONDS == 10.0
+
+    def test_all_contents(self):
+        from congress_videos.modules import speaker_turns
+
+        assert set(speaker_turns.__all__) == {
+            "Turn",
+            "detect_turns",
+            "extract_announcement",
+            "drop_micro_segments",
+            "collapse_foreign_runs",
+            "MIN_SEGMENT_DURATION_SECONDS",
+            "FOREIGN_INTERRUPTION_MAX_SECONDS",
+        }

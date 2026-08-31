@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from congress_videos.modules.speaker_placeholders import is_placeholder
+from congress_videos.modules.speaker_turns import collapse_foreign_runs, drop_micro_segments
 
 __all__ = [
     "KeepInterval",
@@ -65,16 +66,32 @@ non-NULL) resolved_names."""
 def classify_turn_type(
     turn_ids: tuple[int, ...] | list[int],
     resolved_by_id: dict[int, str | None],
+    turn_rows_by_id: dict[int, dict],
 ) -> str:
-    """Return 'qa' if the group spans >=2 DISTINCT real speakers; 'monologue' otherwise.
+    """Return 'qa' if the group has >=2 distinct real speakers; 'monologue' otherwise.
 
-    A solo turn (len==1) always returns 'monologue'. NULL and placeholder
-    resolved_names are treated as unknown and never count toward the distinct
-    real-speaker tally.
+    Rule order (issue #282 — label-first, breaking signature change):
+    1. A solo turn (len==1) always returns 'monologue'.
+    2. Label path: rows for turn_ids with a usable ``speaker_label`` and
+       numeric ``start_seconds``/``end_seconds`` are sorted by start time,
+       then run through the same noise filters #283 already applies
+       (``drop_micro_segments`` -> ``collapse_foreign_runs``, imported as
+       public aliases from ``speaker_turns``). >=2 distinct surviving
+       labels -> 'qa', regardless of resolved-name state.
+    3. Name fallback (pre-#282 behaviour): used only when fewer than 2
+       usable rows exist, or fewer than 2 substantial labels survive
+       filtering. >=2 distinct non-placeholder, non-NULL resolved_names
+       -> 'qa'; else 'monologue'.
+
+    Never performs I/O. Never raises — every input hazard (missing row,
+    None/blank label, non-numeric seconds, Decimal seconds) is handled by
+    an explicit guard rather than a broad except.
 
     Args:
-        turn_ids:       Ordered sequence of turn_ids in this materialization group.
-        resolved_by_id: Mapping of turn_id → resolved_name (None for unknown).
+        turn_ids:        Ordered sequence of turn_ids in this materialization group.
+        resolved_by_id:  Mapping of turn_id → resolved_name (None for unknown).
+        turn_rows_by_id: Mapping of turn_id → row dict with at least
+                         ``speaker_label``, ``start_seconds``, ``end_seconds``.
 
     Returns:
         MONOLOGUE or QA.
@@ -82,6 +99,18 @@ def classify_turn_type(
     if len(turn_ids) == 1:
         return MONOLOGUE
 
+    label_result = _classify_by_label(turn_ids, turn_rows_by_id)
+    if label_result is not None:
+        return label_result
+
+    return _classify_by_name(turn_ids, resolved_by_id)
+
+
+def _classify_by_name(
+    turn_ids: tuple[int, ...] | list[int],
+    resolved_by_id: dict[int, str | None],
+) -> str:
+    """Legacy fallback: 'qa' when >=2 distinct real resolved_names exist."""
     distinct_real: set[str] = set()
     for tid in turn_ids:
         name = resolved_by_id.get(tid)
@@ -95,6 +124,52 @@ def classify_turn_type(
         distinct_real.add(stripped)
 
     return QA if len(distinct_real) >= 2 else MONOLOGUE
+
+
+def _classify_by_label(
+    turn_ids: tuple[int, ...] | list[int],
+    turn_rows_by_id: dict[int, dict],
+) -> str | None:
+    """Return QA when >=2 substantial distinct speaker_label values survive
+    noise filtering; None when the label path is inconclusive (fewer than
+    2 usable rows, or fewer than 2 substantial labels after filtering) —
+    the caller must fall through to the name-based rule in that case.
+    """
+    usable_rows: list[dict] = []
+    for tid in turn_ids:
+        row = turn_rows_by_id.get(tid)
+        if row is None:
+            continue
+
+        label = row.get("speaker_label")
+        if not isinstance(label, str) or not label.strip():
+            continue
+
+        start = row.get("start_seconds")
+        end = row.get("end_seconds")
+        if start is None or end is None:
+            continue
+        try:
+            start_f = float(start)
+            end_f = float(end)
+        except (TypeError, ValueError):
+            continue
+
+        usable_rows.append({
+            "start_seconds": start_f,
+            "end_seconds": end_f,
+            "speaker_label": label.strip(),
+        })
+
+    if len(usable_rows) < 2:
+        return None
+
+    usable_rows.sort(key=lambda r: r["start_seconds"])
+    filtered = drop_micro_segments(usable_rows)
+    filtered = collapse_foreign_runs(filtered)
+
+    distinct_labels = {r["speaker_label"] for r in filtered}
+    return QA if len(distinct_labels) >= 2 else None
 
 
 # ---------------------------------------------------------------------------

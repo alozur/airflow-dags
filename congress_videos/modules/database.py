@@ -1151,6 +1151,44 @@ class CongressionalVideoDB:
                     method,
                 )
 
+    def promote_turn_type_to_qa(self, output_path: str) -> int:
+        """Promote-only monologue->qa write-back after speaker resolution.
+
+        Fires from the prepare loop (issue #282 rule 4) when a newly
+        resolved participant name differs from an already-distinct real
+        name in the same output_path group — evidence the group holds
+        >=2 real speakers that classify_turn_type's acoustic label path
+        did not catch at materialization time. Idempotent: a second call
+        for an already-'qa' output_path affects zero rows. Never demotes
+        an existing 'qa' back to 'monologue'.
+
+        Args:
+            output_path: Grouped turn's video.mp4 path (shared key across
+                all speaker_turn_videos rows in the group).
+
+        Returns:
+            Number of rows updated (0 when already 'qa' or output_path unknown).
+        """
+        stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {stv_table}
+                    SET turn_type = 'qa'
+                    WHERE output_path = %s
+                      AND turn_type = 'monologue'
+                    """,
+                    (output_path,),
+                )
+                logger.info(
+                    "promote_turn_type_to_qa: output_path=%s (rowcount=%d)",
+                    output_path,
+                    cur.rowcount,
+                )
+                return cur.rowcount
+
     def mark_chapter_resolved(self, chapter_id: int, slug: str) -> None:
         """Never-override write-back of a resolved chapter speaker slug (issue #263).
 
