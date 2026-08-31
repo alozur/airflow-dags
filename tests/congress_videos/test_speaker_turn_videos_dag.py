@@ -12,6 +12,7 @@ Test organisation:
 from __future__ import annotations
 
 import importlib
+import json
 import re
 import sys
 from datetime import date
@@ -282,6 +283,25 @@ class TestSelectTurns:
         assert cur.execute.call_count == 1, "explicit-limit branch must issue exactly one query"
         assert cur.execute.call_args_list[0].args[1] == (50,)
 
+    def test_select_includes_is_procedural(self, monkeypatch):
+        """issue #143: _select_task SQL must expose st.is_procedural so the
+        planner can see (never filter) procedural member turns."""
+        mod = _fresh()
+        cur = self._make_pg_mock(
+            monkeypatch, mod,
+            turns_rows=[(1, 10, "vid1", 0.0, 100.0, None)],
+            already_materialized_ids=[],
+        )
+
+        ti = MagicMock()
+        ti.xcom_push.side_effect = lambda key, value: None
+        mod._select_task(ti=ti, dag_run=MagicMock(conf={"chapter_id": 10}))
+
+        select_sql = cur.execute.call_args_list[0].args[0].lower()
+        assert "is_procedural" in select_sql, (
+            f"_select_task must include st.is_procedural in SELECT; got: {select_sql}"
+        )
+
 
 def _row(turn_id, chapter_id=42, video_id="vid1", start=0.0, end=1.0, resolved_name=None):
     return {"turn_id": turn_id, "chapter_id": chapter_id, "video_id": video_id,
@@ -472,7 +492,7 @@ class TestScopedPrecedenceOverLimit:
 
 class TestMaterializeTurns:
     def _turn(self, turn_id=7, chapter_id=3, video_id="vid1",
-              start=600.0, end=700.0, resolved_name=None):
+              start=600.0, end=700.0, resolved_name=None, is_procedural=False):
         return {
             "turn_id": turn_id,
             "chapter_id": chapter_id,
@@ -480,6 +500,7 @@ class TestMaterializeTurns:
             "start_seconds": start,
             "end_seconds": end,
             "resolved_name": resolved_name,
+            "is_procedural": is_procedural,
         }
 
     def test_canonical_path_in_insert(self, monkeypatch):
@@ -683,8 +704,9 @@ class TestMaterializeTurns:
         ti.xcom_pull.return_value = turns
         return cur, ti
 
-    def test_insert_params_include_turn_type(self, monkeypatch):
-        """INSERT params tuple must be (turn_id, output_path, turn_type) — 3-tuple."""
+    def test_insert_params_include_turn_type_and_keep_intervals(self, monkeypatch):
+        """issue #143: INSERT params tuple must be
+        (turn_id, output_path, turn_type, keep_intervals) — a 4-tuple."""
         mod = _fresh()
         plan_mock = MagicMock()
         plan_mock.turn_ids = (7,)
@@ -701,18 +723,23 @@ class TestMaterializeTurns:
         all_calls = cur.execute.call_args_list
         insert_calls = [c for c in all_calls if "INSERT" in str(c).upper()]
         assert len(insert_calls) >= 1, f"Expected INSERT; got: {all_calls}"
-        # params tuple must be (turn_id, output_path, turn_type)
+        # params tuple must be (turn_id, output_path, turn_type, keep_intervals)
         params = insert_calls[0].args[1]
-        assert len(params) == 3, (
-            f"INSERT params must be a 3-tuple (turn_id, output_path, turn_type); got: {params}"
+        assert len(params) == 4, (
+            f"INSERT params must be a 4-tuple "
+            f"(turn_id, output_path, turn_type, keep_intervals); got: {params}"
         )
-        turn_id_param, output_path_param, turn_type_param = params
+        turn_id_param, output_path_param, turn_type_param, keep_intervals_param = params
         assert turn_id_param == 7
         assert isinstance(turn_type_param, str), (
             f"turn_type must be a string; got: {turn_type_param!r}"
         )
         assert turn_type_param in ("monologue", "qa"), (
             f"turn_type must be 'monologue' or 'qa'; got: {turn_type_param!r}"
+        )
+        assert json.loads(keep_intervals_param) == [[600.0, 700.0]], (
+            f"keep_intervals must serialize the plan's own executed cut boundaries; "
+            f"got: {keep_intervals_param!r}"
         )
 
     def test_single_resolved_name_yields_monologue_in_insert(self, monkeypatch):
@@ -847,6 +874,91 @@ class TestMaterializeTurns:
             assert c.args[1][2] == "qa", (
                 f"2-label group with NULL names -> qa; got: {c.args[1][2]!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Degenerate all-procedural group: no plan, but every turn still gets a row
+# (issue #143 D5) — otherwise a permanently pending turn would block
+# _select_automatic_chapter's MIN(turn_id) forever.
+# ---------------------------------------------------------------------------
+
+class TestDegenerateAllProceduralGroupDropped:
+    def _turn(self, turn_id, chapter_id=3, video_id="vid1", start=0.0, end=5.0):
+        return {
+            "turn_id": turn_id,
+            "chapter_id": chapter_id,
+            "video_id": video_id,
+            "start_seconds": start,
+            "end_seconds": end,
+            "resolved_name": None,
+            "is_procedural": True,
+        }
+
+    def _wire(self, monkeypatch, mod, turns):
+        find_source_mock = MagicMock(return_value="/data/src.mp4")
+        execute_plan_mock = MagicMock()
+        monkeypatch.setattr(mod, "_find_source_video_any_date", find_source_mock)
+        monkeypatch.setattr(mod, "plan_turn_materialization", lambda t, tr: [])
+        monkeypatch.setattr(mod, "execute_plan", execute_plan_mock)
+        from pathlib import Path
+        monkeypatch.setattr(mod, "get_orador_video_dir", lambda vid, chid, tid: Path(f"/out/{tid}"))
+
+        pg = MagicMock()
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+        conn.cursor.return_value.__enter__.return_value = cur
+        pg.get_connection.return_value.__enter__.return_value = conn
+        pg.get_qualified_table.side_effect = lambda n: f"test.{n}"
+        monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
+
+        ti = MagicMock()
+        ti.xcom_pull.return_value = turns
+        return cur, ti, execute_plan_mock, find_source_mock
+
+    def test_execute_plan_never_called(self, monkeypatch):
+        """No plan exists for the group → execute_plan (and thus ffmpeg) must
+        never run."""
+        mod = _fresh()
+        turns = [self._turn(80, start=0.0, end=5.0), self._turn(81, start=5.0, end=10.0)]
+        cur, ti, execute_plan_mock, _ = self._wire(monkeypatch, mod, turns)
+
+        mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        execute_plan_mock.assert_not_called()
+
+    def test_one_row_inserted_per_dropped_turn(self, monkeypatch):
+        mod = _fresh()
+        turns = [self._turn(80, start=0.0, end=5.0), self._turn(81, start=5.0, end=10.0)]
+        cur, ti, *_ = self._wire(monkeypatch, mod, turns)
+
+        mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        insert_calls = [c for c in cur.execute.call_args_list if "INSERT" in str(c).upper()]
+        assert len(insert_calls) == 2, f"Expected one INSERT per dropped turn; got: {insert_calls}"
+        inserted_turn_ids = {c.args[1][0] for c in insert_calls}
+        assert inserted_turn_ids == {80, 81}
+
+    def test_keep_intervals_is_empty_json_array(self, monkeypatch):
+        mod = _fresh()
+        turns = [self._turn(80, start=0.0, end=5.0), self._turn(81, start=5.0, end=10.0)]
+        cur, ti, *_ = self._wire(monkeypatch, mod, turns)
+
+        mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        insert_calls = [c for c in cur.execute.call_args_list if "INSERT" in str(c).upper()]
+        for c in insert_calls:
+            keep_intervals_param = c.args[1][3]
+            assert json.loads(keep_intervals_param) == []
+
+    def test_summary_reports_dropped_procedural_count(self, monkeypatch):
+        mod = _fresh()
+        turns = [self._turn(80, start=0.0, end=5.0), self._turn(81, start=5.0, end=10.0)]
+        cur, ti, *_ = self._wire(monkeypatch, mod, turns)
+
+        result = mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        assert result.get("dropped_procedural") == 2
 
 
 # ---------------------------------------------------------------------------

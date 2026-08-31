@@ -43,6 +43,7 @@ Pipeline::
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -59,7 +60,11 @@ from congress_videos.config.constants import (
     SPEAKER_TURN_VIDEOS_DAG_ID,
 )
 from congress_videos.config.paths import DOWNLOADS_DIR, get_orador_video_dir
-from congress_videos.modules.materialization import classify_turn_type, plan_turn_materialization
+from congress_videos.modules.materialization import (
+    MONOLOGUE,
+    classify_turn_type,
+    plan_turn_materialization,
+)
 from congress_videos.modules.materialization_executor import execute_plan
 from congress_videos.srt_helpers import _window_srt_text, score_turn_interest
 from utils.codec_detection import get_cached_codec
@@ -134,9 +139,12 @@ def _select_task(**context) -> list[dict]:
     chapters_table = pg.get_qualified_table("video_chapters")
     stv_table = pg.get_qualified_table("speaker_turn_videos")
     # video_id lives on video_chapters, not speaker_turns; join to resolve it.
+    # st.is_procedural (issue #143) is selected so plan_turn_materialization
+    # can SEE and excise procedural member turns — it is NEVER filtered here;
+    # the planner, not this query, decides what to do with them.
     cols = (
         "st.turn_id, st.chapter_id, vc.video_id, st.start_seconds, st.end_seconds, "
-        "st.resolved_name, st.speaker_label"
+        "st.resolved_name, st.speaker_label, st.is_procedural"
     )
     base = (
         f"SELECT {cols} FROM {turns_table} st "
@@ -229,10 +237,17 @@ def _materialize_task(**context) -> dict:
        ``speaker_turn_videos``. A failed ``execute_plan`` is caught; the turn
        is logged as skipped and processing continues.
 
-    Returns a summary dict ``{materialized: int, skipped: int}``.
+    Degenerate all-procedural groups (issue #143 D5): a group whose every
+    member turn is procedural yields NO plan from ``plan_turn_materialization``
+    (the cuts cover the whole span). Those turn_ids are still recorded, one
+    ``speaker_turn_videos`` row each, with ``keep_intervals='[]'`` and no file
+    on disk — otherwise a permanently pending turn would block
+    ``_select_automatic_chapter``'s ``MIN(turn_id)`` forever.
+
+    Returns a summary dict ``{materialized: int, skipped: int, dropped_procedural: int}``.
     """
     turns = context["ti"].xcom_pull(key="turns", task_ids="select_turns") or []
-    summary = {"materialized": 0, "skipped": 0}
+    summary = {"materialized": 0, "skipped": 0, "dropped_procedural": 0}
 
     if not turns:
         logger.info("speaker_turn_videos: no turns to materialize")
@@ -301,14 +316,22 @@ def _materialize_task(**context) -> dict:
                 summary["skipped"] += len(plan.turn_ids)
                 continue
 
-            # INSERT idempotency rows (one per turn_id in plan)
+            # INSERT idempotency rows (one per turn_id in plan). keep_intervals
+            # (issue #143) records the EXECUTED cut boundaries — the same
+            # values just passed to execute_plan — as absolute source seconds,
+            # so SRT retiming at prepare time can never diverge from the video
+            # that was actually cut.
+            keep_intervals_json = json.dumps(
+                [[ki.start, ki.end] for ki in plan.keep_intervals]
+            )
             with conn.cursor() as cur:
                 for tid in plan.turn_ids:
                     cur.execute(
-                        f"INSERT INTO {stv_table} (turn_id, output_path, turn_type) "
-                        f"VALUES (%s, %s, %s) "
+                        f"INSERT INTO {stv_table} "
+                        f"(turn_id, output_path, turn_type, keep_intervals) "
+                        f"VALUES (%s, %s, %s, %s) "
                         f"ON CONFLICT (turn_id) DO NOTHING",
-                        (tid, output_path, turn_type),
+                        (tid, output_path, turn_type, keep_intervals_json),
                     )
             conn.commit()
             summary["materialized"] += len(plan.turn_ids)
@@ -347,6 +370,36 @@ def _materialize_task(**context) -> dict:
                         tid,
                         exc_info=True,
                     )
+
+        # Degenerate all-procedural groups (issue #143 D5): turns present in
+        # the input but absent from EVERY plan's turn_ids never got a plan at
+        # all — _flush_group emits none when the cuts cover the whole group
+        # span. Still record them (no execute_plan, no file) so select_turns'
+        # NOT EXISTS idempotency treats them as handled and they never
+        # permanently block _select_automatic_chapter's MIN(turn_id).
+        planned_turn_ids = {tid for plan in plans for tid in plan.turn_ids}
+        dropped_turns = [t for t in turns if t["turn_id"] not in planned_turn_ids]
+        if dropped_turns:
+            with conn.cursor() as cur:
+                for turn in dropped_turns:
+                    tid = turn["turn_id"]
+                    dropped_output_path = str(
+                        get_orador_video_dir(str(turn["video_id"]), turn["chapter_id"], tid)
+                        / "video.mp4"
+                    )
+                    cur.execute(
+                        f"INSERT INTO {stv_table} "
+                        f"(turn_id, output_path, turn_type, keep_intervals) "
+                        f"VALUES (%s, %s, %s, %s) "
+                        f"ON CONFLICT (turn_id) DO NOTHING",
+                        (tid, dropped_output_path, MONOLOGUE, json.dumps([])),
+                    )
+            conn.commit()
+            summary["dropped_procedural"] += len(dropped_turns)
+            logger.info(
+                "speaker_turn_videos: dropped %d turn(s) from all-procedural groups: turn_ids=%s",
+                len(dropped_turns), [t["turn_id"] for t in dropped_turns],
+            )
 
     context["ti"].xcom_push(key="summary", value=summary)
     logger.info("speaker_turn_videos: run complete summary=%s", summary)
