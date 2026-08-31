@@ -711,3 +711,25 @@ class TestEvidenceSupportedBoundary:
         from congress_videos.modules.speaker_resolution import _evidence_supported
 
         assert _evidence_supported(["not", "a", "string"], self.SOURCE_TEXT) is False
+
+
+# ---------------------------------------------------------------------------
+# Evidence-aware resolution prompt (issue #284)
+# ---------------------------------------------------------------------------
+
+class TestSystemPromptEvidenceRule:
+    """SPEAKER_RESOLUTION_SYSTEM_PROMPT must instruct the model that
+    evidence must be a verbatim quote, and that unverifiable answers must
+    return a null slug rather than fabricate a name."""
+
+    def test_prompt_requires_verbatim_evidence(self):
+        from congress_videos.config.ai_prompts import SPEAKER_RESOLUTION_SYSTEM_PROMPT
+
+        assert "verbatim" in SPEAKER_RESOLUTION_SYSTEM_PROMPT.lower()
+
+    def test_prompt_instructs_null_over_fabrication(self):
+        from congress_videos.config.ai_prompts import SPEAKER_RESOLUTION_SYSTEM_PROMPT
+
+        prompt_lower = SPEAKER_RESOLUTION_SYSTEM_PROMPT.lower()
+        assert "null" in prompt_lower
+        assert "fabricat" in prompt_lower
