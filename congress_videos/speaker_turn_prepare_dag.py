@@ -24,6 +24,7 @@ from airflow.operators.python import PythonOperator
 
 from congress_videos.config.constants import SPEAKER_TURN_PREPARE_DAG_ID
 from congress_videos.modules.database import CongressionalVideoDB
+from congress_videos.modules.speaker_placeholders import is_placeholder
 from congress_videos.modules.speaker_resolution import (
     SPEAKER_RESOLUTION_MIN_CONFIDENCE,
     resolve_speaker,
@@ -191,6 +192,11 @@ def _prepare_turns_callable() -> None:
         # Step 1.5: AI speaker resolution (issue #177).
         # Never blocks preparation — wrapped in its own try/except.
         try:
+            # Captured BEFORE any in-memory patch below (issue #282 rule 4):
+            # the promotion hook compares this pre-resolution name against
+            # the newly resolved display_name.
+            previous_name = (turn.get("resolved_name") or "").strip()
+
             already_resolved = (
                 turn.get("resolved_participant_slug")
                 and float(turn.get("speaker_resolution_confidence") or 0)
@@ -210,6 +216,21 @@ def _prepare_turns_callable() -> None:
                     )
                     if display_name:
                         turn["resolved_name"] = display_name
+                        # Rule 4 (issue #282): promote a group frozen at
+                        # 'monologue' to 'qa' when this resolution reveals
+                        # a SECOND distinct real speaker — the pre-patch
+                        # name and the newly resolved name are both real
+                        # and differ. Promote-only; never demotes qa.
+                        # Lives inside this same try/except: a promotion
+                        # failure logs a warning below and never blocks
+                        # preparation.
+                        if (
+                            previous_name
+                            and not is_placeholder(previous_name)
+                            and not is_placeholder(display_name)
+                            and previous_name.casefold() != display_name.strip().casefold()
+                        ):
+                            db.promote_turn_type_to_qa(output_path)
                     logger.info(
                         "_prepare_turns_callable: turn_id=%d resolved → slug=%r",
                         turn_id,
