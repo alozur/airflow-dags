@@ -125,11 +125,20 @@ def _resolve_speaker_inner(
 
     start_secs = float(turn.get("start_seconds", 0))
 
-    # Intro window: [start - INTRO_WINDOW_SECS, start)
-    intro_start = max(0.0, start_secs - INTRO_WINDOW_SECS)
+    # Intro window anchor (issue #283 rule 3): use the group's real start
+    # when available (MIN(start_seconds) OVER the materialized group), not
+    # the representative turn's own start_seconds — the representative may
+    # be a diarization blip mid-group. Explicit `is not None` so a
+    # legitimate group_start_seconds == 0.0 is honoured rather than falling
+    # through to start_secs.
+    group_start = turn.get("group_start_seconds")
+    intro_anchor = float(group_start) if group_start is not None else start_secs
+
+    # Intro window: [intro_anchor - INTRO_WINDOW_SECS, intro_anchor)
+    intro_start = max(0.0, intro_anchor - INTRO_WINDOW_SECS)
     intro_blocks = [
         b for b in all_blocks
-        if b["start_secs"] >= intro_start and b["end_secs"] <= start_secs
+        if b["start_secs"] >= intro_start and b["end_secs"] <= intro_anchor
     ]
 
     # Turn context window: [start, start + TURN_CONTEXT_SECS)
