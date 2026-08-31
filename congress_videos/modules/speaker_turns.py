@@ -15,6 +15,7 @@ NEVER used as an acceptance threshold.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import re
@@ -96,6 +97,12 @@ class Turn:
         confidence: Attribution confidence in [0.0, 1.0].
         source: One of "text_named" (0.95), "llm_resolved" (0.85),
             "text_confirmed" (0.80), or "acoustic" (0.50).
+        is_procedural: True when this turn is a chair floor-handoff (issue
+            #143), set by ``_flag_procedural`` after ``_merge_same_name``.
+            Defaulted so every pre-existing call site keeps compiling.
+        procedural_reason: Auditable reason string when ``is_procedural`` is
+            True (e.g. ``"dur=6.0s coverage=0.91 patterns=gracias_senoria"``);
+            always None otherwise.
     """
 
     start_seconds: float
@@ -104,6 +111,8 @@ class Turn:
     resolved_name: str | None
     confidence: float
     source: str
+    is_procedural: bool = False
+    procedural_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +141,132 @@ def _normalize_text(text: str) -> str:
 _RE_NAMED = RE_NAMED
 _RE_SU_SENORIA = RE_SU_SENORIA
 _RE_GRACIAS_SENORIA = RE_GRACIAS_SENORIA
+
+# ---------------------------------------------------------------------------
+# Procedural-turn detection (issue #143) — pure AND-gate
+# ---------------------------------------------------------------------------
+
+PROCEDURAL_MAX_DURATION_SECS: float = 15.0
+"""A turn is procedural-eligible only when its OWN duration is <= this value.
+Longer turns are never flagged regardless of text (precision-first)."""
+
+PROCEDURAL_MIN_COVERAGE: float = 0.6
+"""Minimum fraction of the turn's own normalized text that must be covered
+by the union of PROCEDURAL_PATTERNS matches for the turn to be flagged."""
+
+# Named patterns matched against ACCENT-STRIPPED, LOWERCASED,
+# whitespace-collapsed text (see _normalize_text). Order is irrelevant —
+# every pattern is evaluated and its match spans unioned for coverage.
+# Deliberately excludes "gracias, señor presidente" — the canonical OPENING
+# of a real intervention, never a procedural handoff.
+PROCEDURAL_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    (
+        "tiene_la_palabra_named",
+        re.compile(
+            r"tiene\s+la\s+palabra\s+(?:el\s+senor|la\s+senora)\s+[a-z.\- ]+",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "tiene_la_palabra_su_senoria",
+        re.compile(r"tiene\s+la\s+palabra\s+su\s+senoria", re.IGNORECASE),
+    ),
+    ("gracias_senoria", re.compile(r"gracias,?\s+senoria", re.IGNORECASE)),
+    ("tiene_la_palabra_generic", re.compile(r"tiene\s+la\s+palabra\b", re.IGNORECASE)),
+    ("adelante_senoria", re.compile(r"adelante,?\s+senoria", re.IGNORECASE)),
+    ("para_contestar_responder", re.compile(r"para\s+(?:contestar|responder)", re.IGNORECASE)),
+    ("concluya_senoria", re.compile(r"concluya,?\s+senoria", re.IGNORECASE)),
+    ("vaya_terminando", re.compile(r"vaya\s+terminando", re.IGNORECASE)),
+    (
+        "ha_terminado_su_tiempo",
+        re.compile(r"ha\s+(?:terminado|concluido)\s+su\s+tiempo", re.IGNORECASE),
+    ),
+    ("silencio_por_favor", re.compile(r"silencio,?\s+por\s+favor", re.IGNORECASE)),
+    ("ruego_silencio", re.compile(r"ruego\s+silencio", re.IGNORECASE)),
+    (
+        "suspende_reanuda_sesion",
+        re.compile(r"se\s+(?:suspende|reanuda)\s+la\s+sesion", re.IGNORECASE),
+    ),
+    (
+        "siguiente_punto_orden_dia",
+        re.compile(
+            r"pasamos\s+al\s+(?:siguiente\s+)?punto\s+del\s+orden\s+del\s+dia",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def _union_length(spans: list[tuple[int, int]]) -> int:
+    """Total length covered by a set of (start, end) spans, merging overlaps."""
+    if not spans:
+        return 0
+    ordered = sorted(spans)
+    merged: list[list[int]] = [list(ordered[0])]
+    for start, end in ordered[1:]:
+        last = merged[-1]
+        if start <= last[1]:
+            last[1] = max(last[1], end)
+        else:
+            merged.append([start, end])
+    return sum(end - start for start, end in merged)
+
+
+def is_procedural_turn(text: str, duration_seconds: float) -> tuple[bool, str | None]:
+    """Pure AND-gate: duration <= 15s AND phrase coverage >= 0.6. Never raises.
+
+    Coverage is computed on the turn's OWN accent-stripped, lowercased,
+    whitespace-collapsed text — never a caller-supplied window spanning other
+    turns. Precision over recall: ambiguous cases (e.g. a courtesy opening
+    followed by substance) return ``(False, None)``.
+
+    Args:
+        text: The turn's own SRT text (see ``_turn_window_text``).
+        duration_seconds: The turn's own duration (``end_seconds - start_seconds``).
+
+    Returns:
+        ``(flagged, reason)``. ``reason`` is non-None iff ``flagged`` is True,
+        e.g. ``"dur=8.4s coverage=0.91 patterns=gracias_senoria"``.
+    """
+    if duration_seconds > PROCEDURAL_MAX_DURATION_SECS:
+        return (False, None)
+
+    normalized = " ".join(_normalize_text(text or "").lower().split())
+    if not normalized:
+        return (False, None)
+
+    matched_names: list[str] = []
+    spans: list[tuple[int, int]] = []
+    for name, pattern in PROCEDURAL_PATTERNS:
+        for m in pattern.finditer(normalized):
+            spans.append((m.start(), m.end()))
+            if name not in matched_names:
+                matched_names.append(name)
+
+    if not spans:
+        return (False, None)
+
+    coverage = _union_length(spans) / len(normalized)
+    if coverage < PROCEDURAL_MIN_COVERAGE:
+        return (False, None)
+
+    reason = (
+        f"dur={duration_seconds:.1f}s coverage={coverage:.2f} "
+        f"patterns={','.join(matched_names)}"
+    )
+    return (True, reason)
+
+
+def _turn_window_text(srt_blocks: list[dict], start: float, end: float) -> str:
+    """Join the text of SRT blocks overlapping the turn's OWN [start, end).
+
+    Overlap predicate matches ``extract_announcement``/``_window_srt_text``:
+    ``block.start_secs < end AND block.end_secs > start``. Pure; no I/O.
+    """
+    return " ".join(
+        b["text"] for b in srt_blocks if b["start_secs"] < end and b["end_secs"] > start
+    )
+
 
 # ---------------------------------------------------------------------------
 # President-announcement extractor (pure)
@@ -370,6 +505,33 @@ def _merge_same_name(turns: list[Turn]) -> list[Turn]:
     return result
 
 
+def _flag_procedural(turns: list[Turn], srt_blocks: list[dict]) -> list[Turn]:
+    """Flag chair floor-handoff turns as procedural (issue #143).
+
+    Must run AFTER ``_merge_same_name`` inside ``detect_turns`` so each
+    turn's duration and span are final before the gate runs — a merged
+    (now-long) turn must never be evaluated on a pre-merge sub-span.
+
+    Pure; never mutates input turns. Uses ``_turn_window_text`` to build the
+    turn's OWN text (never a group/chapter-wide window) and ``is_procedural_turn``
+    for the AND-gate decision.
+
+    Args:
+        turns: Ordered list of Turn instances (post same-name merge).
+        srt_blocks: SRT blocks for the chapter window.
+
+    Returns:
+        New list with ``is_procedural``/``procedural_reason`` set on each Turn.
+    """
+    result: list[Turn] = []
+    for turn in turns:
+        duration = turn.end_seconds - turn.start_seconds
+        text = _turn_window_text(srt_blocks, turn.start_seconds, turn.end_seconds)
+        flagged, reason = is_procedural_turn(text, duration)
+        result.append(dataclasses.replace(turn, is_procedural=flagged, procedural_reason=reason))
+    return result
+
+
 # ---------------------------------------------------------------------------
 # LLM fallback (reached only after regex+fuzzy fail — issue #131)
 # ---------------------------------------------------------------------------
@@ -572,7 +734,8 @@ def detect_turns(
     """Detect speaker-turn boundaries within a video chapter.
 
     Orchestrates: diarize_fn → drop micro-segments → gap-merge → foreign-run
-    collapse → text gate → same-name merge. Returns Turn[].
+    collapse → text gate → same-name merge → procedural flag (issue #143).
+    Returns Turn[].
 
     Never touches Airflow context, DB, or Docker directly. All
     side-effecting collaborators are injected.
@@ -642,6 +805,7 @@ def detect_turns(
     segments = _collapse_foreign_runs(segments)
     turns = _apply_text_gate(segments, srt_blocks, name_resolver, completion_fn=completion_fn)
     turns = _merge_same_name(turns)
+    turns = _flag_procedural(turns, srt_blocks)
 
     return turns
 
@@ -677,15 +841,17 @@ def _upsert_turns(
     sql = f"""
         INSERT INTO {table}
             (chapter_id, start_seconds, end_seconds, speaker_label, resolved_name,
-             confidence, source, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+             confidence, source, is_procedural, procedural_reason, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         ON CONFLICT (chapter_id, start_seconds) DO UPDATE SET
-            end_seconds   = EXCLUDED.end_seconds,
-            speaker_label = EXCLUDED.speaker_label,
-            resolved_name = EXCLUDED.resolved_name,
-            confidence    = EXCLUDED.confidence,
-            source        = EXCLUDED.source,
-            updated_at    = NOW()
+            end_seconds       = EXCLUDED.end_seconds,
+            speaker_label     = EXCLUDED.speaker_label,
+            resolved_name     = EXCLUDED.resolved_name,
+            confidence        = EXCLUDED.confidence,
+            source            = EXCLUDED.source,
+            is_procedural     = EXCLUDED.is_procedural,
+            procedural_reason = EXCLUDED.procedural_reason,
+            updated_at        = NOW()
     """
 
     for turn in turns:
@@ -697,4 +863,6 @@ def _upsert_turns(
             turn.resolved_name,
             turn.confidence,
             turn.source,
+            turn.is_procedural,
+            turn.procedural_reason,
         ))
