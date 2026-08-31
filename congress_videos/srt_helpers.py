@@ -294,6 +294,60 @@ def _window_srt_blocks(
     return out
 
 
+def _window_srt_blocks_multi(
+    blocks: list[dict],
+    intervals: list[tuple[float, float]],
+) -> list[dict]:
+    """Retime SRT blocks across N kept windows (issue #143).
+
+    Unlike ``_window_srt_blocks`` (a single window), this walks an ORDERED
+    list of kept intervals and offsets each surviving block by the
+    cumulative duration of the PREVIOUSLY KEPT windows, so the output SRT
+    lines up with the concatenated, gap-free cut video (excised spans
+    between intervals never appear in the output timeline at all).
+
+    A block whose original span straddles a cut boundary is emitted in BOTH
+    surviving windows it overlaps, each clamped to that window's edge — its
+    words are physically split by the cut, so the caption follows the audio
+    on each side.
+
+    With exactly one interval, output is identical to
+    ``_window_srt_blocks(blocks, intervals[0][0], intervals[0][1])``.
+
+    Defensive (validate at system boundaries — intervals may originate from
+    a JSONB column read back from the DB): intervals are coerced to float,
+    sorted by start, and any non-positive-duration (``start >= end``)
+    interval is silently dropped rather than raising.
+
+    Pure; no I/O; never raises.
+
+    Args:
+        blocks:    Parsed SRT blocks, each a ``{start_secs, end_secs, text}`` dict.
+        intervals: Kept (start, end) second pairs, in source-time coordinates.
+
+    Returns:
+        Re-timed blocks in chronological output order.
+    """
+    valid_intervals = sorted(
+        (float(start), float(end)) for start, end in intervals if float(end) > float(start)
+    )
+
+    out: list[dict] = []
+    elapsed = 0.0
+    for window_start, window_end in valid_intervals:
+        for b in blocks:
+            if b["start_secs"] < window_end and b["end_secs"] > window_start:
+                clamped_start = max(b["start_secs"], window_start)
+                clamped_end = min(b["end_secs"], window_end)
+                out.append({
+                    "start_secs": clamped_start - window_start + elapsed,
+                    "end_secs": clamped_end - window_start + elapsed,
+                    "text": b["text"],
+                })
+        elapsed += window_end - window_start
+    return out
+
+
 def _window_srt_text(video_id: str, start_seconds: float, end_seconds: float) -> str:
     """Return joined text of SRT blocks overlapping [start_seconds, end_seconds].
 
