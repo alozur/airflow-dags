@@ -70,9 +70,30 @@ SCHEMA_OWNER_ROLES = {
 MIGRATION_OWNER_ROLE_ENV = 'MIGRATION_OWNER_ROLE'
 
 
+class MigrationPrivilegeError(RuntimeError):
+    """Assumed owner role cannot create objects in the target schema (issue #310)."""
+
+
 def _owner_role_for_schema(schema: str) -> str | None:
     """Owner role to assume for DDL against *schema*; env override wins."""
     return os.getenv(MIGRATION_OWNER_ROLE_ENV) or SCHEMA_OWNER_ROLES.get(schema)
+
+
+def _require_schema_create(cur, role: str, schema: str) -> None:
+    """Fail loudly if *role* lacks CREATE on *schema* — every migration DDL
+    statement would otherwise fail opaquely with InsufficientPrivilege after
+    SET ROLE has already succeeded (issue #310)."""
+    cur.execute(
+        "SELECT has_schema_privilege(%s, %s, 'CREATE') AS has_create", (role, schema)
+    )
+    row = cur.fetchone()
+    if not row or not row['has_create']:
+        raise MigrationPrivilegeError(
+            f"Owner role '{role}' has no CREATE on schema '{schema}' — every "
+            f"migration DDL statement would fail. Run as superuser: "
+            f'GRANT CREATE ON SCHEMA {schema} TO {role}; '
+            f"(codified in congress_videos/sql/grant_permissions*.sql — issue #310)"
+        )
 
 
 def _assume_owner_role(conn, cur, schema: str) -> None:
@@ -84,6 +105,11 @@ def _assume_owner_role(conn, cur, schema: str) -> None:
     Failure is logged and tolerated — local/dev environments without the
     role (or without the membership grant) keep the pre-#291 behavior of
     creating objects as the connection role.
+
+    After a SUCCESSFUL SET ROLE, checks that the assumed role actually holds
+    CREATE on *schema* (issue #310). This check runs OUTSIDE the try/except
+    above on purpose — it must never be swallowed by the SET ROLE fail-soft
+    path, and it must never run when no role was assumed at all.
     """
     role = _owner_role_for_schema(schema)
     if not role:
@@ -99,6 +125,9 @@ def _assume_owner_role(conn, cur, schema: str) -> None:
         logging.warning(
             "SET ROLE %s failed — continuing as connection role", role, exc_info=True
         )
+        return
+
+    _require_schema_create(cur, role, schema)
 
 
 def _migration_connection() -> PostgresConnection:

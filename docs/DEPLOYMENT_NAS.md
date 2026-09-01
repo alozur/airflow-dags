@@ -419,6 +419,21 @@ Los scripts de `congress_videos/sql/grant_permissions*.sql` son **aditivos**: cr
 5. **Solo después de verificar dev y prod**: ejecutar el `REVOKE` acotado a esquema (únicamente `development` y `production`) sobre los grants legados de `airflow`. **No** ejecutar `ALTER ROLE airflow NOLOGIN` ni tocar las bases de datos de metadatos `airflow_db`/`airflow_dev_db` — `airflow` sigue siendo el rol de login de la base de datos de metadatos de Airflow (`SQL_ALCHEMY_CONN`, sin cambios en este proceso).
 6. **GitHub**: reemplazar el PAT clásico `repo` por un token *fine-grained* con permiso `Contents: Read-only`; actualizar `GITHUB_TOKEN` en ambos stacks de Portainer.
 
+### `CREATE ON SCHEMA` para el rol owner (issue #310)
+
+`_assume_owner_role` (`utils/migrations_dag.py`) hace `SET ROLE` al rol owner del esquema (`airflow_dev`/`airflow_prod`) antes de ejecutar cada migración, y desde el 2026-09-01 valida además, con `has_schema_privilege(rol, esquema, 'CREATE')`, que ese rol puede crear objetos en su propio esquema. Si el `GRANT CREATE ON SCHEMA` todavía no se aplicó en vivo, el `SET ROLE` sí tiene éxito pero la validación falla con un `MigrationPrivilegeError` explícito (rol, esquema y el `GRANT` exacto a ejecutar) en vez de fallar de forma opaca a mitad de la migración.
+
+Esto es un **prerequisito de merge, no una consecuencia**: el runner no puede corregir sus propios privilegios, así que el `GRANT` debe aplicarse en vivo, con superusuario, en ambos stacks, **antes** de disparar `run_migrations` tras este cambio (paso 2 del checklist de arriba ya lo incluye — `grant_permissions.sql`/`grant_permissions_production.sql` traen ahora `GRANT CREATE ON SCHEMA {esquema} TO {rol_owner};`). En un rebuild completo del stack, repetir este `GRANT` en el mismo paso en que se corren los demás scripts de grants.
+
+Verificación tras aplicar el `GRANT`:
+
+```sql
+SELECT has_schema_privilege('airflow_dev', 'development', 'CREATE');   -- development
+SELECT has_schema_privilege('airflow_prod', 'production', 'CREATE');   -- production
+```
+
+Ambas consultas deben devolver `t` antes de disparar `run_migrations` en el stack correspondiente.
+
 Antes de aplicar cualquier compose actualizado en Portainer, confirmar que renderiza correctamente:
 
 ```bash
