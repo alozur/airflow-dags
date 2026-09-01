@@ -37,6 +37,24 @@ class TestTurnDataclass:
         assert "resolved_name" in fields
         assert "confidence" in fields
         assert "source" in fields
+        assert "is_procedural" in fields
+        assert "procedural_reason" in fields
+
+    def test_procedural_fields_default_so_existing_call_sites_keep_compiling(self):
+        """issue #143: is_procedural/procedural_reason must be defaulted so
+        every pre-existing Turn(...) call site (with 6 positional/keyword
+        args) keeps constructing without change."""
+        from congress_videos.modules.speaker_turns import Turn
+        t = Turn(
+            start_seconds=0.0,
+            end_seconds=10.0,
+            speaker_label="SPEAKER_01",
+            resolved_name=None,
+            confidence=0.5,
+            source="acoustic",
+        )
+        assert t.is_procedural is False
+        assert t.procedural_reason is None
 
     def test_turn_is_immutable(self):
         from congress_videos.modules.speaker_turns import Turn
@@ -1160,6 +1178,158 @@ class TestDetectTurns:
 
 
 # ---------------------------------------------------------------------------
+# Phase: _flag_procedural wiring (issue #143) — runs AFTER _merge_same_name
+# inside detect_turns, so durations/spans are final before flagging.
+# ---------------------------------------------------------------------------
+
+class TestFlagProceduralUnit:
+    """_flag_procedural(turns, srt_blocks) is a pure post-processing step."""
+
+    def test_flags_a_short_handoff_turn(self):
+        from congress_videos.modules.speaker_turns import Turn, _flag_procedural
+
+        turns = [
+            Turn(
+                start_seconds=10.0,
+                end_seconds=16.0,
+                speaker_label="SPEAKER_00",
+                resolved_name=None,
+                confidence=0.50,
+                source="acoustic",
+            ),
+        ]
+        srt_blocks = _make_srt_blocks((10.0, 16.0, "Tiene la palabra el señor Pérez"))
+
+        result = _flag_procedural(turns, srt_blocks)
+
+        assert len(result) == 1
+        assert result[0].is_procedural is True
+        assert result[0].procedural_reason is not None
+
+    def test_does_not_flag_a_long_monologue(self):
+        from congress_videos.modules.speaker_turns import Turn, _flag_procedural
+
+        turns = [
+            Turn(
+                start_seconds=0.0,
+                end_seconds=400.0,
+                speaker_label="SPEAKER_00",
+                resolved_name="García",
+                confidence=0.95,
+                source="text_named",
+            ),
+        ]
+        srt_blocks = _make_srt_blocks(
+            (0.0, 400.0, "Tiene la palabra el señor Pérez " + "sustancia " * 50)
+        )
+
+        result = _flag_procedural(turns, srt_blocks)
+
+        assert result[0].is_procedural is False
+        assert result[0].procedural_reason is None
+
+    def test_never_mutates_input_turns(self):
+        from congress_videos.modules.speaker_turns import Turn, _flag_procedural
+
+        original = Turn(
+            start_seconds=0.0,
+            end_seconds=5.0,
+            speaker_label="SPEAKER_00",
+            resolved_name=None,
+            confidence=0.5,
+            source="acoustic",
+        )
+        _flag_procedural([original], _make_srt_blocks((0.0, 5.0, "ruego silencio.")))
+
+        assert original.is_procedural is False
+        assert original.procedural_reason is None
+
+    def test_preserves_all_other_turn_fields(self):
+        from congress_videos.modules.speaker_turns import Turn, _flag_procedural
+
+        turns = [
+            Turn(
+                start_seconds=3.0,
+                end_seconds=9.0,
+                speaker_label="SPEAKER_02",
+                resolved_name="Ana",
+                confidence=0.95,
+                source="text_named",
+            ),
+        ]
+        result = _flag_procedural(turns, srt_blocks=[])
+
+        assert result[0].start_seconds == 3.0
+        assert result[0].end_seconds == 9.0
+        assert result[0].speaker_label == "SPEAKER_02"
+        assert result[0].resolved_name == "Ana"
+        assert result[0].confidence == 0.95
+        assert result[0].source == "text_named"
+        # No SRT text overlapping the window → empty text → never flagged
+        assert result[0].is_procedural is False
+
+
+class TestFlagProceduralRunsAfterMergeSameName:
+    """detect_turns must call _flag_procedural AFTER _merge_same_name so a
+    merged (now-long) turn's own final duration/text drives the gate."""
+
+    def test_detect_turns_flags_a_short_handoff_between_named_speakers(self):
+        from congress_videos.modules.speaker_turns import detect_turns
+
+        chapter = _make_chapter()
+        changes = [
+            {
+                "start_seconds": 0.0,
+                "from_speaker": "SPEAKER_00",
+                "to_speaker": "SPEAKER_00",
+                "confirmed_block_duration_seconds": 60.0,
+            },
+            {
+                "start_seconds": 60.0,
+                "from_speaker": "SPEAKER_00",
+                "to_speaker": "SPEAKER_01",
+                "confirmed_block_duration_seconds": 8.0,
+            },
+            {
+                "start_seconds": 68.0,
+                "from_speaker": "SPEAKER_01",
+                "to_speaker": "SPEAKER_02",
+                "confirmed_block_duration_seconds": 60.0,
+            },
+        ]
+        diarize_fn = _stub_diarize_fn_with_changes(changes)
+        srt_blocks = _make_srt_blocks(
+            (60.0, 68.0, "Tiene la palabra el señor Pérez"),
+        )
+
+        result = detect_turns(chapter, srt_blocks, diarize_fn, _identity_resolver)
+
+        handoff_turns = [t for t in result if t.start_seconds == 60.0]
+        assert len(handoff_turns) == 1
+        assert handoff_turns[0].is_procedural is True
+        assert handoff_turns[0].procedural_reason is not None
+
+    def test_detect_turns_never_flags_turns_with_no_matching_text(self):
+        from congress_videos.modules.speaker_turns import detect_turns
+
+        chapter = _make_chapter()
+        changes = [
+            {
+                "start_seconds": 10.0,
+                "from_speaker": "SPEAKER_00",
+                "to_speaker": "SPEAKER_01",
+                "confirmed_block_duration_seconds": 20.0,
+            },
+        ]
+        diarize_fn = _stub_diarize_fn_with_changes(changes)
+        result = detect_turns(chapter, [], diarize_fn, _null_resolver)
+
+        for t in result:
+            assert t.is_procedural is False
+            assert t.procedural_reason is None
+
+
+# ---------------------------------------------------------------------------
 # Phase 7 — _upsert_turns (persistence)
 # ---------------------------------------------------------------------------
 
@@ -1246,6 +1416,53 @@ class TestUpsertTurns:
         _upsert_turns(cursor, chapter_id=42, turns=self._make_turns(1))
         sql_arg = cursor.execute.call_args[0][0]
         assert "INSERT INTO speaker_turns" in sql_arg
+
+    def test_upsert_sql_inserts_is_procedural_column(self):
+        """issue #143: INSERT column list must include is_procedural."""
+        from congress_videos.modules.speaker_turns import _upsert_turns
+        cursor = MagicMock()
+        _upsert_turns(cursor, chapter_id=42, turns=self._make_turns(1))
+        sql_arg = cursor.execute.call_args[0][0]
+        assert "is_procedural" in sql_arg
+
+    def test_upsert_sql_inserts_procedural_reason_column(self):
+        """issue #143: INSERT column list must include procedural_reason."""
+        from congress_videos.modules.speaker_turns import _upsert_turns
+        cursor = MagicMock()
+        _upsert_turns(cursor, chapter_id=42, turns=self._make_turns(1))
+        sql_arg = cursor.execute.call_args[0][0]
+        assert "procedural_reason" in sql_arg
+
+    def test_upsert_sql_updates_procedural_columns_on_conflict(self):
+        """The DO UPDATE SET clause must refresh both procedural columns too
+        (a flag correction must be able to flow through a re-run)."""
+        from congress_videos.modules.speaker_turns import _upsert_turns
+        cursor = MagicMock()
+        _upsert_turns(cursor, chapter_id=42, turns=self._make_turns(1))
+        sql_arg = cursor.execute.call_args[0][0]
+        update_clause = sql_arg.upper().split("DO UPDATE SET")[1]
+        assert "IS_PROCEDURAL" in update_clause
+        assert "PROCEDURAL_REASON" in update_clause
+
+    def test_upsert_params_carry_procedural_flag_and_reason(self):
+        """issue #143: the execute() params tuple must carry the Turn's own
+        is_procedural/procedural_reason values through to the DB."""
+        from congress_videos.modules.speaker_turns import Turn, _upsert_turns
+        cursor = MagicMock()
+        turn = Turn(
+            start_seconds=0.0,
+            end_seconds=6.0,
+            speaker_label="SPEAKER_00",
+            resolved_name=None,
+            confidence=0.50,
+            source="acoustic",
+            is_procedural=True,
+            procedural_reason="dur=6.0s coverage=1.00 patterns=ruego_silencio",
+        )
+        _upsert_turns(cursor, chapter_id=42, turns=[turn])
+        params = cursor.execute.call_args[0][1]
+        assert True in params
+        assert "dur=6.0s coverage=1.00 patterns=ruego_silencio" in params
 
 
 # ---------------------------------------------------------------------------

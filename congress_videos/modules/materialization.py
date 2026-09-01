@@ -231,47 +231,52 @@ def _with_float_seconds(row: dict) -> dict:
 
 
 def _compute_keep_intervals(
-    turn_start: float,
-    turn_end: float,
-    approved_trims: list[dict],
+    span_start: float,
+    span_end: float,
+    cuts: list[dict],
 ) -> tuple[KeepInterval, ...]:
-    """Invert approved trim intervals within [turn_start, turn_end].
+    """Invert cut intervals within [span_start, span_end].
 
-    Produces the ordered list of keeper windows by walking through the
-    sorted trim list and emitting the gaps. Zero-duration segments
-    (when a trim exactly touches a boundary) are dropped.
+    Generic interval inversion over ``{start_seconds, end_seconds}`` dicts —
+    used both for approved trim proposals excised from a single long turn
+    and for procedural member turns excised from a grouped short-turn clip
+    (issue #143). Produces the ordered list of keeper windows by walking
+    through the sorted cut list and emitting the gaps. Zero-duration segments
+    (when a cut exactly touches a boundary) are dropped. When the cuts cover
+    the whole span, returns an empty tuple (the degenerate all-cut case).
 
     Args:
-        turn_start:     Absolute start of the turn in seconds.
-        turn_end:       Absolute end of the turn in seconds.
-        approved_trims: Already-filtered approved+voice-free trim dicts.
+        span_start: Absolute start of the span in seconds.
+        span_end:   Absolute end of the span in seconds.
+        cuts:       Already-filtered dicts to excise (approved+voice-free
+                    trims, or procedural member turns).
 
     Returns:
-        Tuple of KeepInterval in chronological order.
+        Tuple of KeepInterval in chronological order. Empty when fully cut.
     """
-    if not approved_trims:
-        return (KeepInterval(turn_start, turn_end),)
+    if not cuts:
+        return (KeepInterval(span_start, span_end),)
 
-    # Sort trims by start_seconds; clamp to turn bounds
-    sorted_trims = sorted(approved_trims, key=lambda t: t["start_seconds"])
+    # Sort cuts by start_seconds; clamp to span bounds
+    sorted_cuts = sorted(cuts, key=lambda t: t["start_seconds"])
 
     intervals: list[KeepInterval] = []
-    cursor = turn_start
+    cursor = span_start
 
-    for trim in sorted_trims:
-        t_start = max(trim["start_seconds"], turn_start)
-        t_end = min(trim["end_seconds"], turn_end)
+    for trim in sorted_cuts:
+        t_start = max(trim["start_seconds"], span_start)
+        t_end = min(trim["end_seconds"], span_end)
         if t_start >= t_end:
-            continue  # trim is outside turn bounds after clamping
+            continue  # cut is outside span bounds after clamping
 
         if cursor < t_start:
             # Emit the gap before this trim
             intervals.append(KeepInterval(cursor, t_start))
         cursor = max(cursor, t_end)
 
-    # Trailing segment after the last trim
-    if cursor < turn_end:
-        intervals.append(KeepInterval(cursor, turn_end))
+    # Trailing segment after the last cut
+    if cursor < span_end:
+        intervals.append(KeepInterval(cursor, span_end))
 
     return tuple(intervals)
 
@@ -336,19 +341,35 @@ def plan_turn_materialization(
     group: list[dict] = []
 
     def _flush_group(g: list[dict]) -> None:
-        """Emit a single plan for the accumulated short-turn group."""
+        """Emit a single plan for the accumulated short-turn group.
+
+        Procedural member turns (issue #143) are excised via the same
+        interval-inverter used for approved trims: their spans are fed to
+        ``_compute_keep_intervals`` as cuts, wherever they occur (start,
+        middle, or end of the group). ``turn_ids`` always lists EVERY group
+        member — including excised ones — so downstream idempotency
+        (mark_turns_uploaded / select_turns NOT EXISTS) still treats them as
+        handled. When every member is procedural, the cuts cover the whole
+        span and ``_compute_keep_intervals`` returns an empty tuple: no plan
+        is emitted for this group at all (the degenerate case; the DAG layer
+        is responsible for still recording those turns — issue #143 D5).
+        """
         if not g:
             return
         group_start = g[0]["start_seconds"]
         group_end = g[-1]["end_seconds"]
         turn_ids = tuple(t["turn_id"] for t in g)
+        cuts = [t for t in g if t.get("is_procedural")]
+        keep = _compute_keep_intervals(group_start, group_end, cuts)
+        if not keep:
+            return
         plans.append(
             MaterializationPlan(
                 turn_ids=turn_ids,
                 chapter_id=g[0]["chapter_id"],
-                keep_intervals=(KeepInterval(group_start, group_end),),
+                keep_intervals=keep,
                 output_turn_id=turn_ids[0],
-                needs_reencode=False,
+                needs_reencode=len(keep) > 1,
             )
         )
 

@@ -14,6 +14,7 @@ Design constraints (non-negotiable):
 - Failures are self-healing: prepared_at stays NULL, retry next night.
 """
 
+import json
 import logging
 import os
 import subprocess
@@ -49,6 +50,45 @@ DAG_ID = SPEAKER_TURN_PREPARE_DAG_ID
 # ---------------------------------------------------------------------------
 
 
+def _validate_keep_intervals(raw) -> list[tuple[float, float]] | None:
+    """Coerce/validate a ``keep_intervals`` JSONB value (issue #143).
+
+    Boundary validation (repo rule — validate at system boundaries): the
+    value comes back from the DB as a list, a JSON-encoded string (some
+    psycopg2/RealDictCursor configurations), or ``None``.
+
+    Returns a start-sorted list of ``(float, float)`` tuples with every
+    non-positive-duration entry dropped, or ``None`` when the value is
+    missing, empty, or malformed in any way — signalling the caller to fall
+    back to the legacy single-window path. NEVER raises.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(raw, list):
+        return None
+
+    intervals: list[tuple[float, float]] = []
+    for item in raw:
+        try:
+            start, end = item
+            start = float(start)
+            end = float(end)
+        except (TypeError, ValueError):
+            return None  # one malformed entry invalidates the whole value
+        if end > start:
+            intervals.append((start, end))
+
+    if not intervals:
+        return None
+    intervals.sort(key=lambda iv: iv[0])
+    return intervals
+
+
 def _write_turn_sidecars(
     turn: dict,
     *,
@@ -65,6 +105,18 @@ def _write_turn_sidecars(
     After issue #175 vad-trim: when VAD trim was applied, the SRT window is
     narrowed by the trim offsets so timestamps align with the trimmed MP4.
 
+    After issue #143 (procedural-turn excision): when the row carries a
+    valid, non-empty ``keep_intervals`` (the EXECUTED cut boundaries
+    recorded at materialize time), the SRT is retimed from THAT — never
+    from the raw ``group_start_seconds``/``group_end_seconds`` span — via
+    ``_window_srt_blocks_multi``. This is correct whether excision happened
+    (len>1) or not (len==1, values equal the turn/group's own bounds), and
+    fixes edge-only excision: a single collapsed keep interval can be
+    NARROWER than the raw group span, and using the raw span there would
+    misalign captions with the actually-cut video. Rows with no valid
+    ``keep_intervals`` (pre-#143 legacy rows, or a malformed/missing value)
+    fall back to the legacy group_start/group_end single window.
+
     Args:
         turn: Row dict from select_unprepared_turns.
         trim_start_secs: Seconds trimmed from the start (0.0 = no trim).
@@ -77,6 +129,7 @@ def _write_turn_sidecars(
         _parse_srt_blocks,
         _serialize_srt_blocks,
         _window_srt_blocks,
+        _window_srt_blocks_multi,
         find_srt_for_chapter,
     )
 
@@ -100,20 +153,37 @@ def _write_turn_sidecars(
 
     if srt_path is not None:
         blocks = _parse_srt_blocks(srt_path)
-        # Use group extent when available (grouped-turn clip spans multiple individual
-        # turns sharing one output_path).  Fall back to per-turn start/end for
-        # single-turn rows that do not carry group_* keys.
-        window_start = float(
-            turn.get("group_start_seconds", turn.get("start_seconds", 0))
-        )
-        window_end = float(
-            turn.get("group_end_seconds", turn.get("end_seconds", 99 * 3600))
-        )
-        # Issue #175: narrow window by VAD trim offsets so SRT timestamps align
-        # with the (possibly trimmed) MP4. Zero offsets → window unchanged.
-        window_start += trim_start_secs
-        window_end -= trim_end_secs
-        windowed = _window_srt_blocks(blocks, window_start, window_end)
+        keep_intervals = _validate_keep_intervals(turn.get("keep_intervals"))
+
+        if keep_intervals is not None:
+            # Issue #143: retime from the EXECUTED cut boundaries, not the
+            # raw group span. Apply the VAD trim to the first interval's
+            # start and the last interval's end only; drop anything that
+            # collapses to zero/negative duration after trimming.
+            adjusted = list(keep_intervals)
+            first_start, first_end = adjusted[0]
+            adjusted[0] = (first_start + trim_start_secs, first_end)
+            last_start, last_end = adjusted[-1]
+            adjusted[-1] = (last_start, last_end - trim_end_secs)
+            adjusted = [(s, e) for s, e in adjusted if e > s]
+            windowed = _window_srt_blocks_multi(blocks, adjusted) if adjusted else []
+        else:
+            # Legacy path (issue #151): keep_intervals is NULL/missing/malformed
+            # — pre-#143 rows. Use group extent when available (grouped-turn
+            # clip spans multiple individual turns sharing one output_path).
+            # Fall back to per-turn start/end for single-turn rows that do
+            # not carry group_* keys.
+            window_start = float(
+                turn.get("group_start_seconds", turn.get("start_seconds", 0))
+            )
+            window_end = float(
+                turn.get("group_end_seconds", turn.get("end_seconds", 99 * 3600))
+            )
+            # Issue #175: narrow window by VAD trim offsets so SRT timestamps
+            # align with the (possibly trimmed) MP4. Zero offsets → unchanged.
+            window_start += trim_start_secs
+            window_end -= trim_end_secs
+            windowed = _window_srt_blocks(blocks, window_start, window_end)
     else:
         windowed = []
 

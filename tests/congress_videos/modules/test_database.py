@@ -652,3 +652,36 @@ class TestSelectUnpreparedTurnsQueryShape:
         assert "group_end_seconds" in sql, (
             "select_unprepared_turns must expose group_end_seconds column alias"
         )
+
+
+# --------------------------------------------------------------------------- #
+# select_unprepared_turns — procedural-turn filter (issue #143)
+# --------------------------------------------------------------------------- #
+
+class TestSelectUnpreparedTurnsProceduralGate:
+
+    def test_query_excludes_procedural_turns(self, db):
+        """SQL must add NOT st.is_procedural so a flagged turn's own row
+        is never selected for representative attribution."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.select_unprepared_turns(limit=2)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "NOT st.is_procedural" in sql, (
+            f"select_unprepared_turns must exclude is_procedural rows; got: {sql}"
+        )
+
+    def test_query_selects_keep_intervals_column(self, db):
+        """SQL must select stv.keep_intervals so _write_turn_sidecars can
+        retime the SRT from the EXECUTED cut boundaries."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.select_unprepared_turns(limit=2)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "stv.keep_intervals" in sql, (
+            f"select_unprepared_turns must select stv.keep_intervals; got: {sql}"
+        )

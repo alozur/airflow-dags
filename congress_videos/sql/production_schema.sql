@@ -211,7 +211,7 @@ COMMENT ON COLUMN production.video_chapters.last_upload_error IS 'Last recorded 
 COMMENT ON VIEW production.uploadable_chapters IS 'Shows chapters eligible for YouTube upload (relevance_score >= 2)';
 COMMENT ON VIEW production.chapter_statistics IS 'Provides aggregate statistics about chapters by source video';
 
--- View: uploadable_turns (migration 035)
+-- View: uploadable_turns (migration 040)
 -- Shows speaker_turn_videos rows that are PREPARED and not yet uploaded.
 -- Cumulative lineage — this block must stay in lockstep with the LATEST view migration
 -- under congress_videos/sql/migrations/ (guarded by tests/congress_videos/sql/test_production_schema.py):
@@ -221,6 +221,9 @@ COMMENT ON VIEW production.chapter_statistics IS 'Provides aggregate statistics 
 --   032 NOT stv.is_upload_abandoned gate (issue #141)
 --   034 resolved_participant_slug / speaker_resolution_confidence / speaker_resolution_method
 --   035 group_spans CTE + 300s minimum grouped-clip duration floor (issue #234)
+--   040 NOT COALESCE(st.is_procedural, FALSE) exclusion + procedural_seconds floor
+--       adjustment — the published clip (span minus excised procedural spans),
+--       not the raw span, must clear 300s (issue #143)
 
 DROP VIEW IF EXISTS production.uploadable_turns;
 CREATE VIEW production.uploadable_turns AS
@@ -231,10 +234,13 @@ WITH group_spans AS (
     -- after DISTINCT ON (stv.output_path), which keeps a single sibling row per clip.
     -- Computing the span after those gates (e.g. with MIN/MAX OVER (PARTITION BY ...),
     -- which Postgres evaluates AFTER WHERE) would collapse it to that one turn's
-    -- narrow window and re-introduce the issue #151 bug class.
+    -- narrow window and re-introduce the issue #151 bug class. is_procedural is read
+    -- here only to sum excised durations, never to gate which rows enter the aggregate.
     SELECT stv.output_path,
            MIN(st.start_seconds) AS group_start_seconds,
-           MAX(st.end_seconds)   AS group_end_seconds
+           MAX(st.end_seconds)   AS group_end_seconds,
+           SUM(CASE WHEN st.is_procedural THEN st.end_seconds - st.start_seconds ELSE 0 END)
+               AS procedural_seconds
     FROM production.speaker_turn_videos stv
     JOIN production.speaker_turns st ON stv.turn_id = st.turn_id
     GROUP BY stv.output_path
@@ -250,6 +256,7 @@ SELECT * FROM (
         st.interest_score,
         gs.group_start_seconds,
         gs.group_end_seconds,
+        gs.procedural_seconds,
         vc.video_id,
         vc.title AS chapter_title,
         vc.description,
@@ -273,13 +280,16 @@ SELECT * FROM (
       AND vc.is_uploaded_to_youtube = FALSE
       AND vc.relevance_score >= 2
       AND COALESCE(st.interest_score, 1) >= 1    -- INTEREST_FILTER_THRESHOLD, soft-exclude score 0
+      AND NOT COALESCE(st.is_procedural, FALSE)  -- procedural-turn exclusion (issue #143)
     ORDER BY stv.output_path, stv.turn_id
 ) dedup
 -- MIN_TURN_UPLOAD_DURATION_SECONDS = 300 (issue #234): a turn video must last at least
 -- 5 minutes to be worth the single daily 19:00 UTC slot. Documented literal, NOT
--- runtime-tunable — changing the floor requires a new migration.
-WHERE dedup.group_end_seconds - dedup.group_start_seconds >= 300
+-- runtime-tunable — changing the floor requires a new migration. The floor measures
+-- the PUBLISHED clip (group span minus excised procedural seconds), not the raw
+-- span (issue #143).
+WHERE dedup.group_end_seconds - dedup.group_start_seconds - dedup.procedural_seconds >= 300
 ORDER BY COALESCE(dedup.interest_score, 1) DESC,  -- PRIMARY: interest score (NULL → INTEREST_NEUTRAL=1)
          dedup.relevance_score DESC, dedup.session_date DESC;
 
-COMMENT ON VIEW production.uploadable_turns IS 'Speaker turn videos eligible for YouTube upload — prepared_at IS NOT NULL (issue #146), NOT is_upload_abandoned (issue #141), and grouped clip duration >= 300s (issue #234)';
+COMMENT ON VIEW production.uploadable_turns IS 'Speaker turn videos eligible for YouTube upload — prepared_at IS NOT NULL (issue #146), NOT is_upload_abandoned (issue #141), NOT is_procedural (issue #143), and published clip duration (span minus excised procedural seconds) >= 300s (issue #234/#143)';
