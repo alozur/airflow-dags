@@ -40,6 +40,7 @@ from congress_videos.config.ai_prompts import (
 )
 from congress_videos.config.constants import CONGRESO_BROWSER_USER_AGENT
 from utils.ai_helpers import generate_json_completion
+from utils.llm_config import LLM_CHEAP, LLM_DEFAULT
 from utils.postgres_helpers import PostgresConnection
 
 logger = logging.getLogger(__name__)
@@ -154,7 +155,9 @@ def _rank_candidates_via_llm(candidates: list[str], completion_fn) -> str:
     response = completion_fn(
         system_prompt=LAPIDARY_RANKING_SYSTEM_PROMPT,
         user_prompt=user_prompt,
-        model="gpt-4o-mini",
+        # LLM_CHEAP (not LLM_DEFAULT like this file's other calls): this
+        # ranking call is deterministic index-only output (max_tokens=5).
+        model=LLM_CHEAP,
         temperature=0.2,
         max_tokens=5,
     )
@@ -325,7 +328,7 @@ def _call_art_direction_api(user_prompt: str) -> Optional[dict]:
         result = generate_json_completion(
             system_prompt=ART_DIRECTION_SYSTEM_PROMPT,
             user_prompt=user_prompt,
-            model="gpt-4o-mini",
+            model=LLM_DEFAULT,
             max_tokens=400,
             temperature=0.7,
         )
@@ -641,7 +644,7 @@ def _request_title(user_prompt: str) -> Optional[str]:
     result = generate_json_completion(
         system_prompt=THUMBNAIL_TITLE_SYSTEM_PROMPT,
         user_prompt=user_prompt,
-        model="gpt-4o-mini",
+        model=LLM_DEFAULT,
         max_tokens=120,
         temperature=0.7,
     )

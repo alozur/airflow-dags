@@ -33,6 +33,7 @@ from congress_videos.modules.announcement_patterns import (
     RE_SU_SENORIA,
 )
 from congress_videos.modules.sidecar_api_error import SidecarApiError
+from utils.llm_config import LLM_CHEAP
 
 log = logging.getLogger(__name__)
 
@@ -697,7 +698,7 @@ def _llm_resolve_name(
         response = completion_fn(
             TURN_NAME_RESOLUTION_SYSTEM_PROMPT,
             user_prompt,
-            model="gpt-4o-mini",
+            model=LLM_CHEAP,
             temperature=0.0,
             max_tokens=200,
         )

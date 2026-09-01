@@ -27,6 +27,7 @@ from congress_videos.config.ai_prompts import (
 )
 from congress_videos.modules.announcement_patterns import has_announcement_phrase
 from congress_videos.srt_helpers import _parse_srt_blocks, find_srt_for_chapter
+from utils.llm_config import LLM_CHEAP
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +243,7 @@ def _resolve_speaker_inner(
     response = completion_fn(
         SPEAKER_RESOLUTION_SYSTEM_PROMPT,
         user_prompt,
-        model="gpt-4o-mini",
+        model=LLM_CHEAP,
         temperature=0.0,
         max_tokens=300,
     )

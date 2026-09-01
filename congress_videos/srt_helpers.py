@@ -7,6 +7,7 @@ from typing import Optional
 
 from congress_videos.config.paths import DOWNLOADS_DIR, PROJECT_DATA_DIR
 from utils.ai_helpers import generate_json_completion
+from utils.llm_config import LLM_CHEAP
 from utils.time_utils import parse_timestamp
 
 logger = logging.getLogger(__name__)
@@ -410,7 +411,7 @@ def score_turn_interest(window_text: str, completion_fn=None) -> Optional[int]:
         resp = completion_fn(
             system_prompt=INTEREST_SCORING_SYSTEM_PROMPT,
             user_prompt=window_text[:8000],
-            model="gpt-4o-mini",
+            model=LLM_CHEAP,
             temperature=0.0,
             max_tokens=3,
         )
@@ -472,7 +473,7 @@ def select_pretrim_window(
     result = generate_json_completion(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
-        model="gpt-4o-mini",
+        model=LLM_CHEAP,
         max_tokens=200,
     )
 
