@@ -46,6 +46,19 @@ $$;
 GRANT airflow TO airflow_migrations;
 
 -- ---------------------------------------------------------------------------
+-- Schema-object creation (issue #310) — airflow_prod is the owner role that
+-- `_assume_owner_role` (utils/migrations_dag.py) SETs ROLE to before running
+-- migration DDL, so it must hold CREATE on its own schema, not just USAGE.
+-- Without this grant every migration DDL statement fails with
+-- InsufficientPrivilege once SET ROLE succeeds.
+-- ---------------------------------------------------------------------------
+GRANT CREATE ON SCHEMA production TO airflow_prod;
+
+-- Membership (issue #291) — required for `SET ROLE "airflow_prod"` to succeed
+-- from a connection authenticated as airflow_migrations.
+GRANT airflow_prod TO airflow_migrations;
+
+-- ---------------------------------------------------------------------------
 -- Runtime role (airflow_prod): DML only, scoped to `production`
 -- ---------------------------------------------------------------------------
 GRANT USAGE ON SCHEMA production TO airflow_prod;
