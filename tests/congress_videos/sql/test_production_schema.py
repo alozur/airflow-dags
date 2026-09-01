@@ -1,7 +1,7 @@
 """Tests for production_schema.sql's uploadable_turns view snapshot (issue #238).
 
 Guards against the snapshot silently drifting from the latest applied view
-migration (currently 035). Static SQL-text checks only — no DB connection.
+migration (currently 040). Static SQL-text checks only — no DB connection.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ MIGRATION_PATH = (
     / "congress_videos"
     / "sql"
     / "migrations"
-    / "035_add_min_turn_duration.sql"
+    / "040_add_procedural_turn_filter.sql"
 )
 
 
@@ -127,9 +127,38 @@ class TestUploadableTurns035GroupSpans:
     def test_outer_where_enforces_300_second_floor(self):
         sql = self._sql().upper()
         assert re.search(
-            r"WHERE\s+DEDUP\.GROUP_END_SECONDS\s*-\s*DEDUP\.GROUP_START_SECONDS\s*>=\s*300",
+            r"WHERE\s+DEDUP\.GROUP_END_SECONDS\s*-\s*DEDUP\.GROUP_START_SECONDS"
+            r"\s*-\s*DEDUP\.PROCEDURAL_SECONDS\s*>=\s*300",
             sql,
-        ), "Outer WHERE must gate on dedup.group_end_seconds - dedup.group_start_seconds >= 300"
+        ), "Outer WHERE must gate on group span minus procedural_seconds >= 300 (issue #143)"
+
+
+class TestUploadableTurns040ProceduralGate:
+    """040: is_procedural exclusion + procedural_seconds floor adjustment
+    (issue #143)."""
+
+    @staticmethod
+    def _sql() -> str:
+        return SCHEMA_PATH.read_text(encoding="utf-8")
+
+    def test_inner_where_excludes_procedural_turns(self):
+        sql = self._sql().upper()
+        assert re.search(
+            r"NOT\s+COALESCE\s*\(\s*ST\.IS_PROCEDURAL\s*,\s*FALSE\s*\)", sql
+        ), "Snapshot must gate on NOT COALESCE(st.is_procedural, FALSE)"
+
+    def test_cte_computes_procedural_seconds(self):
+        sql = self._sql().upper()
+        assert re.search(
+            r"SUM\s*\(\s*CASE\s+WHEN\s+ST\.IS_PROCEDURAL\s+THEN\s+"
+            r"ST\.END_SECONDS\s*-\s*ST\.START_SECONDS\s+ELSE\s+0\s+END\s*\)\s+"
+            r"AS\s+PROCEDURAL_SECONDS",
+            sql,
+        )
+
+    def test_procedural_seconds_column_selected(self):
+        sql = self._sql().upper()
+        assert "GS.PROCEDURAL_SECONDS" in sql
 
 
 class TestProductionQualification:
@@ -175,14 +204,14 @@ class TestProductionQualification:
 
 class TestSnapshotLockstepWithLatestMigration:
     """The snapshot's uploadable_turns view must be semantically identical to
-    the latest applied view migration (035), modulo comments/qualification/
+    the latest applied view migration (040), modulo comments/qualification/
     whitespace."""
 
-    def test_normalized_view_matches_migration_035(self):
+    def test_normalized_view_matches_migration_040(self):
         snapshot_sql = SCHEMA_PATH.read_text(encoding="utf-8")
         migration_sql = MIGRATION_PATH.read_text(encoding="utf-8")
 
         assert _normalize_view_sql(snapshot_sql) == _normalize_view_sql(migration_sql), (
             "production_schema.sql's uploadable_turns view has drifted from "
-            "migration 035 — update the snapshot to stay in lockstep"
+            "migration 040 — update the snapshot to stay in lockstep"
         )

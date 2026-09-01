@@ -40,6 +40,7 @@ def _turn(
     chapter_id: int,
     start: float,
     end: float,
+    is_procedural: bool = False,
 ) -> dict:
     """Minimal turn dict for plan_turn_materialization."""
     return {
@@ -47,6 +48,7 @@ def _turn(
         "chapter_id": chapter_id,
         "start_seconds": start,
         "end_seconds": end,
+        "is_procedural": is_procedural,
     }
 
 
@@ -392,6 +394,121 @@ class TestTrimAtEndBoundary:
         plans = plan_turn_materialization([turn], approved_trims=trims)
         assert len(plans[0].keep_intervals) == 1
         assert plans[0].keep_intervals[0] == KeepInterval(0.0, 540.0)
+
+
+# ---------------------------------------------------------------------------
+# Procedural-turn excision within a group (issue #143)
+# ---------------------------------------------------------------------------
+
+
+class TestProceduralExcisionMiddleOfGroup:
+    """Q(0-30s) -> handoff(30-36s, procedural) -> A(36-80s) -> keep=[(0,30),(36,80)]."""
+
+    def _make_plans(self):
+        q = _turn(turn_id=60, chapter_id=8, start=0.0, end=30.0)
+        handoff = _turn(turn_id=61, chapter_id=8, start=30.0, end=36.0, is_procedural=True)
+        a = _turn(turn_id=62, chapter_id=8, start=36.0, end=80.0)
+        return plan_turn_materialization([q, handoff, a], approved_trims=[])
+
+    def test_one_plan(self):
+        assert len(self._make_plans()) == 1
+
+    def test_turn_ids_include_the_procedural_member(self):
+        """turn_ids must include ALL group members, including the excised one,
+        so mark_turns_uploaded/select_turns idempotency still sees it."""
+        plan = self._make_plans()[0]
+        assert set(plan.turn_ids) == {60, 61, 62}
+
+    def test_keep_intervals_exclude_the_handoff_span(self):
+        plan = self._make_plans()[0]
+        assert plan.keep_intervals == (KeepInterval(0.0, 30.0), KeepInterval(36.0, 80.0))
+
+    def test_needs_reencode_true(self):
+        """Two keep intervals (excision) forces needs_reencode=True."""
+        assert self._make_plans()[0].needs_reencode is True
+
+
+class TestProceduralExcisionStartAndEndOfGroup:
+    """handoff(0-5s) -> Q(5-40s) -> A(40-70s) -> handoff(70-75s) -> keep=[(5,70)]."""
+
+    def _make_plans(self):
+        h1 = _turn(turn_id=70, chapter_id=9, start=0.0, end=5.0, is_procedural=True)
+        q = _turn(turn_id=71, chapter_id=9, start=5.0, end=40.0)
+        a = _turn(turn_id=72, chapter_id=9, start=40.0, end=70.0)
+        h2 = _turn(turn_id=73, chapter_id=9, start=70.0, end=75.0, is_procedural=True)
+        return plan_turn_materialization([h1, q, a, h2], approved_trims=[])
+
+    def test_one_plan(self):
+        assert len(self._make_plans()) == 1
+
+    def test_turn_ids_include_both_procedural_edges(self):
+        plan = self._make_plans()[0]
+        assert set(plan.turn_ids) == {70, 71, 72, 73}
+
+    def test_keep_interval_collapses_to_single_window(self):
+        """Edge-only excision collapses to ONE keep interval — stream-copy stays
+        possible (needs_reencode=False)."""
+        plan = self._make_plans()[0]
+        assert plan.keep_intervals == (KeepInterval(5.0, 70.0),)
+
+    def test_needs_reencode_false_for_edge_only_excision(self):
+        assert self._make_plans()[0].needs_reencode is False
+
+
+class TestProceduralExcisionDegenerateAllProceduralGroup:
+    """A group whose every member is procedural must yield NO plan at all."""
+
+    def test_no_plan_produced(self):
+        h1 = _turn(turn_id=80, chapter_id=10, start=0.0, end=5.0, is_procedural=True)
+        h2 = _turn(turn_id=81, chapter_id=10, start=5.0, end=10.0, is_procedural=True)
+        plans = plan_turn_materialization([h1, h2], approved_trims=[])
+        assert plans == []
+
+    def test_no_plan_even_with_a_third_solo_group_alongside(self):
+        """The degenerate group must vanish while an unrelated chapter's turn
+        still produces its own plan — the drop is scoped to the one group."""
+        h1 = _turn(turn_id=82, chapter_id=11, start=0.0, end=5.0, is_procedural=True)
+        h2 = _turn(turn_id=83, chapter_id=11, start=5.0, end=10.0, is_procedural=True)
+        other = _turn(turn_id=84, chapter_id=12, start=0.0, end=60.0)
+        plans = plan_turn_materialization([h1, h2, other], approved_trims=[])
+        assert len(plans) == 1
+        assert plans[0].turn_ids == (84,)
+
+
+class TestProceduralUnflaggedGroupByteIdentical:
+    """A group with no procedural member must be byte-identical to pre-#143
+    behavior — is_procedural=False on every member changes nothing."""
+
+    def test_keep_interval_unaffected(self):
+        t_a = _turn(turn_id=90, chapter_id=13, start=0.0, end=60.0, is_procedural=False)
+        t_b = _turn(turn_id=91, chapter_id=13, start=60.0, end=120.0, is_procedural=False)
+        plans = plan_turn_materialization([t_a, t_b], approved_trims=[])
+        assert len(plans) == 1
+        assert plans[0].keep_intervals == (KeepInterval(0.0, 120.0),)
+        assert plans[0].needs_reencode is False
+
+    def test_missing_is_procedural_key_defaults_to_unflagged(self):
+        """A turn dict with NO is_procedural key at all (legacy caller) must
+        behave exactly as if is_procedural=False."""
+        turn = {"turn_id": 92, "chapter_id": 14, "start_seconds": 0.0, "end_seconds": 600.0}
+        plans = plan_turn_materialization([turn], approved_trims=[])
+        assert plans[0].keep_intervals == (KeepInterval(0.0, 600.0),)
+        assert plans[0].needs_reencode is False
+
+
+class TestProceduralLongTurnPathUnaffected:
+    """A >=300s turn can never trip the <=15s detection gate, but this guards
+    the materialization long-turn branch never even inspects is_procedural."""
+
+    def test_long_turn_flagged_is_procedural_still_ignored_by_long_path(self):
+        """Defensive: even if is_procedural were (incorrectly) True on a long
+        turn upstream, the long-turn branch keeps its own full-window/trim
+        behavior untouched — is_procedural is only consulted for grouping."""
+        turn = _turn(turn_id=95, chapter_id=15, start=0.0, end=600.0, is_procedural=True)
+        plans = plan_turn_materialization([turn], approved_trims=[])
+        assert len(plans) == 1
+        assert plans[0].keep_intervals == (KeepInterval(0.0, 600.0),)
+        assert plans[0].needs_reencode is False
 
 
 # ---------------------------------------------------------------------------
