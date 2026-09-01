@@ -1,4 +1,4 @@
-"""Tests for migration 040 — analytics checkpoint actions (issues #102 + #185).
+"""Tests for migration 041 — analytics checkpoint actions (issues #102 + #185).
 
 Static SQL assertions, no DB connection (mirrors test_migration_039.py).
 Adds video_thumbnails.archetype, video_analytics_snapshots.action_detail,
@@ -18,7 +18,7 @@ MIGRATION_PATH = (
     / "congress_videos"
     / "sql"
     / "migrations"
-    / "040_analytics_actions.sql"
+    / "041_analytics_actions.sql"
 )
 
 
