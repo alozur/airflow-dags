@@ -633,6 +633,62 @@ class TestRunGetPendingCheckpoints:
         assert result == db_rows
         mock_ti.xcom_push.assert_any_call(key="candidates", value=db_rows)
 
+    def test_pushed_candidates_survive_xcom_round_trip(self):
+        """Bug regression (issue #303): a non-UTC fixed-offset
+        youtube_upload_date must survive Airflow's REAL XCom serializer
+        round-trip. Before the fix this raises
+        ValueError: ZoneInfo keys must be normalized relative paths, got: """
+        import json
+        from unittest.mock import MagicMock, patch
+
+        from airflow.utils.json import XComDecoder, XComEncoder
+
+        from congress_videos.video_analytics_dag import _run_get_pending_checkpoints
+
+        def _xcom_round_trip(value):
+            return json.loads(json.dumps(value, cls=XComEncoder), cls=XComDecoder)
+
+        db_rows = [
+            {
+                "chapter_id": 42,
+                "youtube_video_id": "abc123",
+                "youtube_upload_date": datetime(2026, 8, 20, 10, 0, tzinfo=timezone(timedelta(hours=2))),
+            }
+        ]
+        mock_ti = MagicMock()
+
+        with patch(
+            "congress_videos.modules.database.CongressionalVideoDB.get_pending_analytics_checkpoints",
+            return_value=db_rows,
+        ):
+            _run_get_pending_checkpoints(ti=mock_ti)
+
+        pushed_value = mock_ti.xcom_push.call_args.kwargs["value"]
+        result = _xcom_round_trip(pushed_value)
+
+        pushed_date = result[0]["youtube_upload_date"]
+        assert isinstance(pushed_date, datetime)
+        assert pushed_date.utcoffset() == timedelta(0)
+        assert pushed_date == db_rows[0]["youtube_upload_date"]
+
+    def test_pushed_value_is_the_returned_object(self):
+        """The explicit ti.xcom_push(key='candidates', ...) and the implicit
+        return_value auto-push must share the SAME normalized object."""
+        from unittest.mock import MagicMock, patch
+
+        from congress_videos.video_analytics_dag import _run_get_pending_checkpoints
+
+        db_rows = [{"chapter_id": 3, "youtube_video_id": "cand3", "youtube_upload_date": None}]
+        mock_ti = MagicMock()
+
+        with patch(
+            "congress_videos.modules.database.CongressionalVideoDB.get_pending_analytics_checkpoints",
+            return_value=db_rows,
+        ):
+            result = _run_get_pending_checkpoints(ti=mock_ti)
+
+        assert mock_ti.xcom_push.call_args.kwargs["value"] is result
+
 
 # ---------------------------------------------------------------------------
 # Terminal trigger to video_analytics_actions (issue #102)
