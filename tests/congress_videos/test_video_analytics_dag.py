@@ -58,11 +58,12 @@ class TestVideoAnalyticsDagLoads:
 class TestVideoAnalyticsDagGraph:
     """Task graph must have staleness guard → pending select → fetch → record."""
 
-    def test_has_four_tasks(self):
-        """DAG must have exactly 4 tasks: t0, t1, t2, t3."""
+    def test_has_five_tasks(self):
+        """DAG must have exactly 5 tasks: t0, t1, t2, t3, t4 (issue #102 adds
+        the terminal trigger_action_dag task)."""
         from congress_videos.video_analytics_dag import dag
 
-        assert len(dag.tasks) == 4
+        assert len(dag.tasks) == 5
 
     def test_expected_task_ids_present(self):
         """Required task IDs must be present in the DAG."""
@@ -631,3 +632,69 @@ class TestRunGetPendingCheckpoints:
 
         assert result == db_rows
         mock_ti.xcom_push.assert_any_call(key="candidates", value=db_rows)
+
+
+# ---------------------------------------------------------------------------
+# Terminal trigger to video_analytics_actions (issue #102)
+#
+# Spec: video-analytics capability / Terminal trigger to action DAG.
+# ---------------------------------------------------------------------------
+
+
+class TestTerminalTriggerToActionDag:
+    """record_snapshots -> TriggerDagRunOperator(trigger_dag_id='video_analytics_actions')."""
+
+    def test_dag_has_five_tasks(self):
+        """A terminal trigger task is appended: 4 existing + 1 new = 5."""
+        from congress_videos.video_analytics_dag import dag
+
+        assert len(dag.tasks) == 5
+
+    def test_trigger_action_dag_task_present(self):
+        from congress_videos.video_analytics_dag import dag
+
+        task_ids = {t.task_id for t in dag.tasks}
+        assert "trigger_action_dag" in task_ids
+
+    def test_trigger_task_is_trigger_dag_run_operator(self):
+        from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+
+        from congress_videos.video_analytics_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        trigger_task = tasks_by_id["trigger_action_dag"]
+        assert isinstance(trigger_task, TriggerDagRunOperator)
+
+    def test_trigger_task_targets_video_analytics_actions(self):
+        from congress_videos.video_analytics_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        trigger_task = tasks_by_id["trigger_action_dag"]
+        assert trigger_task.trigger_dag_id == "video_analytics_actions"
+
+    def test_trigger_task_does_not_wait_for_completion(self):
+        """Fire-and-forget: the hourly collector must not block on the
+        action DAG's (potentially long) regeneration work."""
+        from congress_videos.video_analytics_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        trigger_task = tasks_by_id["trigger_action_dag"]
+        assert trigger_task.wait_for_completion is False
+
+    def test_record_snapshots_is_upstream_of_trigger(self):
+        from congress_videos.video_analytics_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        t3 = tasks_by_id["record_snapshots"]
+        trigger_task = tasks_by_id["trigger_action_dag"]
+
+        downstream_ids = {t.task_id for t in t3.downstream_list}
+        assert trigger_task.task_id in downstream_ids
+
+    def test_docstring_states_writes_occur_only_in_child_dag(self):
+        """The collector docstring must no longer claim no writes anywhere
+        downstream — writes now occur in the triggered child DAG."""
+        import congress_videos.video_analytics_dag as dag_mod
+
+        docstring = dag_mod.__doc__ or ""
+        assert "child" in docstring.lower() or "video_analytics_actions" in docstring

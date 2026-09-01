@@ -377,6 +377,7 @@ def art_direct(
     sibling_briefs: list[str] | None = None,
     srt_fragment: str | None = None,
     resolved_speaker_name: str | None = None,
+    forbidden_archetype: str | None = None,
 ) -> dict:
     """Generate an art-direction brief for a Pikzels thumbnail via OpenAI.
 
@@ -403,6 +404,15 @@ def art_direct(
             default relatable-citizen framing. None or "" (default) leaves
             the prompt byte-identical to the pre-change behavior. Callers
             should derive this via ``resolved_photo_speaker_name()``.
+        forbidden_archetype: When set (issue #102, anti-convergence
+            steering), and the resulting brief's archetype matches this
+            value, re-rolls ONCE with an extra instruction to pick a
+            different archetype, then accepts whatever comes back — no
+            infinite retry loop. The caller records the collision by
+            comparing the returned archetype against forbidden_archetype
+            itself (see action_detail.collisions in the design). None
+            (default) never triggers a re-roll — byte-identical to the
+            pre-change behavior.
     """
     brief = _call_art_direction_api(
         _build_art_direction_prompt(
@@ -432,7 +442,26 @@ def art_direct(
         )
         brief = dict(_DEFAULT_ART_BRIEF)
 
-    return _finalize_brief(brief, srt_fragment)
+    finalized = _finalize_brief(brief, srt_fragment)
+
+    if forbidden_archetype is not None and finalized.get("archetype") == forbidden_archetype:
+        reroll = _call_art_direction_api(
+            _build_art_direction_prompt(
+                debate_summary,
+                previous_brief,
+                sibling_briefs,
+                extra_instruction=(
+                    f"NO uses el arquetipo dramático '{forbidden_archetype}' — ya se "
+                    "usó recientemente. Elige uno visualmente distinto."
+                ),
+                resolved_speaker_name=resolved_speaker_name,
+            )
+        )
+        if reroll is not None:
+            finalized = _finalize_brief(reroll, srt_fragment)
+        # Accept the result either way — one reroll only, no infinite loop.
+
+    return finalized
 
 
 def resolve_participant_photo(slug: str, cfg: dict) -> dict:
@@ -658,6 +687,7 @@ def generate_title(
     cfg: dict,
     sibling_titles: list[str] | None = None,
     key_speakers: list | None = None,
+    forbidden_title: str | None = None,
 ) -> str:
     """Generate a YouTube title for the chosen thumbnail option via OpenAI.
 
@@ -677,6 +707,13 @@ def generate_title(
         key_speakers: Optional list of speaker names (strings or dicts with ``name`` key)
             to soft-hint the LLM toward mentioning them. None or empty list → no injection
             (backward compatible). Best-effort: names are a soft hint only, not validated.
+        forbidden_title: When set (issue #102, anti-convergence steering),
+            and the accepted title exactly matches this value, reprompts
+            ONCE with an extra instruction to produce a different headline,
+            then accepts whatever comes back — no infinite retry loop. The
+            caller records the collision by comparing the returned title
+            against forbidden_title itself. None (default) never triggers a
+            reroll — byte-identical to the pre-change behavior.
 
     Returns:
         A YouTube title string (≤90 chars, no emojis, no forbidden chars, no question marks).
@@ -685,29 +722,51 @@ def generate_title(
     title = _request_title(_build_title_prompt(summary, best, sibling_titles, key_speakers))
 
     if title and _is_valid_title(title):
-        return title
+        final_title = title
+    else:
+        instruction = _choose_reprompt_instruction(title)
 
-    instruction = _choose_reprompt_instruction(title)
-
-    # Second attempt
-    second = _request_title(
-        _build_title_prompt(
-            summary, best, sibling_titles, key_speakers, extra_instruction=instruction
+        # Second attempt
+        second = _request_title(
+            _build_title_prompt(
+                summary, best, sibling_titles, key_speakers, extra_instruction=instruction
+            )
         )
-    )
-    if second and _is_valid_title(second):
-        return second
+        if second and _is_valid_title(second):
+            final_title = second
+        else:
+            # Fallback: sanitise whatever we have
+            candidate = second or title or ""
+            sanitised = _sanitise_title(candidate)
+            logger.warning(
+                "generate_title: both OpenAI attempts returned invalid titles — "
+                "sanitised fallback applied: %r (original: %r)",
+                sanitised,
+                candidate,
+            )
+            final_title = sanitised
 
-    # Fallback: sanitise whatever we have
-    candidate = second or title or ""
-    sanitised = _sanitise_title(candidate)
-    logger.warning(
-        "generate_title: both OpenAI attempts returned invalid titles — "
-        "sanitised fallback applied: %r (original: %r)",
-        sanitised,
-        candidate,
-    )
-    return sanitised
+    if forbidden_title is not None and final_title == forbidden_title:
+        reroll_instruction = (
+            f"El título coincide exactamente con uno usado recientemente: "
+            f"'{forbidden_title}'. Genera un titular distinto que cubra el mismo "
+            "hecho desde otro ángulo."
+        )
+        reroll = _request_title(
+            _build_title_prompt(
+                summary,
+                best,
+                sibling_titles,
+                key_speakers,
+                extra_instruction=reroll_instruction,
+            )
+        )
+        if reroll and _is_valid_title(reroll):
+            final_title = reroll
+        # else: accept the original final_title — one reroll only, no
+        # infinite loop; the caller records the collision.
+
+    return final_title
 
 
 def _summarise_sibling_brief(brief: str) -> str:
@@ -830,8 +889,9 @@ def persist_results(
     sql = f"""
         INSERT INTO {table} (
             chapter_id, youtube_video_id, label, style, prompt,
-            main_score, local_path, output_url, openai_title, is_chosen
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            main_score, local_path, output_url, openai_title, is_chosen,
+            archetype
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (chapter_id, label) DO UPDATE SET
             youtube_video_id = EXCLUDED.youtube_video_id,
             style            = EXCLUDED.style,
@@ -840,7 +900,8 @@ def persist_results(
             local_path       = EXCLUDED.local_path,
             output_url       = EXCLUDED.output_url,
             openai_title     = EXCLUDED.openai_title,
-            is_chosen        = EXCLUDED.is_chosen
+            is_chosen        = EXCLUDED.is_chosen,
+            archetype        = EXCLUDED.archetype
     """
 
     with pg.get_connection() as conn:
@@ -860,6 +921,7 @@ def persist_results(
                     opt.get("output_url"),
                     openai_title,
                     is_chosen,
+                    opt.get("archetype"),
                 )
                 cur.execute(sql, params)
 
