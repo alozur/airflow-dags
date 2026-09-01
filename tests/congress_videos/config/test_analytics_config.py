@@ -151,7 +151,7 @@ class TestUnderperformanceActionConstants:
         cfg = _load()
         assert cfg.MAX_TITLE_ACTIONS_PER_VIDEO == 1
 
-    def test_action_values_mirrors_migration_040_check_constraint(self):
+    def test_action_values_mirrors_migration_041_check_constraint(self):
         cfg = _load()
         assert cfg.ACTION_VALUES == {
             "cold_start",

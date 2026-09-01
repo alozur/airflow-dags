@@ -70,9 +70,9 @@ TITLE_UPDATE_CHECKPOINTS: tuple[str, ...] = ("24h",)
 MAX_THUMBNAIL_ACTIONS_PER_VIDEO: int = 1
 MAX_TITLE_ACTIONS_PER_VIDEO: int = 1
 
-# Mirrors the migration 040 CHECK constraint on
+# Mirrors the migration 041 CHECK constraint on
 # video_analytics_snapshots.action_taken. Kept in sync manually — if this
-# set changes, migration 040 (or a follow-up migration) must change too.
+# set changes, migration 041 (or a follow-up migration) must change too.
 ACTION_VALUES: set[str] = {
     "cold_start",
     "ok",

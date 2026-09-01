@@ -1896,7 +1896,7 @@ class CongressionalVideoDB:
     def get_chosen_thumbnail(self, chapter_id: int) -> Optional[dict]:
         """Return the is_chosen=TRUE video_thumbnails row for a chapter.
 
-        Includes the persisted archetype (migration 040) so a later
+        Includes the persisted archetype (migration 041) so a later
         regeneration can pass it as the anti-convergence exclusion.
 
         Returns:
@@ -1951,7 +1951,7 @@ class CongressionalVideoDB:
 
         Args:
             snapshot_id: FK to video_analytics_snapshots.snapshot_id.
-            action: Final action_taken value (must satisfy migration 040's
+            action: Final action_taken value (must satisfy migration 041's
                 CHECK constraint — 'in_progress' is not a valid terminal
                 value passed here; use claim_snapshot_action for that).
             detail: Audit payload — see design's action_detail shape.
