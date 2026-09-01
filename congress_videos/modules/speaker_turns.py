@@ -154,6 +154,13 @@ PROCEDURAL_MIN_COVERAGE: float = 0.6
 """Minimum fraction of the turn's own normalized text that must be covered
 by the union of PROCEDURAL_PATTERNS matches for the turn to be flagged."""
 
+PROCEDURAL_MIN_COVERAGE_QA: float = 0.55
+"""Relaxed coverage threshold applied only under qa context — when the
+chapter's post-filter turns carry the same >=2-distinct-real-labels evidence
+that classify_turn_type's label path (issue #282) uses to set turn_type='qa'.
+Booster, never a gate: without qa context the strict threshold stands, and
+the duration and anti-bleed gates apply unchanged in both modes."""
+
 # Named patterns matched against ACCENT-STRIPPED, LOWERCASED,
 # whitespace-collapsed text (see _normalize_text). Order is irrelevant —
 # every pattern is evaluated and its match spans unioned for coverage.
@@ -296,8 +303,10 @@ def _union_length(spans: list[tuple[int, int]]) -> int:
     return sum(end - start for start, end in merged)
 
 
-def is_procedural_turn(text: str, duration_seconds: float) -> tuple[bool, str | None]:
-    """Pure AND-gate: duration <= 15s AND phrase coverage >= 0.6. Never raises.
+def is_procedural_turn(
+    text: str, duration_seconds: float, *, qa_context: bool = False
+) -> tuple[bool, str | None]:
+    """Pure AND-gate: duration <= 15s AND phrase coverage >= threshold. Never raises.
 
     Coverage is computed on the turn's OWN accent-stripped, lowercased,
     whitespace-collapsed text — never a caller-supplied window spanning other
@@ -307,6 +316,10 @@ def is_procedural_turn(text: str, duration_seconds: float) -> tuple[bool, str | 
     Args:
         text: The turn's own SRT text (see ``_turn_window_text``).
         duration_seconds: The turn's own duration (``end_seconds - start_seconds``).
+        qa_context: True when the chapter carries the issue-#282 label
+            evidence for turn_type='qa' (>=2 distinct real speaker labels);
+            relaxes the coverage threshold to PROCEDURAL_MIN_COVERAGE_QA.
+            All other gates (duration, core-pattern, anti-bleed) unchanged.
 
     Returns:
         ``(flagged, reason)``. ``reason`` is non-None iff ``flagged`` is True,
@@ -337,8 +350,9 @@ def is_procedural_turn(text: str, duration_seconds: float) -> tuple[bool, str | 
             if name not in matched_names:
                 matched_names.append(name)
 
+    min_coverage = PROCEDURAL_MIN_COVERAGE_QA if qa_context else PROCEDURAL_MIN_COVERAGE
     coverage = _union_length(spans) / len(normalized)
-    if coverage < PROCEDURAL_MIN_COVERAGE:
+    if coverage < min_coverage:
         return (False, None)
 
     # Anti-bleed gate: a genuine handoff is formula end to end. SRT bleed
@@ -347,8 +361,9 @@ def is_procedural_turn(text: str, duration_seconds: float) -> tuple[bool, str | 
     if _longest_unmatched_run(spans, len(normalized)) > PROCEDURAL_MAX_UNMATCHED_RUN:
         return (False, None)
 
+    qa_marker = " qa_context" if qa_context else ""
     reason = (
-        f"dur={duration_seconds:.1f}s coverage={coverage:.2f} "
+        f"dur={duration_seconds:.1f}s coverage={coverage:.2f}{qa_marker} "
         f"patterns={','.join(matched_names)}"
     )
     return (True, reason)
@@ -620,11 +635,18 @@ def _flag_procedural(turns: list[Turn], srt_blocks: list[dict]) -> list[Turn]:
     Returns:
         New list with ``is_procedural``/``procedural_reason`` set on each Turn.
     """
+    # qa context (issue #282 label evidence): >=2 distinct real speaker
+    # labels among the chapter's post-filter turns — the same signal
+    # classify_turn_type's label path uses to set turn_type='qa'. Recomputed
+    # fresh from this run's turns; never read back from cached DB state.
+    distinct_labels = {t.speaker_label.strip() for t in turns if (t.speaker_label or "").strip()}
+    qa_context = len(distinct_labels) >= 2
+
     result: list[Turn] = []
     for turn in turns:
         duration = turn.end_seconds - turn.start_seconds
         text = _turn_window_text(srt_blocks, turn.start_seconds, turn.end_seconds)
-        flagged, reason = is_procedural_turn(text, duration)
+        flagged, reason = is_procedural_turn(text, duration, qa_context=qa_context)
         result.append(dataclasses.replace(turn, is_procedural=flagged, procedural_reason=reason))
     return result
 

@@ -15,7 +15,10 @@ from congress_videos.modules.speaker_turns import (
     PROCEDURAL_MAX_DURATION_SECS,
     PROCEDURAL_MAX_UNMATCHED_RUN,
     PROCEDURAL_MIN_COVERAGE,
+    PROCEDURAL_MIN_COVERAGE_QA,
     PROCEDURAL_PATTERNS,
+    Turn,
+    _flag_procedural,
     is_procedural_turn,
 )
 
@@ -273,3 +276,90 @@ class TestRealCorpusHandoffs:
         flagged, reason = is_procedural_turn(text, duration)
         assert flagged is False, f"false positive on: {text[:60]!r} ({reason})"
         assert reason is None
+
+
+class TestQaContextBooster:
+    """Issue #282 evidence rule as a booster: when the chapter shows the same
+    >=2-distinct-real-labels evidence that classify_turn_type's label path
+    uses to promote turn_type='qa', the coverage threshold relaxes from 0.6
+    to 0.55. Never a hard gate: detection still works without qa context."""
+
+    # Real miss from chapter 318 (5:40:57): coverage 13/22 = 0.59.
+    BORDERLINE = ("ministra cuando quiera", 2.8)
+
+    def test_qa_coverage_constant(self):
+        assert PROCEDURAL_MIN_COVERAGE_QA == 0.55
+
+    def test_borderline_not_flagged_without_qa_context(self):
+        flagged, reason = is_procedural_turn(*self.BORDERLINE)
+        assert flagged is False
+        assert reason is None
+
+    def test_borderline_flagged_with_qa_context(self):
+        flagged, reason = is_procedural_turn(*self.BORDERLINE, qa_context=True)
+        assert flagged is True
+        assert "qa_context" in reason
+
+    def test_qa_context_does_not_relax_below_055(self):
+        """Coverage 14/27 ≈ 0.52 < 0.55 → still not flagged even under qa."""
+        flagged, reason = is_procedural_turn("ruego silencio " + "x" * 12, 5.0, qa_context=True)
+        assert flagged is False
+        assert reason is None
+
+    def test_qa_context_keeps_anti_bleed_gate(self):
+        """SRT bleed followed by substance must stay unflagged under qa too."""
+        text = (
+            "señor conde, señora ministra, cuando quiera. Gracias, señoría. Usted, "
+            "además, que fue secretario de Estado, conoce bien cómo dejaron el "
+            "Ministerio de Defensa."
+        )
+        flagged, reason = is_procedural_turn(text, 6.5, qa_context=True)
+        assert flagged is False
+        assert reason is None
+
+    def test_flag_procedural_applies_qa_context_with_two_labels(self):
+        """A chapter whose post-filter turns carry >=2 distinct labels is qa
+        context: the borderline handoff gets flagged."""
+        blocks = [
+            {"start_secs": 0.0, "end_secs": 2.8, "text": "ministra cuando quiera"},
+            {"start_secs": 2.8, "end_secs": 60.0, "text": "hoy hablaremos de vivienda " * 10},
+        ]
+        turns = [
+            _turn(0.0, 2.8, "SPEAKER_00"),
+            _turn(2.8, 60.0, "SPEAKER_01"),
+        ]
+        flagged = _flag_procedural(turns, blocks)
+        assert flagged[0].is_procedural is True
+        assert "qa_context" in flagged[0].procedural_reason
+        assert flagged[1].is_procedural is False
+
+    def test_flag_procedural_no_qa_context_with_single_label(self):
+        """One distinct label (true monologue chapter) → strict 0.6 stands and
+        the borderline handoff stays unflagged."""
+        blocks = [
+            {"start_secs": 0.0, "end_secs": 2.8, "text": "ministra cuando quiera"},
+            {"start_secs": 2.8, "end_secs": 60.0, "text": "hoy hablaremos de vivienda " * 10},
+        ]
+        turns = [
+            _turn(0.0, 2.8, "SPEAKER_00"),
+            _turn(2.8, 60.0, "SPEAKER_00"),
+        ]
+        flagged = _flag_procedural(turns, blocks)
+        assert flagged[0].is_procedural is False
+
+    def test_flag_procedural_blank_labels_do_not_create_qa_context(self):
+        blocks = [{"start_secs": 0.0, "end_secs": 2.8, "text": "ministra cuando quiera"}]
+        turns = [_turn(0.0, 2.8, "SPEAKER_00"), _turn(2.8, 10.0, ""), _turn(10.0, 20.0, "  ")]
+        flagged = _flag_procedural(turns, blocks)
+        assert flagged[0].is_procedural is False
+
+
+def _turn(start: float, end: float, label: str) -> Turn:
+    return Turn(
+        start_seconds=start,
+        end_seconds=end,
+        speaker_label=label,
+        resolved_name=None,
+        confidence=0.5,
+        source="acoustic",
+    )
