@@ -331,6 +331,34 @@ class TestSelectChaptersProgressFilter:
         executed_sql = cur.execute.call_args[0][0].upper()
         assert "TURNS_DETECTED_AT" not in executed_sql
 
+    def test_chapter_ids_branch_excludes_bucket_order_expressions(self, monkeypatch):
+        """AC6 (issue #300): chapter_ids escape hatch stays plain ORDER BY chapter_id."""
+        mod = _fresh()
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+        self._make_pg_mock(monkeypatch, mod, cur)
+
+        mod.select_chapters(chapter_ids=[42, 7, 15])
+
+        executed_sql = cur.execute.call_args[0][0].upper()
+        assert "INTERVAL" not in executed_sql
+        assert "RELEVANCE_SCORE DESC" not in executed_sql
+        assert "CASE WHEN" not in executed_sql
+
+    def test_cron_branch_includes_bucket_order_expressions(self, monkeypatch):
+        """Cron-branch smoke check (issue #300, clause presence only — the live
+        tests in test_speaker_turns_chapter_order_live.py are authoritative)."""
+        mod = _fresh()
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+        self._make_pg_mock(monkeypatch, mod, cur)
+
+        mod.select_chapters(limit=5)
+
+        executed_sql = cur.execute.call_args[0][0].upper()
+        assert "INTERVAL '7 DAYS'" in executed_sql
+        assert "RELEVANCE_SCORE DESC" in executed_sql
+
 
 class TestProcessTask:
     def _ti_with(self, chapters):
