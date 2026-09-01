@@ -1,5 +1,5 @@
 # dags/repo/utils/airflow_helpers.py
-from typing import Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 from airflow.models.taskinstance import TaskInstance
 from datetime import datetime, timezone
 import os
@@ -54,7 +54,7 @@ def ensure_project_data_directory(project_name: str, base_data_path: str = "/opt
   return project_data_path
 
 
-def _to_utc(value):
+def _to_utc(value: Any) -> Any:
     """Return a UTC-offset datetime, or the value unchanged if not a datetime.
 
     Naive values get UTC ATTACHED (never .astimezone(), which would silently
@@ -68,7 +68,7 @@ def _to_utc(value):
     return value.astimezone(timezone.utc)
 
 
-def utc_normalize_row(row):
+def utc_normalize_row(row: Any) -> Any:
     """Return a new dict with every datetime value normalized to UTC.
 
     psycopg2 returns TIMESTAMPTZ as a datetime whose tzinfo is an unnamed
@@ -86,6 +86,11 @@ def utc_normalize_row(row):
     return {key: _to_utc(value) for key, value in row.items()}
 
 
-def utc_normalize_rows(rows):
-    """Return a new list with utc_normalize_row applied to each row."""
+def utc_normalize_rows(rows: Iterable[Any]) -> list:
+    """Return a new list with utc_normalize_row applied to each row.
+
+    Deliberately has no None guard: callers must supply an iterable. A
+    silent [] on None would hide a data-layer failure as "nothing to do";
+    the TypeError is louder and therefore safer.
+    """
     return [utc_normalize_row(row) for row in rows]
