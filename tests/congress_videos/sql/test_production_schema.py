@@ -1,7 +1,9 @@
-"""Tests for production_schema.sql's uploadable_turns view snapshot (issue #238).
+"""Tests for production_schema.sql's base tables and uploadable_turns view
+snapshot (issues #238, #299).
 
 Guards against the snapshot silently drifting from the latest applied view
-migration (currently 040). Static SQL-text checks only — no DB connection.
+migration (currently 040) and from the live production DDL for the 9
+snapshotted base tables. Static SQL-text checks only — no DB connection.
 """
 from __future__ import annotations
 
@@ -35,6 +37,82 @@ def _normalize_view_sql(text: str) -> str:
         if "CREATE VIEW UPLOADABLE_TURNS" in normalized:
             return normalized
     raise AssertionError("no CREATE VIEW uploadable_turns statement found")
+
+
+def _table_block(table: str) -> str:
+    """Only the `CREATE TABLE production.<table> (...)` body — never the whole file.
+
+    Column assertions MUST be scoped to a single block: `created_at` exists in
+    11 tables and `chapter_id` in 6, so a whole-file substring search would stay
+    green even after a column is deleted from one specific table.
+
+    The terminator is the first `);` after the marker. That is safe for every
+    block today, but it means no table block may contain a literal `);` before
+    its own closing paren — not inside a CHECK constraint, not inside a comment.
+    `test_extracted_block_has_balanced_parens` guards that invariant.
+    """
+    sql = SCHEMA_PATH.read_text(encoding="utf-8")
+    start = sql.index(f"CREATE TABLE IF NOT EXISTS production.{table} (")
+    return sql[start : sql.index(");", start) + 2]
+
+
+# 90 columns across the 8 tables added by issue #299, transcribed from the live
+# `\d production.<table>` DDL (canonical source), in FK-dependency order.
+TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "llm_cache": ("cache_key", "model", "response", "created_at"),
+    "congress_participants": (
+        "normalized_name", "display_name", "party", "parliamentary_group",
+        "constituency", "biography", "full_membership_date", "start_date",
+        "group_entry_date", "photo_url", "created_at", "updated_at",
+        "nickname", "slug",
+    ),
+    "speaker_normalization_cache": (
+        "id", "chapter_id", "dirty_speaker", "canonical_speaker",
+        "participant_normalized_name", "status", "confidence_score",
+        "created_at", "updated_at",
+    ),
+    "video_thumbnails": (
+        "thumbnail_id", "chapter_id", "youtube_video_id", "label", "style",
+        "prompt", "main_score", "local_path", "output_url", "openai_title",
+        "is_chosen", "created_at", "archetype",
+    ),
+    "speaker_turns": (
+        "turn_id", "chapter_id", "start_seconds", "end_seconds",
+        "speaker_label", "resolved_name", "confidence", "source",
+        "created_at", "updated_at", "interest_score", "is_procedural",
+        "procedural_reason",
+    ),
+    "speaker_turn_trim_proposals": (
+        "proposal_id", "turn_id", "start_seconds", "end_seconds", "tipo",
+        "score", "source", "is_voice_free", "created_at", "updated_at",
+        "is_approved", "approved_at",
+    ),
+    "speaker_turn_videos": (
+        "video_id", "turn_id", "output_path", "materialized_at",
+        "is_uploaded_to_youtube", "youtube_video_id", "youtube_upload_date",
+        "prepared_at", "upload_verified_at", "upload_attempts",
+        "is_upload_abandoned", "last_upload_error", "turn_type",
+        "resolved_participant_slug", "speaker_resolution_confidence",
+        "speaker_resolution_method", "keep_intervals",
+    ),
+    "video_analytics_snapshots": (
+        "snapshot_id", "chapter_id", "youtube_video_id", "checkpoint",
+        "metrics", "action_taken", "collected_at", "action_detail",
+    ),
+}
+
+# Every FK in the 8 new blocks must be production.-qualified. Fragments are
+# matched against the whitespace-collapsed, uppercased block.
+FK_QUALIFICATIONS: tuple[tuple[str, str], ...] = (
+    ("speaker_normalization_cache", "REFERENCES PRODUCTION.VIDEO_CHAPTERS(CHAPTER_ID) ON DELETE CASCADE"),
+    ("speaker_normalization_cache", "REFERENCES PRODUCTION.CONGRESS_PARTICIPANTS(NORMALIZED_NAME)"),
+    ("video_thumbnails", "REFERENCES PRODUCTION.VIDEO_CHAPTERS(CHAPTER_ID) ON DELETE CASCADE"),
+    ("speaker_turns", "REFERENCES PRODUCTION.VIDEO_CHAPTERS(CHAPTER_ID) ON DELETE CASCADE"),
+    ("speaker_turn_trim_proposals", "REFERENCES PRODUCTION.SPEAKER_TURNS(TURN_ID) ON DELETE CASCADE"),
+    ("speaker_turn_videos", "REFERENCES PRODUCTION.SPEAKER_TURNS(TURN_ID) ON DELETE CASCADE"),
+    ("speaker_turn_videos", "REFERENCES PRODUCTION.CONGRESS_PARTICIPANTS(SLUG)"),
+    ("video_analytics_snapshots", "REFERENCES PRODUCTION.VIDEO_CHAPTERS(CHAPTER_ID) ON DELETE CASCADE"),
+)
 
 
 class TestProductionSchemaFileExists:
@@ -239,9 +317,7 @@ class TestVideoShortsTableSnapshot:
     @staticmethod
     def _video_shorts_block() -> str:
         """Only the `CREATE TABLE video_shorts (...)` body — never the whole file."""
-        sql = SCHEMA_PATH.read_text(encoding="utf-8")
-        start = sql.index("CREATE TABLE IF NOT EXISTS production.video_shorts")
-        return sql[start : sql.index(");", start) + 2]
+        return _table_block("video_shorts")
 
     @pytest.mark.parametrize("column", VIDEO_SHORTS_COLUMNS)
     def test_column_present_in_block(self, column):
@@ -256,6 +332,43 @@ class TestVideoShortsTableSnapshot:
         assert "REFERENCES PRODUCTION.VIDEO_CHAPTERS(CHAPTER_ID) ON DELETE CASCADE" in block, (
             "video_shorts.chapter_id must reference production.video_chapters "
             "with an explicit schema qualification"
+        )
+
+
+class TestRemainingBaseTableSnapshots:
+    """The 8 base tables added by issue #299 must be present in the snapshot,
+    transcribed from the live `\\d production.<table>` DDL — 90 columns total.
+
+    Same block-scoping discipline as TestVideoShortsTableSnapshot: assertions
+    run against the extracted CREATE TABLE block, never the whole file.
+    """
+
+    @pytest.mark.parametrize(
+        "table,column",
+        [(t, c) for t, cols in TABLE_COLUMNS.items() for c in cols],
+    )
+    def test_column_present_in_block(self, table, column):
+        block = _table_block(table).upper()
+        assert re.search(rf"\b{column.upper()}\b", block), (
+            f"{table} column {column!r} missing from the extracted "
+            "CREATE TABLE block"
+        )
+
+    @pytest.mark.parametrize("table,references", FK_QUALIFICATIONS)
+    def test_fk_is_production_qualified(self, table, references):
+        block = re.sub(r"\s+", " ", _table_block(table)).upper()
+        assert references in block, (
+            f"{table} must carry an explicitly schema-qualified FK: {references}"
+        )
+
+    @pytest.mark.parametrize("table", (*TABLE_COLUMNS, "video_shorts"))
+    def test_extracted_block_has_balanced_parens(self, table):
+        """Guards the `);` terminator: a premature match truncates the block
+        and would silently weaken every assertion above."""
+        body = re.sub(r"--[^\n]*", "", _table_block(table))
+        assert body.count("(") == body.count(")"), (
+            f"{table} block extraction stopped early — a literal '); ' appears "
+            "before the table's own closing paren"
         )
 
 
