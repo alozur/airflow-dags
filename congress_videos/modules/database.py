@@ -1757,3 +1757,218 @@ class CongressionalVideoDB:
                     youtube_video_id,
                     checkpoint,
                 )
+
+    # ---- Checkpoint actions (issue #102) ----
+
+    def get_unactioned_snapshots(self) -> list:
+        """Return NULL-action_taken snapshot rows joined to video_chapters.
+
+        Provides both the analytics fields needed by evaluate_action()
+        (checkpoint, metrics) and the conf fields needed to regenerate a
+        thumbnail/title for the video (chapter_title, description,
+        session_number, session_date, key_speakers, resolved_participant_slug
+        — the same shape _prepare_thumbnail_config() consumes).
+
+        Returns:
+            List of row dicts: {snapshot_id, chapter_id, youtube_video_id,
+            checkpoint, metrics, chapter_title, description, session_number,
+            session_date, key_speakers, resolved_participant_slug}.
+        """
+        snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
+        chapters_table = self.pg_conn.get_qualified_table("video_chapters")
+        source_videos_table = self.pg_conn.get_qualified_table("youtube_source_videos")
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT
+                        s.snapshot_id, s.chapter_id, s.youtube_video_id,
+                        s.checkpoint, s.metrics,
+                        vc.title AS chapter_title, vc.description,
+                        ysv.session_number, ysv.session_date,
+                        vc.key_speakers, vc.resolved_participant_slug
+                    FROM {snapshots_table} s
+                    JOIN {chapters_table} vc ON vc.chapter_id = s.chapter_id
+                    LEFT JOIN {source_videos_table} ysv ON ysv.video_id = vc.video_id
+                    WHERE s.action_taken IS NULL
+                    ORDER BY s.collected_at ASC
+                    """,
+                )
+                rows = cur.fetchall()
+                logger.info(
+                    "get_unactioned_snapshots: %d candidate snapshots found",
+                    len(rows),
+                )
+                return list(rows)
+
+    def get_checkpoint_view_medians(self) -> dict:
+        """Return the channel's own historical median views per checkpoint.
+
+        Single grouped query across all checkpoints. The evaluated video's
+        own snapshot is included in the median (strictly conservative — see
+        spec "Self-inclusion is conservative"); the caller excludes self from
+        the sample-size gate arithmetically (sample_size - 1 >= threshold).
+
+        Returns:
+            Dict keyed by checkpoint: {checkpoint: {median_views, sample_size}}.
+        """
+        snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT
+                        checkpoint,
+                        percentile_cont(0.5) WITHIN GROUP (
+                            ORDER BY (metrics->>'views')::numeric
+                        ) AS median_views,
+                        COUNT(*) AS sample_size
+                    FROM {snapshots_table}
+                    GROUP BY checkpoint
+                    """,
+                )
+                rows = cur.fetchall()
+                return {
+                    row["checkpoint"]: {
+                        "median_views": row["median_views"],
+                        "sample_size": row["sample_size"],
+                    }
+                    for row in rows
+                }
+
+    def get_video_action_history(self, youtube_video_ids: list) -> dict:
+        """Return consumed lifetime action-cap slots per video.
+
+        `in_progress` rows count as consumed slots alongside completed
+        `thumbnail_regenerated`/`thumbnail_and_title_regenerated` records —
+        conservative, because the external YouTube write may already have
+        happened for an in_progress row even though it was never finalized.
+        Whether an in_progress row also consumes a title slot is derived
+        from its own checkpoint column (title actions only ever occur at
+        TITLE_UPDATE_CHECKPOINTS).
+
+        Args:
+            youtube_video_ids: Video IDs to look up. Empty list returns an
+                empty dict immediately without hitting the DB.
+
+        Returns:
+            Dict keyed by youtube_video_id: {"thumbnail": int, "title": int}.
+            Every requested id is present, defaulting to zero counts.
+        """
+        from congress_videos.config.analytics_config import TITLE_UPDATE_CHECKPOINTS
+
+        history = {yt_id: {"thumbnail": 0, "title": 0} for yt_id in youtube_video_ids}
+        if not youtube_video_ids:
+            return history
+
+        snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT youtube_video_id, checkpoint, action_taken
+                    FROM {snapshots_table}
+                    WHERE youtube_video_id = ANY(%s)
+                      AND action_taken IN (
+                          'in_progress',
+                          'thumbnail_regenerated',
+                          'thumbnail_and_title_regenerated'
+                      )
+                    """,
+                    (youtube_video_ids,),
+                )
+                rows = cur.fetchall()
+
+        for row in rows:
+            yt_id = row["youtube_video_id"]
+            action = row["action_taken"]
+            checkpoint = row["checkpoint"]
+            entry = history.setdefault(yt_id, {"thumbnail": 0, "title": 0})
+
+            entry["thumbnail"] += 1
+            if action == "thumbnail_and_title_regenerated":
+                entry["title"] += 1
+            elif action == "in_progress" and checkpoint in TITLE_UPDATE_CHECKPOINTS:
+                entry["title"] += 1
+
+        return history
+
+    def get_chosen_thumbnail(self, chapter_id: int) -> Optional[dict]:
+        """Return the is_chosen=TRUE video_thumbnails row for a chapter.
+
+        Includes the persisted archetype (migration 041) so a later
+        regeneration can pass it as the anti-convergence exclusion.
+
+        Returns:
+            Row dict, or None if no chosen thumbnail exists yet.
+        """
+        thumbnails_table = self.pg_conn.get_qualified_table("video_thumbnails")
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT *
+                    FROM {thumbnails_table}
+                    WHERE chapter_id = %s AND is_chosen = TRUE
+                    LIMIT 1
+                    """,
+                    (chapter_id,),
+                )
+                return cur.fetchone()
+
+    def claim_snapshot_action(self, snapshot_id: int) -> bool:
+        """Claim a snapshot row for automated action before any external call.
+
+        Rowcount-gated: sets action_taken='in_progress' only when it is
+        still NULL. A concurrent/second claim attempt on the same row
+        affects zero rows and returns False.
+
+        Returns:
+            True if this call claimed the row, False if it was already
+            claimed (or otherwise no longer NULL).
+        """
+        snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {snapshots_table}
+                    SET action_taken = 'in_progress'
+                    WHERE snapshot_id = %s AND action_taken IS NULL
+                    """,
+                    (snapshot_id,),
+                )
+                claimed = cur.rowcount == 1
+                logger.info(
+                    "claim_snapshot_action: snapshot_id=%d claimed=%s",
+                    snapshot_id,
+                    claimed,
+                )
+                return claimed
+
+    def mark_action_taken(self, snapshot_id: int, action: str, detail: dict) -> None:
+        """Write the final action_taken literal and action_detail audit JSONB.
+
+        Args:
+            snapshot_id: FK to video_analytics_snapshots.snapshot_id.
+            action: Final action_taken value (must satisfy migration 041's
+                CHECK constraint — 'in_progress' is not a valid terminal
+                value passed here; use claim_snapshot_action for that).
+            detail: Audit payload — see design's action_detail shape.
+        """
+        snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {snapshots_table}
+                    SET action_taken = %s, action_detail = %s::jsonb
+                    WHERE snapshot_id = %s
+                    """,
+                    (action, json.dumps(detail), snapshot_id),
+                )
+                logger.info(
+                    "mark_action_taken: snapshot_id=%d action=%s",
+                    snapshot_id,
+                    action,
+                )
