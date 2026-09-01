@@ -43,7 +43,7 @@ from congress_videos.srt_helpers import (
     _srt_timestamp_to_seconds,
     find_srt_for_chapter,
 )
-from utils.airflow_helpers import ensure_project_data_directory, xcom_task
+from utils.airflow_helpers import ensure_project_data_directory, utc_normalize_row, xcom_task
 from utils.env_loader import load_env_if_local
 
 # Load environment variables
@@ -343,33 +343,23 @@ def _extract_metadata_description(
     return d.get("description", "") if isinstance(d, dict) else str(d)
 
 
-def _sanitize_row_for_xcom(row: dict) -> dict:
-    """Return a NEW row dict with every datetime.datetime value replaced by
-    its ISO-8601 string, so the row survives Airflow's XCom serializer.
-
-    TIMESTAMPTZ columns (materialized_at, prepared_at) arrive from psycopg2 as
-    datetime objects with a non-zero fixed-offset stdlib tzinfo; Airflow encodes
-    those as an empty-named tz that crashes on xcom_pull (issue #163). Values of
-    other types (date, Decimal, str, int, float, list, None) pass through
-    unchanged. Not recursive: the row is flat.
-    """
-    return {
-        k: (v.isoformat() if isinstance(v, datetime) else v)
-        for k, v in row.items()
-    }
-
-
 def _run_get_uploadable_item(db) -> dict | None:
     """Select the next item from the turn queue only.
 
     Returns a dict with keys:
-      - 'item': the row dict (turn)
+      - 'item': the row dict (turn), UTC-normalized
       - 'item_type': 'turn'
     Returns None when the turn queue is empty.
+
+    The row is UTC-normalized (issues #163, #309): psycopg2 returns the
+    TIMESTAMPTZ columns materialized_at/prepared_at with an unnamed non-UTC
+    fixed offset, which Airflow serializes with an empty tz name and then
+    cannot deserialize on xcom_pull. Values stay datetime-typed, so no
+    consumer needs to re-parse.
     """
     turns = db.get_uploadable_turns(limit=1)
     if turns:
-        return {"item": _sanitize_row_for_xcom(turns[0]), "item_type": "turn"}
+        return {"item": utc_normalize_row(turns[0]), "item_type": "turn"}
 
     return None
 
