@@ -1776,6 +1776,7 @@ class CongressionalVideoDB:
         """
         snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
+        source_videos_table = self.pg_conn.get_qualified_table("youtube_source_videos")
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -1783,11 +1784,12 @@ class CongressionalVideoDB:
                     SELECT
                         s.snapshot_id, s.chapter_id, s.youtube_video_id,
                         s.checkpoint, s.metrics,
-                        vc.chapter_title, vc.description, vc.session_number,
-                        vc.session_date, vc.key_speakers,
-                        vc.resolved_participant_slug
+                        vc.title AS chapter_title, vc.description,
+                        ysv.session_number, ysv.session_date,
+                        vc.key_speakers, vc.resolved_participant_slug
                     FROM {snapshots_table} s
                     JOIN {chapters_table} vc ON vc.chapter_id = s.chapter_id
+                    LEFT JOIN {source_videos_table} ysv ON ysv.video_id = vc.video_id
                     WHERE s.action_taken IS NULL
                     ORDER BY s.collected_at ASC
                     """,

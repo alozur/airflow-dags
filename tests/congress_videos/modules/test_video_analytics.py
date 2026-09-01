@@ -816,6 +816,22 @@ class TestGetUnactionedSnapshots:
         sql_calls = _executed_sql(cur)
         assert any("video_chapters" in s for s in sql_calls)
 
+    def test_sql_aliases_title_as_chapter_title_and_joins_source_videos(self):
+        """video_chapters has no chapter_title/session_number/session_date
+        columns directly — title must be aliased, and session fields come
+        from a join to youtube_source_videos (see production_schema.sql)."""
+        cur = _make_cursor()
+        db, _ = _make_db(cur)
+
+        db.get_unactioned_snapshots()
+
+        sql_calls = _executed_sql(cur)
+        combined = " ".join(sql_calls)
+        assert "vc.title AS chapter_title" in combined
+        assert "youtube_source_videos" in combined
+        assert "ysv.session_number" in combined
+        assert "ysv.session_date" in combined
+
     def test_returns_list_with_conf_fields(self):
         cur = _make_cursor()
         cur.fetchall.return_value = [
