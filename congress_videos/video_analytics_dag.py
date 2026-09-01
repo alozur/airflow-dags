@@ -8,8 +8,13 @@ for every uploaded chapter video. Runs hourly; each run:
 2. get_pending_checkpoints — fetch candidate chapters from DB
 3. fetch_analytics  — call YouTube Analytics API, filter via should_persist()
 4. record_snapshots — persist surviving (chapter, checkpoint, metrics) rows
+5. trigger_action_dag — fire-and-forget TriggerDagRunOperator targeting the
+   video_analytics_actions child DAG (issue #102)
 
-Read-only: no YouTube Data API writes, no action_taken column written.
+This collector DAG itself remains read-only: no YouTube Data API writes, no
+action_taken column written. All writes (thumbnail/title regeneration,
+action_taken/action_detail persistence) happen only in the triggered child
+DAG, video_analytics_actions, which uses the separate upload-purpose token.
 """
 
 import logging
@@ -18,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
 from utils.env_loader import load_env_if_local
@@ -285,4 +291,13 @@ with DAG(
         python_callable=_run_record_snapshots,
     )
 
-    t0_staleness >> t1_pending >> t2_fetch >> t3_record
+    # t4: Fire-and-forget trigger of the write-capable child DAG. This
+    # collector never waits on it — regeneration can take minutes and must
+    # not block the next hourly collection run.
+    t4_trigger_action_dag = TriggerDagRunOperator(
+        task_id="trigger_action_dag",
+        trigger_dag_id="video_analytics_actions",
+        wait_for_completion=False,
+    )
+
+    t0_staleness >> t1_pending >> t2_fetch >> t3_record >> t4_trigger_action_dag
