@@ -67,6 +67,9 @@ logger = logging.getLogger(__name__)
 
 DAG_ID = "speaker_turns"
 DEFAULT_LIMIT = 1
+# Chapters newer than this outrank every older chapter regardless of relevance
+# (issue #300, BR1). Wall-clock relative, evaluated by Postgres NOW() per query.
+RECENT_CHAPTER_WINDOW_DAYS = 7
 
 
 def select_chapters(limit: int = DEFAULT_LIMIT, chapter_ids: list[int] | None = None) -> list[dict]:
@@ -74,9 +77,15 @@ def select_chapters(limit: int = DEFAULT_LIMIT, chapter_ids: list[int] | None = 
 
     When ``chapter_ids`` is given, only those chapters are returned without any
     progress filter — this is the manual re-detection escape hatch (issue #166).
-    Otherwise the first ``limit`` uploadable chapters that have not yet been
+    Otherwise the top ``limit`` uploadable chapters that have not yet been
     attempted (turns_detected_at IS NULL and no existing speaker_turns rows) are
-    returned, preventing barren chapters from looping indefinitely.
+    returned, ordered by a two-bucket recency+relevance rule (issue #300):
+    chapters newer than ``RECENT_CHAPTER_WINDOW_DAYS`` outrank every older
+    chapter regardless of ``relevance_score``; within the recent bucket order
+    is ``relevance_score DESC``; within the old bucket order is
+    ``session_date DESC NULLS LAST`` then ``relevance_score DESC``. This keeps
+    fresh, high-relevance chapters from queuing behind an older backlog while
+    still preventing barren chapters from looping indefinitely.
 
     Each row carries the fields the per-chapter pipeline needs: chapter_id,
     video_id, session_date, start_time, end_time.
@@ -95,6 +104,15 @@ def select_chapters(limit: int = DEFAULT_LIMIT, chapter_ids: list[int] | None = 
                     (list(chapter_ids),),
                 )
             else:
+                # Two-bucket order (issue #300). FALSE < TRUE in Postgres, so
+                # `(created_at < cutoff) ASC` puts the recent bucket first. The
+                # CASE key only discriminates inside the old bucket (it is NULL
+                # for recent rows, which key 1 has already segregated).
+                # RECENT_CHAPTER_WINDOW_DAYS is a module int constant, int()-coerced
+                # here: not user input, not an injection seam. `limit` stays bound.
+                recent_cutoff = (
+                    f"NOW() - INTERVAL '{int(RECENT_CHAPTER_WINDOW_DAYS)} days'"
+                )
                 cur.execute(
                     f"SELECT {cols} FROM {view} vc"
                     f" WHERE EXISTS ("
@@ -106,7 +124,13 @@ def select_chapters(limit: int = DEFAULT_LIMIT, chapter_ids: list[int] | None = 
                     f"SELECT 1 FROM {turns_table} st"
                     f" WHERE st.chapter_id = vc.chapter_id"
                     f")"
-                    f" ORDER BY chapter_id LIMIT %s",
+                    f" ORDER BY"
+                    f" (vc.created_at < {recent_cutoff}) ASC,"
+                    f" CASE WHEN vc.created_at < {recent_cutoff}"
+                    f" THEN vc.session_date END DESC NULLS LAST,"
+                    f" vc.relevance_score DESC,"
+                    f" vc.chapter_id ASC"
+                    f" LIMIT %s",
                     (limit,),
                 )
             # PostgresConnection uses RealDictCursor: rows are dict-like.
