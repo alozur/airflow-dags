@@ -1372,11 +1372,9 @@ class TestTurnQueueSelection:
 
     def test_uploader_selects_turn_when_available(self, mocker):
         """When get_uploadable_turns returns a turn, _run_get_uploadable_item returns it
-        (with datetime fields sanitized to ISO-8601 strings)."""
-        from congress_videos.youtube_upload_dag import (
-            _run_get_uploadable_item,
-            _sanitize_row_for_xcom,
-        )
+        (with datetime fields UTC-normalized)."""
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+        from utils.airflow_helpers import utc_normalize_row
 
         fake_turn = _make_turn_row()
         mock_db = MagicMock()
@@ -1385,7 +1383,7 @@ class TestTurnQueueSelection:
 
         result = _run_get_uploadable_item(mock_db)
 
-        assert result["item"] == _sanitize_row_for_xcom(fake_turn)
+        assert result["item"] == utc_normalize_row(fake_turn)
         assert result["item_type"] == "turn"
         mock_db.get_uploadable_chapters.assert_not_called()
 
@@ -1413,10 +1411,11 @@ class TestTurnQueueSelection:
 
         assert result is None
 
-    def test_turn_xcom_item_contains_no_datetime_values(self):
-        """PRIMARY regression test (issue #163): item dict returned for a turn
-        must contain no datetime.datetime values after _run_get_uploadable_item,
-        so Airflow's XCom serializer never sees a non-zero-offset stdlib tzinfo."""
+    def test_turn_xcom_datetimes_are_utc_normalized(self):
+        """PRIMARY regression test (issues #163, #309): materialized_at and
+        prepared_at must be UTC-normalized datetime values after
+        _run_get_uploadable_item, so Airflow's XCom serializer never sees a
+        non-zero-offset stdlib tzinfo."""
         from congress_videos.youtube_upload_dag import _run_get_uploadable_item
 
         fake_turn = _make_turn_row()
@@ -1426,12 +1425,14 @@ class TestTurnQueueSelection:
         result = _run_get_uploadable_item(mock_db)
 
         assert result is not None
-        assert all(not isinstance(v, datetime) for v in result["item"].values()), (
-            "item dict must not contain any datetime.datetime values (XCom serializer safety)"
-        )
+        for key in ("materialized_at", "prepared_at"):
+            v = result["item"][key]
+            assert isinstance(v, datetime)
+            assert v.utcoffset() == timedelta(0)
+            assert v == fake_turn[key]
 
-    def test_turn_xcom_materialized_at_is_isoformat_string(self):
-        """materialized_at and prepared_at must be ISO-8601 strings in the XCom item."""
+    def test_turn_xcom_materialized_at_is_utc_datetime(self):
+        """materialized_at must be a UTC-normalized datetime, not a string."""
         from congress_videos.youtube_upload_dag import _run_get_uploadable_item
 
         fake_turn = _make_turn_row()
@@ -1440,84 +1441,80 @@ class TestTurnQueueSelection:
 
         result = _run_get_uploadable_item(mock_db)
 
-        assert isinstance(result["item"]["materialized_at"], str)
-        assert isinstance(result["item"]["prepared_at"], str)
-        # Verify the strings are valid ISO-8601 (parseable back to datetime)
-        datetime.fromisoformat(result["item"]["materialized_at"])
-        datetime.fromisoformat(result["item"]["prepared_at"])
+        value = result["item"]["materialized_at"]
+        assert isinstance(value, datetime)
+        assert value.utcoffset() == timedelta(0)
+        assert not isinstance(value, str)
 
-class TestSanitizeRowForXcom:
-    """Unit tests for the pure helper _sanitize_row_for_xcom."""
+    def test_turn_xcom_item_survives_real_xcom_round_trip_as_datetime(self):
+        """Contract test (issue #309): after _run_get_uploadable_item builds the
+        uploadable_item payload from a turn with a non-UTC fixed-offset
+        materialized_at/prepared_at, the payload survives Airflow's REAL XCom
+        serializer round-trip AND decodes as a UTC-normalized datetime (not a
+        string). This proves the string -> datetime contract change actually
+        took effect end-to-end through the real serializer, not just at the
+        call site's return value.
 
-    def test_sanitize_converts_datetime_to_isoformat_string(self):
-        """datetime.datetime values must be replaced with their .isoformat() string."""
-        from congress_videos.youtube_upload_dag import _sanitize_row_for_xcom
+        NOTE: this test does NOT assert a ValueError against unmodified code.
+        _run_get_uploadable_item's pre-#309 body already avoided the ZoneInfo
+        crash via the old ISO-8601 stringify helper it used to call, so no
+        crash is reproducible at THIS call site either before or after this
+        change.
+        The RED signal for this test is a type mismatch (str, not datetime) —
+        see test_turn_xcom_item_raw_row_breaks_real_xcom_round_trip below for
+        the actual crash-reproducing bug-pin, which proves the +02:00 shape
+        genuinely breaks the serializer and that normalization is load-bearing.
+        """
+        import json
 
-        tz = timezone(timedelta(hours=2))
-        dt = datetime(2026, 8, 22, 1, 0, tzinfo=tz)
-        row = {"materialized_at": dt, "turn_id": 1}
+        from airflow.utils.json import XComDecoder, XComEncoder
 
-        result = _sanitize_row_for_xcom(row)
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
 
-        assert result["materialized_at"] == dt.isoformat()
-        assert isinstance(result["materialized_at"], str)
+        def _xcom_round_trip(value):
+            return json.loads(json.dumps(value, cls=XComEncoder), cls=XComDecoder)
 
-    def test_sanitize_leaves_non_datetime_fields_unchanged(self):
-        """int, str, float, None, list, and datetime.date must pass through unchanged."""
-        import datetime as dt_module
+        fake_turn = _make_turn_row()
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = [fake_turn]
 
-        from congress_videos.youtube_upload_dag import _sanitize_row_for_xcom
+        result = _run_get_uploadable_item(mock_db)
+        restored = _xcom_round_trip(result)
 
-        date_only = dt_module.date(2026, 8, 22)
-        row = {
-            "turn_id": 7,
-            "name": "Ana",
-            "score": 4.5,
-            "nothing": None,
-            "tags": ["a", "b"],
-            "session_date": date_only,
-        }
+        for key in ("materialized_at", "prepared_at"):
+            v = restored["item"][key]
+            assert isinstance(v, datetime)
+            assert v.utcoffset() == timedelta(0)
+            assert v == fake_turn[key]
+        assert restored["item_type"] == "turn"
 
-        result = _sanitize_row_for_xcom(row)
+    def test_turn_xcom_item_raw_row_breaks_real_xcom_round_trip(self):
+        """Bug-pin (issue #309): a RAW turn row (the un-normalized dict
+        straight from the fixture, bypassing every helper) DOES break
+        Airflow's REAL XCom serializer round-trip with the exact ZoneInfo
+        crash. This must stay red-raising FOREVER — it deliberately never
+        normalizes. It proves the +02:00 offset shape genuinely breaks the
+        serializer, so the normalization applied at the call site is doing
+        real work rather than being decorative.
 
-        assert result["turn_id"] == 7
-        assert result["name"] == "Ana"
-        assert result["score"] == 4.5
-        assert result["nothing"] is None
-        assert result["tags"] == ["a", "b"]
-        assert result["session_date"] is date_only
+        Mirrors tests/utils/test_airflow_helpers.py::TestXComSerializerRoundTrip
+        ::test_raw_non_utc_offset_row_breaks_xcom_round_trip."""
+        import json
 
-    def test_sanitize_returns_new_dict_does_not_mutate_input(self):
-        """The helper must return a NEW dict; the original row must be unmodified."""
-        from congress_videos.youtube_upload_dag import _sanitize_row_for_xcom
+        from airflow.utils.json import XComDecoder, XComEncoder
 
-        tz = timezone(timedelta(hours=2))
-        dt = datetime(2026, 8, 22, 1, 0, tzinfo=tz)
-        row = {"prepared_at": dt, "turn_id": 5}
+        def _xcom_round_trip(value):
+            return json.loads(json.dumps(value, cls=XComEncoder), cls=XComDecoder)
 
-        result = _sanitize_row_for_xcom(row)
+        fake_turn = _make_turn_row()
 
-        assert result is not row
-        assert isinstance(row["prepared_at"], datetime), "Original must remain a datetime"
-
-    def test_sanitize_handles_multiple_datetime_fields(self):
-        """All datetime.datetime values in the row must be converted."""
-        from congress_videos.youtube_upload_dag import _sanitize_row_for_xcom
-
-        tz = timezone(timedelta(hours=2))
-        row = {
-            "materialized_at": datetime(2026, 8, 22, 1, 0, tzinfo=tz),
-            "prepared_at": datetime(2026, 8, 22, 0, 0, tzinfo=tz),
-            "turn_id": 3,
-        }
-
-        result = _sanitize_row_for_xcom(row)
-
-        assert all(not isinstance(v, datetime) for v in result.values()), (
-            "All datetime.datetime values must be converted to strings"
-        )
-        assert isinstance(result["materialized_at"], str)
-        assert isinstance(result["prepared_at"], str)
+        # match= is load-bearing: without it any ValueError would satisfy this
+        # pin, including one raised for an unrelated reason. The point of the
+        # test is that THIS specific tz defect is what breaks the round-trip.
+        with pytest.raises(
+            ValueError, match="ZoneInfo keys must be normalized relative paths"
+        ):
+            _xcom_round_trip(fake_turn)
 
 
 class TestGuardAAndGuardB:
