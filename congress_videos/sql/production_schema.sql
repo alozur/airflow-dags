@@ -105,7 +105,16 @@ CREATE TABLE IF NOT EXISTS production.video_chapters (
 
     -- Timestamps
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+
+    -- Added by migration 020 (chapter speaker attribution, issue #56)
+    resolved_participant_slug TEXT REFERENCES production.congress_participants(slug),
+
+    -- Added by migration 031 (re-diarization progress filter, issue #166)
+    turns_detected_at TIMESTAMPTZ,
+
+    -- Added by migration 032 (post-upload verification, issue #141)
+    upload_verified_at TIMESTAMPTZ
 );
 
 -- Table: video_shorts
@@ -362,6 +371,10 @@ CREATE INDEX idx_video_shorts_reap_clip_id ON production.video_shorts(reap_clip_
 CREATE INDEX idx_video_shorts_uploaded_recent ON production.video_shorts(updated_at DESC) WHERE is_uploaded = TRUE;
 CREATE INDEX idx_video_shorts_pending_downloaded ON production.video_shorts(reap_virality_score DESC NULLS LAST) WHERE is_uploaded = FALSE AND is_upload_abandoned = FALSE AND local_file_path IS NOT NULL AND reap_status = 'downloaded';
 
+-- Migration 008 — live pg_indexes reports "UNIQUE, btree", i.e. a standalone
+-- UNIQUE INDEX, not a table-level UNIQUE CONSTRAINT
+CREATE UNIQUE INDEX uq_video_chapters_segment ON production.video_chapters(video_id, start_time, end_time);
+
 -- Migration 009
 CREATE INDEX idx_llm_cache_created_at ON production.llm_cache(created_at);
 
@@ -372,6 +385,9 @@ CREATE UNIQUE INDEX uq_congress_participants_slug ON production.congress_partici
 -- Migration 019
 CREATE INDEX idx_video_thumbnails_chapter ON production.video_thumbnails(chapter_id);
 CREATE INDEX idx_video_thumbnails_chosen ON production.video_thumbnails(chapter_id, is_chosen);
+
+-- Migration 020
+CREATE INDEX idx_video_chapters_resolved_participant_slug ON production.video_chapters(resolved_participant_slug);
 
 -- Migration 022
 CREATE INDEX idx_speaker_turns_chapter ON production.speaker_turns(chapter_id);
@@ -389,6 +405,10 @@ CREATE INDEX idx_speaker_turn_videos_uploadable ON production.speaker_turn_video
 
 -- Migration 026
 CREATE INDEX idx_video_analytics_chapter ON production.video_analytics_snapshots(chapter_id);
+
+-- Migration 037 (partial index predicate matches the uploadable_chapters
+-- is_uploaded_to_youtube gate verbatim)
+CREATE INDEX idx_video_chapters_pending_priority ON production.video_chapters(relevance_score DESC, created_at DESC) WHERE is_uploaded_to_youtube = FALSE;
 
 -- ============================================================
 -- VIEWS
@@ -422,7 +442,9 @@ SELECT
     vc.is_uploaded_to_youtube,
     vc.created_at,
     -- Calculate days since chapter was identified
-    CURRENT_DATE - DATE(vc.created_at) AS days_since_created
+    CURRENT_DATE - DATE(vc.created_at) AS days_since_created,
+    -- Exposed by migration 021 (column added by 020)
+    vc.resolved_participant_slug
 FROM production.video_chapters vc
 JOIN production.youtube_source_videos ysv ON vc.video_id = ysv.video_id
 WHERE
@@ -430,6 +452,7 @@ WHERE
     AND vc.relevance_score >= 2  -- Only high-relevance chapters (score >= 2/5)
     AND vc.is_upload_abandoned = FALSE
 ORDER BY
+    ysv.session_date DESC NULLS LAST,  -- Newest session first (migration 007)
     vc.relevance_score DESC,  -- Higher relevance score first
     vc.created_at DESC;        -- Newer chapters first
 
