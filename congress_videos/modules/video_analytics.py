@@ -15,7 +15,16 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from congress_videos.config.analytics_config import CHECKPOINTS, MAX_WINDOW_HOURS, METRIC_FIELDS
+from congress_videos.config.analytics_config import (
+    CHECKPOINTS,
+    MAX_THUMBNAIL_ACTIONS_PER_VIDEO,
+    MAX_TITLE_ACTIONS_PER_VIDEO,
+    MAX_WINDOW_HOURS,
+    METRIC_FIELDS,
+    MIN_PRIOR_SNAPSHOTS,
+    TITLE_UPDATE_CHECKPOINTS,
+    UNDERPERFORM_RATIO,
+)
 
 
 def pending_checkpoints(
@@ -107,6 +116,70 @@ def parse_analytics_response(resp: dict[str, Any]) -> dict[str, Any | None]:
         metrics[field] = row[idx] if idx is not None else None
 
     return metrics
+
+
+def _cap_reached(prior_actions: dict[str, int], checkpoint: str) -> bool:
+    """Return True when a relevant lifetime action cap is already consumed.
+
+    Thumbnail actions are relevant at every checkpoint. Title actions are
+    only relevant at TITLE_UPDATE_CHECKPOINTS (24h). Either cap being
+    reached is sufficient to mark the checkpoint 'capped' — there is no
+    partial action_taken value for "thumbnail only, title already capped".
+    """
+    thumbnail_count = prior_actions.get("thumbnail", 0)
+    if thumbnail_count >= MAX_THUMBNAIL_ACTIONS_PER_VIDEO:
+        return True
+
+    if checkpoint in TITLE_UPDATE_CHECKPOINTS:
+        title_count = prior_actions.get("title", 0)
+        if title_count >= MAX_TITLE_ACTIONS_PER_VIDEO:
+            return True
+
+    return False
+
+
+def evaluate_action(
+    views: float | int,
+    median_views: float | int,
+    sample_size: int,
+    checkpoint: str,
+    prior_actions: dict[str, int],
+) -> str:
+    """Decide the action_taken literal for one (video, checkpoint) pair.
+
+    Pure function — no I/O. Gate order (load-bearing, precedence top to
+    bottom): capped -> cold_start -> ok -> act.
+
+    Args:
+        views: The evaluated video's views at this checkpoint.
+        median_views: Channel-wide median views at this checkpoint (computed
+            via a single grouped query across all checkpoints; MAY include
+            the evaluated video's own snapshot — self-inclusion is strictly
+            conservative, see spec).
+        sample_size: Total snapshot count feeding the median, INCLUDING the
+            evaluated video's own row. The gate excludes self arithmetically:
+            (sample_size - 1) >= MIN_PRIOR_SNAPSHOTS.
+        checkpoint: One of '24h','48h','7d','30d','90d'.
+        prior_actions: {'thumbnail': int, 'title': int} counts of consumed
+            lifetime cap slots for this video, where 'in_progress' rows
+            count as consumed slots alongside completed records.
+
+    Returns:
+        One of: 'capped', 'cold_start', 'ok',
+        'thumbnail_regenerated', 'thumbnail_and_title_regenerated'.
+    """
+    if _cap_reached(prior_actions, checkpoint):
+        return "capped"
+
+    if sample_size - 1 < MIN_PRIOR_SNAPSHOTS:
+        return "cold_start"
+
+    if median_views <= 0 or views >= UNDERPERFORM_RATIO * median_views:
+        return "ok"
+
+    if checkpoint in TITLE_UPDATE_CHECKPOINTS:
+        return "thumbnail_and_title_regenerated"
+    return "thumbnail_regenerated"
 
 
 def should_persist(metrics: dict[str, Any | None]) -> bool:

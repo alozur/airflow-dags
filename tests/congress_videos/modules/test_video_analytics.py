@@ -585,3 +585,468 @@ class TestGetCollectedAnalyticsPairs:
 
         assert result == set()
         assert isinstance(result, set)
+
+
+# ---------------------------------------------------------------------------
+# Tests: evaluate_action (issue #102)
+#
+# Spec: Per-checkpoint underperformance evaluation / Lifetime action cap per
+# video / Checkpoint-scoped action types / action_taken vocabulary.
+# Gate precedence (load-bearing): capped -> cold_start -> ok -> act.
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluateActionCapped:
+    """capped takes precedence over cold_start/ok."""
+
+    def test_thumbnail_cap_reached_returns_capped(self):
+        """GIVEN prior_actions shows the lifetime thumbnail cap reached
+        WHEN evaluate_action runs at a non-title checkpoint, deeply
+             underperforming, with a healthy sample
+        THEN it returns 'capped' — precedence over cold_start/ok."""
+        from congress_videos.modules.video_analytics import evaluate_action
+
+        result = evaluate_action(
+            views=1,
+            median_views=1000,
+            sample_size=20,
+            checkpoint="48h",
+            prior_actions={"thumbnail": 1, "title": 0},
+        )
+        assert result == "capped"
+
+    def test_title_cap_reached_at_24h_returns_capped(self):
+        """GIVEN prior_actions shows the lifetime title cap reached
+        WHEN evaluate_action runs at the 24h checkpoint, underperforming,
+             with a healthy sample
+        THEN it returns 'capped'."""
+        from congress_videos.modules.video_analytics import evaluate_action
+
+        result = evaluate_action(
+            views=1,
+            median_views=1000,
+            sample_size=20,
+            checkpoint="24h",
+            prior_actions={"thumbnail": 0, "title": 1},
+        )
+        assert result == "capped"
+
+    def test_title_cap_at_non_title_checkpoint_does_not_cap(self):
+        """Title cap is only relevant at TITLE_UPDATE_CHECKPOINTS (24h); a
+        capped title must NOT block thumbnail-only action elsewhere."""
+        from congress_videos.modules.video_analytics import evaluate_action
+
+        result = evaluate_action(
+            views=1,
+            median_views=1000,
+            sample_size=20,
+            checkpoint="48h",
+            prior_actions={"thumbnail": 0, "title": 1},
+        )
+        assert result == "thumbnail_regenerated"
+
+
+class TestEvaluateActionColdStart:
+    """cold_start: no retroactive evaluation below MIN_PRIOR_SNAPSHOTS."""
+
+    def test_below_min_prior_snapshots_returns_cold_start(self):
+        """GIVEN sample_size - 1 < MIN_PRIOR_SNAPSHOTS (10)
+        WHEN evaluate_action runs
+        THEN it returns 'cold_start' regardless of views/median."""
+        from congress_videos.modules.video_analytics import evaluate_action
+
+        result = evaluate_action(
+            views=1,
+            median_views=1000,
+            sample_size=10,  # sample_size - 1 = 9 < 10
+            checkpoint="24h",
+            prior_actions={"thumbnail": 0, "title": 0},
+        )
+        assert result == "cold_start"
+
+
+class TestEvaluateActionOk:
+    """ok: not underperforming, boundary case at exactly 50%."""
+
+    def test_sufficient_sample_and_ok_views_returns_ok(self):
+        """GIVEN sample_size - 1 >= 10 and views >= 50% of median
+        WHEN evaluate_action runs
+        THEN it returns 'ok'."""
+        from congress_videos.modules.video_analytics import evaluate_action
+
+        result = evaluate_action(
+            views=600,
+            median_views=1000,
+            sample_size=11,  # sample_size - 1 = 10 == MIN_PRIOR_SNAPSHOTS
+            checkpoint="48h",
+            prior_actions={"thumbnail": 0, "title": 0},
+        )
+        assert result == "ok"
+
+    def test_exactly_fifty_percent_boundary_returns_ok(self):
+        """GIVEN views == exactly 50% of the median
+        WHEN evaluate_action runs
+        THEN it returns 'ok', not underperforming (boundary case)."""
+        from congress_videos.modules.video_analytics import evaluate_action
+
+        result = evaluate_action(
+            views=500,
+            median_views=1000,
+            sample_size=11,
+            checkpoint="48h",
+            prior_actions={"thumbnail": 0, "title": 0},
+        )
+        assert result == "ok"
+
+
+class TestEvaluateActionThumbnailOnly:
+    """Non-24h underperformer: thumbnail_regenerated only."""
+
+    def test_underperforming_48h_within_cap_returns_thumbnail_regenerated(self):
+        from congress_videos.modules.video_analytics import evaluate_action
+
+        result = evaluate_action(
+            views=100,
+            median_views=1000,
+            sample_size=11,
+            checkpoint="48h",
+            prior_actions={"thumbnail": 0, "title": 0},
+        )
+        assert result == "thumbnail_regenerated"
+
+    def test_underperforming_7d_within_cap_returns_thumbnail_regenerated(self):
+        from congress_videos.modules.video_analytics import evaluate_action
+
+        result = evaluate_action(
+            views=100,
+            median_views=1000,
+            sample_size=15,
+            checkpoint="7d",
+            prior_actions={"thumbnail": 0, "title": 0},
+        )
+        assert result == "thumbnail_regenerated"
+
+    def test_underperforming_30d_within_cap_returns_thumbnail_regenerated(self):
+        from congress_videos.modules.video_analytics import evaluate_action
+
+        result = evaluate_action(
+            views=100,
+            median_views=1000,
+            sample_size=15,
+            checkpoint="30d",
+            prior_actions={"thumbnail": 0, "title": 0},
+        )
+        assert result == "thumbnail_regenerated"
+
+    def test_underperforming_90d_within_cap_returns_thumbnail_regenerated(self):
+        from congress_videos.modules.video_analytics import evaluate_action
+
+        result = evaluate_action(
+            views=100,
+            median_views=1000,
+            sample_size=15,
+            checkpoint="90d",
+            prior_actions={"thumbnail": 0, "title": 0},
+        )
+        assert result == "thumbnail_regenerated"
+
+
+class TestEvaluateActionThumbnailAndTitle:
+    """24h underperformer: thumbnail_and_title_regenerated."""
+
+    def test_underperforming_24h_within_cap_returns_thumbnail_and_title(self):
+        from congress_videos.modules.video_analytics import evaluate_action
+
+        result = evaluate_action(
+            views=100,
+            median_views=1000,
+            sample_size=11,
+            checkpoint="24h",
+            prior_actions={"thumbnail": 0, "title": 0},
+        )
+        assert result == "thumbnail_and_title_regenerated"
+
+
+class TestEvaluateActionZeroMedian:
+    """Defensive: a zero/negative median must never raise a ZeroDivisionError
+    and must not be treated as underperforming (nothing to compare against)."""
+
+    def test_zero_median_returns_ok(self):
+        from congress_videos.modules.video_analytics import evaluate_action
+
+        result = evaluate_action(
+            views=0,
+            median_views=0,
+            sample_size=11,
+            checkpoint="48h",
+            prior_actions={"thumbnail": 0, "title": 0},
+        )
+        assert result == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Tests: CongressionalVideoDB Video Analytics Actions methods (issue #102)
+# ---------------------------------------------------------------------------
+
+
+class TestGetUnactionedSnapshots:
+    """Spec: action_taken vocabulary and audit snapshot — candidate selection.
+
+    get_unactioned_snapshots() returns NULL-action_taken rows joined to
+    video_chapters for conf fields consumed downstream by
+    _prepare_thumbnail_config-style regeneration.
+    """
+
+    def test_sql_filters_null_action_taken(self):
+        cur = _make_cursor()
+        db, _ = _make_db(cur)
+
+        db.get_unactioned_snapshots()
+
+        sql_calls = _executed_sql(cur)
+        assert len(sql_calls) >= 1
+        assert "action_taken IS NULL" in sql_calls[0]
+
+    def test_sql_joins_video_chapters(self):
+        cur = _make_cursor()
+        db, _ = _make_db(cur)
+
+        db.get_unactioned_snapshots()
+
+        sql_calls = _executed_sql(cur)
+        assert any("video_chapters" in s for s in sql_calls)
+
+    def test_returns_list_with_conf_fields(self):
+        cur = _make_cursor()
+        cur.fetchall.return_value = [
+            {
+                "snapshot_id": 1,
+                "chapter_id": 5,
+                "youtube_video_id": "abc123",
+                "checkpoint": "24h",
+                "metrics": {"views": 100},
+                "chapter_title": "Title",
+                "description": "Desc",
+                "session_number": 3,
+                "session_date": None,
+                "key_speakers": [],
+                "resolved_participant_slug": None,
+            }
+        ]
+        db, _ = _make_db(cur)
+
+        result = db.get_unactioned_snapshots()
+
+        assert isinstance(result, list)
+        assert result[0]["snapshot_id"] == 1
+        assert result[0]["chapter_title"] == "Title"
+
+
+class TestGetCheckpointViewMedians:
+    """Spec: single grouped-query median, self-included."""
+
+    def test_sql_uses_percentile_cont_grouped_by_checkpoint(self):
+        cur = _make_cursor()
+        db, _ = _make_db(cur)
+
+        db.get_checkpoint_view_medians()
+
+        sql_calls = _executed_sql(cur)
+        combined = " ".join(sql_calls).upper()
+        assert "PERCENTILE_CONT" in combined
+        assert "GROUP BY CHECKPOINT" in combined
+
+    def test_returns_dict_keyed_by_checkpoint(self):
+        cur = _make_cursor()
+        cur.fetchall.return_value = [
+            {"checkpoint": "24h", "median_views": 500.0, "sample_size": 42},
+            {"checkpoint": "48h", "median_views": 700.0, "sample_size": 30},
+        ]
+        db, _ = _make_db(cur)
+
+        result = db.get_checkpoint_view_medians()
+
+        assert result["24h"]["median_views"] == 500.0
+        assert result["24h"]["sample_size"] == 42
+        assert result["48h"]["median_views"] == 700.0
+
+
+class TestGetVideoActionHistory:
+    """Spec: in_progress rows count as consumed cap slots alongside completed
+    swap/title records."""
+
+    def test_completed_thumbnail_swap_counts_as_one(self):
+        cur = _make_cursor()
+        cur.fetchall.return_value = [
+            {"youtube_video_id": "abc123", "checkpoint": "48h", "action_taken": "thumbnail_regenerated"},
+        ]
+        db, _ = _make_db(cur)
+
+        result = db.get_video_action_history(["abc123"])
+
+        assert result["abc123"]["thumbnail"] == 1
+        assert result["abc123"]["title"] == 0
+
+    def test_in_progress_row_counts_as_consumed_thumbnail_slot(self):
+        """GIVEN a video has one action_taken='in_progress' row for a
+        thumbnail action and no completed swap record
+        WHEN get_video_action_history computes cap usage
+        THEN the in_progress row counts as a consumed thumbnail-action slot."""
+        cur = _make_cursor()
+        cur.fetchall.return_value = [
+            {"youtube_video_id": "abc123", "checkpoint": "48h", "action_taken": "in_progress"},
+        ]
+        db, _ = _make_db(cur)
+
+        result = db.get_video_action_history(["abc123"])
+
+        assert result["abc123"]["thumbnail"] == 1
+
+    def test_in_progress_at_24h_counts_as_consumed_title_slot(self):
+        cur = _make_cursor()
+        cur.fetchall.return_value = [
+            {"youtube_video_id": "abc123", "checkpoint": "24h", "action_taken": "in_progress"},
+        ]
+        db, _ = _make_db(cur)
+
+        result = db.get_video_action_history(["abc123"])
+
+        assert result["abc123"]["thumbnail"] == 1
+        assert result["abc123"]["title"] == 1
+
+    def test_thumbnail_and_title_regenerated_counts_both(self):
+        cur = _make_cursor()
+        cur.fetchall.return_value = [
+            {
+                "youtube_video_id": "abc123",
+                "checkpoint": "24h",
+                "action_taken": "thumbnail_and_title_regenerated",
+            },
+        ]
+        db, _ = _make_db(cur)
+
+        result = db.get_video_action_history(["abc123"])
+
+        assert result["abc123"]["thumbnail"] == 1
+        assert result["abc123"]["title"] == 1
+
+    def test_video_with_no_rows_returns_zero_counts(self):
+        cur = _make_cursor()
+        cur.fetchall.return_value = []
+        db, _ = _make_db(cur)
+
+        result = db.get_video_action_history(["novideo"])
+
+        assert result["novideo"] == {"thumbnail": 0, "title": 0}
+
+    def test_empty_input_returns_empty_dict_without_db_call(self):
+        cur = _make_cursor()
+        db, _ = _make_db(cur)
+
+        result = db.get_video_action_history([])
+
+        assert result == {}
+        cur.execute.assert_not_called()
+
+
+class TestGetChosenThumbnail:
+    """Spec: Archetype persistence — read back the chosen thumbnail row."""
+
+    def test_sql_filters_chapter_id_and_is_chosen(self):
+        cur = _make_cursor()
+        db, _ = _make_db(cur)
+
+        db.get_chosen_thumbnail(chapter_id=5)
+
+        sql_calls = _executed_sql(cur)
+        combined = " ".join(sql_calls)
+        assert "is_chosen" in combined or "IS_CHOSEN" in combined.upper()
+
+    def test_returns_row_including_archetype(self):
+        cur = _make_cursor()
+        cur.fetchone.return_value = {
+            "thumbnail_id": 1,
+            "chapter_id": 5,
+            "label": "A",
+            "prompt": "...",
+            "openai_title": "Title",
+            "archetype": "outrage",
+            "is_chosen": True,
+        }
+        db, _ = _make_db(cur)
+
+        result = db.get_chosen_thumbnail(chapter_id=5)
+
+        assert result["archetype"] == "outrage"
+
+    def test_no_chosen_row_returns_none(self):
+        cur = _make_cursor()
+        cur.fetchone.return_value = None
+        db, _ = _make_db(cur)
+
+        result = db.get_chosen_thumbnail(chapter_id=999)
+
+        assert result is None
+
+
+class TestClaimSnapshotAction:
+    """Spec: Claim-before-act retry semantics — rowcount-gated claim."""
+
+    def test_successful_claim_returns_true(self):
+        cur = _make_cursor()
+        cur.rowcount = 1
+        db, _ = _make_db(cur)
+
+        result = db.claim_snapshot_action(snapshot_id=42)
+
+        assert result is True
+
+    def test_sql_sets_in_progress_where_action_taken_is_null(self):
+        cur = _make_cursor()
+        db, _ = _make_db(cur)
+
+        db.claim_snapshot_action(snapshot_id=42)
+
+        sql_calls = _executed_sql(cur)
+        combined = " ".join(sql_calls)
+        assert "in_progress" in combined
+        assert "action_taken IS NULL" in combined
+
+    def test_second_claim_on_same_row_returns_false(self):
+        """A concurrent/second claim attempt on an already-claimed row must
+        return False (rowcount=0)."""
+        cur = _make_cursor()
+        cur.rowcount = 0
+        db, _ = _make_db(cur)
+
+        result = db.claim_snapshot_action(snapshot_id=42)
+
+        assert result is False
+
+
+class TestMarkActionTaken:
+    """Spec: action_taken vocabulary and audit snapshot — final write."""
+
+    def test_writes_action_taken_and_action_detail(self):
+        cur = _make_cursor()
+        db, _ = _make_db(cur)
+        detail = {"checkpoint": "24h", "views": 10, "median_views": 1000}
+
+        db.mark_action_taken(
+            snapshot_id=42, action="thumbnail_regenerated", detail=detail
+        )
+
+        sql_calls = _executed_sql(cur)
+        combined = " ".join(sql_calls)
+        assert "action_taken" in combined
+        assert "action_detail" in combined
+
+        all_params = []
+        for call in cur.execute.call_args_list:
+            if len(call.args) > 1:
+                all_params.extend(call.args[1])
+        assert "thumbnail_regenerated" in all_params
+        assert 42 in all_params
+        json_params = [p for p in all_params if isinstance(p, str) and "checkpoint" in p]
+        assert len(json_params) >= 1
+        assert json.loads(json_params[0])["checkpoint"] == "24h"
