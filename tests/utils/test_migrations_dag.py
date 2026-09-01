@@ -63,6 +63,7 @@ def _make_mock_pg(schema: str = "development", applied: list[str] | None = None)
     )
     mock_pg._lock_conn = mock_conn_lock
     mock_pg._lock_cursor = mock_cursor_lock
+    mock_pg._write_conn = mock_conn_write
 
     return mock_pg, mock_cursor_write
 
@@ -533,3 +534,129 @@ class TestMigrationIdempotency:
         assert not _BARE_INSERT.search(sql), (
             f"{path.name}: migrations must not INSERT data — use a separate seed script"
         )
+
+
+# ---------------------------------------------------------------------------
+# Owner-role assumption (issue #291)
+# ---------------------------------------------------------------------------
+
+class TestOwnerRoleForSchema:
+
+    def test_development_maps_to_airflow_dev(self, monkeypatch):
+        from utils.migrations_dag import _owner_role_for_schema
+
+        monkeypatch.delenv("MIGRATION_OWNER_ROLE", raising=False)
+        assert _owner_role_for_schema("development") == "airflow_dev"
+
+    def test_production_maps_to_airflow_prod(self, monkeypatch):
+        from utils.migrations_dag import _owner_role_for_schema
+
+        monkeypatch.delenv("MIGRATION_OWNER_ROLE", raising=False)
+        assert _owner_role_for_schema("production") == "airflow_prod"
+
+    def test_unknown_schema_maps_to_none(self, monkeypatch):
+        from utils.migrations_dag import _owner_role_for_schema
+
+        monkeypatch.delenv("MIGRATION_OWNER_ROLE", raising=False)
+        assert _owner_role_for_schema("public") is None
+
+    def test_env_override_wins(self, monkeypatch):
+        from utils.migrations_dag import _owner_role_for_schema
+
+        monkeypatch.setenv("MIGRATION_OWNER_ROLE", "custom_owner")
+        assert _owner_role_for_schema("development") == "custom_owner"
+        assert _owner_role_for_schema("public") == "custom_owner"
+
+
+class TestOwnerRoleAssumption:
+
+    def _mock_single_conn(self, mocker, schema: str):
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+
+        mock_pg = MagicMock()
+        mock_pg.schema = schema
+        mock_pg.get_connection.return_value = mock_conn
+
+        mocker.patch("utils.migrations_dag.PostgresConnection", return_value=mock_pg)
+        return mock_conn, mock_cursor
+
+    def test_ensure_table_assumes_owner_role_first(self, mocker, monkeypatch):
+        from utils.migrations_dag import _ensure_migrations_table
+
+        monkeypatch.delenv("MIGRATION_OWNER_ROLE", raising=False)
+        _, mock_cursor = self._mock_single_conn(mocker, "development")
+        _ensure_migrations_table()
+
+        executed = [c[0][0] for c in mock_cursor.execute.call_args_list]
+        assert executed[0] == 'SET ROLE "airflow_dev"'
+        assert "CREATE TABLE IF NOT EXISTS" in executed[1]
+
+    def test_apply_sets_role_before_search_path_and_sql(self, mocker, monkeypatch, tmp_path):
+        from utils.migrations_dag import _apply_pending_migrations
+
+        monkeypatch.delenv("MIGRATION_OWNER_ROLE", raising=False)
+        migration_sql = "CREATE VIEW v AS SELECT 1;"
+        _create_migration(tmp_path, "001_init.sql", migration_sql)
+
+        mock_pg, mock_cursor_write = _make_mock_pg(schema="production", applied=[])
+        mocker.patch("utils.migrations_dag.PostgresConnection", return_value=mock_pg)
+        mocker.patch("utils.migrations_dag.DAGS_REPO_PATH", tmp_path)
+
+        _apply_pending_migrations()
+
+        executed = [c[0][0] for c in mock_cursor_write.execute.call_args_list]
+        assert executed[0] == 'SET ROLE "airflow_prod"'
+        assert "SET search_path" in executed[1]
+        assert migration_sql in executed[2]
+
+    def test_set_role_failure_rolls_back_and_migration_still_applies(
+        self, mocker, monkeypatch, tmp_path
+    ):
+        from utils.migrations_dag import _apply_pending_migrations
+
+        monkeypatch.delenv("MIGRATION_OWNER_ROLE", raising=False)
+        migration_sql = "CREATE TABLE IF NOT EXISTS t (id SERIAL);"
+        _create_migration(tmp_path, "001_init.sql", migration_sql)
+
+        mock_pg, mock_cursor_write = _make_mock_pg(schema="development", applied=[])
+
+        def _fail_set_role(sql, *args, **kwargs):
+            if sql.startswith("SET ROLE"):
+                raise RuntimeError("permission denied to set role")
+
+        mock_cursor_write.execute.side_effect = _fail_set_role
+        mocker.patch("utils.migrations_dag.PostgresConnection", return_value=mock_pg)
+        mocker.patch("utils.migrations_dag.DAGS_REPO_PATH", tmp_path)
+
+        _apply_pending_migrations()
+
+        executed = [c[0][0] for c in mock_cursor_write.execute.call_args_list]
+        assert any(migration_sql in s for s in executed)
+        assert any("INSERT INTO" in s and "schema_migrations" in s for s in executed)
+        # The poisoned transaction must be rolled back before the migration
+        # statements run on that same connection (psycopg2 aborts the tx on
+        # error) — and never on the advisory-lock connection.
+        assert mock_pg._write_conn.rollback.called
+        assert not mock_pg._lock_conn.rollback.called
+
+    def test_unknown_schema_issues_no_set_role(self, mocker, monkeypatch, tmp_path):
+        from utils.migrations_dag import _apply_pending_migrations
+
+        monkeypatch.delenv("MIGRATION_OWNER_ROLE", raising=False)
+        _create_migration(tmp_path, "001_init.sql")
+
+        mock_pg, mock_cursor_write = _make_mock_pg(schema="public", applied=[])
+        mocker.patch("utils.migrations_dag.PostgresConnection", return_value=mock_pg)
+        mocker.patch("utils.migrations_dag.DAGS_REPO_PATH", tmp_path)
+
+        _apply_pending_migrations()
+
+        executed = [c[0][0] for c in mock_cursor_write.execute.call_args_list]
+        assert not any(s.startswith("SET ROLE") for s in executed)
