@@ -24,6 +24,7 @@ from typing import Any
 from psycopg2.extras import Json
 
 from utils.ai_helpers import generate_json_completion
+from utils.llm_config import LLM_CHEAP
 from utils.postgres_helpers import PostgresConnection
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ def make_cache_key(
     prompts, model or params) produce different keys.
 
     Args:
-        model: Model identifier (e.g. ``"gpt-4o-mini"``).
+        model: Model identifier (e.g. the ``LLM_CHEAP`` tier constant).
         system_prompt: System message.
         user_prompt: User message.
         **params: Any extra parameters that affect the response (temperature, etc).
@@ -119,7 +120,7 @@ def put_cached(cache_key: str, model: str, response: dict) -> None:
 def cached_json_completion(
     system_prompt: str,
     user_prompt: str,
-    model: str = "gpt-4o-mini",
+    model: str = LLM_CHEAP,
     **kw: Any,
 ) -> dict:
     """Return a JSON completion, served from the Postgres cache when available.
@@ -134,7 +135,7 @@ def cached_json_completion(
     Args:
         system_prompt: System message defining model behaviour.
         user_prompt: User message with the request.
-        model: Model identifier (default ``"gpt-4o-mini"``).
+        model: Model identifier (default: ``LLM_CHEAP`` tier).
         **kw: Extra keyword args forwarded to ``generate_json_completion`` (e.g.
             ``temperature``, ``max_tokens``). They also participate in the cache key.
 

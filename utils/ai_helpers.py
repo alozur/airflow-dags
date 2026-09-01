@@ -10,6 +10,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from utils.llm_config import LLM_CHEAP, LLM_DEFAULT
+
 try:
     import openai
 
@@ -25,7 +27,7 @@ except ImportError:
 def generate_chat_completion(
     system_prompt: str,
     user_prompt: str,
-    model: str = "gpt-3.5-turbo",
+    model: str = LLM_DEFAULT,
     temperature: float = 0.7,
     max_tokens: int = 500,
 ) -> Dict[str, Any]:
@@ -35,7 +37,7 @@ def generate_chat_completion(
     Args:
         system_prompt: System message defining AI behavior
         user_prompt: User message with the actual request
-        model: OpenAI model to use (default: gpt-3.5-turbo)
+        model: OpenAI model to use (default: LLM_DEFAULT tier)
         temperature: Sampling temperature 0-1 (default: 0.7)
         max_tokens: Maximum tokens in response (default: 500)
 
@@ -122,7 +124,7 @@ def parse_json_response(response_text: str) -> Dict[str, Any]:
 def generate_json_completion(
     system_prompt: str,
     user_prompt: str,
-    model: str = "gpt-4o-mini",
+    model: str = LLM_CHEAP,
     temperature: float = 0.3,
     max_tokens: int = 500,
 ) -> Dict[str, Any]:
@@ -135,7 +137,7 @@ def generate_json_completion(
     Args:
         system_prompt: System message defining AI behavior
         user_prompt: User message with the actual request
-        model: OpenAI model to use (default: gpt-4o-mini)
+        model: OpenAI model to use (default: LLM_CHEAP tier)
         temperature: Sampling temperature 0-1 (default: 0.3 for more deterministic JSON)
         max_tokens: Maximum tokens in response (default: 500)
 
