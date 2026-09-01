@@ -107,6 +107,9 @@ ORDER BY COALESCE(dedup.interest_score, 1) DESC,
 """
 
 
+_TEST_SCHEMA = "test_migration_029"
+
+
 @pytest.fixture(scope="module")
 def pg_conn():
     """Live Postgres connection for SQL integration tests.
@@ -114,6 +117,10 @@ def pg_conn():
     Uses TEST_DATABASE_URL env var or falls back to
     postgresql://postgres:postgres@localhost:5432/test_airflow_dags.
     Skips when psycopg2 is unavailable or DB is unreachable.
+
+    Runs in its own Postgres schema (issue #277) so this file can share a
+    throwaway database with other live-Postgres test files without
+    column-not-found collisions from differing table shapes.
     """
     reason = _skip_if_no_postgres()
     if reason:
@@ -128,7 +135,13 @@ def pg_conn():
         "postgresql://postgres:postgres@localhost:5432/test_airflow_dags",
     )
     try:
-        conn = psycopg2.connect(dsn, cursor_factory=RealDictCursor)
+        conn = psycopg2.connect(
+            dsn,
+            cursor_factory=RealDictCursor,
+            # A startup option, not a per-session SET: it cannot be silently
+            # unset by a ROLLBACK TO SAVEPOINT mid-run (issue #277).
+            options=f"-c search_path={_TEST_SCHEMA}",
+        )
         conn.autocommit = False
     except Exception as exc:
         pytest.skip(f"Postgres unavailable: {exc}")
@@ -136,22 +149,35 @@ def pg_conn():
 
     # Bootstrap schema + view inside a savepoint so we can roll back after each test.
     with conn.cursor() as cur:
+        cur.execute(f"DROP SCHEMA IF EXISTS {_TEST_SCHEMA} CASCADE")
+        cur.execute(f"CREATE SCHEMA {_TEST_SCHEMA}")
         cur.execute(_SCHEMA_SQL)
         cur.execute(_VIEW_SQL)
     conn.commit()
 
     yield conn
 
-    conn.rollback()
-    conn.close()
+    try:
+        conn.rollback()  # a failed test leaves an aborted transaction
+        with conn.cursor() as cur:
+            cur.execute(f"DROP SCHEMA IF EXISTS {_TEST_SCHEMA} CASCADE")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 @pytest.fixture()
 def db(pg_conn):
-    """Per-test savepoint so each test starts with a clean state."""
-    pg_conn.execute("SAVEPOINT test_sp")
+    """Per-test savepoint so each test starts with a clean state.
+
+    Issued through a cursor: a psycopg2 connection has no `.execute` (that is
+    psycopg3-only API — issue #276).
+    """
+    with pg_conn.cursor() as cur:
+        cur.execute("SAVEPOINT test_sp")
     yield pg_conn
-    pg_conn.execute("ROLLBACK TO SAVEPOINT test_sp")
+    with pg_conn.cursor() as cur:
+        cur.execute("ROLLBACK TO SAVEPOINT test_sp")
 
 
 def _insert_minimal_turn(db, *, turn_id: int, interest_score=None,
