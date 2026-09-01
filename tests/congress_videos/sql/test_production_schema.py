@@ -1,8 +1,8 @@
 """Tests for production_schema.sql's base tables and uploadable_turns view
-snapshot (issues #238, #299).
+snapshot (issues #238, #299, #304).
 
 Guards against the snapshot silently drifting from the latest applied view
-migration (currently 040) and from the live production DDL for the 9
+migration (currently 040) and from the live production DDL for the 11
 snapshotted base tables. Static SQL-text checks only — no DB connection.
 """
 from __future__ import annotations
@@ -27,16 +27,31 @@ MIGRATION_PATH = (
     / "040_add_procedural_turn_filter.sql"
 )
 
+MIGRATION_038_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "congress_videos"
+    / "sql"
+    / "migrations"
+    / "038_restore_chapter_abandoned_gate.sql"
+)
 
-def _normalize_view_sql(text: str) -> str:
-    """Comment-free, qualification-free, whitespace-collapsed CREATE VIEW body."""
+
+def _normalize_view_sql(text: str, view_name: str = "UPLOADABLE_TURNS") -> str:
+    """Comment-free, qualification-free, whitespace-collapsed CREATE VIEW body.
+
+    `CREATE OR REPLACE VIEW` is rewritten to `CREATE VIEW` so a migration that
+    uses one form stays comparable to a snapshot that uses the other (038 vs
+    the snapshot's DROP + CREATE). No-op for uploadable_turns/040.
+    """
+    target = view_name.upper()
     stripped = re.sub(r"--[^\n]*", " ", text)  # also kills the DOWN block
     stripped = re.sub(r"(?i)\bproduction\.", "", stripped)
     for segment in stripped.split(";"):
         normalized = re.sub(r"\s+", " ", segment).strip().upper()
-        if "CREATE VIEW UPLOADABLE_TURNS" in normalized:
+        normalized = normalized.replace("CREATE OR REPLACE VIEW ", "CREATE VIEW ")
+        if f"CREATE VIEW {target}" in normalized:
             return normalized
-    raise AssertionError("no CREATE VIEW uploadable_turns statement found")
+    raise AssertionError(f"no CREATE VIEW {view_name.lower()} statement found")
 
 
 def _table_block(table: str) -> str:
@@ -56,9 +71,28 @@ def _table_block(table: str) -> str:
     return sql[start : sql.index(");", start) + 2]
 
 
-# 90 columns across the 8 tables added by issue #299, transcribed from the live
+# 133 columns across 10 tables (the 8 from #299 plus video_chapters +
+# youtube_source_videos, issue #304), transcribed from the live
 # `\d production.<table>` DDL (canonical source), in FK-dependency order.
 TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "youtube_source_videos": (
+        "video_id", "video_title", "video_url", "session_number",
+        "session_date", "duration_seconds", "published_at", "channel_id",
+        "is_processed", "total_chapters", "created_at", "updated_at",
+        "download_retry_after",
+    ),
+    "video_chapters": (
+        "chapter_id", "video_id", "title", "description", "start_time",
+        "end_time", "duration_minutes", "speakers", "topics",
+        "relevance_score", "speaker_relevance_points",
+        "topic_relevance_points", "public_interest_points",
+        "scoring_reasoning", "key_speakers", "is_current_topic",
+        "scoring_error", "scored_at", "is_uploaded_to_youtube",
+        "youtube_video_id", "youtube_upload_date", "created_at", "updated_at",
+        "timeline", "upload_attempts", "is_upload_abandoned",
+        "last_upload_error", "resolved_participant_slug", "turns_detected_at",
+        "upload_verified_at",
+    ),
     "llm_cache": ("cache_key", "model", "response", "created_at"),
     "congress_participants": (
         "normalized_name", "display_name", "party", "parliamentary_group",
@@ -101,9 +135,11 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# Every FK in the 8 new blocks must be production.-qualified. Fragments are
-# matched against the whitespace-collapsed, uppercased block.
+# Every FK in every snapshotted block must be production.-qualified. Fragments
+# are matched against the whitespace-collapsed, uppercased block.
 FK_QUALIFICATIONS: tuple[tuple[str, str], ...] = (
+    ("video_chapters", "REFERENCES PRODUCTION.YOUTUBE_SOURCE_VIDEOS(VIDEO_ID) ON DELETE CASCADE"),
+    ("video_chapters", "REFERENCES PRODUCTION.CONGRESS_PARTICIPANTS(SLUG)"),
     ("speaker_normalization_cache", "REFERENCES PRODUCTION.VIDEO_CHAPTERS(CHAPTER_ID) ON DELETE CASCADE"),
     ("speaker_normalization_cache", "REFERENCES PRODUCTION.CONGRESS_PARTICIPANTS(NORMALIZED_NAME)"),
     ("video_thumbnails", "REFERENCES PRODUCTION.VIDEO_CHAPTERS(CHAPTER_ID) ON DELETE CASCADE"),
@@ -336,8 +372,10 @@ class TestVideoShortsTableSnapshot:
 
 
 class TestRemainingBaseTableSnapshots:
-    """The 8 base tables added by issue #299 must be present in the snapshot,
-    transcribed from the live `\\d production.<table>` DDL — 90 columns total.
+    """10 base tables — the 8 added by issue #299 plus video_chapters and
+    youtube_source_videos (issue #304) — must be present in the snapshot,
+    transcribed from the live `\\d production.<table>` DDL — 133 columns
+    total.
 
     Same block-scoping discipline as TestVideoShortsTableSnapshot: assertions
     run against the extracted CREATE TABLE block, never the whole file.
@@ -384,4 +422,27 @@ class TestSnapshotLockstepWithLatestMigration:
         assert _normalize_view_sql(snapshot_sql) == _normalize_view_sql(migration_sql), (
             "production_schema.sql's uploadable_turns view has drifted from "
             "migration 040 — update the snapshot to stay in lockstep"
+        )
+
+
+class TestChaptersSnapshotLockstepWithMigration038:
+    """The snapshot's uploadable_chapters view must be semantically identical
+    to the latest migration that touches it (038), modulo comments/
+    qualification/whitespace.
+
+    This view drifted silently three times — 021 dropped the abandon gate, 036
+    carried the drop forward, and the snapshot's ORDER BY never picked up
+    migration 007's leading session_date key — with no test catching any of it
+    (issue #304). uploadable_turns got this guard in #299; this is its sibling.
+    """
+
+    def test_normalized_view_matches_migration_038(self):
+        snapshot_sql = SCHEMA_PATH.read_text(encoding="utf-8")
+        migration_sql = MIGRATION_038_PATH.read_text(encoding="utf-8")
+
+        assert _normalize_view_sql(
+            snapshot_sql, "UPLOADABLE_CHAPTERS"
+        ) == _normalize_view_sql(migration_sql, "UPLOADABLE_CHAPTERS"), (
+            "production_schema.sql's uploadable_chapters view has drifted from "
+            "migration 038 — update the snapshot to stay in lockstep"
         )
