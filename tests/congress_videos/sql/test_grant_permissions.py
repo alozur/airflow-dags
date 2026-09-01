@@ -26,10 +26,24 @@ _REVOKE = re.compile(r"\bREVOKE\b", re.IGNORECASE)
 _DDL_VERB = re.compile(r"\b(CREATE|ALTER|DROP)\b", re.IGNORECASE)
 _COMMENT_LINE = re.compile(r"--[^\n]*")
 
+# D4 (issue #310): the one carve-out the least-privilege guards below permit —
+# a GRANT whose privilege list is drawn only from {USAGE, CREATE} and whose
+# object clause is `ON SCHEMA <identifier>`. Table-level DDL, ALTER/DROP, and
+# mixed privilege lists (e.g. `CREATE, INSERT`) never match this.
+_SCHEMA_PRIVILEGE_GRANT = re.compile(
+    r"^\s*GRANT\s+(?:USAGE|CREATE)(?:\s*,\s*(?:USAGE|CREATE))*\s+ON\s+SCHEMA\s+\w+",
+    re.IGNORECASE,
+)
+
 
 def _sql_statements_only(text: str) -> str:
     """Strip `--` line comments so checks only see executable SQL, not prose."""
     return _COMMENT_LINE.sub("", text)
+
+
+def _is_schema_privilege_grant(stmt: str) -> bool:
+    """True when *stmt* is a `GRANT {USAGE,CREATE}[, ...] ON SCHEMA <ident>` grant."""
+    return bool(_SCHEMA_PRIVILEGE_GRANT.match(stmt.strip()))
 
 
 @pytest.mark.parametrize("path", [DEV_SCRIPT, PROD_SCRIPT], ids=lambda p: p.name)
@@ -61,9 +75,12 @@ class TestGrantScriptsCommonInvariants:
         )
 
     def test_ddl_verbs_only_in_migration_role_block(self, path: Path):
-        """Every CREATE/ALTER/DROP statement must be scoped to the migration role."""
+        """Every CREATE/ALTER/DROP statement must be scoped to the migration role,
+        except a schema-level CREATE granted to the owner role (D4, issue #310)."""
         sql = _sql_statements_only(path.read_text(encoding="utf-8"))
         for statement in sql.split(";"):
+            if _is_schema_privilege_grant(statement):
+                continue  # owner-role CREATE ON SCHEMA — not a migration-role DDL grant
             if _DDL_VERB.search(statement) and "ROLE" not in statement.upper().split("(")[0]:
                 # Statements that create/alter objects (not roles) must mention
                 # the migration role somewhere in the statement (FOR ROLE / GRANT ... TO).
@@ -84,6 +101,16 @@ class TestDevScriptRoleNames:
         sql = DEV_SCRIPT.read_text(encoding="utf-8")
         assert "airflow_migrations" in sql
 
+    def test_owner_role_has_create_on_schema(self):
+        """Issue #310: airflow_dev must hold CREATE, not just USAGE, on its schema."""
+        sql = _sql_statements_only(DEV_SCRIPT.read_text(encoding="utf-8"))
+        assert "GRANT CREATE ON SCHEMA development TO airflow_dev;" in sql
+
+    def test_owner_role_granted_to_migrations_role(self):
+        """Issue #291: SET ROLE airflow_dev from the migration connection requires membership."""
+        sql = _sql_statements_only(DEV_SCRIPT.read_text(encoding="utf-8"))
+        assert "GRANT airflow_dev TO airflow_migrations;" in sql
+
     def test_scoped_to_development_schema_only(self):
         """Executable statements target `development`; no statement targets
         `production` (comments MAY mention the sibling file by name)."""
@@ -102,9 +129,52 @@ class TestProdScriptRoleNames:
         sql = PROD_SCRIPT.read_text(encoding="utf-8")
         assert "airflow_migrations" in sql
 
+    def test_owner_role_has_create_on_schema(self):
+        """Issue #310: airflow_prod must hold CREATE, not just USAGE, on its schema."""
+        sql = _sql_statements_only(PROD_SCRIPT.read_text(encoding="utf-8"))
+        assert "GRANT CREATE ON SCHEMA production TO airflow_prod;" in sql
+
+    def test_owner_role_granted_to_migrations_role(self):
+        """Issue #291: SET ROLE airflow_prod from the migration connection requires membership."""
+        sql = _sql_statements_only(PROD_SCRIPT.read_text(encoding="utf-8"))
+        assert "GRANT airflow_prod TO airflow_migrations;" in sql
+
     def test_scoped_to_production_schema(self):
         sql = _sql_statements_only(PROD_SCRIPT.read_text(encoding="utf-8"))
         assert "production" in sql
+
+
+class TestIsSchemaPrivilegeGrant:
+    """D4 predicate — the only exception the least-privilege guards carve out.
+
+    A GRANT is a schema-privilege grant only when its privilege list (between
+    GRANT and ON) draws exclusively from {USAGE, CREATE} AND its object
+    clause is `ON SCHEMA <identifier>`. Everything else — table-level DDL,
+    ALTER/DROP, or a mixed privilege list — must still be rejected.
+    """
+
+    @pytest.mark.parametrize(
+        "stmt",
+        [
+            "GRANT CREATE ON SCHEMA development TO airflow_dev",
+            "GRANT USAGE, CREATE ON SCHEMA production TO airflow_prod",
+            "GRANT USAGE ON SCHEMA development TO airflow_migrations",
+        ],
+    )
+    def test_accepts_schema_usage_create_grants(self, stmt: str):
+        assert _is_schema_privilege_grant(stmt)
+
+    @pytest.mark.parametrize(
+        "stmt",
+        [
+            "GRANT CREATE ON ALL TABLES IN SCHEMA development TO airflow_dev",
+            "GRANT ALTER ON SCHEMA development TO airflow_dev",
+            "GRANT DROP ON SCHEMA development TO airflow_dev",
+            "GRANT CREATE, INSERT ON SCHEMA development TO airflow_dev",
+        ],
+    )
+    def test_rejects_non_schema_or_disallowed_privileges(self, stmt: str):
+        assert not _is_schema_privilege_grant(stmt)
 
 
 @pytest.mark.parametrize(
@@ -116,6 +186,8 @@ class TestRuntimeRoleHasNoDDL:
     """The runtime role's own GRANT block must never include CREATE/ALTER/DROP."""
 
     def test_runtime_role_grant_block_is_dml_only(self, path: Path, runtime_role: str):
+        """The runtime role's GRANT block must be DML-only, except a schema-level
+        CREATE granted directly to the owner role (D4, issue #310)."""
         sql = _sql_statements_only(path.read_text(encoding="utf-8"))
         # Find GRANT statements that target the runtime role directly.
         runtime_grants = [
@@ -125,6 +197,8 @@ class TestRuntimeRoleHasNoDDL:
         ]
         assert runtime_grants, f"No GRANT ... TO {runtime_role} statements found"
         for stmt in runtime_grants:
+            if _is_schema_privilege_grant(stmt):
+                continue  # owner-role CREATE ON SCHEMA — the sole permitted exception
             assert not _DDL_VERB.search(stmt.split("GRANT", 1)[-1].split("ON", 1)[0]), (
                 f"Runtime role {runtime_role} grant block must not include CREATE/ALTER/DROP:\n{stmt.strip()}"
             )
