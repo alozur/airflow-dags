@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
+import json
 import os
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
+from airflow.utils.json import XComDecoder, XComEncoder
 
-from utils.airflow_helpers import ensure_project_data_directory, xcom_task
+from utils.airflow_helpers import (
+    ensure_project_data_directory,
+    utc_normalize_row,
+    utc_normalize_rows,
+    xcom_task,
+)
+
+
+def _xcom_round_trip(value):
+    """Byte-identical to Airflow's real XCom push+pull serialization path."""
+    return json.loads(json.dumps(value, cls=XComEncoder), cls=XComDecoder)
 
 
 # ---------------------------------------------------------------------------
@@ -135,3 +148,123 @@ class TestEnsureProjectDataDirectory:
         mocker.patch("os.makedirs")
         result = ensure_project_data_directory("test_project")
         assert result == "/opt/airflow/data/test_project"
+
+
+# ---------------------------------------------------------------------------
+# utc_normalize_row / utc_normalize_rows (issue #303)
+# ---------------------------------------------------------------------------
+
+
+class TestUtcNormalizeRows:
+
+    def test_non_utc_offset_datetime_becomes_utc_offset(self):
+        original = datetime(2026, 8, 20, 10, 0, tzinfo=timezone(timedelta(hours=2)))
+        row = {"chapter_id": 42, "youtube_video_id": "abc123", "youtube_upload_date": original}
+
+        result = utc_normalize_row(row)
+
+        normalized = result["youtube_upload_date"]
+        assert normalized.utcoffset() == timedelta(0)
+        assert normalized == original
+        assert result["chapter_id"] == 42
+        assert result["youtube_video_id"] == "abc123"
+
+    def test_naive_datetime_gets_utc_attached_not_converted(self):
+        naive = datetime(2026, 8, 20, 10, 0)
+        row = {"youtube_upload_date": naive}
+
+        result = utc_normalize_row(row)
+
+        normalized = result["youtube_upload_date"]
+        assert normalized.tzinfo == timezone.utc
+        assert (normalized.year, normalized.month, normalized.day) == (2026, 8, 20)
+        assert (normalized.hour, normalized.minute) == (10, 0)
+
+    def test_non_datetime_values_pass_through(self):
+        row = {
+            "chapter_id": 7,
+            "youtube_video_id": "xyz",
+            "note": None,
+            "published_on": date(2026, 8, 20),
+        }
+
+        result = utc_normalize_row(row)
+
+        assert result["chapter_id"] == 7
+        assert result["youtube_video_id"] == "xyz"
+        assert result["note"] is None
+        assert result["published_on"] == date(2026, 8, 20)
+
+    def test_input_rows_are_not_mutated(self):
+        original_dt = datetime(2026, 8, 20, 10, 0, tzinfo=timezone(timedelta(hours=2)))
+        row = {"youtube_upload_date": original_dt}
+
+        result = utc_normalize_row(row)
+
+        assert row["youtube_upload_date"] is original_dt
+        assert row["youtube_upload_date"].utcoffset() == timedelta(hours=2)
+        assert result is not row
+
+    def test_non_dict_row_passes_through(self):
+        assert utc_normalize_row("not-a-dict") == "not-a-dict"
+        assert utc_normalize_row(None) is None
+
+    def test_rows_list_normalized(self):
+        rows = [
+            {"youtube_upload_date": datetime(2026, 8, 20, 10, 0, tzinfo=timezone(timedelta(hours=2)))},
+            {"youtube_upload_date": None},
+        ]
+
+        result = utc_normalize_rows(rows)
+
+        assert result[0]["youtube_upload_date"].utcoffset() == timedelta(0)
+        assert result[1]["youtube_upload_date"] is None
+        assert result is not rows
+
+
+# ---------------------------------------------------------------------------
+# Real-serializer round-trip regression (issue #303, bug-pinning + fix-proving)
+# ---------------------------------------------------------------------------
+
+
+class TestXComSerializerRoundTrip:
+
+    def test_raw_non_utc_offset_row_breaks_xcom_round_trip(self):
+        """Bug-pin: an UN-normalized non-UTC offset datetime always breaks the
+        real XCom serializer round-trip, both before and after the fix — this
+        test must keep failing the same way forever, it never turns green."""
+        row = {
+            "chapter_id": 42,
+            "youtube_video_id": "abc123",
+            "youtube_upload_date": datetime(2026, 8, 20, 10, 0, tzinfo=timezone(timedelta(hours=2))),
+        }
+
+        with pytest.raises(ValueError):
+            _xcom_round_trip([row])
+
+    def test_normalized_row_survives_xcom_round_trip(self):
+        original = datetime(2026, 8, 20, 10, 0, tzinfo=timezone(timedelta(hours=2)))
+        row = {
+            "chapter_id": 42,
+            "youtube_video_id": "abc123",
+            "youtube_upload_date": original,
+        }
+
+        result = _xcom_round_trip(utc_normalize_rows([row]))
+
+        pushed_date = result[0]["youtube_upload_date"]
+        assert isinstance(pushed_date, datetime)
+        assert pushed_date.utcoffset() == timedelta(0)
+        assert pushed_date == original
+
+    def test_offset_zero_round_trips_before_and_after_normalization(self):
+        row = {
+            "chapter_id": 1,
+            "youtube_upload_date": datetime(2026, 8, 20, 10, 0, tzinfo=timezone.utc),
+        }
+
+        raw_result = _xcom_round_trip([row])
+        normalized_result = _xcom_round_trip(utc_normalize_rows([row]))
+
+        assert raw_result[0]["youtube_upload_date"] == row["youtube_upload_date"]
+        assert normalized_result[0]["youtube_upload_date"] == row["youtube_upload_date"]
