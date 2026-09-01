@@ -1,6 +1,7 @@
 # dags/repo/utils/airflow_helpers.py
-from typing import Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 from airflow.models.taskinstance import TaskInstance
+from datetime import datetime, timezone
 import os
 
 def xcom_task(
@@ -51,3 +52,45 @@ def ensure_project_data_directory(project_name: str, base_data_path: str = "/opt
       print(f"Project data directory already exists: {project_data_path}")
   
   return project_data_path
+
+
+def _to_utc(value: Any) -> Any:
+    """Return a UTC-offset datetime, or the value unchanged if not a datetime.
+
+    Naive values get UTC ATTACHED (never .astimezone(), which would silently
+    assume system-local time). date (non-datetime) and all other types pass
+    through untouched.
+    """
+    if not isinstance(value, datetime):
+        return value
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def utc_normalize_row(row: Any) -> Any:
+    """Return a new dict with every datetime value normalized to UTC.
+
+    psycopg2 returns TIMESTAMPTZ as a datetime whose tzinfo is an unnamed
+    non-UTC fixed offset. Airflow 2.10.2 serializes that with an empty tz
+    name and then raises ValueError on every xcom_pull (issues #163, #303).
+    A UTC offset (0) takes the working "UTC" branch of
+    airflow/serialization/serializers/timezone.py and round-trips cleanly.
+
+    Pure: never mutates the input. Non-dict input passes through unchanged.
+    Only the row's own values are inspected (flat rows); nested containers
+    are intentionally not walked.
+    """
+    if not isinstance(row, dict):
+        return row
+    return {key: _to_utc(value) for key, value in row.items()}
+
+
+def utc_normalize_rows(rows: Iterable[Any]) -> list:
+    """Return a new list with utc_normalize_row applied to each row.
+
+    Deliberately has no None guard: callers must supply an iterable. A
+    silent [] on None would hide a data-layer failure as "nothing to do";
+    the TypeError is louder and therefore safer.
+    """
+    return [utc_normalize_row(row) for row in rows]
