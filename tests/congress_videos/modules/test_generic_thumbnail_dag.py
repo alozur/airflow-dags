@@ -139,9 +139,11 @@ def test_art_direction_task_delegates_to_art_direct(mocker) -> None:
     art_direct.assert_called_once_with(
         _FAKE_CONF["debate_summary"],
         domain_cfg,
+        previous_brief=None,
         sibling_briefs=None,
         srt_fragment=None,
         resolved_speaker_name=None,
+        forbidden_archetype=None,
     )
 
 
@@ -159,9 +161,11 @@ def test_art_direction_task_forwards_srt_fragment_when_present(mocker) -> None:
     art_direct.assert_called_once_with(
         conf_with_srt["debate_summary"],
         domain_cfg,
+        previous_brief=None,
         sibling_briefs=None,
         srt_fragment="Hay que tener cara señoría",
         resolved_speaker_name=None,
+        forbidden_archetype=None,
     )
 
 
@@ -196,9 +200,11 @@ class TestArtDirectionResolvedPhotoWiring:
         art_direct.assert_called_once_with(
             _FAKE_CONF_WITH_SPEAKERS["debate_summary"],
             domain_cfg,
+            previous_brief=None,
             sibling_briefs=None,
             srt_fragment=None,
             resolved_speaker_name="Cervera Pinar",
+            forbidden_archetype=None,
         )
 
     def test_non_activating_gate_inputs_forward_none(self, mocker) -> None:
@@ -1508,3 +1514,188 @@ class TestTaskDownloadOptionCanonicalPath:
         assert result["output_path"] == "/data/oradores/42/thumbnail.png", (
             f"output_path must be /data/oradores/42/thumbnail.png, got {result['output_path']!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Conf passthrough: previous_brief/previous_archetype/previous_title (#102)
+#
+# The action DAG (video_analytics_actions) triggers this DAG for a
+# regeneration with negative-steering conf on the FIRST attempt, not only
+# via the internal art_direction_retry path.
+# ---------------------------------------------------------------------------
+
+
+class TestArtDirectionConfPassthrough:
+    """Spec: Initial art_direction accepts negative-steering conf."""
+
+    def setup_method(self) -> None:
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        self.mod = dag_mod
+
+    def test_initial_art_direction_passes_previous_brief_from_conf(self, mocker) -> None:
+        conf_with_previous = {
+            **_FAKE_CONF,
+            "previous_brief": {"text": "prior brief text", "archetype": "denuncia"},
+        }
+        ti = _make_fake_ti({"validate_input": conf_with_previous})
+
+        mocker.patch.object(self.mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mock_art_direct = mocker.patch.object(
+            self.mod, "art_direct", return_value=_FAKE_ART_BRIEF
+        )
+
+        self.mod._task_art_direction(ti)
+
+        mock_art_direct.assert_called_once()
+        _, kwargs = mock_art_direct.call_args
+        assert kwargs.get("previous_brief") == {
+            "text": "prior brief text",
+            "archetype": "denuncia",
+        }
+
+    def test_initial_art_direction_passes_previous_archetype_as_forbidden(self, mocker) -> None:
+        conf_with_previous = {
+            **_FAKE_CONF,
+            "previous_archetype": "denuncia",
+        }
+        ti = _make_fake_ti({"validate_input": conf_with_previous})
+
+        mocker.patch.object(self.mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mock_art_direct = mocker.patch.object(
+            self.mod, "art_direct", return_value=_FAKE_ART_BRIEF
+        )
+
+        self.mod._task_art_direction(ti)
+
+        _, kwargs = mock_art_direct.call_args
+        assert kwargs.get("forbidden_archetype") == "denuncia"
+
+    def test_no_previous_conf_keys_forbidden_archetype_stays_none(self, mocker) -> None:
+        """Backward compatible: conf without previous_* keys never passes a
+        forbidden_archetype/previous_brief."""
+        ti = _make_fake_ti({"validate_input": _FAKE_CONF})
+
+        mocker.patch.object(self.mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mock_art_direct = mocker.patch.object(
+            self.mod, "art_direct", return_value=_FAKE_ART_BRIEF
+        )
+
+        self.mod._task_art_direction(ti)
+
+        _, kwargs = mock_art_direct.call_args
+        assert kwargs.get("previous_brief") is None
+        assert kwargs.get("forbidden_archetype") is None
+
+
+class TestGenerateTitleConfPassthrough:
+    """Spec: 24h title regeneration passes the prior title as negative input."""
+
+    def setup_method(self) -> None:
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        self.mod = dag_mod
+
+    def test_previous_title_from_conf_passed_as_forbidden_title(self, mocker) -> None:
+        conf_with_previous = {
+            **_FAKE_CONF,
+            "previous_title": "El Congreso vota el futuro de las pensiones",
+        }
+        best = {"style": "A", "prompt": "mercado", "label": "option_a", "main_score": 77.0}
+        ti = _make_fake_ti(
+            {"validate_input": conf_with_previous, "choose_best_option": best}
+        )
+
+        mocker.patch.object(self.mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mock_generate_title = mocker.patch.object(
+            self.mod, "generate_title", return_value="Un título nuevo"
+        )
+
+        self.mod._task_generate_title(ti)
+
+        _, kwargs = mock_generate_title.call_args
+        assert kwargs.get("forbidden_title") == "El Congreso vota el futuro de las pensiones"
+
+    def test_no_previous_title_forbidden_title_stays_none(self, mocker) -> None:
+        best = {"style": "A", "prompt": "mercado", "label": "option_a", "main_score": 77.0}
+        ti = _make_fake_ti({"validate_input": _FAKE_CONF, "choose_best_option": best})
+
+        mocker.patch.object(self.mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mock_generate_title = mocker.patch.object(
+            self.mod, "generate_title", return_value="Un título"
+        )
+
+        self.mod._task_generate_title(ti)
+
+        _, kwargs = mock_generate_title.call_args
+        assert kwargs.get("forbidden_title") is None
+
+
+class TestArchetypeCarriedOnOptionDict:
+    """Spec: Archetype persisted on chosen thumbnail — carried end to end
+    through _task_generate_thumbnail -> download -> score -> persist_results."""
+
+    def setup_method(self) -> None:
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        self.mod = dag_mod
+
+    def test_generate_thumbnail_attaches_archetype_from_brief(self, mocker) -> None:
+        brief_with_archetype = {**_FAKE_ART_BRIEF, "archetype": "monologo"}
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "resolve_participant_photo": {},
+                "art_direction": brief_with_archetype,
+            }
+        )
+
+        mocker.patch.object(self.mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mocker.patch.object(self.mod, "build_pikzels_prompt", return_value="prompt text")
+        mock_pkz = mocker.patch.object(self.mod, "_pkz")
+        mock_pkz.thumbnail_from_text.return_value = {"output": "https://pikzels/a.png"}
+
+        result = self.mod._task_generate_thumbnail("option_a", ti)
+
+        assert result["archetype"] == "monologo"
+
+    def test_download_option_carries_archetype_from_generate_result(self, mocker, tmp_path) -> None:
+        gen_result = {
+            "label": "option_a",
+            "style": "A",
+            "prompt": "p",
+            "output": "https://pikzels/a.png",
+            "archetype": "careo",
+        }
+        conf = {**_FAKE_CONF, "output_path": str(tmp_path / "video.mp4")}
+        ti = _make_fake_ti(
+            {"validate_input": conf, "generate_thumbnail_option_a": gen_result}
+        )
+
+        mock_pkz = mocker.patch.object(self.mod, "_pkz")
+        mock_pkz.download.return_value = None
+
+        result = self.mod._task_download_option("option_a", ti)
+
+        assert result["archetype"] == "careo"
+
+    def test_score_option_preserves_archetype_via_spread(self, mocker, tmp_path) -> None:
+        thumb_file = tmp_path / "option_a.png"
+        thumb_file.write_bytes(b"\x89PNG" * 10)
+        download_info = {
+            "label": "option_a",
+            "local_path": str(thumb_file),
+            "output_url": "u",
+            "style": "A",
+            "prompt": "p",
+            "archetype": "anuncio",
+        }
+        ti = _make_fake_ti({"download_option_a": download_info})
+
+        mock_pkz = mocker.patch.object(self.mod, "_pkz")
+        mock_pkz.to_base64_data_url.return_value = "data:image/png;base64,xx"
+        mock_pkz.score_thumbnail.return_value = {"main_score": 90.0}
+
+        result = self.mod._task_score_option("option_a", ti)
+
+        assert result["archetype"] == "anuncio"
