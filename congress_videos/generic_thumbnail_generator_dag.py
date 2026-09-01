@@ -188,7 +188,7 @@ def _task_generate_thumbnail(label: str, ti: TaskInstance, **context: object) ->
     )
     # Attach label, layout (as style), prompt, and archetype for downstream
     # tasks (archetype carried through download/score to persist_results,
-    # migration 040's video_thumbnails.archetype column, issue #102).
+    # migration 041's video_thumbnails.archetype column, issue #102).
     result["label"] = label
     result["style"] = layout
     result["prompt"] = prompt

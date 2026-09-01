@@ -3779,7 +3779,7 @@ class TestGenerateTitleForbiddenTitle:
 
 
 class TestPersistResultsArchetype:
-    """Spec: Archetype persistence (migration 040) — persist_results writes
+    """Spec: Archetype persistence (migration 041) — persist_results writes
     the chosen option's archetype to video_thumbnails.archetype."""
 
     def _make_options_with_archetype(self):

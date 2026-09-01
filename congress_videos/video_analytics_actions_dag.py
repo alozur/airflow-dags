@@ -28,7 +28,7 @@ only ever persists the RENDERED Pikzels prompt text and the OpenAI title,
 never the raw art-direction brief JSON that art_direct()/_finalize_brief()
 produce. Reconstructing a brief dict from rendered prompt text would be
 fragile prompt-parsing. This implementation steers regeneration using ONLY
-`previous_archetype` (reliably available via the migration 040 column) and
+`previous_archetype` (reliably available via the migration 041 column) and
 `previous_title` (at the 24h checkpoint); `previous_brief` is intentionally
 left unset (art_direct's previous_brief stays None — no "REINTENTO"
 instruction is injected on the anti-convergence path, only the
