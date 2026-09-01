@@ -410,6 +410,29 @@ class TestRemainingBaseTableSnapshots:
         )
 
 
+class TestVideoChaptersIndexCompleteness:
+    """The INDEXES section must contain a CREATE [UNIQUE] INDEX statement for
+    each of the three video_chapters indexes added by this change. Column
+    presence in the CREATE TABLE block does not guarantee the index
+    statement itself wasn't dropped from the INDEXES section (issue #304)."""
+
+    @pytest.mark.parametrize(
+        "index_name",
+        (
+            "uq_video_chapters_segment",
+            "idx_video_chapters_resolved_participant_slug",
+            "idx_video_chapters_pending_priority",
+        ),
+    )
+    def test_index_statement_present(self, index_name):
+        sql = SCHEMA_PATH.read_text(encoding="utf-8")
+        assert re.search(
+            rf"CREATE\s+(?:UNIQUE\s+)?INDEX\s+{index_name}\s+ON\s+production\.video_chapters",
+            sql,
+            re.IGNORECASE,
+        ), f"missing CREATE INDEX statement for {index_name} on production.video_chapters"
+
+
 class TestSnapshotLockstepWithLatestMigration:
     """The snapshot's uploadable_turns view must be semantically identical to
     the latest applied view migration (040), modulo comments/qualification/
