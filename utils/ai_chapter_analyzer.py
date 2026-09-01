@@ -16,6 +16,7 @@ from congress_videos.config.ai_prompts import (
     CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE,
 )
 from utils.ai_helpers import generate_json_completion
+from utils.llm_config import LLM_CHEAP
 from utils.time_utils import parse_timestamp
 
 logger = logging.getLogger(__name__)
@@ -426,7 +427,7 @@ def analyze_chapters_with_ai(
     agenda_content: str,
     min_duration_minutes: int = 15,
     max_duration_minutes: int = 30,
-    model: str = "gpt-4o-mini"
+    model: str = LLM_CHEAP
 ) -> Dict:
     """
     Use AI to identify topic changes in transcription based on content similarity.
@@ -443,7 +444,7 @@ def analyze_chapters_with_ai(
         agenda_content: Session agenda text (used as chunk summary for context)
         min_duration_minutes: Minimum chapter duration (default: 15)
         max_duration_minutes: Maximum chapter duration (default: 30)
-        model: OpenAI model to use (default: "gpt-4o-mini")
+        model: OpenAI model to use (default: LLM_CHEAP tier)
 
     Returns:
         Dict with chapter analysis results:

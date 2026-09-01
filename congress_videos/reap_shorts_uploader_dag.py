@@ -28,6 +28,7 @@ from congress_videos.config.ai_prompts import (
 from utils.ai_helpers import generate_json_completion, truncate_text
 from utils.airflow_helpers import xcom_task
 from utils.env_loader import load_env_if_local
+from utils.llm_config import LLM_DEFAULT
 from utils.whisper_helpers import transcribe_audio_file
 
 load_env_if_local()
@@ -237,7 +238,7 @@ with DAG(
                 ai_result = generate_json_completion(
                     system_prompt=SHORTS_METADATA_SYSTEM_PROMPT,
                     user_prompt=user_prompt,
-                    model="gpt-4o-mini",
+                    model=LLM_DEFAULT,
                     max_tokens=400,
                 )
                 if ai_result.get("data"):

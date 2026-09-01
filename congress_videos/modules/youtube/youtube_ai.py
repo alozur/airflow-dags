@@ -21,6 +21,7 @@ from utils.ai_helpers import (
     generate_chat_completion,
 )
 from utils.llm_cache import cached_json_completion
+from utils.llm_config import LLM_CHEAP, LLM_DEFAULT
 from utils.time_utils import format_youtube_timestamp, parse_timestamp
 
 
@@ -96,7 +97,7 @@ def generate_youtube_description(
         result = generate_chat_completion(
             system_prompt=YOUTUBE_DESCRIPTION_SYSTEM_PROMPT,
             user_prompt=user_prompt,
-            model="gpt-3.5-turbo",
+            model=LLM_DEFAULT,
             temperature=0.7,
             max_tokens=1000,
         )
@@ -483,7 +484,7 @@ def score_chapters_relevance(merged_chapters):
                 result = cached_json_completion(
                     system_prompt=CHAPTER_RELEVANCE_SCORING_SYSTEM_PROMPT,
                     user_prompt=user_prompt,
-                    model="gpt-4o-mini",
+                    model=LLM_CHEAP,
                     temperature=0.3,
                     max_tokens=500
                 )

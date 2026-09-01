@@ -15,6 +15,7 @@ from congress_videos.srt_helpers import (
     _window_srt_text,
     select_pretrim_window,
 )
+from utils.llm_config import LLM_CHEAP
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +274,7 @@ class TestSelectPretrimWindow:
 
         assert result is None
 
-    def test_uses_gpt4o_mini_model(self, mocker, srt_file):
+    def test_uses_cheap_tier_model(self, mocker, srt_file):
         mock_ai = self._patch_ai(
             mocker,
             start_phrase="El presidente compareció ante el Congreso",
@@ -283,7 +284,7 @@ class TestSelectPretrimWindow:
         select_pretrim_window(srt_file, target_secs=360)
 
         _, kwargs = mock_ai.call_args
-        assert kwargs.get("model") == "gpt-4o-mini"
+        assert kwargs.get("model") == LLM_CHEAP
 
 
 # ---------------------------------------------------------------------------
@@ -634,8 +635,8 @@ class TestScoreTurnInterest:
         result = score_turn_interest("texto de prueba", completion_fn=_fn)
         assert result is None
 
-    def test_uses_gpt4o_mini_model(self):
-        """score_turn_interest must pass model='gpt-4o-mini' to completion_fn."""
+    def test_uses_cheap_tier_model(self):
+        """score_turn_interest must pass the LLM_CHEAP tier to completion_fn."""
         called_with = {}
 
         def _fn(**kwargs):
@@ -643,7 +644,7 @@ class TestScoreTurnInterest:
             return {"content": "5", "error": None}
 
         score_turn_interest("texto de prueba", completion_fn=_fn)
-        assert called_with.get("model") == "gpt-4o-mini"
+        assert called_with.get("model") == LLM_CHEAP
 
     def test_uses_temperature_zero(self):
         """score_turn_interest must pass temperature=0.0 to completion_fn."""
@@ -655,6 +656,36 @@ class TestScoreTurnInterest:
 
         score_turn_interest("texto de prueba", completion_fn=_fn)
         assert called_with.get("temperature") == 0.0
+
+    def test_env_override_forwards_to_completion_fn(self, monkeypatch):
+        """End-to-end: LLM_CHEAP env → utils.llm_config → this call site.
+
+        Proves the whole chain (env var → tier constant → forwarded `model`
+        kwarg) in one test, independent of the tier's committed value, so
+        future tier swaps never require touching this test.
+        """
+        import importlib
+
+        import congress_videos.srt_helpers as srt_helpers
+        import utils.llm_config as llm_config
+
+        monkeypatch.setenv("LLM_CHEAP", "sentinel-model")
+        importlib.reload(llm_config)
+        importlib.reload(srt_helpers)
+
+        called_with = {}
+
+        def _fn(**kwargs):
+            called_with.update(kwargs)
+            return {"content": "5", "error": None}
+
+        srt_helpers.score_turn_interest("texto de prueba", completion_fn=_fn)
+
+        assert called_with.get("model") == "sentinel-model"
+
+        monkeypatch.undo()
+        importlib.reload(llm_config)
+        importlib.reload(srt_helpers)
 
 
 # ---------------------------------------------------------------------------

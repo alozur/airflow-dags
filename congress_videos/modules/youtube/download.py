@@ -11,6 +11,7 @@ from congress_videos.config.paths import (
     ensure_directory_exists
 )
 from utils.llm_cache import cached_json_completion
+from utils.llm_config import LLM_CHEAP
 from utils.time_utils import parse_timestamp
 from utils.youtube_downloader import (
     download_youtube_video_for_upload,
@@ -879,7 +880,7 @@ def summarize_one_chunk(chunk_ref: dict) -> dict:
                 duration_minutes=chunk_ref['duration_minutes'],
                 chunk_content=chunk_srt[:15000],  # Limit to 15k chars
             ),
-            model="gpt-4o-mini",
+            model=LLM_CHEAP,
             temperature=0.2,
             max_tokens=1000,
         )
@@ -1372,7 +1373,7 @@ def _analyze_single_chunk(
                     chunk_summary=summary_text,
                     srt_content=window_srt_text,  # Full window — no truncation
                 ),
-                model="gpt-4o-mini",
+                model=LLM_CHEAP,
                 temperature=0.3,
                 max_tokens=2000,
             )

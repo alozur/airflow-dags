@@ -28,6 +28,7 @@ from congress_videos.config.ai_prompts import (
     CHAPTER_SPEAKER_RESOLUTION_SYSTEM_PROMPT,
     CHAPTER_SPEAKER_RESOLUTION_USER_TEMPLATE,
 )
+from utils.llm_config import LLM_CHEAP
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,7 @@ def _resolve_inner(
     response = completion_fn(
         CHAPTER_SPEAKER_RESOLUTION_SYSTEM_PROMPT,
         user_prompt,
-        model="gpt-4o-mini",
+        model=LLM_CHEAP,
         temperature=0.0,
         max_tokens=600,
     )
