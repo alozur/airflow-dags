@@ -65,6 +65,10 @@ def _make_mock_pg(schema: str = "development", applied: list[str] | None = None)
     mock_pg._lock_cursor = mock_cursor_lock
     mock_pg._write_conn = mock_conn_write
 
+    # Owner-role CREATE preflight (issue #310): default to "granted" so tests
+    # not exercising the preflight itself don't have to configure it.
+    mock_cursor_write.fetchone.return_value = {"has_create": True}
+
     return mock_pg, mock_cursor_write
 
 
@@ -574,6 +578,9 @@ class TestOwnerRoleAssumption:
         mock_cursor = MagicMock()
         mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
         mock_cursor.__exit__ = MagicMock(return_value=False)
+        # Owner-role CREATE preflight (issue #310): default to "granted" so
+        # tests not exercising the preflight itself don't have to configure it.
+        mock_cursor.fetchone.return_value = {"has_create": True}
 
         mock_conn = MagicMock()
         mock_conn.cursor.return_value = mock_cursor
@@ -596,7 +603,7 @@ class TestOwnerRoleAssumption:
 
         executed = [c[0][0] for c in mock_cursor.execute.call_args_list]
         assert executed[0] == 'SET ROLE "airflow_dev"'
-        assert "CREATE TABLE IF NOT EXISTS" in executed[1]
+        assert "CREATE TABLE IF NOT EXISTS" in executed[2]
 
     def test_apply_sets_role_before_search_path_and_sql(self, mocker, monkeypatch, tmp_path):
         from utils.migrations_dag import _apply_pending_migrations
@@ -613,8 +620,8 @@ class TestOwnerRoleAssumption:
 
         executed = [c[0][0] for c in mock_cursor_write.execute.call_args_list]
         assert executed[0] == 'SET ROLE "airflow_prod"'
-        assert "SET search_path" in executed[1]
-        assert migration_sql in executed[2]
+        assert "SET search_path" in executed[2]
+        assert migration_sql in executed[3]
 
     def test_set_role_failure_rolls_back_and_migration_still_applies(
         self, mocker, monkeypatch, tmp_path
@@ -645,6 +652,9 @@ class TestOwnerRoleAssumption:
         # error) — and never on the advisory-lock connection.
         assert mock_pg._write_conn.rollback.called
         assert not mock_pg._lock_conn.rollback.called
+        # The CREATE preflight (issue #310) must never run on the fail-soft
+        # path — SET ROLE never succeeded, so there is no assumed role to check.
+        assert not any("has_schema_privilege" in s for s in executed)
 
     def test_unknown_schema_issues_no_set_role(self, mocker, monkeypatch, tmp_path):
         from utils.migrations_dag import _apply_pending_migrations
@@ -660,3 +670,72 @@ class TestOwnerRoleAssumption:
 
         executed = [c[0][0] for c in mock_cursor_write.execute.call_args_list]
         assert not any(s.startswith("SET ROLE") for s in executed)
+        # No role mapped → the CREATE preflight query is never issued either.
+        assert not any("has_schema_privilege" in s for s in executed)
+
+
+class TestOwnerRoleCreatePreflight:
+    """Issue #310: after a successful SET ROLE, the assumed owner role must
+    actually hold CREATE on its schema — checked via has_schema_privilege."""
+
+    def _mock_single_conn(self, mocker, schema: str):
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchone.return_value = {"has_create": True}
+
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+
+        mock_pg = MagicMock()
+        mock_pg.schema = schema
+        mock_pg.get_connection.return_value = mock_conn
+
+        mocker.patch("utils.migrations_dag.PostgresConnection", return_value=mock_pg)
+        return mock_conn, mock_cursor
+
+    def test_raises_when_create_is_missing(self, mocker, monkeypatch):
+        from utils.migrations_dag import MigrationPrivilegeError, _ensure_migrations_table
+
+        monkeypatch.delenv("MIGRATION_OWNER_ROLE", raising=False)
+        _, mock_cursor = self._mock_single_conn(mocker, "production")
+        mock_cursor.fetchone.return_value = {"has_create": False}
+
+        with pytest.raises(MigrationPrivilegeError) as exc_info:
+            _ensure_migrations_table()
+
+        message = str(exc_info.value)
+        assert "airflow_prod" in message
+        assert "production" in message
+        assert "GRANT CREATE ON SCHEMA production TO airflow_prod;" in message
+
+    def test_does_not_raise_when_create_is_granted(self, mocker, monkeypatch):
+        from utils.migrations_dag import _ensure_migrations_table
+
+        monkeypatch.delenv("MIGRATION_OWNER_ROLE", raising=False)
+        _, mock_cursor = self._mock_single_conn(mocker, "development")
+        mock_cursor.fetchone.return_value = {"has_create": True}
+
+        _ensure_migrations_table()  # must not raise
+
+        executed = [c[0][0] for c in mock_cursor.execute.call_args_list]
+        assert any("has_schema_privilege" in s for s in executed)
+        assert any("CREATE TABLE IF NOT EXISTS" in s for s in executed)
+
+    def test_preflight_runs_after_set_role_not_inside_its_try(self, mocker, monkeypatch):
+        """The preflight query must be issued strictly after SET ROLE — never
+        swallowed by the SET ROLE fail-soft except block."""
+        from utils.migrations_dag import _ensure_migrations_table
+
+        monkeypatch.delenv("MIGRATION_OWNER_ROLE", raising=False)
+        _, mock_cursor = self._mock_single_conn(mocker, "development")
+        mock_cursor.fetchone.return_value = {"has_create": True}
+
+        _ensure_migrations_table()
+
+        executed = [c[0][0] for c in mock_cursor.execute.call_args_list]
+        set_role_index = next(i for i, s in enumerate(executed) if s.startswith("SET ROLE"))
+        preflight_index = next(i for i, s in enumerate(executed) if "has_schema_privilege" in s)
+        assert preflight_index > set_role_index
