@@ -108,6 +108,47 @@ CREATE TABLE IF NOT EXISTS production.video_chapters (
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Table: video_shorts
+-- Tracks Reap-generated clips per chapter (folds migrations 004+005+006+012)
+CREATE TABLE IF NOT EXISTS production.video_shorts (
+    id                    SERIAL PRIMARY KEY,
+    chapter_id            INTEGER NOT NULL REFERENCES production.video_chapters(chapter_id) ON DELETE CASCADE,
+
+    -- Pre-trim window applied before sending to Reap (NULL = no pre-trim)
+    pretrim_start_secs    FLOAT,
+    pretrim_end_secs      FLOAT,
+    pretrim_used_srt      BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- Reap job tracking
+    reap_project_id       VARCHAR(255),
+    reap_clip_id          VARCHAR(255) UNIQUE,
+    reap_status           VARCHAR(50) NOT NULL DEFAULT 'pending',
+
+    -- Clip metadata (populated after Reap job completes)
+    reap_virality_score   FLOAT,
+    reap_clip_url         VARCHAR(2048),
+    local_file_path       VARCHAR(2048),
+
+    -- YouTube upload result
+    youtube_video_id      VARCHAR(255),
+    is_uploaded            BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- Audit timestamps
+    created_at              TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMP NOT NULL DEFAULT NOW(),
+
+    -- Added by migration 005
+    staged_clip_path        VARCHAR(2048),
+
+    -- Added by migration 006
+    scoring_reasoning       TEXT,
+
+    -- Added by migration 012 (upload failure tracking)
+    upload_attempts         INTEGER DEFAULT 0,
+    is_upload_abandoned     BOOLEAN DEFAULT FALSE,
+    last_upload_error       TEXT
+);
+
 -- ============================================================
 -- INDEXES
 -- ============================================================
@@ -116,6 +157,13 @@ CREATE INDEX idx_video_chapters_video_id ON production.video_chapters(video_id);
 CREATE INDEX idx_video_chapters_relevance_score ON production.video_chapters(relevance_score DESC);
 CREATE INDEX idx_video_chapters_uploaded ON production.video_chapters(is_uploaded_to_youtube);
 CREATE INDEX idx_youtube_source_videos_session ON production.youtube_source_videos(session_number, session_date);
+
+CREATE INDEX idx_video_shorts_chapter_id ON production.video_shorts(chapter_id);
+CREATE INDEX idx_video_shorts_reap_project_id ON production.video_shorts(reap_project_id);
+CREATE INDEX idx_video_shorts_reap_status ON production.video_shorts(reap_status);
+CREATE INDEX idx_video_shorts_reap_clip_id ON production.video_shorts(reap_clip_id);
+CREATE INDEX idx_video_shorts_uploaded_recent ON production.video_shorts(updated_at DESC) WHERE is_uploaded = TRUE;
+CREATE INDEX idx_video_shorts_pending_downloaded ON production.video_shorts(reap_virality_score DESC NULLS LAST) WHERE is_uploaded = FALSE AND is_upload_abandoned = FALSE AND local_file_path IS NOT NULL AND reap_status = 'downloaded';
 
 -- ============================================================
 -- VIEWS

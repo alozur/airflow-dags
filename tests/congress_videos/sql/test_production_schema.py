@@ -202,6 +202,63 @@ class TestProductionQualification:
         assert "JOIN GROUP_SPANS GS" in block
 
 
+class TestVideoShortsTableSnapshot:
+    """production.video_shorts must be present in the snapshot, folding
+    migrations 004 (create) + 005 (staged_clip_path) + 006 (scoring_reasoning)
+    + 012 (upload failure tracking) — 20 columns total (issue #275).
+
+    Column assertions are scoped to the extracted `CREATE TABLE ... (...)`
+    block only, never the whole file: 9 of the 20 column names also exist on
+    `production.video_chapters`, so a whole-file substring search would stay
+    green even if a column were deleted from `video_shorts` alone.
+    """
+
+    VIDEO_SHORTS_COLUMNS = (
+        "id",
+        "chapter_id",
+        "pretrim_start_secs",
+        "pretrim_end_secs",
+        "pretrim_used_srt",
+        "reap_project_id",
+        "reap_clip_id",
+        "reap_status",
+        "reap_virality_score",
+        "reap_clip_url",
+        "local_file_path",
+        "youtube_video_id",
+        "is_uploaded",
+        "created_at",
+        "updated_at",
+        "staged_clip_path",
+        "scoring_reasoning",
+        "upload_attempts",
+        "is_upload_abandoned",
+        "last_upload_error",
+    )
+
+    @staticmethod
+    def _video_shorts_block() -> str:
+        """Only the `CREATE TABLE video_shorts (...)` body — never the whole file."""
+        sql = SCHEMA_PATH.read_text(encoding="utf-8")
+        start = sql.index("CREATE TABLE IF NOT EXISTS production.video_shorts")
+        return sql[start : sql.index(");", start) + 2]
+
+    @pytest.mark.parametrize("column", VIDEO_SHORTS_COLUMNS)
+    def test_column_present_in_block(self, column):
+        block = self._video_shorts_block().upper()
+        assert re.search(rf"\b{column.upper()}\b", block), (
+            f"video_shorts column {column!r} missing from the extracted "
+            "CREATE TABLE block"
+        )
+
+    def test_chapter_id_fk_is_production_qualified(self):
+        block = re.sub(r"\s+", " ", self._video_shorts_block()).upper()
+        assert "REFERENCES PRODUCTION.VIDEO_CHAPTERS(CHAPTER_ID) ON DELETE CASCADE" in block, (
+            "video_shorts.chapter_id must reference production.video_chapters "
+            "with an explicit schema qualification"
+        )
+
+
 class TestSnapshotLockstepWithLatestMigration:
     """The snapshot's uploadable_turns view must be semantically identical to
     the latest applied view migration (040), modulo comments/qualification/
