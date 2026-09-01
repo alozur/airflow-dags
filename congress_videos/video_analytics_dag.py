@@ -26,6 +26,7 @@ from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
+from utils.airflow_helpers import utc_normalize_rows
 from utils.env_loader import load_env_if_local
 
 load_env_if_local()
@@ -207,11 +208,17 @@ def _run_get_pending_checkpoints(ti):
     """Return candidate video chapters for analytics collection.
 
     Pushes XCom key 'candidates'.
+
+    Rows are UTC-normalized first (issue #303): psycopg2 returns
+    youtube_upload_date (TIMESTAMPTZ) with an unnamed non-UTC fixed offset,
+    which Airflow serializes with an empty tz name and then cannot
+    deserialize on xcom_pull. The SAME normalized object is pushed and
+    returned, so the implicit return_value XCom is covered too.
     """
     from congress_videos.modules.database import CongressionalVideoDB
 
     db = CongressionalVideoDB()
-    result = db.get_pending_analytics_checkpoints()
+    result = utc_normalize_rows(db.get_pending_analytics_checkpoints())
     logging.info("video_analytics: retrieved %d candidate chapters", len(result))
     ti.xcom_push(key="candidates", value=result)
     return result
