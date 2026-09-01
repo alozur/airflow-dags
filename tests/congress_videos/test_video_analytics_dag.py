@@ -5,6 +5,8 @@ Spec: DAG Shape and Scheduling / No Public YouTube Writes.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 
@@ -195,3 +197,437 @@ class TestFetchAnalyticsUsesCollectedPairs:
         # pending_checkpoints must have received the real collected set, not set()
         assert len(captured_pending_calls) == 1
         assert captured_pending_calls[0] == already_collected
+
+
+# ---------------------------------------------------------------------------
+# _fetch_analytics API-call loop coverage (issue #185)
+#
+# Spec: Analytics collector test coverage — happy path, API-error path,
+# missing youtube_video_id, DAG-level idempotency.
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_service(response: dict):
+    """Build a fake Analytics service whose reports().query().execute()
+    returns the given response dict."""
+    from unittest.mock import MagicMock
+
+    fake_service = MagicMock(name="analytics_service")
+    fake_service.reports.return_value.query.return_value.execute.return_value = response
+    return fake_service
+
+
+def _full_response(values: dict) -> dict:
+    """Build a real-shaped Analytics API response covering every
+    METRIC_FIELDS column, using `values` for named overrides (default 0)."""
+    from congress_videos.config.analytics_config import METRIC_FIELDS
+
+    row = [values.get(field, 0) for field in METRIC_FIELDS]
+    return {
+        "columnHeaders": [{"name": name} for name in METRIC_FIELDS],
+        "rows": [row],
+    }
+
+
+class TestFetchAnalyticsHappyPath:
+    """Spec: Analytics collector test coverage / Happy path."""
+
+    def test_real_shaped_response_lands_in_collected_xcom(self):
+        """GIVEN a pending checkpoint candidate with a valid youtube_video_id
+        WHEN _fetch_analytics calls service.reports().query().execute() and
+             receives a real-shaped response
+        THEN the parsed metrics land in the 'collected' XCom key."""
+        from unittest.mock import MagicMock, patch
+
+        from congress_videos.video_analytics_dag import _fetch_analytics
+
+        candidate_rows = [
+            {
+                "chapter_id": 7,
+                "youtube_video_id": "happy123",
+                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+            }
+        ]
+        mock_ti = MagicMock()
+        mock_ti.xcom_pull.return_value = candidate_rows
+
+        response = _full_response({"views": 500, "likes": 40})
+        fake_service = _make_fake_service(response)
+
+        with patch(
+            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+            return_value=set(),
+        ), patch(
+            "utils.youtube_helpers.get_youtube_analytics_service",
+            return_value=fake_service,
+        ):
+            result = _fetch_analytics(ti=mock_ti)
+
+        assert len(result) == 1
+        item = result[0]
+        assert item["chapter_id"] == 7
+        assert item["youtube_video_id"] == "happy123"
+        assert item["metrics"]["views"] == 500
+        assert item["metrics"]["likes"] == 40
+        mock_ti.xcom_push.assert_any_call(key="collected", value=result)
+
+
+class TestFetchAnalyticsApiErrorPath:
+    """Spec: Analytics collector test coverage / Quota-exceeded-API error path."""
+
+    def test_execute_raises_item_skipped_loop_continues(self):
+        """GIVEN the Analytics API raises on .execute() for one candidate but
+             succeeds for another
+        WHEN _fetch_analytics processes both
+        THEN the failing item is skipped (no partial XCom entry) and the loop
+             continues to collect the succeeding item without crashing."""
+        from unittest.mock import MagicMock, patch
+
+        from congress_videos.video_analytics_dag import _fetch_analytics
+
+        candidate_rows = [
+            {
+                "chapter_id": 1,
+                "youtube_video_id": "fails111",
+                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+            },
+            {
+                "chapter_id": 2,
+                "youtube_video_id": "ok222",
+                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+            },
+        ]
+        mock_ti = MagicMock()
+        mock_ti.xcom_pull.return_value = candidate_rows
+
+        good_response = _full_response({"views": 10})
+        fake_service = MagicMock(name="analytics_service")
+
+        def fake_execute():
+            filters = fake_service.reports.return_value.query.call_args.kwargs.get(
+                "filters", ""
+            )
+            if "fails111" in filters:
+                raise RuntimeError("quotaExceeded")
+            return good_response
+
+        fake_service.reports.return_value.query.return_value.execute.side_effect = (
+            fake_execute
+        )
+
+        with patch(
+            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+            return_value=set(),
+        ), patch(
+            "utils.youtube_helpers.get_youtube_analytics_service",
+            return_value=fake_service,
+        ):
+            result = _fetch_analytics(ti=mock_ti)
+
+        yt_ids = {item["youtube_video_id"] for item in result}
+        assert "ok222" in yt_ids
+        assert "fails111" not in yt_ids
+        assert len(result) == 1
+
+
+class TestFetchAnalyticsMissingVideoId:
+    """Spec: Analytics collector test coverage / Missing video id."""
+
+    def test_missing_youtube_video_id_excluded_from_api_call_and_collected(self):
+        """GIVEN a candidate row with a missing/None youtube_video_id alongside
+             a valid one
+        WHEN _fetch_analytics runs (real pending_checkpoints, not mocked)
+        THEN the row without an id is never sent to the Analytics API and is
+             excluded from 'collected'."""
+        from unittest.mock import MagicMock, patch
+
+        from congress_videos.video_analytics_dag import _fetch_analytics
+
+        candidate_rows = [
+            {
+                "chapter_id": 1,
+                "youtube_video_id": None,
+                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+            },
+            {
+                "chapter_id": 2,
+                "youtube_video_id": "valid456",
+                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+            },
+        ]
+        mock_ti = MagicMock()
+        mock_ti.xcom_pull.return_value = candidate_rows
+
+        response = _full_response({"views": 25})
+        fake_service = _make_fake_service(response)
+
+        with patch(
+            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+            return_value=set(),
+        ), patch(
+            "utils.youtube_helpers.get_youtube_analytics_service",
+            return_value=fake_service,
+        ):
+            result = _fetch_analytics(ti=mock_ti)
+
+        # Only one (video, checkpoint) API call — the None-id row never reaches it.
+        assert fake_service.reports.return_value.query.call_count == 1
+        assert len(result) == 1
+        assert result[0]["youtube_video_id"] == "valid456"
+
+
+class TestFetchAnalyticsDagLevelIdempotency:
+    """Spec: Analytics collector test coverage / DAG-level idempotency."""
+
+    def test_two_full_runs_do_not_duplicate_a_recorded_checkpoint(
+        self, mock_task_instance
+    ):
+        """GIVEN a checkpoint already recorded in video_analytics_snapshots
+        WHEN the DAG-callable path (_fetch_analytics -> _run_record_snapshots)
+             runs twice for the same checkpoint
+        THEN no duplicate row is written — ON CONFLICT DO NOTHING holds
+             end-to-end, not just at the DB-method level."""
+        from unittest.mock import MagicMock, patch
+
+        from congress_videos.video_analytics_dag import (
+            _fetch_analytics,
+            _run_record_snapshots,
+        )
+
+        candidate_rows = [
+            {
+                "chapter_id": 9,
+                "youtube_video_id": "idem789",
+                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+            }
+        ]
+
+        # In-memory store simulating the UNIQUE(youtube_video_id, checkpoint)
+        # constraint + ON CONFLICT DO NOTHING semantics.
+        store: dict[tuple[str, str], dict] = {}
+
+        def fake_get_collected(youtube_video_ids):
+            return {key for key in store if key[0] in youtube_video_ids}
+
+        def fake_record(chapter_id, youtube_video_id, checkpoint, metrics):
+            store.setdefault((youtube_video_id, checkpoint), metrics)
+
+        response = _full_response({"views": 100})
+        fake_service = _make_fake_service(response)
+
+        mock_task_instance.xcom_store["candidates"] = candidate_rows
+
+        with patch(
+            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+            side_effect=fake_get_collected,
+        ), patch(
+            "congress_videos.modules.database.CongressionalVideoDB.record_analytics_snapshot",
+            side_effect=fake_record,
+        ), patch(
+            "utils.youtube_helpers.get_youtube_analytics_service",
+            return_value=fake_service,
+        ):
+            # Run 1: nothing collected yet -> fetch + record one snapshot.
+            _fetch_analytics(ti=mock_task_instance)
+            _run_record_snapshots(ti=mock_task_instance)
+
+            assert len(store) == 1
+
+            # Run 2: same checkpoint, now already collected -> no re-fetch,
+            # no duplicate record.
+            _fetch_analytics(ti=mock_task_instance)
+            _run_record_snapshots(ti=mock_task_instance)
+
+        assert len(store) == 1
+        assert store[("idem789", "24h")]["views"] == 100
+
+
+# ---------------------------------------------------------------------------
+# Remaining coverage gaps: staleness_guard, empty-candidates short-circuit,
+# get_collected_analytics_pairs failure, Analytics service build failure,
+# should_persist skip-and-retry branch, _run_get_pending_checkpoints.
+# ---------------------------------------------------------------------------
+
+
+class TestStalenessGuard:
+    """Spec: staleness_guard skips stale data_interval_end replays."""
+
+    def test_fresh_run_returns_true(self):
+        """GIVEN data_interval_end is now (fresh)
+        WHEN _staleness_guard runs
+        THEN it returns True (proceed)."""
+        from congress_videos.video_analytics_dag import _staleness_guard
+
+        assert _staleness_guard(data_interval_end=datetime.now(timezone.utc)) is True
+
+    def test_no_data_interval_end_returns_true(self):
+        """GIVEN no data_interval_end in context
+        WHEN _staleness_guard runs
+        THEN it returns True (proceed)."""
+        from congress_videos.video_analytics_dag import _staleness_guard
+
+        assert _staleness_guard() is True
+
+    def test_stale_run_returns_false(self):
+        """GIVEN data_interval_end is far in the past (beyond tolerance)
+        WHEN _staleness_guard runs
+        THEN it returns False (skip)."""
+        from congress_videos.video_analytics_dag import _staleness_guard
+
+        stale = datetime.now(timezone.utc) - timedelta(hours=6)
+        assert _staleness_guard(data_interval_end=stale) is False
+
+
+class TestFetchAnalyticsNoCandidates:
+    """Spec: empty-candidates short-circuit."""
+
+    def test_no_candidate_rows_returns_empty_and_pushes_empty_xcom(self):
+        """GIVEN no candidate rows on the 'candidates' XCom
+        WHEN _fetch_analytics runs
+        THEN it returns [] and pushes an empty 'collected' XCom without
+             calling the Analytics API."""
+        from unittest.mock import MagicMock
+
+        from congress_videos.video_analytics_dag import _fetch_analytics
+
+        mock_ti = MagicMock()
+        mock_ti.xcom_pull.return_value = []
+
+        result = _fetch_analytics(ti=mock_ti)
+
+        assert result == []
+        mock_ti.xcom_push.assert_any_call(key="collected", value=[])
+
+
+class TestFetchAnalyticsCollectedPairsFailure:
+    """Spec: DB read for already-collected pairs degrades gracefully."""
+
+    def test_get_collected_pairs_raises_proceeds_with_empty_set(self):
+        """GIVEN get_collected_analytics_pairs raises
+        WHEN _fetch_analytics runs
+        THEN it logs a warning and proceeds as if nothing was collected yet
+             (idempotency stays DB-enforced via ON CONFLICT DO NOTHING)."""
+        from unittest.mock import MagicMock, patch
+
+        from congress_videos.video_analytics_dag import _fetch_analytics
+
+        candidate_rows = [
+            {
+                "chapter_id": 1,
+                "youtube_video_id": "dbfail1",
+                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+            }
+        ]
+        mock_ti = MagicMock()
+        mock_ti.xcom_pull.return_value = candidate_rows
+
+        response = _full_response({"views": 5})
+        fake_service = _make_fake_service(response)
+
+        with patch(
+            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+            side_effect=RuntimeError("connection refused"),
+        ), patch(
+            "utils.youtube_helpers.get_youtube_analytics_service",
+            return_value=fake_service,
+        ):
+            result = _fetch_analytics(ti=mock_ti)
+
+        assert len(result) == 1
+        assert result[0]["youtube_video_id"] == "dbfail1"
+
+
+class TestFetchAnalyticsServiceBuildFailure:
+    """Spec: Analytics service construction failure degrades gracefully."""
+
+    def test_service_build_raises_returns_empty_collected(self):
+        """GIVEN get_youtube_analytics_service raises
+        WHEN _fetch_analytics runs
+        THEN it logs a warning, pushes an empty 'collected' XCom, and returns
+             [] without crashing the task."""
+        from unittest.mock import MagicMock, patch
+
+        from congress_videos.video_analytics_dag import _fetch_analytics
+
+        candidate_rows = [
+            {
+                "chapter_id": 1,
+                "youtube_video_id": "svcfail1",
+                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+            }
+        ]
+        mock_ti = MagicMock()
+        mock_ti.xcom_pull.return_value = candidate_rows
+
+        with patch(
+            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+            return_value=set(),
+        ), patch(
+            "utils.youtube_helpers.get_youtube_analytics_service",
+            side_effect=RuntimeError("token missing"),
+        ):
+            result = _fetch_analytics(ti=mock_ti)
+
+        assert result == []
+        mock_ti.xcom_push.assert_any_call(key="collected", value=[])
+
+
+class TestFetchAnalyticsSkipAndRetry:
+    """Spec: should_persist() False branch — all-None/all-zero metrics."""
+
+    def test_all_zero_metrics_skipped_not_collected(self):
+        """GIVEN the Analytics API returns all-zero metrics for a candidate
+        WHEN _fetch_analytics runs
+        THEN the pair is skipped (skip-and-retry) and excluded from
+             'collected', leaving it pending for the next hourly run."""
+        from unittest.mock import MagicMock, patch
+
+        from congress_videos.video_analytics_dag import _fetch_analytics
+
+        candidate_rows = [
+            {
+                "chapter_id": 1,
+                "youtube_video_id": "zeroed1",
+                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+            }
+        ]
+        mock_ti = MagicMock()
+        mock_ti.xcom_pull.return_value = candidate_rows
+
+        all_zero_response = _full_response({})
+        fake_service = _make_fake_service(all_zero_response)
+
+        with patch(
+            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+            return_value=set(),
+        ), patch(
+            "utils.youtube_helpers.get_youtube_analytics_service",
+            return_value=fake_service,
+        ):
+            result = _fetch_analytics(ti=mock_ti)
+
+        assert result == []
+
+
+class TestRunGetPendingCheckpoints:
+    """Spec: _run_get_pending_checkpoints callable pushes 'candidates' XCom."""
+
+    def test_pushes_db_result_to_candidates_xcom(self):
+        """GIVEN CongressionalVideoDB.get_pending_analytics_checkpoints returns rows
+        WHEN _run_get_pending_checkpoints runs
+        THEN it pushes those rows to the 'candidates' XCom key and returns them."""
+        from unittest.mock import MagicMock, patch
+
+        from congress_videos.video_analytics_dag import _run_get_pending_checkpoints
+
+        db_rows = [{"chapter_id": 3, "youtube_video_id": "cand3", "youtube_upload_date": None}]
+        mock_ti = MagicMock()
+
+        with patch(
+            "congress_videos.modules.database.CongressionalVideoDB.get_pending_analytics_checkpoints",
+            return_value=db_rows,
+        ):
+            result = _run_get_pending_checkpoints(ti=mock_ti)
+
+        assert result == db_rows
+        mock_ti.xcom_push.assert_any_call(key="candidates", value=db_rows)
