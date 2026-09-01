@@ -56,6 +56,50 @@ _MIGRATION_LOCK_NAMESPACE = 0x4D494752
 MIGRATION_USER_ENV = 'MIGRATION_POSTGRES_USER'
 MIGRATION_PASSWORD_ENV = 'MIGRATION_POSTGRES_PASSWORD'
 
+# Owner role per target schema (issue #291). DDL executed by the dedicated
+# migration role must create objects owned by the stack's runtime-owner role —
+# otherwise every DROP/CREATE in a migration (e.g. 040's uploadable_turns
+# re-declaration) leaves the object owned by airflow_migrations and the
+# runtime role loses access until a manual ALTER ... OWNER TO. SET ROLE here
+# relies on the membership grants airflow_dev/airflow_prod -> airflow_migrations
+# provisioned on 2026-09-01.
+SCHEMA_OWNER_ROLES = {
+    'development': 'airflow_dev',
+    'production': 'airflow_prod',
+}
+MIGRATION_OWNER_ROLE_ENV = 'MIGRATION_OWNER_ROLE'
+
+
+def _owner_role_for_schema(schema: str) -> str | None:
+    """Owner role to assume for DDL against *schema*; env override wins."""
+    return os.getenv(MIGRATION_OWNER_ROLE_ENV) or SCHEMA_OWNER_ROLES.get(schema)
+
+
+def _assume_owner_role(conn, cur, schema: str) -> None:
+    """SET ROLE to the schema's owner role; fail-soft when not assumable.
+
+    Must be the FIRST statement on a fresh connection: psycopg2 aborts the
+    open transaction on any error, so a failed SET ROLE is rolled back here
+    before the caller issues further statements on the same connection.
+    Failure is logged and tolerated — local/dev environments without the
+    role (or without the membership grant) keep the pre-#291 behavior of
+    creating objects as the connection role.
+    """
+    role = _owner_role_for_schema(schema)
+    if not role:
+        logging.info(
+            "No owner role mapped for schema '%s' — running as connection role", schema
+        )
+        return
+    try:
+        cur.execute(f'SET ROLE "{role}"')
+        logging.info("Assumed owner role '%s' for schema '%s'", role, schema)
+    except Exception:
+        conn.rollback()
+        logging.warning(
+            "SET ROLE %s failed — continuing as connection role", role, exc_info=True
+        )
+
 
 def _migration_connection() -> PostgresConnection:
     """PostgresConnection bound to the DDL migration role when fully provisioned.
@@ -90,6 +134,7 @@ def _ensure_migrations_table() -> None:
     schema = pg.schema
     with pg.get_connection(statement_timeout_ms=0) as conn:
         with conn.cursor() as cur:
+            _assume_owner_role(conn, cur, schema)
             cur.execute(f"""
                 CREATE TABLE IF NOT EXISTS {schema}.schema_migrations (
                     id           SERIAL PRIMARY KEY,
@@ -159,6 +204,7 @@ def _apply_pending_migrations(**context) -> None:
             # Each migration runs in its own transaction — partial progress is preserved on failure
             with pg.get_connection(statement_timeout_ms=0) as conn:
                 with conn.cursor() as cur:
+                    _assume_owner_role(conn, cur, schema)
                     cur.execute(f"SET search_path TO {schema}, public")
                     cur.execute(sql)
                     cur.execute(
