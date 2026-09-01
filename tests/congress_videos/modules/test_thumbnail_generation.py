@@ -3582,3 +3582,271 @@ class TestArtDirectResolvedPhotoInstruction:
         sibling_prompt = sibling_prompts[0]
         assert "NO REPITAS" in sibling_prompt and "EXCEPCIÓN DE IDENTIDAD" in sibling_prompt
         assert sibling_prompt.index("EXCEPCIÓN DE IDENTIDAD") > sibling_prompt.index("NO REPITAS")
+
+
+# ---------------------------------------------------------------------------
+# Anti-convergence steering: forbidden_archetype / forbidden_title (#102)
+# ---------------------------------------------------------------------------
+
+
+class TestArtDirectForbiddenArchetype:
+    """Spec: Anti-convergence steering contract / Archetype forced different."""
+
+    def _valid_brief(self, archetype: str) -> dict:
+        return {
+            "text": "LO QUE NO TE CUENTAN",
+            "background": "una calle española con manifestantes",
+            "person": "un ciudadano de mediana edad",
+            "mood": "indignación",
+            "archetype": archetype,
+        }
+
+    def test_reroll_once_when_archetype_matches_forbidden(self, mocker):
+        """GIVEN the first brief's archetype matches forbidden_archetype
+        WHEN art_direct runs
+        THEN _call_art_direction_api is called a second time (one retry)."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        mock_call = mocker.patch(
+            "congress_videos.modules.thumbnail_generation._call_art_direction_api",
+            side_effect=[
+                self._valid_brief("denuncia"),
+                self._valid_brief("careo"),
+            ],
+        )
+        cfg = _make_cfg()
+
+        result = art_direct(
+            "Debate sobre pensiones",
+            cfg,
+            forbidden_archetype="denuncia",
+        )
+
+        assert mock_call.call_count == 2
+        assert result["archetype"] == "careo"
+
+    def test_no_reroll_when_archetype_does_not_match(self, mocker):
+        """GIVEN the first brief's archetype does NOT match forbidden_archetype
+        WHEN art_direct runs
+        THEN _call_art_direction_api is called exactly once (no wasted retry)."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        mock_call = mocker.patch(
+            "congress_videos.modules.thumbnail_generation._call_art_direction_api",
+            return_value=self._valid_brief("monologo"),
+        )
+        cfg = _make_cfg()
+
+        result = art_direct(
+            "Debate sobre pensiones",
+            cfg,
+            forbidden_archetype="denuncia",
+        )
+
+        assert mock_call.call_count == 1
+        assert result["archetype"] == "monologo"
+
+    def test_still_colliding_after_one_retry_is_accepted(self, mocker):
+        """GIVEN the reroll ALSO returns the forbidden archetype
+        WHEN art_direct runs
+        THEN the result is still accepted (no infinite retry loop) — the
+             caller records the collision by comparing values itself."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        mock_call = mocker.patch(
+            "congress_videos.modules.thumbnail_generation._call_art_direction_api",
+            return_value=self._valid_brief("denuncia"),
+        )
+        cfg = _make_cfg()
+
+        result = art_direct(
+            "Debate sobre pensiones",
+            cfg,
+            forbidden_archetype="denuncia",
+        )
+
+        assert mock_call.call_count == 2
+        assert result["archetype"] == "denuncia"
+
+    def test_default_forbidden_archetype_none_is_backward_compatible(self, mocker):
+        """forbidden_archetype=None (default) must not trigger any reroll —
+        byte-identical to pre-change behavior."""
+        from congress_videos.modules.thumbnail_generation import art_direct
+
+        mock_call = mocker.patch(
+            "congress_videos.modules.thumbnail_generation._call_art_direction_api",
+            return_value=self._valid_brief("denuncia"),
+        )
+        cfg = _make_cfg()
+
+        art_direct("Debate sobre pensiones", cfg)
+
+        assert mock_call.call_count == 1
+
+
+class TestGenerateTitleForbiddenTitle:
+    """Spec: Anti-convergence steering contract / Title negative input."""
+
+    def _best_opt(self) -> dict:
+        return {
+            "label": "option_a",
+            "style": "A",
+            "prompt": "A thick gold border...",
+            "output_url": "u",
+            "local_path": "/a.png",
+            "main_score": 80.0,
+        }
+
+    def test_reprompts_once_when_title_matches_forbidden(self, mocker):
+        """GIVEN the first valid title exactly matches forbidden_title
+        WHEN generate_title runs
+        THEN _request_title is called a second time (one reroll)."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        prior_title = "El Congreso vota el futuro de las pensiones"
+        new_title = "Diputados aprueban reforma clave en pensiones"
+        mock_request = mocker.patch(
+            "congress_videos.modules.thumbnail_generation._request_title",
+            side_effect=[prior_title, new_title],
+        )
+        cfg = _make_cfg()
+
+        result = generate_title(
+            "Debate sobre pensiones",
+            self._best_opt(),
+            cfg,
+            forbidden_title=prior_title,
+        )
+
+        assert mock_request.call_count == 2
+        assert result == new_title
+
+    def test_no_reprompt_when_title_does_not_match_forbidden(self, mocker):
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        mock_request = mocker.patch(
+            "congress_videos.modules.thumbnail_generation._request_title",
+            return_value="Un título completamente distinto",
+        )
+        cfg = _make_cfg()
+
+        result = generate_title(
+            "Debate sobre pensiones",
+            self._best_opt(),
+            cfg,
+            forbidden_title="Otro título anterior",
+        )
+
+        assert mock_request.call_count == 1
+        assert result == "Un título completamente distinto"
+
+    def test_still_colliding_after_one_reroll_is_accepted(self, mocker):
+        """GIVEN the reroll ALSO returns the forbidden title
+        WHEN generate_title runs
+        THEN the result is still accepted (no infinite retry loop) — the
+             caller records the collision by comparing values itself."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        prior_title = "El Congreso vota el futuro de las pensiones"
+        mock_request = mocker.patch(
+            "congress_videos.modules.thumbnail_generation._request_title",
+            return_value=prior_title,
+        )
+        cfg = _make_cfg()
+
+        result = generate_title(
+            "Debate sobre pensiones",
+            self._best_opt(),
+            cfg,
+            forbidden_title=prior_title,
+        )
+
+        assert mock_request.call_count == 2
+        assert result == prior_title
+
+    def test_default_forbidden_title_none_is_backward_compatible(self, mocker):
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        mock_request = mocker.patch(
+            "congress_videos.modules.thumbnail_generation._request_title",
+            return_value="Cualquier título válido aquí",
+        )
+        cfg = _make_cfg()
+
+        generate_title("Debate sobre pensiones", self._best_opt(), cfg)
+
+        assert mock_request.call_count == 1
+
+
+class TestPersistResultsArchetype:
+    """Spec: Archetype persistence (migration 040) — persist_results writes
+    the chosen option's archetype to video_thumbnails.archetype."""
+
+    def _make_options_with_archetype(self):
+        return [
+            {
+                "label": "option_a",
+                "output_url": "https://pikzels.com/a.png",
+                "local_path": "/a.png",
+                "main_score": 72.0,
+                "style": "style A",
+                "prompt": "prompt A",
+                "archetype": "monologo",
+            },
+            {
+                "label": "option_b",
+                "output_url": "https://pikzels.com/b.png",
+                "local_path": "/b.png",
+                "main_score": 85.0,
+                "style": "style B",
+                "prompt": "prompt B",
+                "archetype": "denuncia",
+            },
+        ]
+
+    def test_sql_includes_archetype_column(self, mock_psycopg2_connection):
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        options = self._make_options_with_archetype()
+        persist_results(7, "vid123", "Un título", options, "option_b")
+
+        sql_calls = [c.args[0] for c in mock_cursor.execute.call_args_list if c.args]
+        assert any("archetype" in s for s in sql_calls)
+
+    def test_chosen_option_archetype_is_bound(self, mock_psycopg2_connection):
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        options = self._make_options_with_archetype()
+        persist_results(7, "vid123", "Un título", options, "option_b")
+
+        all_calls = mock_cursor.execute.call_args_list
+        chosen_params = None
+        for c in all_calls:
+            params = c[0][1] if len(c[0]) > 1 else c[1].get("params", c[0][0])
+            if isinstance(params, (list, tuple)) and "option_b" in params:
+                chosen_params = params
+                break
+        assert chosen_params is not None
+        assert "denuncia" in chosen_params
+
+    def test_option_without_archetype_key_writes_none(self, mock_psycopg2_connection):
+        """Backward compatible: an option dict lacking 'archetype' must not
+        raise a KeyError — writes NULL."""
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        options = [
+            {
+                "label": "option_a",
+                "output_url": "u",
+                "local_path": "/a.png",
+                "main_score": 72.0,
+                "style": "A",
+                "prompt": "p",
+            }
+        ]
+        persist_results(7, "vid123", "Un título", options, "option_a")
+
+        assert mock_cursor.execute.call_count == 1
