@@ -1508,7 +1508,12 @@ class TestTurnQueueSelection:
 
         fake_turn = _make_turn_row()
 
-        with pytest.raises(ValueError):
+        # match= is load-bearing: without it any ValueError would satisfy this
+        # pin, including one raised for an unrelated reason. The point of the
+        # test is that THIS specific tz defect is what breaks the round-trip.
+        with pytest.raises(
+            ValueError, match="ZoneInfo keys must be normalized relative paths"
+        ):
             _xcom_round_trip(fake_turn)
 
 
