@@ -186,6 +186,8 @@ class TestUtcNormalizeRows:
             "youtube_video_id": "xyz",
             "note": None,
             "published_on": date(2026, 8, 20),
+            "relevance_score": 4.5,
+            "key_speakers": ["Ana García", "Pedro López"],
         }
 
         result = utc_normalize_row(row)
@@ -194,6 +196,8 @@ class TestUtcNormalizeRows:
         assert result["youtube_video_id"] == "xyz"
         assert result["note"] is None
         assert result["published_on"] == date(2026, 8, 20)
+        assert result["relevance_score"] == 4.5
+        assert result["key_speakers"] == ["Ana García", "Pedro López"]
 
     def test_input_rows_are_not_mutated(self):
         original_dt = datetime(2026, 8, 20, 10, 0, tzinfo=timezone(timedelta(hours=2)))
