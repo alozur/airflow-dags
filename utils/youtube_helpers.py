@@ -323,6 +323,53 @@ def set_thumbnail_for_video(youtube, video_id: str, thumbnail_file: str) -> Dict
         }
 
 
+def update_video_title(youtube, video_id: str, title: str) -> Dict:
+    """
+    Update a YouTube video's title without clobbering its other snippet
+    fields (issue #102).
+
+    Fetches the FULL current snippet via ``videos().list(part="snippet")``,
+    mutates only ``title``, and writes it back via
+    ``videos().update(part="snippet")``. A naive
+    ``body={"snippet": {"title": ...}}`` call would clear ``categoryId``,
+    ``tags``, and ``description`` — the API replaces the whole part, not a
+    single field.
+
+    Args:
+        youtube: Authenticated YouTube API service (upload-purpose token).
+        video_id: YouTube video ID to update.
+        title: New title.
+
+    Returns:
+        Dict with result:
+        - success: Boolean indicating if the update succeeded.
+        - error: Error message (if failed), else None.
+    """
+    try:
+        list_response = youtube.videos().list(part="snippet", id=video_id).execute()
+        items = list_response.get("items", [])
+        if not items:
+            error_msg = f"Video not found: {video_id}"
+            logging.error(error_msg)
+            return {"success": False, "error": error_msg}
+
+        snippet = dict(items[0]["snippet"])
+        snippet["title"] = title
+
+        youtube.videos().update(
+            part="snippet",
+            body={"id": video_id, "snippet": snippet},
+        ).execute()
+
+        logging.info(f"Title updated successfully for video {video_id}")
+        return {"success": True, "error": None}
+
+    except Exception as e:
+        error_msg = f"Title update failed: {str(e)}"
+        logging.error(error_msg)
+        return {"success": False, "error": error_msg}
+
+
 def upload_multiple_videos(
     token_file: str,
     videos: List[Dict],

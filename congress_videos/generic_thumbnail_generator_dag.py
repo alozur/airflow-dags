@@ -134,7 +134,13 @@ def _task_fetch_recent_history(ti: TaskInstance, **context: object) -> dict:
 
 
 def _task_art_direction(ti: TaskInstance, **context: object) -> dict:
-    """Generate the art-direction brief shared by both thumbnail options."""
+    """Generate the art-direction brief shared by both thumbnail options.
+
+    Accepts optional ``previous_brief``/``previous_archetype`` from the
+    triggering conf (issue #102, anti-convergence steering) so the action
+    DAG can force a different visual approach on the FIRST attempt, not
+    only via the internal art_direction_retry path.
+    """
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
     history: dict = ti.xcom_pull(task_ids="fetch_recent_history") or {}
     photo_data: dict = ti.xcom_pull(task_ids="resolve_participant_photo") or {}
@@ -142,11 +148,13 @@ def _task_art_direction(ti: TaskInstance, **context: object) -> dict:
     return art_direct(
         conf["debate_summary"],
         domain_cfg,
+        previous_brief=conf.get("previous_brief"),
         sibling_briefs=history.get("briefs") or None,
         srt_fragment=conf.get("srt_fragment"),
         resolved_speaker_name=resolved_photo_speaker_name(
             photo_data, conf.get("key_speakers")
         ),
+        forbidden_archetype=conf.get("previous_archetype"),
     )
 
 
@@ -178,10 +186,13 @@ def _task_generate_thumbnail(label: str, ti: TaskInstance, **context: object) ->
         prompt,
         support_image_base64=data_url,
     )
-    # Attach label, layout (as style), and prompt for downstream tasks.
+    # Attach label, layout (as style), prompt, and archetype for downstream
+    # tasks (archetype carried through download/score to persist_results,
+    # migration 041's video_thumbnails.archetype column, issue #102).
     result["label"] = label
     result["style"] = layout
     result["prompt"] = prompt
+    result["archetype"] = art_brief.get("archetype")
     return result
 
 
@@ -208,6 +219,7 @@ def _task_download_option(label: str, ti: TaskInstance, **context: object) -> di
         "output_url": output_url,
         "style": gen_result.get("style", ""),
         "prompt": gen_result.get("prompt", ""),
+        "archetype": gen_result.get("archetype"),
     }
 
 
@@ -242,7 +254,13 @@ def _task_choose_best(ti: TaskInstance, **context: object) -> dict:
 
 
 def _task_generate_title(ti: TaskInstance, **context: object) -> str:
-    """Generate a YouTube title for the chosen thumbnail option."""
+    """Generate a YouTube title for the chosen thumbnail option.
+
+    Accepts an optional ``previous_title`` from the triggering conf (issue
+    #102, anti-convergence steering) — passed as generate_title's
+    forbidden_title so a 24h checkpoint regeneration avoids repeating the
+    exact prior headline.
+    """
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
     best: dict = ti.xcom_pull(task_ids="choose_best_option") or {}
     history: dict = ti.xcom_pull(task_ids="fetch_recent_history") or {}
@@ -253,6 +271,7 @@ def _task_generate_title(ti: TaskInstance, **context: object) -> str:
         domain_cfg,
         sibling_titles=history.get("titles") or None,
         key_speakers=conf.get("key_speakers") or None,
+        forbidden_title=conf.get("previous_title"),
     )
 
 

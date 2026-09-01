@@ -122,3 +122,43 @@ class TestNoAirflowImports:
         # Should not raise even if airflow is absent
         cfg = _load()
         assert cfg.CHECKPOINTS is not None
+
+
+class TestUnderperformanceActionConstants:
+    """[RED] Spec: Per-checkpoint underperformance evaluation / Lifetime action
+    cap per video / Checkpoint-scoped action types (issue #102).
+
+    New constants consumed by evaluate_action() (modules/video_analytics.py).
+    """
+
+    def test_underperform_ratio_is_half(self):
+        cfg = _load()
+        assert cfg.UNDERPERFORM_RATIO == 0.5
+
+    def test_min_prior_snapshots_is_ten(self):
+        cfg = _load()
+        assert cfg.MIN_PRIOR_SNAPSHOTS == 10
+
+    def test_title_update_checkpoints_is_24h_only(self):
+        cfg = _load()
+        assert cfg.TITLE_UPDATE_CHECKPOINTS == ("24h",)
+
+    def test_max_thumbnail_actions_per_video_is_one(self):
+        cfg = _load()
+        assert cfg.MAX_THUMBNAIL_ACTIONS_PER_VIDEO == 1
+
+    def test_max_title_actions_per_video_is_one(self):
+        cfg = _load()
+        assert cfg.MAX_TITLE_ACTIONS_PER_VIDEO == 1
+
+    def test_action_values_mirrors_migration_041_check_constraint(self):
+        cfg = _load()
+        assert cfg.ACTION_VALUES == {
+            "cold_start",
+            "ok",
+            "capped",
+            "in_progress",
+            "thumbnail_regenerated",
+            "thumbnail_and_title_regenerated",
+            "failed",
+        }
