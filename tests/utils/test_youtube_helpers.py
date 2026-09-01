@@ -181,6 +181,42 @@ class TestUploadVideoToYoutube:
         call_kwargs = youtube.videos.return_value.insert.call_args.kwargs
         assert call_kwargs["body"]["status"]["privacyStatus"] == "public"
 
+    def test_thumbnail_failure_reported_but_video_upload_still_succeeds(self, tmp_path):
+        """Issue #320: a failed thumbnails.set call must not fail the video
+
+        upload — the video is published (success=True) but thumbnail_success
+        is explicitly False so the caller (chapter-upload gate) can surface it.
+        """
+        video_file = tmp_path / "video.mp4"
+        video_file.write_bytes(b"\x00" * 512)
+        thumbnail_file = tmp_path / "thumbnail.jpg"
+        thumbnail_file.write_bytes(b"\xff\xd8\xff" * 100)
+
+        youtube = MagicMock()
+        fake_response = {"id": "vid-with-bad-thumb"}
+        insert_request = MagicMock()
+        insert_request.next_chunk.return_value = (None, fake_response)
+        youtube.videos.return_value.insert.return_value = insert_request
+
+        with (
+            patch("utils.youtube_helpers.MediaFileUpload"),
+            patch(
+                "utils.youtube_helpers.set_thumbnail_for_video",
+                return_value={"success": False, "error": "thumbnail rejected"},
+            ) as mock_set_thumbnail,
+        ):
+            result = upload_video_to_youtube(
+                youtube,
+                str(video_file),
+                "Title",
+                "Desc",
+                thumbnail_file=str(thumbnail_file),
+            )
+
+        mock_set_thumbnail.assert_called_once()
+        assert_success_result(result)
+        assert result["thumbnail_success"] is False
+
 
 # ---------------------------------------------------------------------------
 # set_thumbnail_for_video
