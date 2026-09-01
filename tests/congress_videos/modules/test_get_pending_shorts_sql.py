@@ -64,6 +64,9 @@ CREATE TABLE IF NOT EXISTS video_shorts (
 """
 
 
+_TEST_SCHEMA = "test_get_pending_shorts_sql"
+
+
 @pytest.fixture(scope="module")
 def pg_conn():
     """Live Postgres connection for SQL integration tests.
@@ -71,6 +74,10 @@ def pg_conn():
     Uses TEST_DATABASE_URL env var or falls back to
     postgresql://postgres:postgres@localhost:5432/test_airflow_dags.
     Skips when psycopg2 is unavailable or the DB is unreachable.
+
+    Runs in its own Postgres schema (issue #277) so this file can share a
+    throwaway database with other live-Postgres test files without
+    column-not-found collisions from differing table shapes.
     """
     reason = _skip_if_no_postgres()
     if reason:
@@ -84,20 +91,33 @@ def pg_conn():
         "postgresql://postgres:postgres@localhost:5432/test_airflow_dags",
     )
     try:
-        conn = psycopg2.connect(dsn, cursor_factory=RealDictCursor)
+        conn = psycopg2.connect(
+            dsn,
+            cursor_factory=RealDictCursor,
+            # A startup option, not a per-session SET: it cannot be silently
+            # unset by a ROLLBACK TO SAVEPOINT mid-run (issue #277).
+            options=f"-c search_path={_TEST_SCHEMA}",
+        )
         conn.autocommit = False
     except Exception as exc:
         pytest.skip(f"Postgres unavailable: {exc}")
         return
 
     with conn.cursor() as cur:
+        cur.execute(f"DROP SCHEMA IF EXISTS {_TEST_SCHEMA} CASCADE")
+        cur.execute(f"CREATE SCHEMA {_TEST_SCHEMA}")
         cur.execute(_SCHEMA_SQL)
     conn.commit()
 
     yield conn
 
-    conn.rollback()
-    conn.close()
+    try:
+        conn.rollback()  # a failed test leaves an aborted transaction
+        with conn.cursor() as cur:
+            cur.execute(f"DROP SCHEMA IF EXISTS {_TEST_SCHEMA} CASCADE")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 @pytest.fixture()
@@ -233,130 +253,112 @@ def test_min_virality_score_does_not_change_tier(db):
 # R1, R3, R5, R6, R7 — folded ranking scenarios
 # --------------------------------------------------------------------------- #
 
-def _baseline_setup(cur, chapter_id):
-    scores = [9.0, 8.0, 7.0, 6.0, 5.0]
-    ids = [_insert_clip(cur, chapter_id, virality_score=score) for score in scores]
-    return {"ids": ids}
-
-
-def _baseline_check(rows, ctx):
+def test_baseline_top_three_clips_are_tier1(db):
     """5 clips, no uploads -> exactly 3 Tier-1 (the 3 top scores), 2 Tier-2."""
+    with db.cursor() as cur:
+        chapter_id = _insert_chapter(cur)
+        scores = [9.0, 8.0, 7.0, 6.0, 5.0]
+        ids = [_insert_clip(cur, chapter_id, virality_score=score) for score in scores]
+
+        rows = _run_candidate_query(cur)
+
     by_id = {r["id"]: r for r in rows}
-    assert set(by_id) == set(ctx["ids"])
-    assert {by_id[i]["tier"] for i in ctx["ids"][:3]} == {1}
-    assert {by_id[i]["tier"] for i in ctx["ids"][3:]} == {2}
-    assert sorted(by_id[i]["chapter_rank"] for i in ctx["ids"]) == [1, 2, 3, 4, 5]
+    assert set(by_id) == set(ids)
+    assert {by_id[i]["tier"] for i in ids[:3]} == {1}
+    assert {by_id[i]["tier"] for i in ids[3:]} == {2}
+    assert sorted(by_id[i]["chapter_rank"] for i in ids) == [1, 2, 3, 4, 5]
 
 
-def _row_set_identity_setup(cur, chapter_id):
-    scores = [4.0, 3.0, 2.0]
-    ids = [_insert_clip(cur, chapter_id, virality_score=score) for score in scores]
-    return {"ids": ids}
-
-
-def _row_set_identity_check(rows, ctx):
+def test_row_set_identity_matches_legacy_query(db):
     """Pending set returned equals exactly the set of inserted ids (no drops,
     no phantom rows) when nothing is uploaded or abandoned."""
+    with db.cursor() as cur:
+        chapter_id = _insert_chapter(cur)
+        scores = [4.0, 3.0, 2.0]
+        ids = [_insert_clip(cur, chapter_id, virality_score=score) for score in scores]
+
+        rows = _run_candidate_query(cur)
+
     returned_ids = {r["id"] for r in rows}
-    assert returned_ids == set(ctx["ids"])
+    assert returned_ids == set(ids)
 
 
-def _null_score_below_cap_setup(cur, chapter_id):
-    scored_ids = [_insert_clip(cur, chapter_id, virality_score=score) for score in [9.0, 8.0]]
-    null_id = _insert_clip(cur, chapter_id, virality_score=None)
-    return {"scored_ids": scored_ids, "null_id": null_id}
-
-
-def _null_score_below_cap_check(rows, ctx):
+def test_null_score_clip_below_cap_is_tier1(db):
     """2 scored + 1 NULL: the NULL-score clip ranks 3rd (NULLS LAST) and is
     within the Tier-1 cap of 3."""
+    with db.cursor() as cur:
+        chapter_id = _insert_chapter(cur)
+        for score in [9.0, 8.0]:
+            _insert_clip(cur, chapter_id, virality_score=score)
+        null_id = _insert_clip(cur, chapter_id, virality_score=None)
+
+        rows = _run_candidate_query(cur)
+
     by_id = {r["id"]: r for r in rows}
-    assert by_id[ctx["null_id"]]["chapter_rank"] == 3
-    assert by_id[ctx["null_id"]]["tier"] == 1
+    assert by_id[null_id]["chapter_rank"] == 3
+    assert by_id[null_id]["tier"] == 1
 
 
-def _null_score_above_cap_setup(cur, chapter_id):
-    scored_ids = [_insert_clip(cur, chapter_id, virality_score=score) for score in [9.0, 8.0, 7.0]]
-    null_id = _insert_clip(cur, chapter_id, virality_score=None)
-    return {"scored_ids": scored_ids, "null_id": null_id}
-
-
-def _null_score_above_cap_check(rows, ctx):
+def test_null_score_clip_above_cap_is_tier2(db):
     """3 scored + 1 NULL: the NULL-score clip ranks 4th and falls to Tier 2."""
+    with db.cursor() as cur:
+        chapter_id = _insert_chapter(cur)
+        for score in [9.0, 8.0, 7.0]:
+            _insert_clip(cur, chapter_id, virality_score=score)
+        null_id = _insert_clip(cur, chapter_id, virality_score=None)
+
+        rows = _run_candidate_query(cur)
+
     by_id = {r["id"]: r for r in rows}
-    assert by_id[ctx["null_id"]]["chapter_rank"] == 4
-    assert by_id[ctx["null_id"]]["tier"] == 2
+    assert by_id[null_id]["chapter_rank"] == 4
+    assert by_id[null_id]["tier"] == 2
 
 
-def _abandoned_top3_setup(cur, chapter_id):
-    abandoned_ids = [
-        _insert_clip(cur, chapter_id, virality_score=score, is_upload_abandoned=True)
-        for score in [9.0, 8.0, 7.0]
-    ]
-    active_ids = [_insert_clip(cur, chapter_id, virality_score=score) for score in [6.0, 5.0, 4.0]]
-    return {"abandoned_ids": abandoned_ids, "active_ids": active_ids}
-
-
-def _abandoned_top3_check(rows, ctx):
+def test_abandoned_top_clips_free_tier1_slots(db):
     """Abandoned clips never enter the ranking CTE at all (R7): the next 3
     non-abandoned clips become Tier 1 with ranks 1-3, and no abandoned id is
     ever returned."""
+    with db.cursor() as cur:
+        chapter_id = _insert_chapter(cur)
+        abandoned_ids = [
+            _insert_clip(cur, chapter_id, virality_score=score, is_upload_abandoned=True)
+            for score in [9.0, 8.0, 7.0]
+        ]
+        active_ids = [
+            _insert_clip(cur, chapter_id, virality_score=score) for score in [6.0, 5.0, 4.0]
+        ]
+
+        rows = _run_candidate_query(cur)
+
     by_id = {r["id"]: r for r in rows}
-    for abandoned_id in ctx["abandoned_ids"]:
+    for abandoned_id in abandoned_ids:
         assert abandoned_id not in by_id
-    assert sorted(by_id[i]["chapter_rank"] for i in ctx["active_ids"]) == [1, 2, 3]
-    assert {by_id[i]["tier"] for i in ctx["active_ids"]} == {1}
+    assert sorted(by_id[i]["chapter_rank"] for i in active_ids) == [1, 2, 3]
+    assert {by_id[i]["tier"] for i in active_ids} == {1}
 
 
-def _null_local_path_setup(cur, chapter_id):
+def test_null_local_file_path_consumes_rank_but_is_not_returned(db):
     """Highest-scoring clip has no local file yet — it still consumes rank 1
     in the ranking universe, but the outer query excludes it from the
     returned rows (local_file_path IS NOT NULL)."""
-    missing_file_id = _insert_clip(cur, chapter_id, virality_score=9.0, local_file_path=None)
-    present_ids = [
-        _insert_clip(cur, chapter_id, virality_score=score) for score in [8.0, 7.0, 6.0]
-    ]
-    return {"missing_file_id": missing_file_id, "present_ids": present_ids}
+    with db.cursor() as cur:
+        chapter_id = _insert_chapter(cur)
+        missing_file_id = _insert_clip(cur, chapter_id, virality_score=9.0, local_file_path=None)
+        present_ids = [
+            _insert_clip(cur, chapter_id, virality_score=score) for score in [8.0, 7.0, 6.0]
+        ]
 
+        rows = _run_candidate_query(cur)
 
-def _null_local_path_check(rows, ctx):
     by_id = {r["id"]: r for r in rows}
-    assert ctx["missing_file_id"] not in by_id
+    assert missing_file_id not in by_id
     # Rank 1 was consumed by the excluded clip, so only 2 of the 3 remaining
     # clips fit inside the Tier-1 cap (ranks 2 and 3); the 3rd falls to Tier 2.
     tier1_ids = {r["id"] for r in rows if r["tier"] == 1}
     tier2_ids = {r["id"] for r in rows if r["tier"] == 2}
     assert len(tier1_ids) == 2
     assert len(tier2_ids) == 1
-    assert tier1_ids | tier2_ids == set(ctx["present_ids"])
-
-
-@pytest.mark.parametrize(
-    "setup, check",
-    [
-        (_baseline_setup, _baseline_check),
-        (_row_set_identity_setup, _row_set_identity_check),
-        (_null_score_below_cap_setup, _null_score_below_cap_check),
-        (_null_score_above_cap_setup, _null_score_above_cap_check),
-        (_abandoned_top3_setup, _abandoned_top3_check),
-        (_null_local_path_setup, _null_local_path_check),
-    ],
-    ids=[
-        "baseline-top3-tier1",
-        "row-set-identity",
-        "null-score-below-cap-is-tier1",
-        "null-score-above-cap-is-tier2",
-        "abandoned-top3-excluded-from-universe",
-        "null-local-path-consumes-rank-but-excluded",
-    ],
-)
-def test_ranking_scenarios(db, setup, check):
-    with db.cursor() as cur:
-        chapter_id = _insert_chapter(cur)
-        ctx = setup(cur, chapter_id)
-        rows = _run_candidate_query(cur)
-
-    check(rows, ctx)
+    assert tier1_ids | tier2_ids == set(present_ids)
 
 
 def test_null_score_ties_break_deterministically_by_id(db):
