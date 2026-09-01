@@ -47,3 +47,38 @@ METRIC_FIELDS: list[str] = [
     "subscribersGained",
     "subscribersLost",
 ]
+
+# ---------------------------------------------------------------------------
+# Checkpoint action evaluation (issue #102)
+# ---------------------------------------------------------------------------
+
+# A video is "underperforming" at a checkpoint when its views fall below this
+# ratio of the channel's own historical median views for that checkpoint.
+UNDERPERFORM_RATIO: float = 0.5
+
+# Minimum number of OTHER videos' snapshots required at a checkpoint before
+# evaluate_action() will judge underperformance there. Enforced arithmetically
+# as (sample_size - 1) >= MIN_PRIOR_SNAPSHOTS, i.e. the evaluated video's own
+# snapshot is excluded from the count (but not from the median computation).
+MIN_PRIOR_SNAPSHOTS: int = 10
+
+# Title regeneration is only evaluated at these checkpoints. Thumbnail
+# regeneration MAY occur at any checkpoint in CHECKPOINTS.
+TITLE_UPDATE_CHECKPOINTS: tuple[str, ...] = ("24h",)
+
+# Lifetime cap per video, across all checkpoints, on each action type.
+MAX_THUMBNAIL_ACTIONS_PER_VIDEO: int = 1
+MAX_TITLE_ACTIONS_PER_VIDEO: int = 1
+
+# Mirrors the migration 040 CHECK constraint on
+# video_analytics_snapshots.action_taken. Kept in sync manually — if this
+# set changes, migration 040 (or a follow-up migration) must change too.
+ACTION_VALUES: set[str] = {
+    "cold_start",
+    "ok",
+    "capped",
+    "in_progress",
+    "thumbnail_regenerated",
+    "thumbnail_and_title_regenerated",
+    "failed",
+}
