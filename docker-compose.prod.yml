@@ -55,6 +55,10 @@ x-airflow-common:
     REAP_API_KEY: "${REAP_API_KEY}"
     PIKZELS_API_KEY: "${PIKZELS_API_KEY:-}"
 
+    # LLM model tiers (utils/llm_config.py) — empty falls back to committed defaults
+    LLM_DEFAULT: "${LLM_DEFAULT:-}"
+    LLM_CHEAP: "${LLM_CHEAP:-}"
+
     # PostgreSQL connection for your project
     POSTGRES_HOST: "${POSTGRES_HOST}"
     POSTGRES_PORT: "${POSTGRES_PORT}"
