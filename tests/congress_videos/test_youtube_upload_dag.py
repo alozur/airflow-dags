@@ -1446,6 +1446,71 @@ class TestTurnQueueSelection:
         assert value.utcoffset() == timedelta(0)
         assert not isinstance(value, str)
 
+    def test_turn_xcom_item_survives_real_xcom_round_trip_as_datetime(self):
+        """Contract test (issue #309): after _run_get_uploadable_item builds the
+        uploadable_item payload from a turn with a non-UTC fixed-offset
+        materialized_at/prepared_at, the payload survives Airflow's REAL XCom
+        serializer round-trip AND decodes as a UTC-normalized datetime (not a
+        string). This proves the string -> datetime contract change actually
+        took effect end-to-end through the real serializer, not just at the
+        call site's return value.
+
+        NOTE: this test does NOT assert a ValueError against unmodified code.
+        _run_get_uploadable_item's pre-#309 body already avoided the ZoneInfo
+        crash via the old ISO-8601 stringify helper it used to call, so no
+        crash is reproducible at THIS call site either before or after this
+        change.
+        The RED signal for this test is a type mismatch (str, not datetime) —
+        see test_turn_xcom_item_raw_row_breaks_real_xcom_round_trip below for
+        the actual crash-reproducing bug-pin, which proves the +02:00 shape
+        genuinely breaks the serializer and that normalization is load-bearing.
+        """
+        import json
+
+        from airflow.utils.json import XComDecoder, XComEncoder
+
+        from congress_videos.youtube_upload_dag import _run_get_uploadable_item
+
+        def _xcom_round_trip(value):
+            return json.loads(json.dumps(value, cls=XComEncoder), cls=XComDecoder)
+
+        fake_turn = _make_turn_row()
+        mock_db = MagicMock()
+        mock_db.get_uploadable_turns.return_value = [fake_turn]
+
+        result = _run_get_uploadable_item(mock_db)
+        restored = _xcom_round_trip(result)
+
+        for key in ("materialized_at", "prepared_at"):
+            v = restored["item"][key]
+            assert isinstance(v, datetime)
+            assert v.utcoffset() == timedelta(0)
+            assert v == fake_turn[key]
+        assert restored["item_type"] == "turn"
+
+    def test_turn_xcom_item_raw_row_breaks_real_xcom_round_trip(self):
+        """Bug-pin (issue #309): a RAW turn row (the un-normalized dict
+        straight from the fixture, bypassing every helper) DOES break
+        Airflow's REAL XCom serializer round-trip with the exact ZoneInfo
+        crash. This must stay red-raising FOREVER — it deliberately never
+        normalizes. It proves the +02:00 offset shape genuinely breaks the
+        serializer, so the normalization applied at the call site is doing
+        real work rather than being decorative.
+
+        Mirrors tests/utils/test_airflow_helpers.py::TestXComSerializerRoundTrip
+        ::test_raw_non_utc_offset_row_breaks_xcom_round_trip."""
+        import json
+
+        from airflow.utils.json import XComDecoder, XComEncoder
+
+        def _xcom_round_trip(value):
+            return json.loads(json.dumps(value, cls=XComEncoder), cls=XComDecoder)
+
+        fake_turn = _make_turn_row()
+
+        with pytest.raises(ValueError):
+            _xcom_round_trip(fake_turn)
+
 
 class TestGuardAAndGuardB:
     """View-level guards: Guard A (chapter excluded when turn uploaded),
