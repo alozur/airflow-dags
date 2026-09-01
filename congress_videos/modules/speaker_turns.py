@@ -194,7 +194,91 @@ PROCEDURAL_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
             re.IGNORECASE,
         ),
     ),
+    # Corpus-derived additions (validated against production chapters 318/262):
+    # the chair thanks the OUTGOING speaker by title+name. The negative
+    # lookahead keeps the anti-pattern intact: thanking the president(a) is
+    # the canonical OPENING of a real intervention, never a handoff.
+    (
+        "gracias_titled",
+        re.compile(
+            r"(?:muchas\s+)?gracias,?\s+(?:el\s+|la\s+)?(?:senor|senora)"
+            r"(?!\s+president)\s+[a-z\-]+(?:\s+de\s+[a-z\-]+){0,2}",
+            re.IGNORECASE,
+        ),
+    ),
+    ("cuando_quiera", re.compile(r"cuando\s+(?:usted\s+)?quiera", re.IGNORECASE)),
+    (
+        "preguntas_dirigidas",
+        re.compile(
+            r"(?:pasamos|vamos)\s+(?:ahora\s+)?a\s+las\s+preguntas\s+dirigidas\s+"
+            r"a[a-z\- ]{0,40}",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "pregunta_formula",
+        re.compile(
+            r"la\s+(?:siguiente|primera|segunda|tercera|ultima)\s+(?:pregunta\s+)?"
+            r"(?:se\s+la\s+formula|la\s+formula|va\s+dirigida\s+al?)"
+            r"(?:\s+(?:el|la|al))?(?:\s+diputad[oa])?(?:\s+(?:don|dona))?"
+            r"(?:\s+[a-z\-]+){0,6}",
+            re.IGNORECASE,
+        ),
+    ),
 )
+
+PROCEDURAL_MAX_UNMATCHED_RUN: int = 40
+"""Longest contiguous run of normalized characters NOT covered by any
+pattern match that a flagged turn may contain. A genuine handoff is formula
+end to end (unmatched runs are names and connectives); SRT bleed followed by
+real substance leaves one long unmatched tail and must never be flagged."""
+
+# Filler patterns contribute coverage but can NEVER justify a flag on their
+# own (a heckle can be pure vocative): at least one PROCEDURAL_PATTERNS
+# (core) match is required before fillers are even considered.
+PROCEDURAL_FILLER_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    (
+        "vocative_titled",
+        re.compile(
+            r"(?:el\s+|la\s+)?(?:senor|senora|senoria)s?\s+[a-z\-]+"
+            r"(?:\s+de\s+[a-z\-]+){0,2},?",
+            re.IGNORECASE,
+        ),
+    ),
+    ("muchas_gracias_bare", re.compile(r"(?:muchas\s+)?gracias", re.IGNORECASE)),
+    ("por_favor", re.compile(r"por\s+favor", re.IGNORECASE)),
+    ("silencio_bare", re.compile(r"silencio", re.IGNORECASE)),
+    ("un_momentito", re.compile(r"un\s+momentito", re.IGNORECASE)),
+    (
+        "grupo_parlamentario",
+        re.compile(
+            r"(?:por\s+el\s+|del\s+|el\s+|la\s+)?grupo\s+parlamentario"
+            r"(?:\s+[a-z\-]+)?",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "diputado_titled",
+        re.compile(
+            r"(?:el\s+|la\s+)?diputad[oa](?:\s+(?:don|dona))?(?:\s+[a-z\-]+){0,4}",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def _longest_unmatched_run(spans: list[tuple[int, int]], total_length: int) -> int:
+    """Length of the longest contiguous stretch NOT covered by any span."""
+    if not spans:
+        return total_length
+    ordered = sorted(spans)
+    longest = ordered[0][0]
+    cursor = ordered[0][1]
+    for start, end in ordered[1:]:
+        if start > cursor:
+            longest = max(longest, start - cursor)
+        cursor = max(cursor, end)
+    return max(longest, total_length - cursor)
 
 
 def _union_length(spans: list[tuple[int, int]]) -> int:
@@ -243,11 +327,24 @@ def is_procedural_turn(text: str, duration_seconds: float) -> tuple[bool, str | 
             if name not in matched_names:
                 matched_names.append(name)
 
+    # Core gate: fillers can never justify a flag on their own.
     if not spans:
         return (False, None)
 
+    for name, pattern in PROCEDURAL_FILLER_PATTERNS:
+        for m in pattern.finditer(normalized):
+            spans.append((m.start(), m.end()))
+            if name not in matched_names:
+                matched_names.append(name)
+
     coverage = _union_length(spans) / len(normalized)
     if coverage < PROCEDURAL_MIN_COVERAGE:
+        return (False, None)
+
+    # Anti-bleed gate: a genuine handoff is formula end to end. SRT bleed
+    # followed by real substance leaves one long uncovered tail — reject it
+    # even when courtesy fillers push raw coverage past the threshold.
+    if _longest_unmatched_run(spans, len(normalized)) > PROCEDURAL_MAX_UNMATCHED_RUN:
         return (False, None)
 
     reason = (

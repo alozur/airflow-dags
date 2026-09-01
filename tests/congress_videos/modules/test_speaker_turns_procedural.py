@@ -11,7 +11,9 @@ from __future__ import annotations
 import pytest
 
 from congress_videos.modules.speaker_turns import (
+    PROCEDURAL_FILLER_PATTERNS,
     PROCEDURAL_MAX_DURATION_SECS,
+    PROCEDURAL_MAX_UNMATCHED_RUN,
     PROCEDURAL_MIN_COVERAGE,
     PROCEDURAL_PATTERNS,
     is_procedural_turn,
@@ -153,6 +155,11 @@ class TestEachNamedPattern:
         "ruego_silencio": "Ruego silencio.",
         "suspende_reanuda_sesion": "Se suspende la sesión.",
         "siguiente_punto_orden_dia": "Pasamos al siguiente punto del orden del día.",
+        # Real-corpus additions (chapters 318/262, session 2026-06):
+        "gracias_titled": "Muchas gracias, señora ministra.",
+        "cuando_quiera": "Señora ministra, cuando quiera.",
+        "preguntas_dirigidas": "Pasamos ahora a las preguntas dirigidas a la señora ministra de Defensa.",
+        "pregunta_formula": "La siguiente pregunta la formula la diputada doña Cayetana Álvarez de Toledo.",
     }
 
     def test_every_declared_pattern_has_a_sample(self):
@@ -166,3 +173,103 @@ class TestEachNamedPattern:
         flagged, reason = is_procedural_turn(text, 5.0)
         assert flagged is True, f"pattern {name!r} sample {text!r} was not flagged"
         assert name in reason, f"reason {reason!r} must name the firing pattern {name!r}"
+
+
+class TestFillerPatterns:
+    """Filler patterns add coverage but can NEVER justify a flag alone."""
+
+    def test_filler_constant_is_named_pairs(self):
+        assert len(PROCEDURAL_FILLER_PATTERNS) >= 4
+        for name, pattern in PROCEDURAL_FILLER_PATTERNS:
+            assert isinstance(name, str) and name
+            assert hasattr(pattern, "search")
+
+    def test_max_unmatched_run_constant(self):
+        assert PROCEDURAL_MAX_UNMATCHED_RUN == 40
+
+    def test_fillers_alone_never_flag(self):
+        """Vocatives + courtesy fillers with no core phrase → NOT flagged,
+        even at full coverage (a heckle can be all vocative)."""
+        flagged, reason = is_procedural_turn("Señora ministra, por favor.", 3.0)
+        assert flagged is False
+        assert reason is None
+
+    def test_bare_gracias_alone_never_flags(self):
+        flagged, reason = is_procedural_turn("Muchas gracias.", 2.0)
+        assert flagged is False
+        assert reason is None
+
+
+class TestRealCorpusHandoffs:
+    """Literal chair handoffs from production chapters 318 (pmLyT3dd1hQ) and
+    262 (mjUgQQVHYJg) — the exact per-turn SRT text the pipeline sees,
+    SRT-bleed included. Every one of these was a miss before the corpus
+    tuning pass (0/90 turns flagged)."""
+
+    MUST_FLAG = [
+        # (duration, turn's own SRT text)
+        (3.4, "Muchas gracias, señora ministra. Señora Funez, tiene la palabra, por favor."),
+        (3.8, "Muchas gracias, señora ministra. Señor Carazo, ahora,"),
+        (3.1, "Muchas gracias, señor ministro. Señor Tellado, cuando quiera. Señor Bolaños,"),
+        (2.9, "Muchas gracias, señora diputada. Señor ministro, cuando quiera."),
+        (3.0, "Muchas gracias, señor ministro. Señora Álvarez de Toledo."),
+        (5.5, "Muchas gracias, señora ministra. Por favor, silencio. Señor Conde, tiene la palabra."),
+        (2.5, "Muchas gracias, señor Rojas. Señora ministra, tiene la palabra, por favor."),
+        (4.4, "Muchas gracias, señor conde, señora ministra, cuando quiera."),
+        (
+            8.7,
+            "Muchas gracias, señor ministro. La siguiente pregunta la formula la "
+            "diputada doña Cayetana Álvarez de Toledo, del grupo parlamentario "
+            "popular que tiene la palabra cuando quiera.",
+        ),
+        (
+            10.9,
+            "Muchas gracias. Pasamos ahora a las preguntas dirigidas a la señora "
+            "ministra de Defensa. La primera la fórmula, por el grupo parlamentario "
+            "popular, la diputada doña Isabel Cedó.",
+        ),
+    ]
+
+    MUST_NOT_FLAG = [
+        # Short substantive turns / SRT-bleed openings followed by substance.
+        (
+            14.1,
+            "Muchas gracias, señor ministro. Señor Tellado, cuando quiera. Señor "
+            "Bolaños, no se apropie el discurso del Papa, porque el Papa habló de "
+            "muchas otras cosas que a ustedes no les gustan nada.",
+        ),
+        (
+            7.1,
+            "que tiene la palabra cuando usted quiera. Muchas gracias. ¿Mantiene "
+            "usted también que existe una conspiración judicial para derribar al "
+            "gobierno?",
+        ),
+        (
+            6.5,
+            "señor conde, señora ministra, cuando quiera. Gracias, señoría. Usted, "
+            "además, que fue secretario de Estado, conoce bien cómo dejaron el "
+            "Ministerio de Defensa.",
+        ),
+        (2.8, "Repararemos el daño causado, señor Hurtasun, se lo aseguro."),
+        (2.7, "Los de la democracia, los del diálogo. Madre mía, ¿qué es lo que les molesta?"),
+        (
+            14.0,
+            "Muchas gracias, señor Rojas. Señora ministra, eh, mire, yo tengo una "
+            "conciencia lo suficientemente fuerte para soportar sus ataques y sus "
+            "insultos durante toda la legislatura.",
+        ),
+        # Canonical opening of a REAL intervention (thanks the chair).
+        (9.0, "Gracias, señora presidenta. España es un estado de derecho sólido."),
+    ]
+
+    @pytest.mark.parametrize("duration,text", MUST_FLAG)
+    def test_real_handoff_flagged(self, duration, text):
+        flagged, reason = is_procedural_turn(text, duration)
+        assert flagged is True, f"real handoff missed: {text[:60]!r}"
+        assert reason is not None
+
+    @pytest.mark.parametrize("duration,text", MUST_NOT_FLAG)
+    def test_real_substance_not_flagged(self, duration, text):
+        flagged, reason = is_procedural_turn(text, duration)
+        assert flagged is False, f"false positive on: {text[:60]!r} ({reason})"
+        assert reason is None
