@@ -123,6 +123,96 @@ class TestYoutubeUploadDagLoads:
 
 
 # ---------------------------------------------------------------------------
+# _unpublished_thumbnail_labels (issue #320)
+# ---------------------------------------------------------------------------
+
+
+class TestUnpublishedThumbnailLabels:
+    def test_single_failure_returns_one_label(self):
+        from congress_videos.youtube_upload_dag import _unpublished_thumbnail_labels
+
+        upload_details = [
+            {
+                "youtube_video_id": "abc123",
+                "chapter_id": 9,
+                "turn_id": None,
+                "thumbnail_success": False,
+            }
+        ]
+        labels = _unpublished_thumbnail_labels(upload_details)
+        assert len(labels) == 1
+        assert "abc123" in labels[0]
+        assert "chapter_id=9" in labels[0]
+
+    def test_two_failures_return_both_labels(self):
+        from congress_videos.youtube_upload_dag import _unpublished_thumbnail_labels
+
+        upload_details = [
+            {
+                "youtube_video_id": "vid-one",
+                "chapter_id": 9,
+                "turn_id": None,
+                "thumbnail_success": False,
+            },
+            {
+                "youtube_video_id": "vid-two",
+                "chapter_id": None,
+                "turn_id": 42,
+                "thumbnail_success": False,
+            },
+        ]
+        labels = _unpublished_thumbnail_labels(upload_details)
+        assert len(labels) == 2
+        joined = " ".join(labels)
+        assert "vid-one" in joined
+        assert "vid-two" in joined
+
+    def test_missing_youtube_video_id_renders_unknown(self):
+        from congress_videos.youtube_upload_dag import _unpublished_thumbnail_labels
+
+        upload_details = [
+            {"chapter_id": 9, "turn_id": None, "thumbnail_success": False},
+        ]
+        labels = _unpublished_thumbnail_labels(upload_details)
+        assert len(labels) == 1
+        assert "<unknown>" in labels[0]
+
+    def test_none_thumbnail_success_is_not_a_failure(self):
+        """No custom thumbnail was requested — not a failure (design D2)."""
+        from congress_videos.youtube_upload_dag import _unpublished_thumbnail_labels
+
+        upload_details = [
+            {"youtube_video_id": "abc", "chapter_id": 1, "thumbnail_success": None}
+        ]
+        assert _unpublished_thumbnail_labels(upload_details) == []
+
+    def test_true_thumbnail_success_is_not_a_failure(self):
+        from congress_videos.youtube_upload_dag import _unpublished_thumbnail_labels
+
+        upload_details = [
+            {"youtube_video_id": "abc", "chapter_id": 1, "thumbnail_success": True}
+        ]
+        assert _unpublished_thumbnail_labels(upload_details) == []
+
+    def test_missing_key_is_not_a_failure(self):
+        """No-results fallback path never sets thumbnail_success at all."""
+        from congress_videos.youtube_upload_dag import _unpublished_thumbnail_labels
+
+        upload_details = [{"youtube_video_id": "abc", "chapter_id": 1}]
+        assert _unpublished_thumbnail_labels(upload_details) == []
+
+    def test_empty_list_returns_empty_list(self):
+        from congress_videos.youtube_upload_dag import _unpublished_thumbnail_labels
+
+        assert _unpublished_thumbnail_labels([]) == []
+
+    def test_none_input_returns_empty_list(self):
+        from congress_videos.youtube_upload_dag import _unpublished_thumbnail_labels
+
+        assert _unpublished_thumbnail_labels(None) == []
+
+
+# ---------------------------------------------------------------------------
 # _check_upload_failures
 # ---------------------------------------------------------------------------
 
@@ -174,6 +264,67 @@ class TestCheckUploadFailures:
             }
         )
         _check_upload_failures(ti)  # should not raise
+
+    def test_raises_on_thumbnail_failure_with_clean_db(self):
+        """Issue #320: a video published but its custom thumbnail failed."""
+        from congress_videos.youtube_upload_dag import _check_upload_failures
+
+        ti = _make_ti(
+            {
+                "chapter_upload_updates": {"recorded_failures": 0, "failed_updates": 0},
+                "upload_results": {
+                    "upload_details": [
+                        {
+                            "youtube_video_id": "vid-thumb-fail",
+                            "chapter_id": 9,
+                            "turn_id": None,
+                            "thumbnail_success": False,
+                        }
+                    ]
+                },
+            }
+        )
+        with pytest.raises(Exception, match="custom thumbnail") as exc_info:
+            _check_upload_failures(ti)
+        assert "vid-thumb-fail" in str(exc_info.value)
+
+    def test_raises_one_combined_exception_for_db_and_thumbnail_failures(self):
+        """Issue #320 design D6: both findings surface in ONE raise, not first-wins."""
+        from congress_videos.youtube_upload_dag import _check_upload_failures
+
+        ti = _make_ti(
+            {
+                "chapter_upload_updates": {
+                    "recorded_failures": 1,
+                    "failed_updates": 0,
+                    "details": [{"chapter_id": 5, "status": "failure_recorded"}],
+                },
+                "upload_results": {
+                    "upload_details": [
+                        {
+                            "youtube_video_id": "vid-thumb-fail",
+                            "chapter_id": 9,
+                            "turn_id": None,
+                            "thumbnail_success": False,
+                        }
+                    ]
+                },
+            }
+        )
+        with pytest.raises(Exception) as exc_info:
+            _check_upload_failures(ti)
+        message = str(exc_info.value)
+        assert "Chapter upload failures" in message
+        assert "custom thumbnail" in message
+
+    def test_missing_upload_results_is_benign_when_db_clean(self):
+        """Issue #320 design D3: missing upload_results does not raise on its own."""
+        from congress_videos.youtube_upload_dag import _check_upload_failures
+
+        ti = _make_ti(
+            {"chapter_upload_updates": {"recorded_failures": 0, "failed_updates": 0}}
+        )
+        _check_upload_failures(ti)  # should not raise — upload_results absent
 
 
 # ---------------------------------------------------------------------------

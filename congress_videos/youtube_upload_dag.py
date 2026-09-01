@@ -373,6 +373,33 @@ def _thumbnail_failure(chapter_id: int | None) -> dict:
     }
 
 
+def _unpublished_thumbnail_labels(upload_details: list | None) -> list[str]:
+    """Label every video that published without its custom thumbnail.
+
+    ``thumbnail_success`` is four-valued: ``True`` (thumbnail set), ``False``
+    (YouTube's ``thumbnails.set`` call failed), ``None`` (no custom thumbnail
+    was requested for this video), or the key absent entirely (the
+    no-results fallback shape built by ``trigger_upload_with_config`` when
+    the triggered DAG returns no XCom). ONLY the literal value ``False`` is a
+    failure — see design D2 (issue #320).
+    """
+    if not upload_details:
+        return []
+
+    labels = []
+    for detail in upload_details:
+        # Deliberate identity check, not truthiness: `not detail.get(...)`
+        # would also match None/missing (no thumbnail requested) and wrongly
+        # flag every legitimate upload that never asked for a custom one.
+        if detail.get("thumbnail_success") is False:
+            youtube_video_id = detail.get("youtube_video_id") or "<unknown>"
+            labels.append(
+                f"{youtube_video_id} (chapter_id={detail.get('chapter_id')}, "
+                f"turn_id={detail.get('turn_id')})"
+            )
+    return labels
+
+
 def trigger_thumbnail_generation(ti, **context) -> str | None:
     """Run the generic thumbnail DAG and retain its result for upload configuration."""
     thumbnail_config = ti.xcom_pull(key="thumbnail_config") or {}
@@ -909,12 +936,22 @@ with (
                 return dag_run.run_id
 
     def _check_upload_failures(ti):
-        """Raise after DB writes so failures are visible in the Airflow UI."""
+        """Raise after DB writes so failures are visible in the Airflow UI.
+
+        Accumulates two independent findings into ONE exception (issue #320
+        design D6): DB-recorded upload failures, and videos published without
+        their custom thumbnail. A first-wins raise would hide the thumbnail
+        finding permanently — the DB writes are already committed and the
+        XComs are immutable, so a retry would just re-raise the same DB error
+        forever without the thumbnail finding ever surfacing.
+        """
         updates = ti.xcom_pull(key="chapter_upload_updates")
         if updates is None:
             raise Exception(
                 "chapter_upload_updates XCom missing after mark_chapters_uploaded succeeded"
             )
+
+        problems = []
 
         recorded = updates.get("recorded_failures", 0)
         failed = updates.get("failed_updates", 0)
@@ -924,10 +961,29 @@ with (
                 for d in updates.get("details", [])
                 if d.get("status") in ("failure_recorded", "failed")
             ]
-            raise Exception(
+            problems.append(
                 f"Chapter upload failures: {recorded} recorded, {failed} "
                 f"DB-update failures. Chapters: {[d.get('chapter_id') for d in bad]}"
             )
+
+        # upload_results missing/None/empty is deliberately benign here (design
+        # D3): the chapter_upload_updates-missing raise above already owns
+        # reporting a missing-XCom condition, and a second raise for
+        # upload_results would double-report it and could mask the more
+        # specific message above.
+        upload_results = ti.xcom_pull(key="upload_results") or {}
+        thumbnail_labels = _unpublished_thumbnail_labels(
+            upload_results.get("upload_details")
+        )
+        if thumbnail_labels:
+            problems.append(
+                f"{len(thumbnail_labels)} video(s) uploaded without their custom "
+                f"thumbnail (DB writes already committed). Re-run "
+                f"set_thumbnail_for_video for: {', '.join(thumbnail_labels)}"
+            )
+
+        if problems:
+            raise Exception(" | ".join(problems))
 
         logging.info("No chapter upload failures recorded")
 
