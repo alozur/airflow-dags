@@ -218,3 +218,82 @@ class TestSetThumbnailForVideo:
             result = set_thumbnail_for_video(youtube, "video-abc", str(thumb_file))
 
         assert_error_result(result, "thumbnail size exceeded")
+
+
+# ---------------------------------------------------------------------------
+# update_video_title (issue #102) — fetch-then-patch
+# ---------------------------------------------------------------------------
+
+class TestUpdateVideoTitle:
+    """Spec: update_video_title fetch-then-patch — mutate only title,
+    preserve categoryId/tags/description."""
+
+    def _existing_snippet(self) -> dict:
+        return {
+            "title": "Old Title",
+            "description": "A long description that must survive.",
+            "categoryId": "25",
+            "tags": ["congreso", "politica"],
+        }
+
+    def test_title_updated_other_fields_preserved(self):
+        """GIVEN a live video with existing categoryId, tags, description
+        WHEN update_video_title() is called with a new title
+        THEN the title changes and all other snippet fields remain
+             unchanged."""
+        from utils.youtube_helpers import update_video_title
+
+        youtube = MagicMock()
+        youtube.videos.return_value.list.return_value.execute.return_value = {
+            "items": [{"id": "video-1", "snippet": self._existing_snippet()}]
+        }
+        youtube.videos.return_value.update.return_value.execute.return_value = {
+            "id": "video-1"
+        }
+
+        result = update_video_title(youtube, "video-1", "New Provocative Title")
+
+        assert_success_result(result)
+        youtube.videos.return_value.list.assert_called_once()
+        list_kwargs = youtube.videos.return_value.list.call_args.kwargs
+        assert list_kwargs["part"] == "snippet"
+
+        update_kwargs = youtube.videos.return_value.update.call_args.kwargs
+        assert update_kwargs["part"] == "snippet"
+        body_snippet = update_kwargs["body"]["snippet"]
+        assert body_snippet["title"] == "New Provocative Title"
+        assert body_snippet["categoryId"] == "25"
+        assert body_snippet["tags"] == ["congreso", "politica"]
+        assert body_snippet["description"] == "A long description that must survive."
+
+    def test_video_not_found_returns_error(self):
+        """GIVEN videos().list() returns no items
+        WHEN update_video_title() is called
+        THEN it returns {success: False, error: ...} without raising."""
+        from utils.youtube_helpers import update_video_title
+
+        youtube = MagicMock()
+        youtube.videos.return_value.list.return_value.execute.return_value = {"items": []}
+
+        result = update_video_title(youtube, "missing-id", "New Title")
+
+        assert_error_result(result, "not found")
+        youtube.videos.return_value.update.assert_not_called()
+
+    def test_api_exception_returns_error_without_raising(self):
+        """GIVEN videos().update().execute() raises
+        WHEN update_video_title() is called
+        THEN it returns {success: False, error: ...} without raising."""
+        from utils.youtube_helpers import update_video_title
+
+        youtube = MagicMock()
+        youtube.videos.return_value.list.return_value.execute.return_value = {
+            "items": [{"id": "video-1", "snippet": self._existing_snippet()}]
+        }
+        youtube.videos.return_value.update.return_value.execute.side_effect = Exception(
+            "quotaExceeded"
+        )
+
+        result = update_video_title(youtube, "video-1", "New Title")
+
+        assert_error_result(result, "quotaExceeded")
