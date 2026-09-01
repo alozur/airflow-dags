@@ -30,6 +30,10 @@ from congress_videos.modules.speaker_resolution import (
     SPEAKER_RESOLUTION_MIN_CONFIDENCE,
     resolve_speaker,
 )
+from congress_videos.modules.speaker_roster_crosscheck import (
+    chapter_roster_mentions,
+    crosscheck_slug,
+)
 from congress_videos.modules.participants_db import CongressParticipantsDB
 from congress_videos.modules.vad_helpers import trim_turn_silence_with_vad
 from utils.env_loader import load_env_if_local
@@ -276,36 +280,64 @@ def _prepare_turns_callable() -> None:
                 resolution = resolve_speaker(turn, participants)
                 if resolution is not None:
                     slug = resolution["participant_slug"]
-                    db.mark_turn_resolved(
-                        output_path, slug, resolution["confidence"], "ai_srt_context"
-                    )
-                    # Patch in-memory so thumbnail/title steps see the real name.
+                    confidence = resolution["confidence"]
                     display_name = next(
                         (p["display_name"] for p in participants if p["slug"] == slug),
                         None,
                     )
-                    if display_name:
-                        turn["resolved_name"] = display_name
-                        # Rule 4 (issue #282): promote a group frozen at
-                        # 'monologue' to 'qa' when this resolution reveals
-                        # a SECOND distinct real speaker — the pre-patch
-                        # name and the newly resolved name are both real
-                        # and differ. Promote-only; never demotes qa.
-                        # Lives inside this same try/except: a promotion
-                        # failure logs a warning below and never blocks
-                        # preparation.
-                        if (
-                            previous_name
-                            and not is_placeholder(previous_name)
-                            and not is_placeholder(display_name)
-                            and previous_name.casefold() != display_name.strip().casefold()
-                        ):
-                            db.promote_turn_type_to_qa(output_path)
-                    logger.info(
-                        "_prepare_turns_callable: turn_id=%d resolved → slug=%r",
-                        turn_id,
-                        slug,
+
+                    # Gate B (issue #321): cross-check the resolved participant's
+                    # canonical display_name against the chapter's own
+                    # key_speakers/speakers rosters before persisting. Rejection
+                    # withholds BOTH the DB write and the in-memory resolved_name
+                    # patch — the incident this guards against is a wrong name
+                    # reaching the thumbnail/title sidecar seam via the patch,
+                    # not only via the DB write.
+                    mentions = chapter_roster_mentions(
+                        turn.get("key_speakers"), turn.get("speakers")
                     )
+                    verdict = crosscheck_slug(display_name or "", mentions)
+
+                    if verdict == "reject":
+                        logger.warning(
+                            "_prepare_turns_callable: turn_id=%d chapter_id=%s "
+                            "roster cross-check REJECTED slug=%r display_name=%r "
+                            "against mentions=%r — write withheld",
+                            turn_id,
+                            turn.get("chapter_id"),
+                            slug,
+                            display_name,
+                            mentions,
+                        )
+                    else:
+                        # Gate A (issue #321): mark_turn_resolved now scopes the
+                        # write to sibling rows sharing this turn's speaker_label.
+                        db.mark_turn_resolved(
+                            output_path, slug, confidence, "ai_srt_context", turn_id
+                        )
+                        # Patch in-memory so thumbnail/title steps see the real name.
+                        if display_name:
+                            turn["resolved_name"] = display_name
+                            # Rule 4 (issue #282): promote a group frozen at
+                            # 'monologue' to 'qa' when this resolution reveals
+                            # a SECOND distinct real speaker — the pre-patch
+                            # name and the newly resolved name are both real
+                            # and differ. Promote-only; never demotes qa.
+                            # Lives inside this same try/except: a promotion
+                            # failure logs a warning below and never blocks
+                            # preparation.
+                            if (
+                                previous_name
+                                and not is_placeholder(previous_name)
+                                and not is_placeholder(display_name)
+                                and previous_name.casefold() != display_name.strip().casefold()
+                            ):
+                                db.promote_turn_type_to_qa(output_path)
+                        logger.info(
+                            "_prepare_turns_callable: turn_id=%d resolved → slug=%r",
+                            turn_id,
+                            slug,
+                        )
                 else:
                     logger.info(
                         "_prepare_turns_callable: turn_id=%d — no speaker resolved; continuing without attribution",
