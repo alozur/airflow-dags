@@ -911,3 +911,93 @@ class TestCheckShortUploadFailures:
         ti = _make_ti({})
         with pytest.raises(Exception, match="Upload results XCom missing"):
             _check_short_upload_failures(ti, params={})
+
+
+# ---------------------------------------------------------------------------
+# _generate_metadata — AI success vs. fallback-on-error DAG-boundary coverage
+# (issue #365: no production change here, this DAG is a test subject only)
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateMetadataAiOutcome:
+    def test_ai_title_and_description_used(self, mocker):
+        """AI metadata parses the expected JSON on success (issue #365 spec)."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
+        )
+        mock_db_cls.return_value.get_chapter_metadata.return_value = (
+            _make_chapter_metadata()
+        )
+
+        mocker.patch("os.path.exists", return_value=True)
+        mocker.patch("subprocess.run").return_value.returncode = 0
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.transcribe_audio_file",
+            return_value={"success": True, "text": "Texto transcrito de prueba"},
+        )
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.generate_json_completion",
+            return_value={
+                "data": {
+                    "title": "Título generado por IA",
+                    "description": "Descripción generada por IA",
+                },
+                "error": None,
+            },
+        )
+
+        pending_shorts = [
+            {"id": 1, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}
+        ]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        metadata = ti.xcom_store["shorts_metadata"]
+        assert metadata[0]["title"] == "Título generado por IA"
+        assert metadata[0]["description"].startswith("Descripción generada por IA")
+
+    def test_fallback_and_warning_on_ai_error(self, mocker, caplog):
+        """AI failure preserves the pre-computed fallback and logs a warning
+        (issue #365 spec) — this exercises the UNMODIFIED fallback branch at
+        `reap_shorts_uploader_dag.py:252-256`. The task must still SUCCEED.
+        """
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
+        )
+        mock_db_cls.return_value.get_chapter_metadata.return_value = (
+            _make_chapter_metadata(
+                title="Debate presupuestos",
+                key_speakers=["Ana García"],
+            )
+        )
+
+        mocker.patch("os.path.exists", return_value=True)
+        mocker.patch("subprocess.run").return_value.returncode = 0
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.transcribe_audio_file",
+            return_value={"success": True, "text": "Texto transcrito de prueba"},
+        )
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.generate_json_completion",
+            return_value={"data": None, "error": "boom"},
+        )
+
+        pending_shorts = [
+            {"id": 7, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}
+        ]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+
+        with caplog.at_level(logging.WARNING):
+            _generate_metadata(ti)  # must not raise — task succeeds on AI failure
+
+        metadata = ti.xcom_store["shorts_metadata"]
+        assert metadata[0]["title"] == "Ana García: Debate presupuestos #Shorts"
+        assert metadata[0]["description"].startswith(
+            "🏛️ Debate en el Congreso de los Diputados."
+        )
+        warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("7" in w and "boom" in w for w in warnings)

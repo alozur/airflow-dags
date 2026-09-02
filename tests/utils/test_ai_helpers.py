@@ -193,7 +193,36 @@ class TestGenerateChatCompletion:
         generate_chat_completion("sys", "usr", temperature=0.1, max_tokens=200)
         call_kwargs = mock_create.call_args.kwargs
         assert call_kwargs["temperature"] == 0.1
-        assert call_kwargs["max_tokens"] == 200
+        # The `max_tokens` Python parameter is forwarded on the wire as
+        # `max_completion_tokens` (issue #365) — GPT-5-family models reject
+        # `max_tokens` with a 400 "Unsupported parameter" error.
+        assert call_kwargs["max_completion_tokens"] == 200
+        assert "max_tokens" not in call_kwargs
+
+    def test_never_sends_max_tokens_kwarg(self, mocker):
+        """Regression guard for issue #365: `max_tokens` must never reach the wire.
+
+        Uses a negative assertion (key absence), not just an equality check on
+        `max_completion_tokens` — an equality-only assertion would not catch a
+        `max_tokens=` kwarg re-added alongside it.
+        """
+        fake_response = self._make_fake_response("ok")
+        mock_create = mocker.patch(
+            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
+        )
+        generate_chat_completion("sys", "usr")
+        assert "max_tokens" not in mock_create.call_args.kwargs
+
+    def test_max_completion_tokens_used_for_non_gpt5_model(self, mocker):
+        """No model-name branching: the wire kwarg is the same regardless of model."""
+        fake_response = self._make_fake_response("ok")
+        mock_create = mocker.patch(
+            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
+        )
+        generate_chat_completion("sys", "usr", model="gpt-4o-mini", max_tokens=200)
+        call_kwargs = mock_create.call_args.kwargs
+        assert call_kwargs["max_completion_tokens"] == 200
+        assert "max_tokens" not in call_kwargs
 
     def test_sends_system_and_user_messages(self, mocker):
         fake_response = self._make_fake_response("ok")
@@ -300,6 +329,25 @@ class TestGenerateJsonCompletion:
         result = generate_json_completion("sys", "usr")
         assert result["error"] is None
         assert result["data"] == {"title": "Test"}
+
+    def test_json_completion_forwards_max_tokens_to_wire_param(self, mocker):
+        """Pins the public-signature-unchanged requirement (issue #365):
+
+        `generate_json_completion(max_tokens=...)` still ends up as
+        `max_completion_tokens=...` on the actual OpenAI SDK call, exercising the
+        real (unmocked) `generate_chat_completion` in between.
+        """
+        fake_response = MagicMock()
+        fake_response.choices = [MagicMock()]
+        fake_response.choices[0].message.content = '{"ok": true}'
+        mock_create = mocker.patch(
+            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
+        )
+        result = generate_json_completion("sys", "usr", max_tokens=120)
+        call_kwargs = mock_create.call_args.kwargs
+        assert call_kwargs["max_completion_tokens"] == 120
+        assert "max_tokens" not in call_kwargs
+        assert result["data"] == {"ok": True}
 
 
 # ---------------------------------------------------------------------------
