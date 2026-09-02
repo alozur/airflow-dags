@@ -66,6 +66,9 @@ _REGENERATE_DECISIONS = {"thumbnail_regenerated", "thumbnail_and_title_regenerat
 # Bounded poll loop for the triggered thumbnail DAG (10s interval).
 _THUMBNAIL_POLL_INTERVAL_SECONDS = 10
 _THUMBNAIL_MAX_POLLS = int(os.getenv("ANALYTICS_ACTION_THUMBNAIL_MAX_POLLS", "180"))  # ~30 min
+# Log a progress line every N polls (~60s at a 10s interval) so a long wait
+# is visible while it happens, not only in hindsight (issue #311, D7).
+_POLL_PROGRESS_EVERY = 6
 
 
 def _run_select_candidates(ti):
@@ -176,19 +179,66 @@ def _run_record_no_ops(ti):
     return {"recorded_no_ops": len(no_ops)}
 
 
-def _poll_thumbnail_dag_run(dag_run) -> dict:
+def _snapshot_age_days(collected_at) -> int | None:
+    """Whole days between a snapshot's measurement and now, or None.
+
+    The first production run applied 13-day-old measurements, so how stale
+    the decision's input was belongs in the log next to the wait. Note that
+    ``collected_at`` is only projected as of issue #311 — rows built before
+    that, and every hand-built test fixture, pass None and must degrade
+    rather than crash.
+    """
+    if not isinstance(collected_at, datetime):
+        return None
+    # Match awareness: datetime.now(None) is naive, datetime.now(tz) is aware.
+    return (datetime.now(collected_at.tzinfo) - collected_at).days
+
+
+def _poll_thumbnail_dag_run(
+    dag_run,
+    *,
+    snapshot_id=None,
+    checkpoint=None,
+    snapshot_age_days=None,
+) -> dict:
     """Poll a triggered generic_thumbnail_generator run to completion.
 
     Bounded by _THUMBNAIL_MAX_POLLS — never blocks forever. Returns
     {"success": False, "error": ...} on failure/timeout, or the child DAG's
     thumbnail_result XCom dict on success.
+
+    Logs on entry and every _POLL_PROGRESS_EVERY polls (issue #311, D7): a
+    bounded ~30-minute loop that prints nothing is indistinguishable from a
+    hung task while it is happening, which is how #311's latency went
+    unnoticed until someone read the timestamps afterwards. The context
+    arguments are keyword-only and optional so the loop stays callable
+    without them.
     """
     child_run_id = dag_run.run_id
 
-    for _ in range(_THUMBNAIL_MAX_POLLS):
+    logging.info(
+        "video_analytics_actions: polling thumbnail DAG run %s "
+        "(snapshot_id=%s checkpoint=%s snapshot_age_days=%s) — waiting up to %ds",
+        child_run_id,
+        snapshot_id,
+        checkpoint,
+        snapshot_age_days,
+        _THUMBNAIL_MAX_POLLS * _THUMBNAIL_POLL_INTERVAL_SECONDS,
+    )
+
+    for poll in range(_THUMBNAIL_MAX_POLLS):
         time.sleep(_THUMBNAIL_POLL_INTERVAL_SECONDS)
         dag_run.refresh_from_db()
         if dag_run.state not in ("success", "failed"):
+            if (poll + 1) % _POLL_PROGRESS_EVERY == 0:
+                logging.info(
+                    "video_analytics_actions: still waiting on thumbnail DAG run %s "
+                    "— state=%s elapsed=%ds (snapshot_id=%s)",
+                    child_run_id,
+                    dag_run.state,
+                    (poll + 1) * _THUMBNAIL_POLL_INTERVAL_SECONDS,
+                    snapshot_id,
+                )
             continue
 
         if dag_run.state != "success":
@@ -225,7 +275,9 @@ def _poll_thumbnail_dag_run(dag_run) -> dict:
 def _apply_one_action(db, row: dict, run_id: str) -> dict:
     """Claim, regenerate, publish, and finalize a single regenerate-decision row.
 
-    Returns {"snapshot_id": ..., "action": <final action_taken>}.
+    Returns {"snapshot_id", "youtube_video_id", "action", "applied", "error"}.
+    ``applied`` is quad-valued per key ("thumbnail"/"title"): True (published),
+    False (attempted and failed), None (never attempted) — see issue #317.
     """
     snapshot_id = row["snapshot_id"]
 
@@ -255,7 +307,18 @@ def _apply_one_action(db, row: dict, run_id: str) -> dict:
         "prior": prior,
         "new": {},
         "collisions": {},
+        "applied": {"thumbnail": None, "title": None},
     }
+
+    def _result(action: str) -> dict:
+        return {
+            "snapshot_id": snapshot_id,
+            "youtube_video_id": row["youtube_video_id"],
+            "action": action,
+            "applied": dict(detail["applied"]),  # copy: never alias the recorded detail
+            "error": detail.get("error"),
+            "failure": detail.get("failure"),
+        }
 
     is_title_checkpoint = row["checkpoint"] in TITLE_UPDATE_CHECKPOINTS
 
@@ -295,16 +358,27 @@ def _apply_one_action(db, row: dict, run_id: str) -> dict:
             exc,
         )
         detail["error"] = str(exc)
+        # stage="trigger" (D6): the exception carries no HTTP classification —
+        # trigger_dag_api failures are Airflow-internal, not YouTube errors.
+        detail["failure"] = {"stage": "trigger", "permanent": None, "status": None, "reason": None}
         db.mark_action_taken(snapshot_id=snapshot_id, action="failed", detail=detail)
-        return {"snapshot_id": snapshot_id, "action": "failed"}
+        return _result("failed")
 
     detail["thumbnail_dag_run_id"] = dag_run.run_id
 
-    thumb_result = _poll_thumbnail_dag_run(dag_run)
+    thumb_result = _poll_thumbnail_dag_run(
+        dag_run,
+        snapshot_id=snapshot_id,
+        checkpoint=row["checkpoint"],
+        snapshot_age_days=_snapshot_age_days(row.get("collected_at")),
+    )
     if not thumb_result.get("success"):
         detail["error"] = thumb_result.get("error")
+        # stage="thumbnail_dag" (D6): the child DAG failed or timed out
+        # before any YouTube call was ever made — nothing to classify.
+        detail["failure"] = {"stage": "thumbnail_dag", "permanent": None, "status": None, "reason": None}
         db.mark_action_taken(snapshot_id=snapshot_id, action="failed", detail=detail)
-        return {"snapshot_id": snapshot_id, "action": "failed"}
+        return _result("failed")
 
     from utils.youtube_helpers import (
         get_authenticated_youtube_service,
@@ -320,21 +394,50 @@ def _apply_one_action(db, row: dict, run_id: str) -> dict:
     detail["new"]["local_path"] = thumb_result.get("output_path")
     detail["new"]["title"] = thumb_result.get("title")
     detail["youtube"] = {"thumbnail": thumb_publish}
+    detail["applied"]["thumbnail"] = thumb_publish.get("success") is True
 
     if not thumb_publish.get("success"):
         detail["error"] = thumb_publish.get("error")
+        # stage="youtube_thumbnail" (D6): thumb_publish carries
+        # classify_youtube_error's output on real HttpErrors (issue #311).
+        detail["failure"] = {
+            "stage": "youtube_thumbnail",
+            "permanent": thumb_publish.get("permanent"),
+            "status": thumb_publish.get("status"),
+            "reason": thumb_publish.get("reason"),
+        }
         db.mark_action_taken(snapshot_id=snapshot_id, action="failed", detail=detail)
-        return {"snapshot_id": snapshot_id, "action": "failed"}
+        return _result("failed")
 
     if is_title_checkpoint:
-        title_publish = update_video_title(
-            youtube, row["youtube_video_id"], thumb_result.get("title", "")
-        )
+        try:
+            title_publish = update_video_title(
+                youtube, row["youtube_video_id"], thumb_result.get("title")
+            )
+        except ValueError as exc:
+            # Issue #317: update_video_title raises pre-API on a blank title.
+            # Convert to the SAME recorded-failure shape every other publish
+            # error already takes, so the batch finishes and EVERY claimed
+            # row is recorded. Per-row isolation, not a swallow: the row is
+            # durably marked "failed" with applied.title=False below.
+            # Turning the whole task RED on that record is issue #311's.
+            title_publish = {"success": False, "error": f"blank title refused: {exc}"}
         detail["youtube"]["title"] = title_publish
+        detail["applied"]["title"] = title_publish.get("success") is True
         if not title_publish.get("success"):
             detail["error"] = title_publish.get("error")
+            # stage="youtube_title" (D6): the blank-title ValueError guard
+            # (#317) builds a dict without classification keys — .get()
+            # falls back to None, correctly landing it in the "unclassified"
+            # bucket of _action_failure_problems rather than crashing.
+            detail["failure"] = {
+                "stage": "youtube_title",
+                "permanent": title_publish.get("permanent"),
+                "status": title_publish.get("status"),
+                "reason": title_publish.get("reason"),
+            }
             db.mark_action_taken(snapshot_id=snapshot_id, action="failed", detail=detail)
-            return {"snapshot_id": snapshot_id, "action": "failed"}
+            return _result("failed")
 
     new_chosen = db.get_chosen_thumbnail(row["chapter_id"]) or {}
     detail["new"]["archetype"] = new_chosen.get("archetype")
@@ -352,7 +455,48 @@ def _apply_one_action(db, row: dict, run_id: str) -> dict:
 
     final_action = row["decision"]
     db.mark_action_taken(snapshot_id=snapshot_id, action=final_action, detail=detail)
-    return {"snapshot_id": snapshot_id, "action": final_action}
+    return _result(final_action)
+
+
+def _action_failure_problems(results: list) -> list:
+    """Describe every failed analytics action worth failing apply_actions.
+
+    Returns finished operator-facing sentences; an empty list means clean.
+    Rows with ``action != "failed"`` (including ``"skipped_already_claimed"``)
+    are not failures. Permanent and transient/unclassified failures get
+    SEPARATE sentences — they need different remedies and must stay
+    separately diagnosable (#332 D2). A ``"failed"`` row missing its
+    ``failure`` key is still reported, as unclassified — ``.get()`` on ``{}``
+    renders every field as ``None`` rather than crashing.
+    """
+    permanent_labels = []
+    other_labels = []
+    for row in results:
+        if row.get("action") != "failed":
+            continue
+        failure = row.get("failure") or {}
+        label = (
+            f"snapshot_id={row.get('snapshot_id')} stage={failure.get('stage')} "
+            f"status={failure.get('status')} reason={failure.get('reason')}"
+        )
+        if failure.get("permanent") is True:
+            permanent_labels.append(label)
+        else:
+            other_labels.append(label)
+
+    problems = []
+    if permanent_labels:
+        problems.append(
+            f"{len(permanent_labels)} analytics action(s) failed PERMANENTLY and are now "
+            f"action_taken='failed' (terminal — a human must reset the row; these will NOT "
+            f"clear on their own): {', '.join(permanent_labels)}."
+        )
+    if other_labels:
+        problems.append(
+            f"{len(other_labels)} analytics action(s) failed transiently or unclassified: "
+            f"{', '.join(other_labels)}."
+        )
+    return problems
 
 
 def _run_apply_actions(ti, **context):
@@ -361,6 +505,11 @@ def _run_apply_actions(ti, **context):
     retries=0 at the task level (see DAG definition) — claim_snapshot_action
     is the actual safety net against a killed/retried run causing a double
     regeneration.
+
+    Every claimed row is processed and recorded FIRST (issue #311, D1) —
+    a single exception is raised only ONCE, after the loop, naming every
+    failed row. Aborting mid-loop would permanently hide later findings,
+    since 'failed' is a terminal action_taken.
     """
     from congress_videos.modules.database import CongressionalVideoDB
 
@@ -372,6 +521,11 @@ def _run_apply_actions(ti, **context):
     results = [_apply_one_action(db, row, run_id) for row in to_apply]
 
     logging.info("video_analytics_actions: applied %d action(s)", len(results))
+
+    problems = _action_failure_problems(results)
+    if problems:
+        raise Exception(" | ".join(problems))
+
     return {"applied": len(results), "results": results}
 
 

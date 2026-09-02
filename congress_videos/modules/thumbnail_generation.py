@@ -45,6 +45,14 @@ from utils.postgres_helpers import PostgresConnection
 
 logger = logging.getLogger(__name__)
 
+
+class TitleGenerationError(RuntimeError):
+    """Raised when both OpenAI title attempts fail to produce a usable title
+    (issue #317). A blank/whitespace-only sanitised result is refused rather
+    than returned, since it would silently clobber a stored ``openai_title``.
+    """
+
+
 # Forbidden characters in generated titles (besides emojis).
 _FORBIDDEN_CHARS_RE = re.compile(r"[#@|~^]")
 
@@ -720,6 +728,10 @@ def generate_title(
 
     Returns:
         A YouTube title string (≤90 chars, no emojis, no forbidden chars, no question marks).
+
+    Raises:
+        TitleGenerationError: If both OpenAI attempts fail to produce a title
+            whose sanitised result is non-blank (issue #317).
     """
     # First attempt
     title = _request_title(_build_title_prompt(summary, best, sibling_titles, key_speakers))
@@ -741,6 +753,13 @@ def generate_title(
             # Fallback: sanitise whatever we have
             candidate = second or title or ""
             sanitised = _sanitise_title(candidate)
+            if not sanitised.strip():
+                raise TitleGenerationError(
+                    "generate_title: both OpenAI attempts failed to produce a "
+                    f"usable title (raw candidate: {candidate!r}). Refusing to "
+                    "return a blank title — it would be persisted over the "
+                    "stored openai_title."
+                )
             logger.warning(
                 "generate_title: both OpenAI attempts returned invalid titles — "
                 "sanitised fallback applied: %r (original: %r)",
@@ -867,7 +886,7 @@ def fetch_recent_thumbnail_history(
 def persist_results(
     chapter_id: int,
     youtube_video_id: str,
-    title: str,
+    title: str | None,
     options: list[dict],
     best_label: str,
 ) -> None:
@@ -876,21 +895,27 @@ def persist_results(
     Uses INSERT … ON CONFLICT (chapter_id, label) DO UPDATE (upsert) so that
     re-triggering the DAG for the same chapter replaces prior rows cleanly.
 
-    The chosen row has ``openai_title=title`` and ``is_chosen=TRUE``.
-    The non-chosen row has ``openai_title=NULL`` and ``is_chosen=FALSE``.
+    The chosen row keeps its existing ``openai_title`` when ``title`` is
+    blank/whitespace-only/``None`` (issue #317) — a blank title must never
+    clobber a previously stored one. The non-chosen row's ``openai_title``
+    always stays explicitly ``NULL``, never resurrected from a prior value.
 
     Args:
         chapter_id: FK to ``video_chapters.chapter_id``.
         youtube_video_id: YouTube video identifier.
-        title: OpenAI-generated title for the chosen option.
+        title: OpenAI-generated title for the chosen option, or None.
         options: List of option dicts from the DAG's score task callables.
         best_label: Label of the chosen option.
     """
     pg = PostgresConnection()
     table = pg.get_qualified_table("video_thumbnails")
 
+    # "" and "   " → None: strip() catches whitespace, which SQL's
+    # NULLIF(x, '') would miss.
+    normalised_title = (title or "").strip() or None
+
     sql = f"""
-        INSERT INTO {table} (
+        INSERT INTO {table} AS vt (
             chapter_id, youtube_video_id, label, style, prompt,
             main_score, local_path, output_url, openai_title, is_chosen,
             archetype
@@ -902,7 +927,14 @@ def persist_results(
             main_score       = EXCLUDED.main_score,
             local_path       = EXCLUDED.local_path,
             output_url       = EXCLUDED.output_url,
-            openai_title     = EXCLUDED.openai_title,
+            -- Issue #317. A bare COALESCE here would resurrect a stale title
+            -- onto the NON-chosen row, which must stay explicitly NULL.
+            -- Preservation is conditional on is_chosen; nothing else changes.
+            openai_title     = CASE
+                                   WHEN EXCLUDED.is_chosen
+                                   THEN COALESCE(EXCLUDED.openai_title, vt.openai_title)
+                                   ELSE NULL
+                               END,
             is_chosen        = EXCLUDED.is_chosen,
             archetype        = EXCLUDED.archetype
     """
@@ -911,7 +943,7 @@ def persist_results(
         with conn.cursor() as cur:
             for opt in options:
                 is_chosen = opt["label"] == best_label
-                openai_title = title if is_chosen else None
+                openai_title = normalised_title if is_chosen else None
 
                 params = (
                     chapter_id,

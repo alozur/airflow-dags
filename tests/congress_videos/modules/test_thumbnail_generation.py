@@ -555,6 +555,50 @@ class TestGenerateTitle:
             for r in caplog.records
         )
 
+    def test_both_attempts_sanitise_to_blank_raises(self, mocker):
+        """Issue #317 (A-2, D1 amendment): a candidate that is non-empty but
+        sanitises to '' (e.g. emoji-only) must raise, not return ''."""
+        from congress_videos.modules.thumbnail_generation import (
+            TitleGenerationError,
+            generate_title,
+        )
+
+        emoji_only = "\U0001f389\U0001f389"
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            return_value={"data": {"title": emoji_only}, "error": None},
+        )
+        cfg = _make_cfg()
+
+        with pytest.raises(TitleGenerationError, match="both OpenAI attempts"):
+            generate_title("summary", self._best_opt(), cfg)
+
+    def test_first_invalid_sanitisable_second_nothing_returns_sanitised(self, mocker):
+        """Issue #317 (A-3): an invalid-but-sanitisable first candidate still
+        takes the fallback path when the second attempt yields nothing — the
+        raise is scoped to a blank SANITISED result, not any invalid one."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        bad_title = "El Congreso \U0001f525 vota " + "x" * 100  # emoji + too long
+        call_count = {"n": 0}
+
+        def _side_effect(system_prompt, user_prompt, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {"data": {"title": bad_title}, "error": None}
+            return {"data": None, "error": "API error"}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side_effect,
+        )
+        cfg = _make_cfg()
+
+        result = generate_title("summary", self._best_opt(), cfg)
+
+        assert result
+        assert "\U0001f525" not in result
+
     def test_all_uppercase_title_triggers_reprompt(self, mocker):
         """First response entirely in UPPERCASE triggers a second OpenAI call."""
         from congress_videos.modules.thumbnail_generation import generate_title
@@ -693,6 +737,74 @@ class TestPersistResults:
         assert "/opt/airflow/data/thumbnails/vid/option_a.png" in all_params
         assert "/opt/airflow/data/thumbnails/vid/option_b.png" in all_params
 
+    # params tuple layout, see the SQL VALUES clause: (chapter_id,
+    # youtube_video_id, label, style, prompt, main_score, local_path,
+    # output_url, openai_title, is_chosen, archetype).
+    _OPENAI_TITLE_INDEX = 8
+
+    def _call_for_label(self, mock_cursor, label: str):
+        """Return (sql, params) of the execute() call whose label param matches."""
+        for c in mock_cursor.execute.call_args_list:
+            sql, params = c[0][0], c[0][1]
+            if params[2] == label:
+                return sql, params
+        raise AssertionError(f"No execute call found for label={label!r}")
+
+    def test_blank_title_none_keeps_chosen_param_none_with_conditional_sql(
+        self, mock_psycopg2_connection
+    ):
+        """Issue #317 (B-1): title=None -> chosen row's openai_title param is
+        None AND the SQL is the conditional CASE WHEN EXCLUDED.is_chosen
+        upsert, not a bare unconditional overwrite."""
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        options = self._make_options()
+        persist_results(7, "vid123", None, options, "option_b")
+
+        sql, params = self._call_for_label(mock_cursor, "option_b")
+        assert params[self._OPENAI_TITLE_INDEX] is None
+        assert "WHEN EXCLUDED.is_chosen" in sql
+
+    def test_whitespace_only_title_keeps_chosen_param_none(self, mock_psycopg2_connection):
+        """Issue #317 (B-2): title='   ' -> chosen row's openai_title param is
+        None (Python strip() catches whitespace, which SQL NULLIF(x,'')
+        would miss)."""
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        options = self._make_options()
+        persist_results(7, "vid123", "   ", options, "option_b")
+
+        _, params = self._call_for_label(mock_cursor, "option_b")
+        assert params[self._OPENAI_TITLE_INDEX] is None
+
+    def test_non_chosen_row_stays_null_with_else_null_sql_trap(self, mock_psycopg2_connection):
+        """Issue #317 (B-3, the trap): non-chosen row's openai_title param is
+        None AND the SQL contains ELSE NULL — a bare COALESCE would
+        resurrect a stale title onto the non-chosen row instead."""
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        options = self._make_options()
+        persist_results(7, "vid123", "Un título potente", options, "option_b")
+
+        sql, params = self._call_for_label(mock_cursor, "option_a")
+        assert params[self._OPENAI_TITLE_INDEX] is None
+        assert "ELSE NULL" in sql
+
+    def test_normal_title_is_stripped_in_chosen_params(self, mock_psycopg2_connection):
+        """Issue #317 (B-4): a normal title with surrounding whitespace is
+        stripped before being bound as the chosen row's openai_title."""
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        options = self._make_options()
+        persist_results(7, "vid123", "  Un título potente  ", options, "option_b")
+
+        _, params = self._call_for_label(mock_cursor, "option_b")
+        assert params[self._OPENAI_TITLE_INDEX] == "Un título potente"
+
 
 # ---------------------------------------------------------------------------
 # T-05: TRIANGULATE edge cases
@@ -765,9 +877,14 @@ class TestTriangulateEdgeCases:
         assert result["source"] == "party_logo"
         assert result["support_image_b64"] == base64.b64encode(logo_bytes).decode()
 
-    def test_generate_title_both_calls_return_none_sanitises(self, mocker, caplog):
-        """When generate_json_completion returns error on both calls, sanitised empty string returned."""
-        from congress_videos.modules.thumbnail_generation import generate_title
+    def test_generate_title_both_calls_return_none_raises(self, mocker):
+        """Issue #317 (A-1): when generate_json_completion returns error on
+        both calls, generate_title raises TitleGenerationError instead of
+        returning a blank sanitised string that would clobber a stored title."""
+        from congress_videos.modules.thumbnail_generation import (
+            TitleGenerationError,
+            generate_title,
+        )
 
         mocker.patch(
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
@@ -782,11 +899,8 @@ class TestTriangulateEdgeCases:
             "local_path": "/a.png",
             "main_score": 80.0,
         }
-        with caplog.at_level(logging.WARNING):
-            result = generate_title("summary", best, cfg)
-
-        assert isinstance(result, str)
-        assert len(result) <= 90
+        with pytest.raises(TitleGenerationError, match="both OpenAI attempts"):
+            generate_title("summary", best, cfg)
 
     def test_choose_best_preserves_all_fields(self):
         """choose_best_option returns the full original dict plus is_chosen=True."""

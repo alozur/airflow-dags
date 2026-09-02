@@ -285,7 +285,10 @@ def _task_persist_results(ti: TaskInstance, **context: object) -> None:
     option_a: dict = ti.xcom_pull(task_ids="score_option_a") or {}
     option_b: dict = ti.xcom_pull(task_ids="score_option_b") or {}
     best: dict = ti.xcom_pull(task_ids="choose_best_option") or {}
-    title: str = ti.xcom_pull(task_ids="generate_title") or ""
+    # Issue #317: None means "not generated" and MUST NOT be coerced to "" —
+    # persist_results treats "" and None identically (both non-clobbering),
+    # but conflating them here loses the distinction for any future caller.
+    title: str | None = ti.xcom_pull(task_ids="generate_title")
 
     options = [x for x in [option_a, option_b] if x]
     persist_results(
@@ -326,7 +329,7 @@ def _task_thumbnail_result(ti: TaskInstance, **context: object) -> dict:
     """
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
     best: dict = ti.xcom_pull(task_ids="choose_best_option") or {}
-    title: str = ti.xcom_pull(task_ids="generate_title") or ""
+    title: str | None = ti.xcom_pull(task_ids="generate_title")  # issue #317: no or "" coercion
 
     best_local_path: str | None = best.get("local_path")
     _conf_output_path = conf.get("output_path")
