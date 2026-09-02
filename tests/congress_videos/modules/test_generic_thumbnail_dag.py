@@ -1147,6 +1147,51 @@ class TestTaskPersistResultsEmptyFilter:
         assert options_list[0]["label"] == "option_a"
 
 
+class TestTitleXComNoneNotEmptyString:
+    """Issue #317 (G3, E-1/E-2): a missing generate_title XCom must stay
+    ``None`` through persist_results and _task_thumbnail_result, never
+    coerced to ``""`` — the coercion is what made a raised/blank title
+    indistinguishable from "not run yet"."""
+
+    def test_persist_results_called_with_title_none(self, mocker) -> None:
+        """E-1: generate_title XCom None -> persist_results(title=None)."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        option_a = {"label": "option_a", "main_score": 72.0, "output_url": "u", "local_path": "/a.png", "style": "A"}
+        best = {**option_a, "is_chosen": True}
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "score_option_a": option_a,
+                "score_option_b": {},
+                "choose_best_option": best,
+                "generate_title": None,
+            }
+        )
+
+        mock_persist = mocker.patch.object(dag_mod, "persist_results")
+        dag_mod._task_persist_results(ti)
+
+        call_kwargs = mock_persist.call_args.kwargs
+        assert call_kwargs.get("title") is None
+
+    def test_task_thumbnail_result_title_none(self) -> None:
+        """E-2: _task_thumbnail_result returns {"title": None}, not "" ."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "choose_best_option": {"local_path": "/thumbnails/42/option_a.png"},
+                "generate_title": None,
+            }
+        )
+
+        result = dag_mod._task_thumbnail_result(ti)
+
+        assert result["title"] is None
+
+
 # ---------------------------------------------------------------------------
 # Phase 6: fetch_recent_history DAG task wiring
 # ---------------------------------------------------------------------------
