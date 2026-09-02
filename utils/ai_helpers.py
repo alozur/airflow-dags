@@ -10,7 +10,12 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from utils.llm_config import LLM_CHEAP, LLM_DEFAULT
+from utils.llm_config import (
+    LLM_CHEAP,
+    LLM_CONNECT_TIMEOUT_SECONDS,
+    LLM_DEFAULT,
+    LLM_TIMEOUT_SECONDS,
+)
 
 try:
     import openai
@@ -117,6 +122,7 @@ def generate_chat_completion(
     model: str = LLM_DEFAULT,
     temperature: float = 0.7,
     max_tokens: int = 500,
+    timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Generate a chat completion using OpenAI API.
@@ -130,6 +136,13 @@ def generate_chat_completion(
             wire as OpenAI's `max_completion_tokens` (issue #365) — the Python
             parameter name is kept deliberately so the 13 existing call sites
             need no change.
+        timeout: Optional per-call read/write budget in seconds. None
+            (default) uses LLM_TIMEOUT_SECONDS; the LLM_CONNECT_TIMEOUT_SECONDS
+            connect budget always applies. Deliberately `Optional[float] = None`
+            rather than `= LLM_TIMEOUT_SECONDS` (unlike `model` above): the
+            value must COMPOSE with the operator connect budget into a single
+            `Timeout` object, and a scalar signature default would both
+            discard the connect budget and freeze the env read at import time.
 
     Returns:
         Dict with:
@@ -154,6 +167,17 @@ def generate_chat_completion(
             "error": "OpenAI permanently unavailable this process (quota/auth latch armed); skipping call",
         }
 
+    # Resolved per call so the module-level floats stay monkeypatchable and
+    # `openai.Timeout` is only dereferenced past the `if not openai` guard
+    # above (survives `mocker.patch("utils.ai_helpers.openai", None)`). A
+    # caller-supplied float overrides ONLY the read/write/pool budget; the
+    # operator-level connect budget always applies (issue #355). `is None` is
+    # the "not specified" sentinel — never truthiness, and never "unbounded".
+    request_timeout = openai.Timeout(
+        timeout=LLM_TIMEOUT_SECONDS if timeout is None else timeout,
+        connect=LLM_CONNECT_TIMEOUT_SECONDS,
+    )
+
     try:
         response = openai.chat.completions.create(
             model=model,
@@ -173,6 +197,14 @@ def generate_chat_completion(
             # (test_never_sends_max_tokens_kwarg) asserts its absence.
             max_completion_tokens=max_tokens,
             temperature=temperature,
+            # Without this the SDK uses its own DEFAULT_TIMEOUT (read 600s,
+            # connect 5s) with DEFAULT_MAX_RETRIES=2, so one stalled call can
+            # hold a task ~30 min — and only 2 of ~5 DAGs set an
+            # execution_timeout, so most have no Airflow ceiling at all
+            # (issue #355). Split, not scalar: a bare float would overwrite the
+            # connect budget too. Never pass `timeout=None` here — the SDK reads
+            # None as "unbounded", which is the exact bug being fixed.
+            timeout=request_timeout,
         )
 
         content = response.choices[0].message.content.strip()
@@ -243,6 +275,7 @@ def generate_json_completion(
     model: str = LLM_CHEAP,
     temperature: float = 0.3,
     max_tokens: int = 500,
+    timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Generate a JSON completion using OpenAI API with automatic parsing.
@@ -259,6 +292,10 @@ def generate_json_completion(
             wire as OpenAI's `max_completion_tokens` (issue #365) — the Python
             parameter name is kept deliberately so the 13 existing call sites
             need no change.
+        timeout: Optional per-call read/write budget in seconds. None
+            (default) uses LLM_TIMEOUT_SECONDS; the LLM_CONNECT_TIMEOUT_SECONDS
+            connect budget always applies. Forwarded unchanged to
+            generate_chat_completion.
 
     Returns:
         Dict with:
@@ -273,6 +310,7 @@ def generate_json_completion(
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
+        timeout=timeout,
     )
 
     if completion_result["error"]:

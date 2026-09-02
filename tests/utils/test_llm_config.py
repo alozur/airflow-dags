@@ -55,3 +55,61 @@ class TestLlmDefault:
 
         assert llm_config.LLM_DEFAULT == "gpt-5.6-luna"
         assert llm_config.LLM_CHEAP == "gpt-5-nano"
+
+
+class TestLlmTimeouts:
+
+    def test_fallbacks_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("LLM_TIMEOUT_SECONDS", raising=False)
+        monkeypatch.delenv("LLM_CONNECT_TIMEOUT_SECONDS", raising=False)
+
+        importlib.reload(llm_config)
+
+        assert llm_config.LLM_TIMEOUT_SECONDS == 120.0
+        assert llm_config.LLM_CONNECT_TIMEOUT_SECONDS == 10.0
+
+    def test_env_override_wins(self, monkeypatch):
+        monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "45.5")
+
+        importlib.reload(llm_config)
+
+        assert llm_config.LLM_TIMEOUT_SECONDS == 45.5
+
+    def test_connect_env_override_wins(self, monkeypatch):
+        monkeypatch.setenv("LLM_CONNECT_TIMEOUT_SECONDS", "3")
+
+        importlib.reload(llm_config)
+
+        assert llm_config.LLM_CONNECT_TIMEOUT_SECONDS == 3.0
+
+    def test_empty_string_falls_back(self, monkeypatch):
+        """Mirrors the LLM_DEFAULT/LLM_CHEAP empty-string rule above: compose
+        passes an unset override through as "", which must fall back, not raise.
+        """
+        monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "")
+        monkeypatch.setenv("LLM_CONNECT_TIMEOUT_SECONDS", "")
+
+        importlib.reload(llm_config)
+
+        assert llm_config.LLM_TIMEOUT_SECONDS == 120.0
+        assert llm_config.LLM_CONNECT_TIMEOUT_SECONDS == 10.0
+
+    def test_malformed_value_raises_at_import(self, monkeypatch):
+        monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "abc")
+
+        with pytest.raises(ValueError, match=r"LLM_TIMEOUT_SECONDS.*'abc'"):
+            importlib.reload(llm_config)
+
+    @pytest.mark.parametrize("bad_value", ["0", "-1", "-0.5"])
+    def test_non_positive_raises(self, monkeypatch, bad_value: str):
+        monkeypatch.setenv("LLM_CONNECT_TIMEOUT_SECONDS", bad_value)
+
+        with pytest.raises(ValueError, match=r"LLM_CONNECT_TIMEOUT_SECONDS"):
+            importlib.reload(llm_config)
+
+    @pytest.mark.parametrize("bad_value", ["inf", "-inf", "nan"])
+    def test_non_finite_raises(self, monkeypatch, bad_value: str):
+        monkeypatch.setenv("LLM_TIMEOUT_SECONDS", bad_value)
+
+        with pytest.raises(ValueError, match=r"LLM_TIMEOUT_SECONDS"):
+            importlib.reload(llm_config)
