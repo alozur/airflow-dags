@@ -333,3 +333,37 @@ class TestUpdateVideoTitle:
         result = update_video_title(youtube, "video-1", "New Title")
 
         assert_error_result(result, "quotaExceeded")
+
+    def test_empty_string_rejected_pre_api(self):
+        """Issue #317 (C-1): title='' raises ValueError, and it is raised
+        BEFORE any YouTube API call — the bare except below must never see it."""
+        from utils.youtube_helpers import update_video_title
+
+        youtube = MagicMock()
+
+        with pytest.raises(ValueError):
+            update_video_title(youtube, "video-1", "")
+
+        youtube.videos.return_value.list.assert_not_called()
+
+    def test_whitespace_only_rejected_pre_api(self):
+        """Issue #317 (C-2): title='   ' raises ValueError pre-API."""
+        from utils.youtube_helpers import update_video_title
+
+        youtube = MagicMock()
+
+        with pytest.raises(ValueError):
+            update_video_title(youtube, "video-1", "   ")
+
+        youtube.videos.return_value.list.assert_not_called()
+
+    def test_none_title_rejected_pre_api(self):
+        """Issue #317 (C-3): title=None raises ValueError pre-API."""
+        from utils.youtube_helpers import update_video_title
+
+        youtube = MagicMock()
+
+        with pytest.raises(ValueError):
+            update_video_title(youtube, "video-1", None)
+
+        youtube.videos.return_value.list.assert_not_called()

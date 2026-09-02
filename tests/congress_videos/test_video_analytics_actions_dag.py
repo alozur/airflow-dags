@@ -7,6 +7,7 @@ cap per video.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -589,6 +590,172 @@ class TestApplyActionsFailurePath:
             _run_apply_actions(ti=mock_task_instance)
 
         mock_update_title.assert_not_called()
+
+
+def _patched_apply(*, set_thumbnail_result=None, update_title_result=None, update_title_side_effect=None):
+    """ExitStack of the standard apply_actions success-path patch set, with
+    the thumbnail/title publish results overridable per test (D-1..D-3)."""
+    stack = ExitStack()
+    stack.enter_context(patch(
+        "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
+        return_value=True,
+    ))
+    stack.enter_context(patch(
+        "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
+        return_value=None,
+    ))
+    stack.enter_context(patch(
+        "congress_videos.video_analytics_actions_dag.trigger_dag_api",
+        return_value=_thumbnail_dag_run(),
+    ))
+    stack.enter_context(patch(
+        "congress_videos.video_analytics_actions_dag.time.sleep", return_value=None
+    ))
+    stack.enter_context(patch(
+        "airflow.models.XCom.get_one",
+        return_value={
+            "success": True, "chapter_id": 5,
+            "output_path": "/tmp/thumb.png", "title": "Nuevo título",
+        },
+    ))
+    stack.enter_context(patch(
+        "utils.youtube_helpers.get_authenticated_youtube_service", return_value=MagicMock()
+    ))
+    stack.enter_context(patch(
+        "utils.youtube_helpers.set_thumbnail_for_video",
+        return_value=set_thumbnail_result or {"success": True, "error": None},
+    ))
+    if update_title_side_effect is not None:
+        stack.enter_context(patch(
+            "utils.youtube_helpers.update_video_title", side_effect=update_title_side_effect
+        ))
+    else:
+        stack.enter_context(patch(
+            "utils.youtube_helpers.update_video_title",
+            return_value=update_title_result or {"success": True, "error": None},
+        ))
+    return stack
+
+
+class TestApplyActionsAppliedField:
+    """Issue #317 (D1/D4/D5): per-row `applied` quad-value + per-row isolation."""
+
+    def test_title_failure_records_applied_thumbnail_true_title_false(self, mock_task_instance):
+        """D-1: ordinary title publish failure -> failed, applied ==
+        {"thumbnail": True, "title": False}."""
+        from congress_videos.video_analytics_actions_dag import _run_apply_actions
+
+        mock_task_instance.xcom_store["decisions"] = [
+            _decision_row(checkpoint="24h", decision="thumbnail_and_title_regenerated")
+        ]
+        mock_task_instance.run_id = "manual_run_1"
+        captured = {}
+
+        def fake_mark(snapshot_id, action, detail):
+            captured["action"] = action
+            captured["detail"] = detail
+
+        with _patched_apply(
+            update_title_result={"success": False, "error": "quotaExceeded"}
+        ), patch(
+            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
+            side_effect=fake_mark,
+        ):
+            _run_apply_actions(ti=mock_task_instance)
+
+        assert captured["action"] == "failed"
+        assert captured["detail"]["applied"] == {"thumbnail": True, "title": False}
+
+    def test_blank_title_guard_raise_is_recorded_not_escaped(self, mock_task_instance):
+        """D-2: update_video_title raises ValueError (blank guard) -> recorded
+        failed with applied.title is False; no exception escapes the task."""
+        from congress_videos.video_analytics_actions_dag import _run_apply_actions
+
+        mock_task_instance.xcom_store["decisions"] = [
+            _decision_row(checkpoint="24h", decision="thumbnail_and_title_regenerated")
+        ]
+        mock_task_instance.run_id = "manual_run_1"
+        captured = {}
+
+        def fake_mark(snapshot_id, action, detail):
+            captured["action"] = action
+            captured["detail"] = detail
+
+        with _patched_apply(
+            update_title_side_effect=ValueError("update_video_title: refusing to publish a blank title")
+        ), patch(
+            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
+            side_effect=fake_mark,
+        ):
+            result = _run_apply_actions(ti=mock_task_instance)
+
+        assert captured["action"] == "failed"
+        assert captured["detail"]["applied"]["title"] is False
+        assert "blank title refused" in captured["detail"]["error"]
+        assert result["applied"] == 1  # the task itself did not raise
+
+    def test_one_row_guard_failure_does_not_abort_remaining_rows(self, mock_task_instance):
+        """D-3: 2 rows, row 1's title guard raises, row 2 succeeds -> BOTH
+        mark_action_taken calls happen and the task does not raise (loop
+        integrity + the green-until-#311 fact)."""
+        from congress_videos.video_analytics_actions_dag import _run_apply_actions
+
+        mock_task_instance.xcom_store["decisions"] = [
+            _decision_row(snapshot_id=1, checkpoint="24h", decision="thumbnail_and_title_regenerated"),
+            _decision_row(snapshot_id=2, checkpoint="24h", decision="thumbnail_and_title_regenerated"),
+        ]
+        mock_task_instance.run_id = "manual_run_1"
+        marked = []
+
+        def fake_mark(snapshot_id, action, detail):
+            marked.append((snapshot_id, action))
+
+        call_count = {"n": 0}
+
+        def _title_side_effect(*_args, **_kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise ValueError("blank title")
+            return {"success": True, "error": None}
+
+        with _patched_apply(update_title_side_effect=_title_side_effect), patch(
+            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
+            side_effect=fake_mark,
+        ):
+            result = _run_apply_actions(ti=mock_task_instance)
+
+        assert len(marked) == 2
+        assert {a for _, a in marked} == {"failed", "thumbnail_and_title_regenerated"}
+        assert result["applied"] == 2
+
+    def test_trigger_failure_applied_both_none(self, mock_task_instance):
+        """D-6: trigger DAG exception -> early return, applied ==
+        {"thumbnail": None, "title": None} (pins init-at-build)."""
+        from congress_videos.video_analytics_actions_dag import _run_apply_actions
+
+        mock_task_instance.xcom_store["decisions"] = [_decision_row()]
+        mock_task_instance.run_id = "manual_run_1"
+        captured = {}
+
+        def fake_mark(snapshot_id, action, detail):
+            captured["detail"] = detail
+
+        with patch(
+            "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
+            return_value=True,
+        ), patch(
+            "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
+            return_value=None,
+        ), patch(
+            "congress_videos.video_analytics_actions_dag.trigger_dag_api",
+            side_effect=RuntimeError("dag not found"),
+        ), patch(
+            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
+            side_effect=fake_mark,
+        ):
+            _run_apply_actions(ti=mock_task_instance)
+
+        assert captured["detail"]["applied"] == {"thumbnail": None, "title": None}
 
 
 class TestApplyActionsAdditionalFailureBranches:
