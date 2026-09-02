@@ -1,8 +1,8 @@
 # Custom Airflow image with ffmpeg and Deno support
-# Based on Apache Airflow 2.10.2
-# Build with: docker build -t my-airflow:latest .
+# Based on Apache Airflow 2.11.1
+# Build with: docker build -t my-airflow:dev . (or :prod for the promoted tag)
 
-FROM apache/airflow:2.10.2
+FROM apache/airflow:2.11.1
 
 # Switch to root user to install system packages
 USER root

@@ -8,9 +8,9 @@
 # See scripts/test-airflow-e2e.sh for the driver that boots this stack, polls health,
 # asserts `airflow dags list-import-errors` is empty, and tears down unconditionally.
 x-airflow-common: &airflow-common
-  # Lightweight stock image; matches production Airflow 2.10.2 (Dockerfile base). No
+  # Lightweight stock image; matches production Airflow 2.11.1 (Dockerfile base). No
   # build, no _PIP_ADDITIONAL_REQUIREMENTS (design.md Note N1, revised decision).
-  image: apache/airflow:2.10.2-python3.12
+  image: apache/airflow:2.11.1-python3.12
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
