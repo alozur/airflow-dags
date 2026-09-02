@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -711,6 +713,241 @@ class TestEvidenceSupportedBoundary:
         from congress_videos.modules.speaker_resolution import _evidence_supported
 
         assert _evidence_supported(["not", "a", "string"], self.SOURCE_TEXT) is False
+
+
+# ---------------------------------------------------------------------------
+# _chapter_span (issue #322)
+# ---------------------------------------------------------------------------
+
+class TestChapterSpan:
+    """_chapter_span parses turn['start_time']/['end_time'] (video_chapters
+    VARCHAR SRT timestamps) into (start_seconds, end_seconds), or None."""
+
+    @pytest.mark.parametrize(
+        "start_time,end_time,expected",
+        [
+            ("00:10:00,000", "00:40:00,500", (600.0, 2400.5)),  # SRT comma format
+            ("00:10:00", "00:40:00", (600.0, 2400.0)),  # no-millis format
+            ("not-a-timestamp", "00:40:00", None),  # malformed
+            ("00:40:00", "00:40:00", None),  # end == start
+            ("00:40:01", "00:40:00", None),  # end < start
+        ],
+    )
+    def test_parses_or_rejects(self, start_time, end_time, expected):
+        from congress_videos.modules.speaker_resolution import _chapter_span
+
+        turn = _make_turn()
+        turn["start_time"] = start_time
+        turn["end_time"] = end_time
+
+        assert _chapter_span(turn) == expected
+
+    def test_missing_keys_returns_none(self):
+        from congress_videos.modules.speaker_resolution import _chapter_span
+
+        assert _chapter_span(_make_turn()) is None
+
+    def test_none_values_returns_none(self):
+        from congress_videos.modules.speaker_resolution import _chapter_span
+
+        turn = _make_turn()
+        turn["start_time"] = None
+        turn["end_time"] = None
+
+        assert _chapter_span(turn) is None
+
+
+# ---------------------------------------------------------------------------
+# _evidence_supported_in_blocks (issue #322) — sliding-join anchored gate
+# ---------------------------------------------------------------------------
+
+class TestEvidenceSupportedInBlocks:
+    """Locates evidence across a sliding join of up to ANCHOR_JOIN_BLOCKS=3
+    consecutive blocks, reusing _evidence_supported verbatim per join.
+    Ratios pinned against real rapidfuzz output with >5pt margin either
+    side of EVIDENCE_MIN_PARTIAL_RATIO=85."""
+
+    def test_empty_blocks_returns_false(self):
+        from congress_videos.modules.speaker_resolution import _evidence_supported_in_blocks
+
+        assert _evidence_supported_in_blocks("Some verbatim evidence quote", []) is False
+
+    def test_twelve_char_floor_still_enforced(self):
+        from congress_videos.modules.speaker_resolution import _evidence_supported_in_blocks
+
+        blocks = _make_blocks([(0.0, 5.0, "Tiene la palabra el señor Sánchez, comienza")])
+
+        assert _evidence_supported_in_blocks("short", blocks) is False
+
+    def test_straddle_two_blocks_accepted(self):
+        """Evidence spans the tail of block 0 + head of block 1; neither
+        block alone reaches 85, the 2-block join does."""
+        from congress_videos.modules.speaker_resolution import _evidence_supported_in_blocks
+
+        b0 = "Comparece hoy ante esta Camara el senor Ministro de Hacienda para explicar"
+        b1 = "las nuevas medidas fiscales aprobadas por el Consejo de Ministros la semana pasada"
+        evidence = "Ministro de Hacienda para explicar las nuevas medidas fiscales aprobadas"
+        blocks = _make_blocks([(0.0, 5.0, b0), (5.0, 10.0, b1)])
+
+        assert _evidence_supported_in_blocks(evidence, blocks[:1]) is False
+        assert _evidence_supported_in_blocks(evidence, blocks[1:]) is False
+        assert _evidence_supported_in_blocks(evidence, blocks) is True
+
+    def test_straddle_three_blocks_accepted(self):
+        """Evidence spans three consecutive blocks; none alone reaches 85,
+        the 3-block join (default join_size=ANCHOR_JOIN_BLOCKS) does."""
+        from congress_videos.modules.speaker_resolution import _evidence_supported_in_blocks
+
+        r0 = "valora con gran detalle"
+        r1 = "el nuevo decreto aprobado recientemente por unanimidad y consenso"
+        r2 = "por el consejo de ministros"
+        evidence = f"{r0} {r1} {r2}"
+        blocks = _make_blocks([
+            (0.0, 5.0, f"Interviene la portavoz socialista para {r0}"),
+            (5.0, 10.0, f"eh pues bueno la verdad es que {r1}"),
+            (10.0, 15.0, f"{r2} este mismo lunes por la tarde noche"),
+        ])
+
+        for window in (blocks[:1], blocks[1:2], blocks[2:3]):
+            assert _evidence_supported_in_blocks(evidence, window) is False
+        assert _evidence_supported_in_blocks(evidence, blocks) is True
+
+    def test_span_four_blocks_rejected(self):
+        """Evidence needs a 4th block; with default join_size=3 no 1..3
+        window reconstructs enough of it to pass."""
+        from congress_videos.modules.speaker_resolution import _evidence_supported_in_blocks
+
+        r0, r1, r2, r3 = (
+            "valora con gran detalle",
+            "el nuevo decreto aprobado",
+            "por el consejo de ministros",
+            "sobre vivienda social urbana",
+        )
+        evidence = f"{r0} {r1} {r2} {r3}"
+        blocks = _make_blocks([
+            (0.0, 5.0, f"Interviene la portavoz socialista para {r0}"),
+            (5.0, 10.0, f"eh pues bueno {r1}"),
+            (10.0, 15.0, f"la verdad es que {r2}"),
+            (15.0, 20.0, f"{r3} segun confirmaron fuentes del propio ministerio"),
+        ])
+
+        assert _evidence_supported_in_blocks(evidence, blocks, join_size=3) is False
+
+
+# ---------------------------------------------------------------------------
+# Anchored evidence gate — resolve_speaker integration (issue #322)
+# ---------------------------------------------------------------------------
+
+_PREGATE_BLOCK = (900.0, 905.0, ANNOUNCEMENT_TEXT)  # inside intro window [880,1000)
+
+
+def _run_anchored_gate_case(evidence_offset, confidence=0.95):
+    """Shared harness: turn anchored at start_seconds=1000, pre-gate block
+    inside the narrow intro window, evidence block at anchor+evidence_offset."""
+    from congress_videos.modules.speaker_resolution import resolve_speaker
+
+    turn = _make_turn(start_seconds=1000.0)
+    participants = _make_participants(["pedro-sanchez"])
+    unique_evidence = "Comparece hoy el ministro de Hacienda ante la prensa"
+    blocks = _make_blocks([
+        _PREGATE_BLOCK,
+        (1000.0 + evidence_offset, 1005.0 + evidence_offset, unique_evidence),
+    ])
+
+    def fake_completion(system, user, **kw):
+        return _ok_completion("pedro-sanchez", confidence, evidence=unique_evidence)
+
+    with (
+        patch("congress_videos.modules.speaker_resolution.find_srt_for_chapter", return_value="/fake/src.srt"),
+        patch("congress_videos.modules.speaker_resolution._parse_srt_blocks", return_value=blocks),
+    ):
+        return resolve_speaker(turn, participants, completion_fn=fake_completion)
+
+
+class TestAnchoredEvidenceGateIntegration:
+    """resolve_speaker-level proof the region_blocks filter wires
+    _evidence_supported_in_blocks: default 600s lookback, unchanged forward
+    edge, and chapter-start clamp."""
+
+    def test_evidence_at_anchor_minus_700_rejected(self):
+        """700s back is outside the default 600s lookback."""
+        assert _run_anchored_gate_case(evidence_offset=-700) is None
+
+    def test_evidence_at_anchor_minus_500_accepted(self):
+        """500s back is within the default 600s lookback."""
+        result = _run_anchored_gate_case(evidence_offset=-500)
+        assert result is not None
+        assert result["participant_slug"] == "pedro-sanchez"
+
+    def test_evidence_at_start_plus_90_rejected_even_at_high_confidence(self):
+        """Past the forward edge (start + TURN_CONTEXT_SECS=60) — rejected
+        even at confidence 0.99."""
+        assert _run_anchored_gate_case(evidence_offset=90, confidence=0.99) is None
+
+    def test_chapter_start_clamp_blocks_pre_chapter_pickup(self):
+        """A chapter starting at 900s clamps the lookback's backward edge
+        past what 500s-back would otherwise allow."""
+        from congress_videos.modules.speaker_resolution import resolve_speaker
+
+        turn = _make_turn(start_seconds=1000.0)
+        turn["start_time"] = "00:15:00"  # chapter starts at 900s
+        turn["end_time"] = "00:35:00"
+        participants = _make_participants(["pedro-sanchez"])
+        unique_evidence = "Comparece hoy el ministro de Hacienda ante la prensa"
+        blocks = _make_blocks([_PREGATE_BLOCK, (500.0, 505.0, unique_evidence)])
+
+        def fake_completion(system, user, **kw):
+            return _ok_completion("pedro-sanchez", 0.95, evidence=unique_evidence)
+
+        with (
+            patch("congress_videos.modules.speaker_resolution.find_srt_for_chapter", return_value="/fake/src.srt"),
+            patch("congress_videos.modules.speaker_resolution._parse_srt_blocks", return_value=blocks),
+        ):
+            result = resolve_speaker(turn, participants, completion_fn=fake_completion)
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Announcement pre-gate stays unchanged in slice 1 (issue #322)
+# ---------------------------------------------------------------------------
+
+class TestPreGateUnchangedSlice1:
+    """Slice 1 only anchors the EVIDENCE gate; the pre-gate keeps reading
+    the narrow intro+turn text for every turn_type (D4's rebind is
+    slice-2/qa-only) — proves slice 1 does not widen which turns reach the
+    LLM, for monologue AND qa turn types alike."""
+
+    @pytest.mark.parametrize("turn_type", ["monologue", "qa", None])
+    def test_still_vetoed_announcement_300s_back(self, turn_type):
+        from congress_videos.modules.speaker_resolution import resolve_speaker
+
+        turn = _make_turn(start_seconds=1000.0)
+        if turn_type is not None:
+            turn["turn_type"] = turn_type
+        participants = _make_participants(["pedro-sanchez"])
+        # anchor=1000; announcement at anchor-300=700 sits inside the
+        # widened evidence region ([400,1060)) but outside the narrow
+        # intro [880,1000) and turn [1000,1060) windows the pre-gate reads.
+        blocks = _make_blocks([
+            (700.0, 705.0, ANNOUNCEMENT_TEXT),
+            (900.0, 905.0, "El Gobierno remite el informe correspondiente."),
+            (1010.0, 1015.0, "Continuamos con el siguiente punto del orden del dia."),
+        ])
+        call_count = []
+
+        def fake_completion(system, user, **kw):
+            call_count.append(1)
+            return _ok_completion("pedro-sanchez", 0.95)
+
+        with (
+            patch("congress_videos.modules.speaker_resolution.find_srt_for_chapter", return_value="/fake/src.srt"),
+            patch("congress_videos.modules.speaker_resolution._parse_srt_blocks", return_value=blocks),
+        ):
+            result = resolve_speaker(turn, participants, completion_fn=fake_completion)
+
+        assert result is None
+        assert len(call_count) == 0
 
 
 # ---------------------------------------------------------------------------
