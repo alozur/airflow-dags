@@ -39,7 +39,7 @@ YouTube API → filtrar sesiones → descargar/transcribir → IA scoring → BD
 | 1 | `get_video_descriptions` | Dead end sin la rama congreso |
 | 2 | `parse_description_links` | Puerta de entrada a la rama congreso |
 | 3 | `scrape_press_release` | Scraper BeautifulSoup congreso.es, sin downstream |
-| 4 | `download_and_read_agenda` | Descargador PDF via PyPDF2 |
+| 4 | `download_and_read_agenda` | Descargador PDF via pypdf |
 | 5 | `extract_session_date` | Parser de fechas en castellano (183 líneas) |
 | 6 | `extract_agenda_section` | Hoja colgante, nunca consumida |
 
@@ -67,12 +67,12 @@ t8 >> t9_db
 - `download_and_read_agenda()`
 - `extract_session_date()`
 - `extract_agenda_section()`
-- Imports: `from bs4 import BeautifulSoup`, `from PyPDF2 import PdfReader`, `import requests` (verificar que no lo usen otras funciones del fichero antes de eliminarlo)
+- Imports: `from bs4 import BeautifulSoup`, `from pypdf import PdfReader`, `import requests` (verificar que no lo usen otras funciones del fichero antes de eliminarlo)
 
 ### 4. Limpiar dependencias
 
 - `requirements.txt`: eliminar `beautifulsoup4` y `lxml`
-- `docker-compose.yml` y `docker-compose.prod.yml`: eliminar `PyPDF2` y `beautifulsoup4` de `_PIP_ADDITIONAL_REQUIREMENTS`
+- `docker-compose.yml` y `docker-compose.prod.yml`: eliminar `pypdf` y `beautifulsoup4` de `_PIP_ADDITIONAL_REQUIREMENTS`
 
 > **Precaución**: hacer `rg -l 'BeautifulSoup\|bs4' congress_videos/` antes de eliminar bs4 para confirmar que ningún otro módulo la usa.
 

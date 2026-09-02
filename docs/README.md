@@ -133,7 +133,7 @@ Sincroniza manualmente el repositorio de DAGs desde GitHub. Solo se lanza de for
 | IA / LLM | OpenAI GPT-4o-mini / GPT-3.5-turbo | API |
 | YouTube API | google-api-python-client | Latest |
 | Imágenes | Pillow | Latest |
-| PDF | PyPDF2 | Latest |
+| PDF | pypdf | Latest |
 | HTML scraping | BeautifulSoup4 | >=4.12.2 |
 | Video processing | ffmpeg | Sistema |
 | Autenticación YouTube | google-auth-oauthlib | Latest |
@@ -190,7 +190,7 @@ conda create -n airflow python=3.11
 conda activate airflow
 pip install apache-airflow==2.10.2 apache-airflow-providers-postgres \
     openai beautifulsoup4 requests urllib3 google-auth google-auth-oauthlib \
-    google-auth-httplib2 google-api-python-client Pillow PyPDF2 \
+    google-auth-httplib2 google-api-python-client Pillow pypdf \
     yt-dlp pytubefix openai-whisper psycopg2-binary python-dotenv ruff
 ```
 

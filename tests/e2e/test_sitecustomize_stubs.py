@@ -33,7 +33,7 @@ CONFIRMED_HEAVY_IMPORT_NAMES = [
     "PIL",
     "bs4",
     "googleapiclient",
-    "PyPDF2",
+    "pypdf",
     "numpy",
     "google.auth",
 ]
