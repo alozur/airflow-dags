@@ -214,7 +214,7 @@ CREATE TABLE IF NOT EXISTS production.speaker_normalization_cache (
 
 -- Table: video_thumbnails
 -- Pikzels-generated thumbnail options per chapter, plus the chosen option's
--- OpenAI title (migration 019 + 041 archetype).
+-- OpenAI title (migration 019 + 041 archetype + 043 art direction brief).
 CREATE TABLE IF NOT EXISTS production.video_thumbnails (
     thumbnail_id      SERIAL      PRIMARY KEY,
     chapter_id        INTEGER     NOT NULL REFERENCES production.video_chapters(chapter_id) ON DELETE CASCADE,
@@ -231,6 +231,9 @@ CREATE TABLE IF NOT EXISTS production.video_thumbnails (
 
     -- Added by migration 041 (anti-convergence steering, issues #102 + #185)
     archetype         TEXT,
+
+    -- Added by migration 043 (issue #292)
+    art_direction_brief JSONB,
 
     CONSTRAINT uq_video_thumbnails_chapter_label UNIQUE (chapter_id, label)
 );
