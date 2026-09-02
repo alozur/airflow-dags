@@ -264,11 +264,9 @@ def _task_generate_title(ti: TaskInstance, **context: object) -> str:
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
     best: dict = ti.xcom_pull(task_ids="choose_best_option") or {}
     history: dict = ti.xcom_pull(task_ids="fetch_recent_history") or {}
-    domain_cfg = get_domain_config(conf["domain"])
     return generate_title(
         conf["debate_summary"],
         best,
-        domain_cfg,
         sibling_titles=history.get("titles") or None,
         key_speakers=conf.get("key_speakers") or None,
         forbidden_title=conf.get("previous_title"),

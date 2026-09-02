@@ -185,13 +185,8 @@ class TestNewsFormatGoldenSnapshots:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             side_effect=_side_effect,
         )
-        cfg = {
-            "styles": [{"label": "option_a", "layout": "A"}],
-            "participants_lookup": lambda slug: None,
-            "party_logo_map": None,
-        }
         best = {"style": "A", "prompt": "debate parlamentario"}
-        result = generate_title("Debate de pensiones", best, cfg)
+        result = generate_title("Debate de pensiones", best)
 
         assert call_count["n"] == 2, "Question title must trigger a second LLM call"
         assert "?" not in result
