@@ -66,6 +66,9 @@ _REGENERATE_DECISIONS = {"thumbnail_regenerated", "thumbnail_and_title_regenerat
 # Bounded poll loop for the triggered thumbnail DAG (10s interval).
 _THUMBNAIL_POLL_INTERVAL_SECONDS = 10
 _THUMBNAIL_MAX_POLLS = int(os.getenv("ANALYTICS_ACTION_THUMBNAIL_MAX_POLLS", "180"))  # ~30 min
+# Log a progress line every N polls (~60s at a 10s interval) so a long wait
+# is visible while it happens, not only in hindsight (issue #311, D7).
+_POLL_PROGRESS_EVERY = 6
 
 
 def _run_select_candidates(ti):
@@ -176,19 +179,66 @@ def _run_record_no_ops(ti):
     return {"recorded_no_ops": len(no_ops)}
 
 
-def _poll_thumbnail_dag_run(dag_run) -> dict:
+def _snapshot_age_days(collected_at) -> int | None:
+    """Whole days between a snapshot's measurement and now, or None.
+
+    The first production run applied 13-day-old measurements, so how stale
+    the decision's input was belongs in the log next to the wait. Note that
+    ``collected_at`` is only projected as of issue #311 — rows built before
+    that, and every hand-built test fixture, pass None and must degrade
+    rather than crash.
+    """
+    if not isinstance(collected_at, datetime):
+        return None
+    # Match awareness: datetime.now(None) is naive, datetime.now(tz) is aware.
+    return (datetime.now(collected_at.tzinfo) - collected_at).days
+
+
+def _poll_thumbnail_dag_run(
+    dag_run,
+    *,
+    snapshot_id=None,
+    checkpoint=None,
+    snapshot_age_days=None,
+) -> dict:
     """Poll a triggered generic_thumbnail_generator run to completion.
 
     Bounded by _THUMBNAIL_MAX_POLLS — never blocks forever. Returns
     {"success": False, "error": ...} on failure/timeout, or the child DAG's
     thumbnail_result XCom dict on success.
+
+    Logs on entry and every _POLL_PROGRESS_EVERY polls (issue #311, D7): a
+    bounded ~30-minute loop that prints nothing is indistinguishable from a
+    hung task while it is happening, which is how #311's latency went
+    unnoticed until someone read the timestamps afterwards. The context
+    arguments are keyword-only and optional so the loop stays callable
+    without them.
     """
     child_run_id = dag_run.run_id
 
-    for _ in range(_THUMBNAIL_MAX_POLLS):
+    logging.info(
+        "video_analytics_actions: polling thumbnail DAG run %s "
+        "(snapshot_id=%s checkpoint=%s snapshot_age_days=%s) — waiting up to %ds",
+        child_run_id,
+        snapshot_id,
+        checkpoint,
+        snapshot_age_days,
+        _THUMBNAIL_MAX_POLLS * _THUMBNAIL_POLL_INTERVAL_SECONDS,
+    )
+
+    for poll in range(_THUMBNAIL_MAX_POLLS):
         time.sleep(_THUMBNAIL_POLL_INTERVAL_SECONDS)
         dag_run.refresh_from_db()
         if dag_run.state not in ("success", "failed"):
+            if (poll + 1) % _POLL_PROGRESS_EVERY == 0:
+                logging.info(
+                    "video_analytics_actions: still waiting on thumbnail DAG run %s "
+                    "— state=%s elapsed=%ds (snapshot_id=%s)",
+                    child_run_id,
+                    dag_run.state,
+                    (poll + 1) * _THUMBNAIL_POLL_INTERVAL_SECONDS,
+                    snapshot_id,
+                )
             continue
 
         if dag_run.state != "success":
@@ -316,7 +366,12 @@ def _apply_one_action(db, row: dict, run_id: str) -> dict:
 
     detail["thumbnail_dag_run_id"] = dag_run.run_id
 
-    thumb_result = _poll_thumbnail_dag_run(dag_run)
+    thumb_result = _poll_thumbnail_dag_run(
+        dag_run,
+        snapshot_id=snapshot_id,
+        checkpoint=row["checkpoint"],
+        snapshot_age_days=_snapshot_age_days(row.get("collected_at")),
+    )
     if not thumb_result.get("success"):
         detail["error"] = thumb_result.get("error")
         # stage="thumbnail_dag" (D6): the child DAG failed or timed out

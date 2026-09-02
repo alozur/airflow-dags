@@ -2009,8 +2009,10 @@ class CongressionalVideoDB:
 
         Returns:
             List of row dicts: {snapshot_id, chapter_id, youtube_video_id,
-            checkpoint, metrics, chapter_title, description, session_number,
-            session_date, key_speakers, resolved_participant_slug}.
+            checkpoint, metrics, collected_at, chapter_title, description,
+            session_number, session_date, key_speakers,
+            resolved_participant_slug}. ``collected_at`` lets callers report
+            how stale the measurement behind an action was (issue #311).
         """
         snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
@@ -2021,7 +2023,7 @@ class CongressionalVideoDB:
                     f"""
                     SELECT
                         s.snapshot_id, s.chapter_id, s.youtube_video_id,
-                        s.checkpoint, s.metrics,
+                        s.checkpoint, s.metrics, s.collected_at,
                         vc.title AS chapter_title, vc.description,
                         ysv.session_number, ysv.session_date,
                         vc.key_speakers, vc.resolved_participant_slug
