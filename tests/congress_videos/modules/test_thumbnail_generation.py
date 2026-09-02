@@ -20,6 +20,7 @@ test_generic_thumbnail_dag.py.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from unittest.mock import MagicMock, patch
 
@@ -3845,3 +3846,171 @@ class TestPersistResultsArchetype:
         persist_results(7, "vid123", "Un título", options, "option_a")
 
         assert mock_cursor.execute.call_count == 1
+
+
+class TestPersistResultsArtDirectionBrief:
+    """Spec: Art direction brief persistence (migration 043, #292) —
+    persist_results writes each option's own finalized art_direction_brief
+    to video_thumbnails.art_direction_brief as jsonb, independent of which
+    option was chosen."""
+
+    def _make_options_with_briefs(self, brief_a=None, brief_b=None):
+        options = [
+            {
+                "label": "option_a",
+                "output_url": "https://pikzels.com/a.png",
+                "local_path": "/a.png",
+                "main_score": 72.0,
+                "style": "style A",
+                "prompt": "prompt A",
+            },
+            {
+                "label": "option_b",
+                "output_url": "https://pikzels.com/b.png",
+                "local_path": "/b.png",
+                "main_score": 85.0,
+                "style": "style B",
+                "prompt": "prompt B",
+            },
+        ]
+        if brief_a is not None:
+            options[0]["art_direction_brief"] = brief_a
+        if brief_b is not None:
+            options[1]["art_direction_brief"] = brief_b
+        return options
+
+    def _params_containing(self, mock_cursor, needle):
+        all_calls = mock_cursor.execute.call_args_list
+        for c in all_calls:
+            params = c[0][1] if len(c[0]) > 1 else c[1].get("params", c[0][0])
+            if isinstance(params, (list, tuple)) and needle in params:
+                return params
+        return None
+
+    def test_sql_includes_art_direction_brief_column_and_jsonb_cast(
+        self, mock_psycopg2_connection
+    ):
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        options = self._make_options_with_briefs(
+            brief_a={"text": "foo"}, brief_b={"text": "bar"}
+        )
+        persist_results(7, "vid123", "Un título", options, "option_b")
+
+        sql_calls = [c.args[0] for c in mock_cursor.execute.call_args_list if c.args]
+        assert any(
+            "art_direction_brief" in s and "::jsonb" in s for s in sql_calls
+        )
+
+    def test_chosen_option_brief_round_trips_through_json(
+        self, mock_psycopg2_connection
+    ):
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        brief_b = {"text": "chosen brief", "framing": "close-up"}
+        options = self._make_options_with_briefs(
+            brief_a={"text": "not chosen"}, brief_b=brief_b
+        )
+        persist_results(7, "vid123", "Un título", options, "option_b")
+
+        chosen_params = self._params_containing(mock_cursor, "option_b")
+        assert chosen_params is not None
+        json_strs = [p for p in chosen_params if isinstance(p, str)]
+        decoded = [json.loads(s) for s in json_strs if _is_json(s)]
+        assert brief_b in decoded
+
+    def test_brief_with_non_ascii_text_preserves_literal_characters(
+        self, mock_psycopg2_connection
+    ):
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        brief_a = {"text": "PENSIÓN"}
+        options = self._make_options_with_briefs(brief_a=brief_a)
+        persist_results(7, "vid123", "Un título", options, "option_a")
+
+        chosen_params = self._params_containing(mock_cursor, "option_a")
+        assert chosen_params is not None
+        assert any(
+            isinstance(p, str) and "PENSIÓN" in p for p in chosen_params
+        )
+
+    def test_option_without_brief_key_binds_none(self, mock_psycopg2_connection):
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        options = self._make_options_with_briefs(brief_b={"text": "only b"})
+        persist_results(7, "vid123", "Un título", options, "option_b")
+
+        sql_calls = [c.args[0] for c in mock_cursor.execute.call_args_list if c.args]
+        assert any("art_direction_brief" in s for s in sql_calls)
+
+        option_a_params = self._params_containing(mock_cursor, "option_a")
+        assert option_a_params is not None
+        assert None in option_a_params
+        assert "{}" not in option_a_params
+        assert "null" not in option_a_params
+
+    def test_empty_dict_brief_binds_none(self, mock_psycopg2_connection):
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        options = self._make_options_with_briefs(brief_a={}, brief_b={"text": "b"})
+        persist_results(7, "vid123", "Un título", options, "option_b")
+
+        sql_calls = [c.args[0] for c in mock_cursor.execute.call_args_list if c.args]
+        assert any("art_direction_brief" in s for s in sql_calls)
+
+        option_a_params = self._params_containing(mock_cursor, "option_a")
+        assert option_a_params is not None
+        assert None in option_a_params
+
+    def test_non_dict_brief_binds_none(self, mock_psycopg2_connection):
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        options = self._make_options_with_briefs(
+            brief_a="a string", brief_b={"text": "b"}
+        )
+        persist_results(7, "vid123", "Un título", options, "option_b")
+
+        sql_calls = [c.args[0] for c in mock_cursor.execute.call_args_list if c.args]
+        assert any("art_direction_brief" in s for s in sql_calls)
+
+        option_a_params = self._params_containing(mock_cursor, "option_a")
+        assert option_a_params is not None
+        assert None in option_a_params
+
+    def test_two_options_produce_distinct_bound_json_strings(
+        self, mock_psycopg2_connection
+    ):
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        brief_a = {"text": "brief for a"}
+        brief_b = {"text": "brief for b"}
+        options = self._make_options_with_briefs(brief_a=brief_a, brief_b=brief_b)
+        persist_results(7, "vid123", "Un título", options, "option_b")
+
+        params_a = self._params_containing(mock_cursor, "option_a")
+        params_b = self._params_containing(mock_cursor, "option_b")
+        assert params_a is not None
+        assert params_b is not None
+
+        json_a = next(
+            p for p in params_a if isinstance(p, str) and _is_json(p) and json.loads(p) == brief_a
+        )
+        json_b = next(
+            p for p in params_b if isinstance(p, str) and _is_json(p) and json.loads(p) == brief_b
+        )
+        assert json_a != json_b
+
+
+def _is_json(value: str) -> bool:
+    try:
+        json.loads(value)
+        return True
+    except (ValueError, TypeError):
+        return False
