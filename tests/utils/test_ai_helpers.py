@@ -259,6 +259,75 @@ class TestGenerateChatCompletion:
 
 
 # ---------------------------------------------------------------------------
+# generate_chat_completion — request timeout budget (issue #355)
+# ---------------------------------------------------------------------------
+
+class TestRequestTimeout:
+
+    def _make_fake_response(self, content: str) -> MagicMock:
+        fake_response = MagicMock()
+        fake_response.choices = [MagicMock()]
+        fake_response.choices[0].message.content = content
+        return fake_response
+
+    def test_sends_default_split_timeout(self, mocker):
+        fake_response = self._make_fake_response("ok")
+        mock_create = mocker.patch(
+            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
+        )
+
+        generate_chat_completion("sys", "usr")
+
+        call_kwargs = mock_create.call_args.kwargs
+        request_timeout = call_kwargs["timeout"]
+        assert request_timeout.read == request_timeout.write == request_timeout.pool == 120.0
+        assert request_timeout.connect == 10.0
+
+    def test_timeout_is_never_none_on_the_wire(self, mocker):
+        """Regression guard: `timeout=None` would tell the SDK "unbounded" —
+        the exact bug issue #355 fixes."""
+        fake_response = self._make_fake_response("ok")
+        mock_create = mocker.patch(
+            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
+        )
+
+        generate_chat_completion("sys", "usr")
+
+        call_kwargs = mock_create.call_args.kwargs
+        assert "timeout" in call_kwargs
+        assert call_kwargs["timeout"] is not None
+        assert call_kwargs["timeout"].read is not None
+
+    def test_caller_override_replaces_read_budget_only(self, mocker):
+        fake_response = self._make_fake_response("ok")
+        mock_create = mocker.patch(
+            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
+        )
+
+        generate_chat_completion("sys", "usr", timeout=5.0)
+
+        request_timeout = mock_create.call_args.kwargs["timeout"]
+        assert request_timeout.read == 5.0
+        assert request_timeout.connect == 10.0
+
+    def test_env_configured_timeout_is_used(self, mocker):
+        """Pins per-call construction (design D2): patching the module-level
+        floats directly must be reflected without any importlib.reload."""
+        mocker.patch("utils.ai_helpers.LLM_TIMEOUT_SECONDS", 42.0)
+        mocker.patch("utils.ai_helpers.LLM_CONNECT_TIMEOUT_SECONDS", 3.0)
+        fake_response = self._make_fake_response("ok")
+        mock_create = mocker.patch(
+            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
+        )
+
+        generate_chat_completion("sys", "usr")
+
+        request_timeout = mock_create.call_args.kwargs["timeout"]
+        assert request_timeout.read == 42.0
+        assert request_timeout.connect == 3.0
+
+
+# ---------------------------------------------------------------------------
 # generate_json_completion
 # ---------------------------------------------------------------------------
 
@@ -348,6 +417,30 @@ class TestGenerateJsonCompletion:
         assert call_kwargs["max_completion_tokens"] == 120
         assert "max_tokens" not in call_kwargs
         assert result["data"] == {"ok": True}
+
+    def test_passes_timeout_to_chat_completion(self, mocker):
+        mock_chat = mocker.patch(
+            "utils.ai_helpers.generate_chat_completion",
+            return_value={"content": '{"ok": true}', "error": None},
+        )
+        generate_json_completion("sys", "usr", timeout=7.0)
+        call_kwargs = mock_chat.call_args.kwargs
+        assert call_kwargs["timeout"] == 7.0
+
+    def test_json_completion_forwards_timeout_to_wire(self, mocker):
+        """End-to-end: real generate_chat_completion, mocked .create()."""
+        fake_response = MagicMock()
+        fake_response.choices = [MagicMock()]
+        fake_response.choices[0].message.content = '{"ok": true}'
+        mock_create = mocker.patch(
+            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
+        )
+
+        generate_json_completion("sys", "usr", timeout=7.0)
+
+        request_timeout = mock_create.call_args.kwargs["timeout"]
+        assert request_timeout.read == 7.0
+        assert request_timeout.connect == 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +545,9 @@ class TestOpenAIQuotaLatch:
             body={"type": "rate_limit_exceeded"},
         )
 
+    def _timeout_error(self) -> openai.APITimeoutError:
+        return openai.APITimeoutError(request=_fake_request())
+
     def test_quota_error_arms_latch_and_skips_subsequent_calls(self, mocker):
         mock_create = mocker.patch(
             "utils.ai_helpers.openai.chat.completions.create",
@@ -508,3 +604,23 @@ class TestOpenAIQuotaLatch:
 
         assert result["content"] == "back to normal"
         assert mock_create.call_count == 2
+
+    def test_request_timeout_does_not_arm_latch(self, mocker):
+        """A stalled/timed-out request is transient (issue #355) — it must
+        never arm the permanent-failure latch that short-circuits later calls."""
+        mock_create = mocker.patch(
+            "utils.ai_helpers.openai.chat.completions.create",
+            side_effect=self._timeout_error(),
+        )
+
+        first = generate_chat_completion("sys", "usr")
+        assert first["content"] is None
+        assert first["error"] is not None
+        assert mock_create.call_count == 1
+
+        mock_create.side_effect = None
+        mock_create.return_value = self._make_fake_response("ok")
+        second = generate_chat_completion("sys", "usr")
+
+        assert second["content"] == "ok"
+        assert mock_create.call_count == 2  # latch stayed disarmed
