@@ -70,7 +70,7 @@ AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 30
 ```bash
 conda create -n airflow python=3.11
 conda activate airflow
-pip install apache-airflow==2.7.3
+pip install apache-airflow==2.11.1
 pip install apache-airflow-providers-postgres
 pip install requests beautifulsoup4 lxml urllib3
 pip install openai  # For AI-enhanced projects
@@ -459,7 +459,7 @@ MAX_ACTIVE_RUNS_PER_DAG: 1  # Max concurrent DAG runs
 
 ### Technology Evaluation Criteria
 When considering new technologies:
-1. **Airflow Compatibility:** Must work with Airflow 2.7+
+1. **Airflow Compatibility:** Must work with Airflow 2.11.1
 2. **Docker Support:** Easy containerization
 3. **Documentation:** Good docs and community support
 4. **Performance:** Minimal overhead

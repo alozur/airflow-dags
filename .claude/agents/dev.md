@@ -133,7 +133,7 @@ python_standards:
 environment_setup:
   conda_env: airflow
   python_version: '3.11+'
-  airflow_version: '2.7.x'
+  airflow_version: '2.11.1'
   postgres_version: '16'
   executor: LocalExecutor
   deployment: Docker Compose

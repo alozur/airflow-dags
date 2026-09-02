@@ -6,7 +6,7 @@ These standards directly control AI developer behavior and are critical for prev
 
 ## Core Standards
 
-- **Languages & Runtimes:** Python 3.11+, Apache Airflow 2.7.x
+- **Languages & Runtimes:** Python 3.12+, Apache Airflow 2.11.1
 - **Database:** PostgreSQL 16
 - **Style & Linting:** Ruff (modern, fast Python linter and formatter)
 - **Formatting:** PEP 8 compliance with 88-character line length (Black compatible)
@@ -311,6 +311,6 @@ def process_video_metadata(video_id: str, session_num: int) -> dict:
 ---
 
 **Last Updated:** 2025-10-02
-**Airflow Version:** 2.7.x
+**Airflow Version:** 2.11.1
 **Python Version:** 3.11+
 **PostgreSQL Version:** 16
