@@ -892,3 +892,51 @@ class TestFindSrtVideoIdGuard:
             assert srt_helpers.find_srt_for_chapter("vid_123", 1) == str(srt_file)
         finally:
             srt_helpers.PROJECT_DATA_DIR = original
+
+
+# ---------------------------------------------------------------------------
+# chapter_window_blocks (issue #322) — chapter-span filter, NOT re-timed
+# ---------------------------------------------------------------------------
+
+class TestChapterWindowBlocks:
+    """Filters SRT blocks to a chapter's [start_time, end_time) span,
+    absolute timestamps preserved (unlike _window_srt_blocks) — overlap
+    predicate is start < end AND end > start, so a block straddling
+    end_time is included. Unparseable spans fail safe: [] + WARNING."""
+
+    _BLOCKS = [
+        {"start_secs": 0.0, "end_secs": 5.0, "text": "before chapter"},
+        {"start_secs": 600.0, "end_secs": 605.0, "text": "chapter opening"},
+        {"start_secs": 1200.0, "end_secs": 1205.0, "text": "chapter middle"},
+        {"start_secs": 2395.0, "end_secs": 2405.0, "text": "straddles chapter end"},
+        {"start_secs": 3000.0, "end_secs": 3005.0, "text": "after chapter"},
+    ]
+
+    @pytest.mark.parametrize(
+        "start_time,end_time", [("00:10:00,000", "00:40:00,000"), (600.0, 2400.0)]
+    )
+    def test_valid_span_returns_overlapping_blocks_absolute_timestamps(self, start_time, end_time):
+        from congress_videos.srt_helpers import chapter_window_blocks
+
+        result = chapter_window_blocks(self._BLOCKS, start_time, end_time)
+
+        texts = [b["text"] for b in result]
+        assert texts == ["chapter opening", "chapter middle", "straddles chapter end"]
+        assert result[0]["start_secs"] == pytest.approx(600.0)  # NOT re-timed
+
+    @pytest.mark.parametrize(
+        "start_time,end_time", [("not-a-timestamp", "00:40:00,000"), ("00:10:00,000", None)]
+    )
+    def test_unparseable_span_returns_empty_and_warns(self, start_time, end_time, caplog):
+        from congress_videos.srt_helpers import chapter_window_blocks
+
+        with caplog.at_level("WARNING"):
+            result = chapter_window_blocks(self._BLOCKS, start_time, end_time)
+
+        assert result == []
+        assert any("chapter_window_blocks" in rec.message for rec in caplog.records)
+
+    def test_empty_blocks_input_returns_empty(self):
+        from congress_videos.srt_helpers import chapter_window_blocks
+
+        assert chapter_window_blocks([], "00:10:00,000", "00:40:00,000") == []

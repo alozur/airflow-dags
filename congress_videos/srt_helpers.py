@@ -295,6 +295,33 @@ def _window_srt_blocks(
     return out
 
 
+def chapter_window_blocks(blocks: list[dict], start_time, end_time) -> list[dict]:
+    """Filter *blocks* to a chapter's own ``[start_time, end_time)`` span
+    (issue #322). Unlike ``_window_srt_blocks``, timestamps are NOT
+    re-timed — absolute coordinates are preserved (D9: needed by the
+    qa-gated wide prompt context and the deferred thumbnail adopter).
+    ``start_time``/``end_time`` accept an SRT ``str`` or numeric seconds.
+    Overlap predicate matches ``_window_srt_blocks``: ``start < end AND
+    end > start``. Fails safe (``[]`` + WARNING) on any parse failure or
+    ``end_secs <= start_secs``. Never raises.
+    """
+    try:
+        start_secs = start_time if isinstance(start_time, (int, float)) else _srt_timestamp_to_seconds(start_time)
+        end_secs = end_time if isinstance(end_time, (int, float)) else _srt_timestamp_to_seconds(end_time)
+        start_secs, end_secs = float(start_secs), float(end_secs)
+    except (ValueError, TypeError):
+        start_secs = end_secs = None
+
+    if start_secs is None or end_secs <= start_secs:
+        logger.warning(
+            "chapter_window_blocks: invalid chapter span start_time=%r end_time=%r — returning []",
+            start_time, end_time,
+        )
+        return []
+
+    return [b for b in blocks if b["start_secs"] < end_secs and b["end_secs"] > start_secs]
+
+
 def _window_srt_blocks_multi(
     blocks: list[dict],
     intervals: list[tuple[float, float]],
