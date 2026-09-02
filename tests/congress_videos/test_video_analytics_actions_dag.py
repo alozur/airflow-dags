@@ -420,7 +420,10 @@ class TestApplyActionsNoOpNeverCallsYoutube:
 
 
 class TestApplyActionsFailurePath:
-    """Spec: failure path sets action_taken='failed' with error in action_detail."""
+    """Spec: failure path sets action_taken='failed' with error in
+    action_detail, AND (issue #311, D1/D5) the gate raises exactly once
+    after every row is recorded — the row is durably 'failed' in the DB
+    before the exception ever reaches Airflow."""
 
     def test_thumbnail_dag_failure_marks_failed_with_error(self, mock_task_instance):
         from congress_videos.video_analytics_actions_dag import _run_apply_actions
@@ -449,7 +452,7 @@ class TestApplyActionsFailurePath:
         ), patch(
             "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
             side_effect=fake_mark,
-        ):
+        ), pytest.raises(Exception, match="failed"):
             _run_apply_actions(ti=mock_task_instance)
 
         assert captured["action"] == "failed"
@@ -496,7 +499,7 @@ class TestApplyActionsFailurePath:
         ), patch(
             "utils.youtube_helpers.set_thumbnail_for_video",
             return_value={"success": False, "error": "thumbnail size exceeded"},
-        ):
+        ), pytest.raises(Exception, match="failed"):
             _run_apply_actions(ti=mock_task_instance)
 
         assert captured["action"] == "failed"
@@ -592,7 +595,13 @@ class TestApplyActionsFailurePath:
         mock_update_title.assert_not_called()
 
 
-def _patched_apply(*, set_thumbnail_result=None, update_title_result=None, update_title_side_effect=None):
+def _patched_apply(
+    *,
+    set_thumbnail_result=None,
+    set_thumbnail_side_effect=None,
+    update_title_result=None,
+    update_title_side_effect=None,
+):
     """ExitStack of the standard apply_actions success-path patch set, with
     the thumbnail/title publish results overridable per test (D-1..D-3)."""
     stack = ExitStack()
@@ -621,10 +630,15 @@ def _patched_apply(*, set_thumbnail_result=None, update_title_result=None, updat
     stack.enter_context(patch(
         "utils.youtube_helpers.get_authenticated_youtube_service", return_value=MagicMock()
     ))
-    stack.enter_context(patch(
-        "utils.youtube_helpers.set_thumbnail_for_video",
-        return_value=set_thumbnail_result or {"success": True, "error": None},
-    ))
+    if set_thumbnail_side_effect is not None:
+        stack.enter_context(patch(
+            "utils.youtube_helpers.set_thumbnail_for_video", side_effect=set_thumbnail_side_effect
+        ))
+    else:
+        stack.enter_context(patch(
+            "utils.youtube_helpers.set_thumbnail_for_video",
+            return_value=set_thumbnail_result or {"success": True, "error": None},
+        ))
     if update_title_side_effect is not None:
         stack.enter_context(patch(
             "utils.youtube_helpers.update_video_title", side_effect=update_title_side_effect
@@ -638,7 +652,9 @@ def _patched_apply(*, set_thumbnail_result=None, update_title_result=None, updat
 
 
 class TestApplyActionsAppliedField:
-    """Issue #317 (D1/D4/D5): per-row `applied` quad-value + per-row isolation."""
+    """Issue #317 (D1/D4/D5): per-row `applied` quad-value + per-row isolation.
+    Issue #311 (D1/D5): a "failed" row still raises the gate exactly once,
+    AFTER every row is recorded."""
 
     def test_title_failure_records_applied_thumbnail_true_title_false(self, mock_task_instance):
         """D-1: ordinary title publish failure -> failed, applied ==
@@ -660,7 +676,7 @@ class TestApplyActionsAppliedField:
         ), patch(
             "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
             side_effect=fake_mark,
-        ):
+        ), pytest.raises(Exception, match="failed"):
             _run_apply_actions(ti=mock_task_instance)
 
         assert captured["action"] == "failed"
@@ -668,7 +684,10 @@ class TestApplyActionsAppliedField:
 
     def test_blank_title_guard_raise_is_recorded_not_escaped(self, mock_task_instance):
         """D-2: update_video_title raises ValueError (blank guard) -> recorded
-        failed with applied.title is False; no exception escapes the task."""
+        failed with applied.title is False. The ValueError itself never
+        escapes _apply_one_action's per-row isolation; the DIFFERENT,
+        deliberate exception raised by the #311 gate below it is what
+        reaches Airflow, naming this row, only after mark_action_taken ran."""
         from congress_videos.video_analytics_actions_dag import _run_apply_actions
 
         mock_task_instance.xcom_store["decisions"] = [
@@ -686,18 +705,18 @@ class TestApplyActionsAppliedField:
         ), patch(
             "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
             side_effect=fake_mark,
-        ):
-            result = _run_apply_actions(ti=mock_task_instance)
+        ), pytest.raises(Exception, match="failed"):
+            _run_apply_actions(ti=mock_task_instance)
 
         assert captured["action"] == "failed"
         assert captured["detail"]["applied"]["title"] is False
         assert "blank title refused" in captured["detail"]["error"]
-        assert result["applied"] == 1  # the task itself did not raise
 
     def test_one_row_guard_failure_does_not_abort_remaining_rows(self, mock_task_instance):
-        """D-3: 2 rows, row 1's title guard raises, row 2 succeeds -> BOTH
-        mark_action_taken calls happen and the task does not raise (loop
-        integrity + the green-until-#311 fact)."""
+        """D-3 + issue #311 D1: 2 rows, row 1's title guard raises, row 2
+        succeeds -> BOTH mark_action_taken calls happen (loop integrity,
+        every row claimed and recorded) BEFORE the gate raises once at the
+        end naming only the failed row."""
         from congress_videos.video_analytics_actions_dag import _run_apply_actions
 
         mock_task_instance.xcom_store["decisions"] = [
@@ -721,12 +740,14 @@ class TestApplyActionsAppliedField:
         with _patched_apply(update_title_side_effect=_title_side_effect), patch(
             "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
             side_effect=fake_mark,
-        ):
-            result = _run_apply_actions(ti=mock_task_instance)
+        ), pytest.raises(Exception, match="snapshot_id=1"):
+            _run_apply_actions(ti=mock_task_instance)
 
+        # Pins D1: both rows were claimed and mark_action_taken-recorded
+        # BEFORE the exception below propagated — the raise happens only
+        # after the full results list comprehension finishes.
         assert len(marked) == 2
         assert {a for _, a in marked} == {"failed", "thumbnail_and_title_regenerated"}
-        assert result["applied"] == 2
 
     def test_trigger_failure_applied_both_none(self, mock_task_instance):
         """D-6: trigger DAG exception -> early return, applied ==
@@ -752,10 +773,139 @@ class TestApplyActionsAppliedField:
         ), patch(
             "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
             side_effect=fake_mark,
-        ):
+        ), pytest.raises(Exception, match="failed"):
             _run_apply_actions(ti=mock_task_instance)
 
         assert captured["detail"]["applied"] == {"thumbnail": None, "title": None}
+
+
+def _permanent_thumbnail_failure(video_id: str) -> dict:
+    return {
+        "success": False,
+        "error": f"Thumbnail upload failed: forbidden for {video_id}",
+        "permanent": True,
+        "status": 403,
+        "reason": "forbidden",
+        "domain": "youtube.thumbnail",
+        "location": "videoId",
+        "message": "The caller does not have permission.",
+    }
+
+
+class TestApplyActionsFailLoudGate:
+    """Integration (issue #311, B8.1): the gate raises exactly once, naming
+    every failed row, only after every claimed row is recorded. All-success
+    batches staying green is proven implicitly by the many other passing
+    success-path tests elsewhere in this file — none of them are wrapped in
+    pytest.raises, so a spurious raise there would already fail loudly."""
+
+    def test_mixed_batch_raises_naming_only_failed_snapshots(self, mock_task_instance):
+        """Covers both required B8.1 scenarios in one pass: a success row
+        mixed with failures is never named, and multiple permanent failures
+        (snapshot 1 and 3) join into a SINGLE sentence, not one each."""
+        from congress_videos.video_analytics_actions_dag import _run_apply_actions
+
+        mock_task_instance.xcom_store["decisions"] = [
+            _decision_row(snapshot_id=1, youtube_video_id="vid-forbidden-1"),
+            _decision_row(snapshot_id=2, youtube_video_id="vid-ok"),
+            _decision_row(snapshot_id=3, youtube_video_id="vid-forbidden-3"),
+        ]
+        mock_task_instance.run_id = "manual_run_1"
+
+        def fake_set_thumbnail(youtube, video_id, path):
+            if video_id == "vid-ok":
+                return {"success": True, "error": None}
+            return _permanent_thumbnail_failure(video_id)
+
+        with _patched_apply(set_thumbnail_side_effect=fake_set_thumbnail), patch(
+            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"
+        ) as mock_mark, pytest.raises(Exception) as exc_info:
+            _run_apply_actions(ti=mock_task_instance)
+
+        message = str(exc_info.value)
+        assert message.count("PERMANENTLY") == 1
+        assert "snapshot_id=1" in message
+        assert "snapshot_id=3" in message
+        assert "snapshot_id=2" not in message
+        # Pins D1: all 3 rows still got mark_action_taken before the raise.
+        assert mock_mark.call_count == 3
+
+
+class TestActionFailureProblems:
+    """Spec: apply_actions fails loud with every finding — pure-dict tests,
+    no TI double (issue #311, D5)."""
+
+    def _failed_row(self, snapshot_id=1, **failure_overrides):
+        failure = {"stage": "youtube_thumbnail", "permanent": True, "status": 403, "reason": "forbidden"}
+        failure.update(failure_overrides)
+        return {"snapshot_id": snapshot_id, "action": "failed", "failure": failure}
+
+    def _success_row(self, snapshot_id=1, action="thumbnail_regenerated"):
+        return {"snapshot_id": snapshot_id, "action": action, "failure": None}
+
+    def test_empty_and_non_failure_rows_produce_no_problems(self):
+        from congress_videos.video_analytics_actions_dag import _action_failure_problems
+
+        assert _action_failure_problems([]) == []
+        assert _action_failure_problems(
+            [self._success_row(1), self._success_row(2, "thumbnail_and_title_regenerated")]
+        ) == []
+        assert _action_failure_problems(
+            [{"snapshot_id": 1, "action": "skipped_already_claimed"}]
+        ) == []
+
+    def test_permanent_failure_sentence_excludes_transient_word(self):
+        from congress_videos.video_analytics_actions_dag import _action_failure_problems
+
+        problems = _action_failure_problems([self._failed_row(1)])
+
+        assert len(problems) == 1
+        assert "PERMANENTLY" in problems[0]
+        assert "transient" not in problems[0]
+        assert "snapshot_id=1" in problems[0]
+        assert "stage=youtube_thumbnail" in problems[0]
+        assert "status=403" in problems[0]
+        assert "reason=forbidden" in problems[0]
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"permanent": False, "status": 503, "reason": "backendError"},
+            {"permanent": None, "status": None, "reason": None},
+        ],
+        ids=["transient", "permanent_none"],
+    )
+    def test_transient_or_unknown_failure_produces_only_second_sentence(self, overrides):
+        from congress_videos.video_analytics_actions_dag import _action_failure_problems
+
+        problems = _action_failure_problems([self._failed_row(1, **overrides)])
+
+        assert len(problems) == 1
+        assert "transiently or unclassified" in problems[0]
+        assert f"status={overrides['status']}" in problems[0]
+
+    def test_permanent_and_transient_together_produce_two_sentences(self):
+        from congress_videos.video_analytics_actions_dag import _action_failure_problems
+
+        rows = [
+            self._failed_row(1),
+            self._failed_row(2, permanent=False, status=503, reason="backendError"),
+        ]
+        problems = _action_failure_problems(rows)
+
+        assert len(problems) == 2
+        assert "PERMANENTLY" in problems[0]
+        assert "transiently or unclassified" in problems[1]
+
+    def test_missing_failure_key_on_failed_row_still_reported_unclassified(self):
+        from congress_videos.video_analytics_actions_dag import _action_failure_problems
+
+        row = {"snapshot_id": 9, "action": "failed"}
+        problems = _action_failure_problems([row])
+
+        assert len(problems) == 1
+        assert "transiently or unclassified" in problems[0]
+        assert "snapshot_id=9" in problems[0]
 
 
 class TestApplyActionsAdditionalFailureBranches:
@@ -785,7 +935,7 @@ class TestApplyActionsAdditionalFailureBranches:
         ), patch(
             "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
             side_effect=fake_mark,
-        ):
+        ), pytest.raises(Exception, match="failed"):
             _run_apply_actions(ti=mock_task_instance)
 
         assert captured["action"] == "failed"
@@ -822,7 +972,7 @@ class TestApplyActionsAdditionalFailureBranches:
         ), patch(
             "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
             side_effect=fake_mark,
-        ):
+        ), pytest.raises(Exception, match="failed"):
             _run_apply_actions(ti=mock_task_instance)
 
         assert captured["action"] == "failed"
