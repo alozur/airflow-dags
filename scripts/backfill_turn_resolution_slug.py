@@ -9,8 +9,11 @@ database; a published turn's public metadata needs a separate,
 manually-approved YouTube fix (see the issue #339 runbook).
 
 Dry run is the DEFAULT (no `--execute`): zero write statements, no
-write transaction, never commits. `--execute` raises
-`NotImplementedError` in this revision; the write path lands later.
+write transaction, never commits. With `--execute`, every turn_id is
+corrected in ONE all-or-nothing transaction: each UPDATE is scoped by
+`turn_id` (never `output_path`) and guarded by its own expected-slug
+precondition; any rowcount other than exactly 1 aborts and rolls back
+the ENTIRE batch — partial remediation is never committed.
 
 Input: a JSON array at `--input PATH`, one entry per turn —
     [{"turn_id": 8124, "expected_current_slug": "wrong", "new_slug": "right"}]
@@ -18,7 +21,8 @@ Input: a JSON array at `--input PATH`, one entry per turn —
 
 Usage:
     uv run python scripts/backfill_turn_resolution_slug.py \\
-        --input remediation/339-plan.json --confidence 1.0
+        --input remediation/339-plan.json --confidence 1.0 [--execute] \\
+        [--rollback-out remediation/339-inverse.json]
 """
 
 import argparse
@@ -36,7 +40,6 @@ STATUS_WOULD_UPDATE = "WOULD-UPDATE"
 STATUS_DRIFT = "DRIFT"
 STATUS_MISSING = "MISSING"
 STATUS_NO_CHANGE = "NO-CHANGE"
-_DRY_RUN_STATUS_ORDER = (STATUS_WOULD_UPDATE, STATUS_DRIFT, STATUS_MISSING, STATUS_NO_CHANGE)
 
 CURRENT_STATE_QUERY_TEMPLATE = """
     SELECT stv.turn_id AS turn_id,
@@ -54,6 +57,18 @@ METHOD_CONSTRAINT_QUERY = """
     WHERE conrelid = %s::regclass AND contype = 'c' AND conname LIKE %s
 """
 
+UPDATE_QUERY_TEMPLATE = """
+    UPDATE {stv_table}
+    SET resolved_participant_slug = %s,
+        speaker_resolution_confidence = %s,
+        speaker_resolution_method = %s
+    WHERE turn_id = %s
+      AND resolved_participant_slug IS NOT DISTINCT FROM %s
+"""
+
+STATUS_UPDATED = "UPDATED"
+STATUS_REFUSED_DRIFT = "REFUSED-DRIFT"
+
 
 class BackfillInputError(Exception):
     """Invalid CLI input: malformed plan file or bad confidence."""
@@ -61,6 +76,14 @@ class BackfillInputError(Exception):
 
 class BackfillConstraintError(Exception):
     """An existing CHECK constraint refuses the --method literal."""
+
+
+class BackfillUsageError(Exception):
+    """Misuse of the connection/API — refused before any statement is executed."""
+
+
+class BackfillDriftError(Exception):
+    """A write's rowcount was not exactly 1 — the entire batch was rolled back."""
 
 
 @dataclass(frozen=True)
@@ -170,6 +193,16 @@ def _derive_dry_run_status(entry: BackfillEntry, current_row) -> str:
     return STATUS_WOULD_UPDATE
 
 
+_STATUS_ORDER = (
+    STATUS_WOULD_UPDATE,
+    STATUS_UPDATED,
+    STATUS_DRIFT,
+    STATUS_REFUSED_DRIFT,
+    STATUS_MISSING,
+    STATUS_NO_CHANGE,
+)
+
+
 def render_summary(
     entries: list[BackfillEntry],
     current_state: dict,
@@ -178,9 +211,11 @@ def render_summary(
     qualified_table: str,
     method: str,
     confidence: float,
+    statuses: dict[int, str] | None = None,
 ) -> str:
     """Render turn_id | speaker_label | old_slug | new_slug | status, output_path
-    last/untruncated, footer with per-status counts."""
+    last/untruncated, footer with per-status counts. `statuses` (execute mode)
+    overrides the dry-run drift classification with actual outcomes."""
     lines = [
         f"Mode: {mode_label}",
         f"Table: {qualified_table}",
@@ -194,7 +229,7 @@ def render_summary(
     status_counts: dict[str, int] = {}
     for entry in entries:
         current_row = current_state.get(entry.turn_id)
-        status = _derive_dry_run_status(entry, current_row)
+        status = statuses[entry.turn_id] if statuses else _derive_dry_run_status(entry, current_row)
         status_counts[status] = status_counts.get(status, 0) + 1
         old_slug = current_row.get("resolved_participant_slug") if current_row else None
         speaker_label = current_row.get("speaker_label") if current_row else None
@@ -205,15 +240,60 @@ def render_summary(
         )
 
     lines.append("")
-    for status in _DRY_RUN_STATUS_ORDER:
+    for status in _STATUS_ORDER:
         if status in status_counts:
             lines.append(f"{status}: {status_counts[status]}")
     return "\n".join(lines)
 
 
-def apply_backfill(*args, **kwargs):
-    """Write path stub — implemented in a follow-up change; single call site to replace."""
-    raise NotImplementedError("write path lands in a follow-up PR; use dry-run (omit --execute)")
+def build_update_query(stv_table: str) -> str:
+    """Build the parameterized per-turn UPDATE — predicate is `turn_id` + slug precondition, NEVER `output_path`."""
+    return UPDATE_QUERY_TEMPLATE.format(stv_table=stv_table)
+
+
+def check_autocommit_disabled(conn) -> None:
+    """Refuse an autocommit connection (`is True`, not truthiness — MagicMock-safe)."""
+    if getattr(conn, "autocommit", False) is True:
+        raise BackfillUsageError(
+            "connection is in autocommit mode; the backfill requires transactional writes"
+        )
+
+
+def apply_backfill(
+    conn, stv_table: str, entries: list[BackfillEntry], confidence: float, method: str
+) -> dict[int, str]:
+    """One UPDATE per entry (turn_id only). rowcount != 1 rolls back the whole
+    batch and raises `BackfillDriftError`; method/confidence always come from the
+    caller. Commits once, only after every entry succeeds."""
+    query = build_update_query(stv_table)
+    with conn.cursor() as cur:
+        for entry in entries:
+            cur.execute(
+                query,
+                (entry.new_slug, confidence, method, entry.turn_id, entry.expected_current_slug),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                raise BackfillDriftError(
+                    f"turn_id {entry.turn_id}: expected rowcount 1, got {cur.rowcount} "
+                    "(current slug drifted from expected_current_slug or turn_id not found) — "
+                    "entire batch rolled back"
+                )
+    conn.commit()
+    return {entry.turn_id: STATUS_UPDATED for entry in entries}
+
+
+def write_rollback_plan(path: str, entries: list[BackfillEntry]) -> None:
+    """Write the inverse plan (expected←new, new←old) in `load_plan`'s JSON schema."""
+    inverse = [
+        {
+            "turn_id": entry.turn_id,
+            "expected_current_slug": entry.new_slug,
+            "new_slug": entry.expected_current_slug,
+        }
+        for entry in entries
+    ]
+    Path(path).write_text(json.dumps(inverse, indent=2))
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -229,12 +309,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--execute", action="store_true", help="Perform writes. Absent (default) = dry run."
     )
+    parser.add_argument(
+        "--rollback-out", default=None, help="Write the inverse plan here after a successful --execute."
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Dry-run entrypoint: load/validate plan, fetch current state, render summary, exit 0.
-    `--execute` raises `NotImplementedError`. Never opens a write transaction or commits."""
+    """Dry-run (default) or --execute. Exit: 0 ok, 1 operational, 2 input, 3 safety refusal."""
     args = parse_args(argv)
 
     try:
@@ -244,26 +326,57 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Input error: {exc}", file=sys.stderr)
         return 2
 
-    if args.execute:
-        apply_backfill()
-
     try:
         pg_conn = PostgresConnection()
         stv_table = pg_conn.get_qualified_table("speaker_turn_videos")
         st_table = pg_conn.get_qualified_table("speaker_turns")
+        turn_ids = [entry.turn_id for entry in entries]
         with pg_conn.get_connection() as conn:
-            current_state = fetch_current_state(
-                conn, stv_table, st_table, [entry.turn_id for entry in entries]
-            )
-            conn.rollback()
-            summary = render_summary(
-                entries,
-                current_state,
-                mode_label="DRY RUN",
-                qualified_table=stv_table,
-                method=args.method,
-                confidence=args.confidence,
-            )
+            if args.execute:
+                check_autocommit_disabled(conn)
+                check_method_constraint(conn, stv_table, args.method)
+                current_state = fetch_current_state(conn, stv_table, st_table, turn_ids)
+                try:
+                    statuses = apply_backfill(conn, stv_table, entries, args.confidence, args.method)
+                except BackfillDriftError as exc:
+                    print(f"Refused: {exc}", file=sys.stderr)
+                    statuses = {entry.turn_id: STATUS_REFUSED_DRIFT for entry in entries}
+                    summary = render_summary(
+                        entries,
+                        current_state,
+                        mode_label="EXECUTE (ROLLED BACK)",
+                        qualified_table=stv_table,
+                        method=args.method,
+                        confidence=args.confidence,
+                        statuses=statuses,
+                    )
+                    print(summary)
+                    return 3
+                if args.rollback_out:
+                    write_rollback_plan(args.rollback_out, entries)
+                summary = render_summary(
+                    entries,
+                    current_state,
+                    mode_label="EXECUTE",
+                    qualified_table=stv_table,
+                    method=args.method,
+                    confidence=args.confidence,
+                    statuses=statuses,
+                )
+            else:
+                current_state = fetch_current_state(conn, stv_table, st_table, turn_ids)
+                conn.rollback()
+                summary = render_summary(
+                    entries,
+                    current_state,
+                    mode_label="DRY RUN",
+                    qualified_table=stv_table,
+                    method=args.method,
+                    confidence=args.confidence,
+                )
+    except (BackfillConstraintError, BackfillUsageError) as exc:
+        print(f"Refused: {exc}", file=sys.stderr)
+        return 3
     except Exception as exc:
         print(f"Operational error: {exc}", file=sys.stderr)
         return 1
