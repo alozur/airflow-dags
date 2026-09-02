@@ -637,6 +637,7 @@ with DAG(
         Pushes XCom key 'db_save_results'.
         """
         from congress_videos.modules.database import CongressionalVideoDB
+        from congress_videos.srt_helpers import write_chapter_srt_sidecar
 
         scored_chapters = ti.xcom_pull(key='scored_chapters')
         session_date_data = ti.xcom_pull(key='session_date')
@@ -684,6 +685,28 @@ with DAG(
             "Saved %d chapters across %d videos",
             result['total_chapters_saved'], result['total_videos_saved'],
         )
+
+        # Persist a per-chapter SRT sidecar in this same run — the only
+        # moment the source SRT is provably still on disk (issue #340).
+        # Best-effort: one chapter's write failure must never abort the
+        # loop nor block the db_save_results XCom push below.
+        for video_result in result.get('videos', []):
+            video_id = video_result.get('video_id')
+            for chapter in video_result.get('chapters', []):
+                try:
+                    write_chapter_srt_sidecar(
+                        video_id,
+                        chapter.get('chapter_id'),
+                        chapter.get('start_time'),
+                        chapter.get('end_time'),
+                        session_date=session_date_str,
+                    )
+                except Exception:
+                    logging.warning(
+                        "write_chapter_srt_sidecar failed for video_id=%s chapter_id=%s",
+                        video_id, chapter.get('chapter_id'), exc_info=True,
+                    )
+
         ti.xcom_push(key='db_save_results', value=result)
         return result
 

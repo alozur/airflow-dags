@@ -124,6 +124,29 @@ class TestHappyPath:
         assert result["videos"][0]["chapters_saved"] == 2
         assert result["videos"][0]["error"] is None
 
+    def test_chapters_key_carries_id_and_bounds_per_inserted_chapter(self):
+        """Additive 'chapters' key (issue #340): one entry per RETURNING'd
+        chapter_id + plain-string bounds — pre-existing keys untouched."""
+        cur = _make_cursor()
+        cur.fetchone.side_effect = [{"chapter_id": 101}, {"chapter_id": 102}]
+        db, _conn = _make_db(cur)
+
+        data = {"videos": [_video("vidA", 2)]}
+        result = db.save_youtube_chapters_to_db(
+            scored_chapters_data=data, session_number=12, session_date=date(2026, 6, 12),
+        )
+        video_result = result["videos"][0]
+
+        assert video_result["video_id"] == "vidA"
+        assert video_result["chapters_saved"] == 2
+        assert video_result["error"] is None
+        assert video_result["chapters"] == [
+            {"chapter_id": 101, "start_time": "00:01:00,000", "end_time": "00:02:00,000"},
+            {"chapter_id": 102, "start_time": "00:02:00,000", "end_time": "00:03:00,000"},
+        ]
+        for entry in video_result["chapters"]:
+            assert isinstance(entry["start_time"], str) and isinstance(entry["end_time"], str)
+
 
 # --------------------------------------------------------------------------- #
 # 2. Isolation on failure — one bad video must not poison the batch
@@ -182,6 +205,30 @@ class TestIsolationOnFailure:
         assert result["total_videos_saved"] == 1
         assert result["total_chapters_saved"] == 1
         assert result["total_videos_failed"] == 1
+
+        # Rolled-back video (vid1) contributes empty 'chapters', never partial;
+        # the successful video (vid2) still carries its real entry.
+        assert videos_by_id["vid1"]["chapters"] == []
+        assert videos_by_id["vid2"]["chapters"] == [
+            {"chapter_id": 99, "start_time": "00:01:00,000", "end_time": "00:02:00,000"}
+        ]
+
+    def test_skipped_video_with_upstream_error_contributes_empty_chapters(self):
+        """Upstream-error skip path (no DB work attempted) also emits []."""
+        cur = _make_cursor()
+        db, _conn = _make_db(cur)
+        data = {"videos": [{
+            "video_id": "vidBroken", "video_title": "Broken",
+            "error": "upstream scoring failed", "scored_chapters": [],
+        }]}
+
+        result = db.save_youtube_chapters_to_db(
+            scored_chapters_data=data, session_number=1, session_date=date(2026, 6, 12),
+        )
+
+        assert result["videos"][0]["video_id"] == "vidBroken"
+        assert result["videos"][0]["chapters"] == []
+        assert result["videos"][0]["error"] == "upstream scoring failed"
 
 
 # --------------------------------------------------------------------------- #
