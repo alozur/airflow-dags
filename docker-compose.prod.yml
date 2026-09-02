@@ -59,6 +59,12 @@ x-airflow-common:
     LLM_DEFAULT: "${LLM_DEFAULT:-}"
     LLM_CHEAP: "${LLM_CHEAP:-}"
 
+    # OpenAI request timeout budget (utils/llm_config.py) — empty falls back to
+    # the committed defaults (read/write/pool 120s, connect 10s). A malformed or
+    # non-positive value fails DAG parsing loud (issue #355).
+    LLM_TIMEOUT_SECONDS: "${LLM_TIMEOUT_SECONDS:-}"
+    LLM_CONNECT_TIMEOUT_SECONDS: "${LLM_CONNECT_TIMEOUT_SECONDS:-}"
+
     # PostgreSQL connection for your project
     POSTGRES_HOST: "${POSTGRES_HOST}"
     POSTGRES_PORT: "${POSTGRES_PORT}"

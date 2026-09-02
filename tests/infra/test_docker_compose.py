@@ -131,6 +131,21 @@ class TestMigrationRoleEnvPassthrough:
 
 
 @pytest.mark.parametrize("path", [DEV_COMPOSE, PROD_COMPOSE], ids=lambda p: p.name)
+class TestLlmTimeoutEnvPassthrough:
+    """x-airflow-common must forward the OpenAI request timeout budget knobs.
+
+    Without these environment entries, an operator override in stack.env
+    never reaches the container and utils/llm_config.py silently keeps the
+    committed defaults — the knob is inert (issue #355).
+    """
+
+    def test_timeout_env_vars_are_forwarded(self, path: Path):
+        env = _load(path)["x-airflow-common"]["environment"]
+        assert env["LLM_TIMEOUT_SECONDS"] == "${LLM_TIMEOUT_SECONDS:-}"
+        assert env["LLM_CONNECT_TIMEOUT_SECONDS"] == "${LLM_CONNECT_TIMEOUT_SECONDS:-}"
+
+
+@pytest.mark.parametrize("path", [DEV_COMPOSE, PROD_COMPOSE], ids=lambda p: p.name)
 class TestExplicitDNS:
     """Issue #215: NAS containers need explicit public DNS resolvers."""
 
