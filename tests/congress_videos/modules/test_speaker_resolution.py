@@ -224,6 +224,53 @@ class TestResolveSpeakerNoSrtFile:
         assert result is None
 
 
+class TestResolveSpeakerCanonicalDir:
+    """canonical_dir wiring (issue #340 slice 2): prefer the persisted
+    per-chapter sidecar over the legacy downloads/ probes.
+
+    ``find_srt_for_chapter`` itself already resolves preference-order and
+    fallback behavior for a given ``canonical_dir`` (see
+    TestFindSrtForChapterCanonical in test_srt_helpers.py); these tests
+    verify the caller in speaker_resolution.py computes and passes the
+    right value (or None) at the call site.
+    """
+
+    def test_canonical_dir_passed_when_chapter_id_truthy(self):
+        """canonical wins: caller passes get_video_chapter_dir(video_id, chapter_id)."""
+        from congress_videos.config.paths import get_video_chapter_dir
+        from congress_videos.modules.speaker_resolution import resolve_speaker
+
+        turn = _make_turn(video_id="vidABC", chapter_id=10, session_date="2026-01-01")
+        participants = _make_participants(["pedro-sanchez"])
+
+        with patch(
+            "congress_videos.modules.speaker_resolution.find_srt_for_chapter",
+            return_value=None,
+        ) as mock_find:
+            result = resolve_speaker(turn, participants)
+
+        expected_dir = str(get_video_chapter_dir("vidABC", 10))
+        mock_find.assert_called_once_with("vidABC", 10, "2026-01-01", expected_dir)
+        assert result is None
+
+    def test_no_canonical_dir_when_chapter_id_falsy(self):
+        """Legacy fallback unchanged: falsy chapter_id (site coerces to 0)
+        → canonical_dir stays None, matching pre-change behavior."""
+        from congress_videos.modules.speaker_resolution import resolve_speaker
+
+        turn = _make_turn(video_id="vidABC", chapter_id=0, session_date="2026-01-01")
+        participants = _make_participants(["pedro-sanchez"])
+
+        with patch(
+            "congress_videos.modules.speaker_resolution.find_srt_for_chapter",
+            return_value=None,
+        ) as mock_find:
+            result = resolve_speaker(turn, participants)
+
+        mock_find.assert_called_once_with("vidABC", 0, "2026-01-01", None)
+        assert result is None
+
+
 class TestResolveSpeakerCompletionRaises:
 
     def test_resolve_speaker_completion_raises(self):

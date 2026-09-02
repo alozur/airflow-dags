@@ -496,6 +496,68 @@ class TestWriteTurnSidecarsGroupedRange:
         assert len(content) > 0, "Single-turn SRT must be non-empty for overlapping block"
 
 
+class TestWriteTurnSidecarsCanonicalDir:
+    """canonical_dir wiring (issue #340 slice 2): prefer the persisted
+    per-chapter sidecar over the legacy downloads/ probes.
+
+    ``find_srt_for_chapter`` itself already resolves preference-order and
+    fallback behavior for a given ``canonical_dir`` (see
+    TestFindSrtForChapterCanonical in test_srt_helpers.py); these tests
+    verify the caller in speaker_turn_prepare_dag.py computes and passes
+    the right value (or None) at the call site.
+    """
+
+    def _make_turn(self, tmp_path, video_id="vidXYZ", chapter_id=100):
+        video_dir = tmp_path / "output_turn_canonical"
+        video_dir.mkdir()
+        return {
+            "turn_id": 900,
+            "output_path": str(video_dir / "video.mp4"),
+            "chapter_id": chapter_id,
+            "resolved_name": "Speaker Name",
+            "start_seconds": 100.0,
+            "end_seconds": 200.0,
+            "video_id": video_id,
+            "session_date": "2026-01-01",
+        }
+
+    def test_canonical_dir_passed_when_video_and_chapter_present(self, tmp_path):
+        """canonical wins: caller passes get_video_chapter_dir(video_id, chapter_id)."""
+        from congress_videos.config.paths import get_video_chapter_dir
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        turn = self._make_turn(tmp_path)
+
+        with (
+            patch(
+                "congress_videos.srt_helpers.find_srt_for_chapter",
+                return_value=None,
+            ) as mock_find,
+            patch("congress_videos.srt_helpers._parse_srt_blocks", return_value=[]),
+        ):
+            _write_turn_sidecars(turn)
+
+        expected_dir = str(get_video_chapter_dir("vidXYZ", 100))
+        mock_find.assert_called_once_with("vidXYZ", 100, "2026-01-01", expected_dir)
+
+    def test_no_canonical_dir_when_chapter_id_missing(self, tmp_path):
+        """Legacy path unchanged: no chapter_id → canonical_dir stays None."""
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        turn = self._make_turn(tmp_path, chapter_id=None)
+
+        with (
+            patch(
+                "congress_videos.srt_helpers.find_srt_for_chapter",
+                return_value=None,
+            ) as mock_find,
+            patch("congress_videos.srt_helpers._parse_srt_blocks", return_value=[]),
+        ):
+            _write_turn_sidecars(turn)
+
+        mock_find.assert_called_once_with("vidXYZ", None, "2026-01-01", None)
+
+
 class TestWriteTurnSidecarsKeepIntervalsBranch:
     """_write_turn_sidecars branches to the multi-window retime when a valid,
     non-empty keep_intervals is present on the row (issue #143). Falls back
