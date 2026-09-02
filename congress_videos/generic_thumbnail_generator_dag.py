@@ -186,13 +186,15 @@ def _task_generate_thumbnail(label: str, ti: TaskInstance, **context: object) ->
         prompt,
         support_image_base64=data_url,
     )
-    # Attach label, layout (as style), prompt, and archetype for downstream
-    # tasks (archetype carried through download/score to persist_results,
-    # migration 041's video_thumbnails.archetype column, issue #102).
+    # Attach label, layout (as style), prompt, archetype, and the full
+    # art-direction brief for downstream tasks (carried through
+    # download/score to persist_results — migration 041's archetype column
+    # and migration 043's art_direction_brief column, issues #102/#292).
     result["label"] = label
     result["style"] = layout
     result["prompt"] = prompt
     result["archetype"] = art_brief.get("archetype")
+    result["art_direction_brief"] = art_brief
     return result
 
 
@@ -220,6 +222,7 @@ def _task_download_option(label: str, ti: TaskInstance, **context: object) -> di
         "style": gen_result.get("style", ""),
         "prompt": gen_result.get("prompt", ""),
         "archetype": gen_result.get("archetype"),
+        "art_direction_brief": gen_result.get("art_direction_brief"),
     }
 
 
