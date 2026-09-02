@@ -841,12 +841,14 @@ class TestEvidenceSupportedInBlocks:
 _PREGATE_BLOCK = (900.0, 905.0, ANNOUNCEMENT_TEXT)  # inside intro window [880,1000)
 
 
-def _run_anchored_gate_case(evidence_offset, confidence=0.95):
+def _run_anchored_gate_case(evidence_offset, confidence=0.95, turn_type=None):
     """Shared harness: turn anchored at start_seconds=1000, pre-gate block
     inside the narrow intro window, evidence block at anchor+evidence_offset."""
     from congress_videos.modules.speaker_resolution import resolve_speaker
 
     turn = _make_turn(start_seconds=1000.0)
+    if turn_type is not None:
+        turn["turn_type"] = turn_type
     participants = _make_participants(["pedro-sanchez"])
     unique_evidence = "Comparece hoy el ministro de Hacienda ante la prensa"
     blocks = _make_blocks([
@@ -883,6 +885,23 @@ class TestAnchoredEvidenceGateIntegration:
         """Past the forward edge (start + TURN_CONTEXT_SECS=60) — rejected
         even at confidence 0.99."""
         assert _run_anchored_gate_case(evidence_offset=90, confidence=0.99) is None
+
+    def test_lookback_constant_is_live_tunable(self, monkeypatch):
+        """QA_EVIDENCE_LOOKBACK_SECS is read at call time, not baked in:
+        narrowing it to 100s rejects the same -500s evidence the 600s
+        default accepts (see test_evidence_at_anchor_minus_500_accepted)."""
+        import congress_videos.modules.speaker_resolution as sr
+
+        monkeypatch.setattr(sr, "QA_EVIDENCE_LOOKBACK_SECS", 100)
+        assert _run_anchored_gate_case(evidence_offset=-500) is None
+
+    @pytest.mark.parametrize("turn_type", ["monologue", "qa"])
+    def test_gate_uniform_across_turn_types(self, turn_type):
+        """The anchored evidence gate has no turn_type branch: in-region
+        evidence resolves for monologue and qa alike."""
+        result = _run_anchored_gate_case(evidence_offset=-500, turn_type=turn_type)
+        assert result is not None
+        assert result["participant_slug"] == "pedro-sanchez"
 
     def test_chapter_start_clamp_blocks_pre_chapter_pickup(self):
         """A chapter starting at 900s clamps the lookback's backward edge
