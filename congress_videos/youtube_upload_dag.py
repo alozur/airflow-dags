@@ -36,11 +36,12 @@ from congress_videos.modules.participants_db import (
     lookup_participant_by_slug,
     lookup_participant_fuzzy,
 )
+from congress_videos.config.paths import get_video_chapter_dir
 from congress_videos.modules.speaker_placeholders import is_placeholder
 from congress_videos.modules.upload_marking import mark_chapter_uploads, mark_turn_uploads
 from congress_videos.srt_helpers import (
     _parse_srt_blocks,
-    _srt_timestamp_to_seconds,
+    chapter_window_blocks,
     find_srt_for_chapter,
 )
 from utils.airflow_helpers import ensure_project_data_directory, utc_normalize_row, xcom_task
@@ -185,6 +186,22 @@ def _resolve_chapter_speaker(chapter: dict, key_speakers: list, db) -> tuple[str
         return None, key_speakers
 
 
+def _turn_window_bound(primary, fallback, default: float) -> float:
+    """First float-coercible of *primary*/*fallback*, else *default*.
+
+    Group bounds arrive as ``Decimal`` (NUMERIC columns); ``chapter_window_blocks``
+    silently rejects that type, so coercion happens here, per-field (#341 F1).
+    """
+    for value in (primary, fallback):
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return default
+
+
 def _prepare_thumbnail_config(chapter: dict, db) -> dict:
     """Build the thumbnail-generation config dict for a single chapter or turn.
 
@@ -285,32 +302,60 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
         config["output_path"] = chapter.get("output_path")
 
     # Resolve SRT fragment for lapidary quote extraction (issue #57).
+    # Note (issue #146 Fix C): the turn subtitles.srt sidecar is now written
+    # exclusively by the nightly speaker_turn_prepare DAG. The upload path no
+    # longer writes it; srt_fragment below is still needed for the lapidary
+    # thumbnail quote (chapter path) and is harmless for turns.
     video_id = chapter.get("video_id")
+    canonical_dir = (
+        str(get_video_chapter_dir(str(video_id), chapter_id))
+        if video_id is not None and chapter_id is not None
+        else None
+    )
     srt_path = (
-        find_srt_for_chapter(str(video_id), chapter_id, str(session_date) if session_date else None)
+        find_srt_for_chapter(
+            str(video_id),
+            chapter_id,
+            str(session_date) if session_date else None,
+            canonical_dir=canonical_dir,
+        )
         if video_id is not None
         else None
     )
-    if srt_path is not None:
-        blocks = _parse_srt_blocks(srt_path)
-        if is_turn:
-            # Turn: use integer seconds directly from the turn row.
-            window_start_secs = float(chapter.get("start_seconds", 0))
-            window_end_secs = float(chapter.get("end_seconds", 99 * 3600))
-        else:
-            # Chapter: convert SRT-format timestamp strings to seconds.
-            window_start_secs = _srt_timestamp_to_seconds(chapter.get("start_time", "00:00:00,000"))
-            window_end_secs = _srt_timestamp_to_seconds(chapter.get("end_time", "99:59:59,999"))
-        windowed = [
-            b
-            for b in blocks
-            if b["start_secs"] >= window_start_secs and b["end_secs"] <= window_end_secs
-        ]
-        config["srt_fragment"] = " ".join(b["text"] for b in windowed)[:10_000]
-        # Note (issue #146 Fix C): the turn subtitles.srt sidecar is now written
-        # exclusively by the nightly speaker_turn_prepare DAG. The upload path no
-        # longer writes it; srt_fragment above is still needed for the lapidary
-        # thumbnail quote (chapter path) and is harmless for turns.
+    if srt_path is None:
+        logging.warning(
+            "_prepare_thumbnail_config: no SRT resolved (video_id=%s chapter_id=%s "
+            "turn_id=%s) — srt_fragment omitted, thumbnail falls back to invented copy",
+            video_id,
+            chapter_id,
+            chapter.get("turn_id"),
+        )
+        return config
+
+    blocks = _parse_srt_blocks(srt_path)
+    if is_turn:
+        # Grouped clips (#129/#231) publish the GROUP span, not the
+        # representative turn's own narrow span (issue #341).
+        w_start = _turn_window_bound(chapter.get("group_start_seconds"), chapter.get("start_seconds"), 0.0)
+        w_end = _turn_window_bound(chapter.get("group_end_seconds"), chapter.get("end_seconds"), 99 * 3600)
+    else:
+        w_start = chapter.get("start_time", "00:00:00,000")
+        w_end = chapter.get("end_time", "99:59:59,999")
+
+    fragment = " ".join(b["text"] for b in chapter_window_blocks(blocks, w_start, w_end))[:10_000]
+    if fragment:
+        config["srt_fragment"] = fragment
+    else:
+        logging.warning(
+            "_prepare_thumbnail_config: empty SRT window (video_id=%s chapter_id=%s "
+            "turn_id=%s window=%s..%s blocks=%d) — srt_fragment omitted",
+            video_id,
+            chapter_id,
+            chapter.get("turn_id"),
+            w_start,
+            w_end,
+            len(blocks),
+        )
 
     return config
 

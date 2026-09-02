@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1334,7 +1336,9 @@ class TestPrepareThumbnailConfigSrtFragment:
     """_prepare_thumbnail_config must resolve and thread the SRT fragment."""
 
     def test_srt_present_adds_srt_fragment_to_config(self):
-        """When SRT resolves, config[srt_fragment] equals the joined block text."""
+        """When SRT resolves, config[srt_fragment] includes every overlapping block,
+        including ones straddling either window boundary (issue #341: overlap, not
+        containment)."""
         from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
 
         chapter = _make_srt_chapter(
@@ -1343,9 +1347,13 @@ class TestPrepareThumbnailConfigSrtFragment:
         )
 
         blocks = [
-            {"start_secs": 60.0, "end_secs": 70.0, "text": "primera frase del debate"},
-            {"start_secs": 75.0, "end_secs": 85.0, "text": "segunda frase importante"},
-            # block outside window — must be excluded
+            # straddles window start (55s..65s crosses 60s) — must be INCLUDED
+            {"start_secs": 55.0, "end_secs": 65.0, "text": "arranca antes de la ventana"},
+            {"start_secs": 70.0, "end_secs": 80.0, "text": "primera frase del debate"},
+            {"start_secs": 90.0, "end_secs": 100.0, "text": "segunda frase importante"},
+            # straddles window end (115s..125s crosses 120s) — must be INCLUDED
+            {"start_secs": 115.0, "end_secs": 125.0, "text": "termina tras la ventana"},
+            # block outside window entirely — must be excluded
             {"start_secs": 200.0, "end_secs": 210.0, "text": "fuera de ventana"},
         ]
 
@@ -1366,8 +1374,10 @@ class TestPrepareThumbnailConfigSrtFragment:
             result = _prepare_thumbnail_config(chapter, MagicMock())
 
         assert "srt_fragment" in result
+        assert "arranca antes de la ventana" in result["srt_fragment"]
         assert "primera frase del debate" in result["srt_fragment"]
         assert "segunda frase importante" in result["srt_fragment"]
+        assert "termina tras la ventana" in result["srt_fragment"]
         assert "fuera de ventana" not in result["srt_fragment"]
 
     def test_srt_text_capped_at_10000_chars(self):
@@ -1403,11 +1413,12 @@ class TestPrepareThumbnailConfigSrtFragment:
 
         assert len(result["srt_fragment"]) == 10_000
 
-    def test_srt_absent_omits_srt_fragment_key(self):
-        """When no SRT resolves, the srt_fragment key must be absent from config."""
+    def test_srt_absent_omits_srt_fragment_key(self, caplog):
+        """When no SRT resolves, the srt_fragment key must be absent from config,
+        and a WARNING naming the row identifiers and the miss cause is logged."""
         from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
 
-        chapter = _make_srt_chapter()
+        chapter = _make_srt_chapter(chapter_id=42, video_id="vid001")
 
         with (
             patch(
@@ -1418,10 +1429,13 @@ class TestPrepareThumbnailConfigSrtFragment:
                 "congress_videos.youtube_upload_dag.find_srt_for_chapter",
                 return_value=None,
             ),
+            caplog.at_level(logging.WARNING),
         ):
             result = _prepare_thumbnail_config(chapter, MagicMock())
 
         assert "srt_fragment" not in result
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("vid001" in r.message and "42" in r.message for r in warnings)
 
 
 class TestTriggerThumbnailGenerationForwardsSrt:
@@ -1614,6 +1628,12 @@ class TestTriggerThumbnailGenerationForwardsKeySpeakers:
 # ---------------------------------------------------------------------------
 
 
+# Sentinel distinguishing "not passed" (mirror the turn's own bounds — issue
+# #341 default, identical behavior for every pre-existing consumer) from an
+# explicitly-passed None (used by the group-bounds-fallback tests).
+_UNSET = object()
+
+
 def _make_turn_row(
     turn_id: int = 1,
     output_path: str = "/data/turn1.mp4",
@@ -1625,6 +1645,8 @@ def _make_turn_row(
     session_number: int = 80,
     session_date: str = "2025-06-10",
     resolved_participant_slug: str | None = None,
+    group_start_seconds=_UNSET,
+    group_end_seconds=_UNSET,
 ) -> dict:
     # Non-zero offset (hours=2) reproduces the psycopg2 TIMESTAMPTZ shape that
     # crashes Airflow's XCom serializer with a ValueError on empty ZoneInfo key.
@@ -1645,7 +1667,36 @@ def _make_turn_row(
         "materialized_at": datetime(2026, 8, 22, 1, 0, tzinfo=_tz_offset),
         "prepared_at": datetime(2026, 8, 22, 0, 0, tzinfo=_tz_offset),
         "resolved_participant_slug": resolved_participant_slug,
+        "group_start_seconds": start_seconds if group_start_seconds is _UNSET else group_start_seconds,
+        "group_end_seconds": end_seconds if group_end_seconds is _UNSET else group_end_seconds,
     }
+
+
+def _run_turn_config(turn: dict, blocks: list[dict], *, srt_path: str = "/fake/turn.srt"):
+    """Patch the SRT seam and run `_prepare_thumbnail_config` for a turn row.
+
+    Shared by the group-window test suite (issue #341) to avoid a fresh
+    triple-patch stack per test. Sets `video_id` when the caller did not,
+    since `find_srt_for_chapter` is only reached when `video_id` is present.
+    """
+    from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+    turn.setdefault("video_id", "vid001")
+    with (
+        patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "garcia-ana"},
+        ),
+        patch(
+            "congress_videos.youtube_upload_dag.find_srt_for_chapter",
+            return_value=srt_path,
+        ),
+        patch(
+            "congress_videos.youtube_upload_dag._parse_srt_blocks",
+            return_value=blocks,
+        ),
+    ):
+        return _prepare_thumbnail_config(turn, MagicMock())
 
 
 class TestPrepareThumbnailConfigForTurn:
@@ -1685,22 +1736,29 @@ class TestPrepareThumbnailConfigForTurn:
         lookup.assert_called_once_with("Pedro López")
         assert result["slug"] == "lopez-pedro"
 
-    def test_srt_fragment_bounded_by_start_end_seconds(self, tmp_path, mocker):
-        """Turn config: SRT fragment must be limited to [start_seconds, end_seconds]."""
+    def test_srt_fragment_bounded_by_group_window(self, tmp_path, mocker):
+        """Turn config: SRT fragment must be limited to
+        [group_start_seconds, group_end_seconds], which is wider than the
+        representative turn's own [start_seconds, end_seconds] (issue #341)."""
         from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
 
-        # SRT content: block 1 within window, block 2 after window
+        # SRT content: block 1 outside the turn's own span but inside the group
+        # span (straddles the group start), block 2 inside both, block 3 outside
+        # the group span entirely.
         srt_content = (
-            "1\n00:01:00,000 --> 00:02:00,000\nDentro del turno.\n\n"
-            "2\n00:04:00,000 --> 00:05:00,000\nFuera del turno.\n\n"
+            "1\n00:00:50,000 --> 00:01:10,000\nAntes del turno propio, dentro del grupo.\n\n"
+            "2\n00:01:30,000 --> 00:02:00,000\nDentro del turno propio.\n\n"
+            "3\n00:04:00,000 --> 00:05:00,000\nFuera del grupo.\n\n"
         )
         srt_path = tmp_path / "test.srt"
         srt_path.write_text(srt_content, encoding="utf-8")
 
         turn = _make_turn_row(
             turn_id=1,
-            start_seconds=60.0,   # 00:01:00
-            end_seconds=180.0,    # 00:03:00 — block 2 is at 240s, outside window
+            start_seconds=90.0,          # 00:01:30 — turn's own narrow span
+            end_seconds=120.0,           # 00:02:00
+            group_start_seconds=60.0,    # 00:01:00 — wider group span
+            group_end_seconds=180.0,     # 00:03:00
         )
         turn["video_id"] = "video123"
         turn["session_date"] = "2025-06-10"
@@ -1717,8 +1775,9 @@ class TestPrepareThumbnailConfigForTurn:
         result = _prepare_thumbnail_config(turn, MagicMock())
 
         assert "srt_fragment" in result
-        assert "Dentro del turno" in result["srt_fragment"]
-        assert "Fuera del turno" not in result["srt_fragment"]
+        assert "Antes del turno propio, dentro del grupo" in result["srt_fragment"]
+        assert "Dentro del turno propio" in result["srt_fragment"]
+        assert "Fuera del grupo" not in result["srt_fragment"]
 
     def test_chapter_id_preserved_in_config(self):
         """Turn config: chapter_id must be preserved for thumbnail identity."""
@@ -1747,6 +1806,165 @@ class TestPrepareThumbnailConfigForTurn:
             result = _prepare_thumbnail_config(turn, MagicMock())
 
         assert "80" in result["session"]
+
+
+def _group_turn(**overrides) -> dict:
+    """Turn bounds for the group-window suite: own span 90-120s, group span 60-180s."""
+    base = {"start_seconds": 90.0, "end_seconds": 120.0, "group_start_seconds": 60.0, "group_end_seconds": 180.0}
+    base.update(overrides)
+    return _make_turn_row(**base)
+
+
+class TestPrepareThumbnailConfigGroupWindow:
+    """Turn-row SRT windowing uses the GROUP span, not the representative
+    turn's own narrow span (issue #341). Overlap semantics, per-field
+    coercing fallback, and non-fatal empty-window handling."""
+
+    def test_block_outside_turn_span_inside_group_span_included(self):
+        """A block inside the group span but outside the turn's own span is INCLUDED (#341 lock)."""
+        turn = _group_turn()
+        blocks = [{"start_secs": 70.0, "end_secs": 80.0, "text": "dentro del grupo"}]
+
+        config = _run_turn_config(turn, blocks)
+
+        assert "dentro del grupo" in config.get("srt_fragment", "")
+
+    def test_block_outside_group_span_excluded(self):
+        """A block with no overlap with the group span is EXCLUDED."""
+        turn = _group_turn()
+        blocks = [
+            {"start_secs": 100.0, "end_secs": 110.0, "text": "dentro del grupo"},
+            {"start_secs": 200.0, "end_secs": 210.0, "text": "fuera del grupo"},
+        ]
+
+        config = _run_turn_config(turn, blocks)
+
+        assert "dentro del grupo" in config["srt_fragment"]
+        assert "fuera del grupo" not in config["srt_fragment"]
+
+    @pytest.mark.parametrize(
+        ("start_secs", "end_secs", "text"),
+        [(55.0, 65.0, "cruza el inicio del grupo"), (175.0, 185.0, "cruza el final del grupo")],
+        ids=["start-boundary", "end-boundary"],
+    )
+    def test_block_straddling_group_boundary_included(self, start_secs, end_secs, text):
+        """A block whose span crosses either group boundary is INCLUDED."""
+        turn = _group_turn()
+        blocks = [{"start_secs": start_secs, "end_secs": end_secs, "text": text}]
+
+        config = _run_turn_config(turn, blocks)
+
+        assert text in config.get("srt_fragment", "")
+
+    @pytest.mark.parametrize(
+        ("group_start", "group_end", "pop_keys"),
+        [(None, None, True), (None, None, False), ("not-a-number", "also-bad", False)],
+        ids=["missing-keys", "none-bounds", "non-numeric"],
+    )
+    def test_group_bounds_fallback_to_turn_bounds(self, group_start, group_end, pop_keys):
+        """Missing, None, or unparsable group bounds fall back to the turn's own start/end."""
+        turn = _make_turn_row(
+            start_seconds=60.0,
+            end_seconds=120.0,
+            group_start_seconds=group_start,
+            group_end_seconds=group_end,
+        )
+        if pop_keys:
+            del turn["group_start_seconds"]
+            del turn["group_end_seconds"]
+        blocks = [
+            {"start_secs": 70.0, "end_secs": 80.0, "text": "dentro del turno"},
+            {"start_secs": 300.0, "end_secs": 310.0, "text": "muy lejos"},
+        ]
+
+        config = _run_turn_config(turn, blocks)
+
+        assert "dentro del turno" in config["srt_fragment"]
+        assert "muy lejos" not in config["srt_fragment"]
+
+    def test_decimal_group_bounds_produce_same_window_as_float(self, caplog):
+        """Decimal group bounds (the DB driver's real shape for NUMERIC columns)
+        must produce a non-empty fragment, with no empty-window WARNING fired
+        by the type alone (design finding F1)."""
+        turn = _make_turn_row(
+            start_seconds=60.0,
+            end_seconds=120.0,
+            group_start_seconds=Decimal("60.0"),
+            group_end_seconds=Decimal("120.0"),
+        )
+        blocks = [{"start_secs": 70.0, "end_secs": 80.0, "text": "cita con decimal"}]
+
+        with caplog.at_level(logging.WARNING):
+            config = _run_turn_config(turn, blocks)
+
+        assert config.get("srt_fragment") == "cita con decimal"
+        assert not any("empty SRT window" in r.message for r in caplog.records)
+
+    def test_empty_window_omits_key_and_warns(self, caplog):
+        """An empty overlap omits srt_fragment (never "") and logs a WARNING
+        naming the row identifiers and the empty-window cause."""
+        turn = _group_turn(turn_id=7, chapter_id=42)
+        blocks = [{"start_secs": 500.0, "end_secs": 510.0, "text": "muy lejos del grupo"}]
+
+        with caplog.at_level(logging.WARNING):
+            config = _run_turn_config(turn, blocks)
+
+        assert "srt_fragment" not in config
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("empty SRT window" in r.message for r in warnings)
+        assert any("42" in r.message and "7" in r.message for r in warnings)
+
+
+class TestPrepareThumbnailConfigCanonicalDir:
+    """`find_srt_for_chapter` must receive `canonical_dir` (issue #341/#340)."""
+
+    def test_canonical_dir_passed_for_turn_row(self):
+        """Turn row: canonical_dir == str(get_video_chapter_dir(video_id, chapter_id))."""
+        from congress_videos.config.paths import get_video_chapter_dir
+
+        turn = _make_turn_row(chapter_id=42)
+        turn["video_id"] = "vid001"
+        mock_find = self._run_and_capture(turn)
+
+        assert mock_find.call_args.kwargs["canonical_dir"] == str(get_video_chapter_dir("vid001", 42))
+
+    def test_canonical_dir_passed_for_chapter_row(self):
+        """Chapter row: canonical_dir == str(get_video_chapter_dir(video_id, chapter_id))."""
+        from congress_videos.config.paths import get_video_chapter_dir
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        chapter = _make_srt_chapter(chapter_id=42, video_id="vid001")
+        with (
+            patch("congress_videos.youtube_upload_dag.get_participants_roster", return_value=[]),
+            patch("congress_videos.youtube_upload_dag.find_srt_for_chapter", return_value=None) as mock_find,
+        ):
+            _prepare_thumbnail_config(chapter, MagicMock())
+
+        assert mock_find.call_args.kwargs["canonical_dir"] == str(get_video_chapter_dir("vid001", 42))
+
+    def test_canonical_dir_none_when_chapter_id_missing(self):
+        """When chapter_id is missing/None, canonical_dir must be None (D3) —
+        legacy probe behavior stays unchanged."""
+        turn = _make_turn_row()
+        turn["video_id"] = "vid001"
+        turn["chapter_id"] = None
+        mock_find = self._run_and_capture(turn)
+
+        assert mock_find.call_args.kwargs["canonical_dir"] is None
+
+    @staticmethod
+    def _run_and_capture(turn: dict):
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+                return_value={"slug": "garcia-ana"},
+            ),
+            patch("congress_videos.youtube_upload_dag.find_srt_for_chapter", return_value=None) as mock_find,
+        ):
+            _prepare_thumbnail_config(turn, MagicMock())
+        return mock_find
 
 
 class TestPrepareThumbnailConfigForTurnSlugFallback:

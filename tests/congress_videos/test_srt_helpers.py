@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from congress_videos.srt_helpers import (
@@ -12,6 +14,7 @@ from congress_videos.srt_helpers import (
     _window_srt_blocks,
     find_srt_for_chapter,
     score_turn_interest,
+    write_chapter_srt_sidecar,
     _window_srt_text,
     select_pretrim_window,
 )
@@ -940,3 +943,161 @@ class TestChapterWindowBlocks:
         from congress_videos.srt_helpers import chapter_window_blocks
 
         assert chapter_window_blocks([], "00:10:00,000", "00:40:00,000") == []
+
+
+# ---------------------------------------------------------------------------
+# write_chapter_srt_sidecar (issue #340) — persisted per-chapter sidecar
+# ---------------------------------------------------------------------------
+
+_CHAPTER_SIDECAR_SRT = (
+    "1\n00:01:00,000 --> 00:01:05,000\nfuera antes del pad\n\n"
+    "2\n00:02:30,000 --> 00:02:35,000\ndentro del pad izquierdo\n\n"
+    "3\n00:05:10,000 --> 00:05:15,000\ndentro del capitulo\n\n"
+    "4\n00:08:00,000 --> 00:08:05,000\ndentro del pad derecho\n\n"
+    "5\n00:08:40,000 --> 00:08:45,000\nfuera despues del pad\n\n"
+)
+
+
+class TestWriteChapterSrtSidecar:
+    """start_time=00:05:00,000 / end_time=00:05:30,000 (300s/330s), pad=180s
+    -> padded window [120s, 510s]. Only blocks 2-4 above overlap it."""
+
+    VIDEO_ID = "vidZZZ"
+    CHAPTER_ID = 7
+    START = "00:05:00,000"
+    END = "00:05:30,000"
+
+    @pytest.fixture
+    def source_srt(self, tmp_path, mocker):
+        """Real source SRT resolvable by the (unmocked) find_srt_for_chapter."""
+        project_dir = tmp_path / "project_data"
+        srt_dir = project_dir / self.VIDEO_ID / "srt_files"
+        srt_dir.mkdir(parents=True)
+        (srt_dir / f"{self.VIDEO_ID}.srt").write_text(_CHAPTER_SIDECAR_SRT, encoding="utf-8")
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", str(project_dir))
+        mocker.patch("congress_videos.srt_helpers.DOWNLOADS_DIR", str(tmp_path / "no_downloads"))
+        return project_dir
+
+    @pytest.fixture
+    def target_dir(self, tmp_path, mocker):
+        """Writer's target dir, decoupled from the source-lookup mocks above."""
+        target = tmp_path / "chapter_target"
+        mocker.patch("congress_videos.srt_helpers.get_video_chapter_dir", return_value=target)
+        return target
+
+    def test_happy_path_writes_padded_absolute_timestamped_sidecar(self, source_srt, target_dir):
+        result = write_chapter_srt_sidecar(self.VIDEO_ID, self.CHAPTER_ID, self.START, self.END)
+
+        assert result == target_dir / "subtitles.srt"
+        assert target_dir.is_dir()  # parent dirs created (mkdir parents=True)
+        content = (target_dir / "subtitles.srt").read_text(encoding="utf-8")
+
+        assert "dentro del pad izquierdo" in content
+        assert "dentro del capitulo" in content
+        assert "dentro del pad derecho" in content
+        assert "fuera antes del pad" not in content
+        assert "fuera despues del pad" not in content
+        # Absolute source-video timestamps preserved, not re-timed to window origin.
+        assert "00:02:30,000 --> 00:02:35,000" in content
+        assert "00:08:00,000 --> 00:08:05,000" in content
+        assert not (target_dir / "subtitles.srt.tmp").exists()
+
+    def test_start_end_time_bounds_stay_plain_strings_never_tz_typed(self, source_srt, target_dir):
+        start, end = self.START, self.END
+        write_chapter_srt_sidecar(self.VIDEO_ID, self.CHAPTER_ID, start, end)
+        # issue #163 regression class: bounds stay plain strings, never coerced
+        # into datetime/time objects.
+        assert isinstance(start, str) and isinstance(end, str)
+
+    def test_nested_parent_dirs_are_created(self, source_srt, tmp_path, mocker):
+        nested = tmp_path / "a" / "b" / "c"  # none of these levels pre-exist
+        mocker.patch("congress_videos.srt_helpers.get_video_chapter_dir", return_value=nested)
+
+        result = write_chapter_srt_sidecar(self.VIDEO_ID, self.CHAPTER_ID, self.START, self.END)
+
+        assert result == nested / "subtitles.srt"
+        assert (nested / "subtitles.srt").exists()
+
+    def test_rerun_overwrites_with_fresh_window(self, source_srt, target_dir):
+        write_chapter_srt_sidecar(self.VIDEO_ID, self.CHAPTER_ID, self.START, self.END)
+        first_content = (target_dir / "subtitles.srt").read_text(encoding="utf-8")
+        assert "dentro del capitulo" in first_content
+
+        # Different span, outside the first window — proves overwrite, not append.
+        second_result = write_chapter_srt_sidecar(
+            self.VIDEO_ID, self.CHAPTER_ID, "00:01:00,000", "00:01:05,000"
+        )
+        second_content = (target_dir / "subtitles.srt").read_text(encoding="utf-8")
+
+        assert second_result == target_dir / "subtitles.srt"
+        assert "fuera antes del pad" in second_content
+        assert "dentro del capitulo" not in second_content
+        assert not (target_dir / "subtitles.srt.tmp").exists()
+
+    def test_missing_source_srt_returns_none_and_writes_no_file(self, tmp_path, mocker):
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", str(tmp_path / "empty"))
+        mocker.patch("congress_videos.srt_helpers.DOWNLOADS_DIR", str(tmp_path / "no_downloads"))
+        target = tmp_path / "chapter_target"
+        mocker.patch("congress_videos.srt_helpers.get_video_chapter_dir", return_value=target)
+
+        result = write_chapter_srt_sidecar(self.VIDEO_ID, self.CHAPTER_ID, self.START, self.END)
+
+        assert result is None
+        assert not target.exists()
+
+    def test_empty_padded_window_returns_none_no_file_and_warns(self, source_srt, target_dir, caplog):
+        # Padded window for a 01:00:00 chapter is [3420s, 3785s] — no fixture
+        # block (max 525s) overlaps it.
+        with caplog.at_level(logging.WARNING):
+            result = write_chapter_srt_sidecar(
+                self.VIDEO_ID, self.CHAPTER_ID, "01:00:00,000", "01:00:05,000"
+            )
+
+        assert result is None
+        assert not target_dir.exists()
+        assert any("write_chapter_srt_sidecar" in rec.message for rec in caplog.records)
+
+    def test_unparseable_bounds_returns_none(self, source_srt, target_dir, mocker):
+        import congress_videos.srt_helpers as srt_helpers_mod
+
+        probe = mocker.spy(srt_helpers_mod, "find_srt_for_chapter")
+        result = write_chapter_srt_sidecar(self.VIDEO_ID, self.CHAPTER_ID, "not-a-timestamp", self.END)
+
+        assert result is None
+        assert not target_dir.exists()
+        probe.assert_not_called()  # bounds validated BEFORE the source is probed
+
+    def test_traversal_video_id_returns_none_and_creates_nothing(self, source_srt, target_dir):
+        result = write_chapter_srt_sidecar("../../etc/passwd", self.CHAPTER_ID, self.START, self.END)
+
+        assert result is None
+        assert not target_dir.exists()
+
+    def test_oserror_during_write_is_swallowed_and_tmp_is_unlinked(
+        self, source_srt, target_dir, mocker, caplog
+    ):
+        mocker.patch("os.replace", side_effect=OSError("disk full"))
+
+        with caplog.at_level(logging.WARNING):
+            result = write_chapter_srt_sidecar(self.VIDEO_ID, self.CHAPTER_ID, self.START, self.END)
+
+        assert result is None
+        assert not (target_dir / "subtitles.srt").exists()
+        assert not (target_dir / "subtitles.srt.tmp").exists()
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any(r.exc_info is not None for r in warnings)
+
+    def test_never_passes_canonical_dir_to_its_own_probe(self, source_srt, target_dir, mocker):
+        import congress_videos.srt_helpers as srt_helpers_mod
+
+        spy = mocker.patch(
+            "congress_videos.srt_helpers.find_srt_for_chapter",
+            wraps=srt_helpers_mod.find_srt_for_chapter,
+        )
+
+        write_chapter_srt_sidecar(self.VIDEO_ID, self.CHAPTER_ID, self.START, self.END)
+
+        assert spy.call_count >= 1
+        for call in spy.call_args_list:
+            assert "canonical_dir" not in call.kwargs
+            assert len(call.args) <= 3

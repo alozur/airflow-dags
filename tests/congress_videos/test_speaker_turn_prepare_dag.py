@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+from contextlib import ExitStack
 from pathlib import Path
 from subprocess import PIPE
 from unittest.mock import MagicMock, call, patch
@@ -494,6 +495,68 @@ class TestWriteTurnSidecarsGroupedRange:
         assert srt_path.exists()
         content = srt_path.read_text(encoding="utf-8")
         assert len(content) > 0, "Single-turn SRT must be non-empty for overlapping block"
+
+
+class TestWriteTurnSidecarsCanonicalDir:
+    """canonical_dir wiring (issue #340 slice 2): prefer the persisted
+    per-chapter sidecar over the legacy downloads/ probes.
+
+    ``find_srt_for_chapter`` itself already resolves preference-order and
+    fallback behavior for a given ``canonical_dir`` (see
+    TestFindSrtForChapterCanonical in test_srt_helpers.py); these tests
+    verify the caller in speaker_turn_prepare_dag.py computes and passes
+    the right value (or None) at the call site.
+    """
+
+    def _make_turn(self, tmp_path, video_id="vidXYZ", chapter_id=100):
+        video_dir = tmp_path / "output_turn_canonical"
+        video_dir.mkdir()
+        return {
+            "turn_id": 900,
+            "output_path": str(video_dir / "video.mp4"),
+            "chapter_id": chapter_id,
+            "resolved_name": "Speaker Name",
+            "start_seconds": 100.0,
+            "end_seconds": 200.0,
+            "video_id": video_id,
+            "session_date": "2026-01-01",
+        }
+
+    def test_canonical_dir_passed_when_video_and_chapter_present(self, tmp_path):
+        """canonical wins: caller passes get_video_chapter_dir(video_id, chapter_id)."""
+        from congress_videos.config.paths import get_video_chapter_dir
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        turn = self._make_turn(tmp_path)
+
+        with (
+            patch(
+                "congress_videos.srt_helpers.find_srt_for_chapter",
+                return_value=None,
+            ) as mock_find,
+            patch("congress_videos.srt_helpers._parse_srt_blocks", return_value=[]),
+        ):
+            _write_turn_sidecars(turn)
+
+        expected_dir = str(get_video_chapter_dir("vidXYZ", 100))
+        mock_find.assert_called_once_with("vidXYZ", 100, "2026-01-01", expected_dir)
+
+    def test_no_canonical_dir_when_chapter_id_missing(self, tmp_path):
+        """Legacy path unchanged: no chapter_id → canonical_dir stays None."""
+        from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
+
+        turn = self._make_turn(tmp_path, chapter_id=None)
+
+        with (
+            patch(
+                "congress_videos.srt_helpers.find_srt_for_chapter",
+                return_value=None,
+            ) as mock_find,
+            patch("congress_videos.srt_helpers._parse_srt_blocks", return_value=[]),
+        ):
+            _write_turn_sidecars(turn)
+
+        mock_find.assert_called_once_with("vidXYZ", None, "2026-01-01", None)
 
 
 class TestWriteTurnSidecarsKeepIntervalsBranch:
@@ -1625,3 +1688,256 @@ class TestPrepareTurnsCallableVadStep:
         assert len(vad_calls) == 2, f"VAD must be called for both turns; calls={vad_calls}"
         assert "/data/v1.mp4" in vad_calls
         assert "/data/v2.mp4" in vad_calls
+
+
+# ---------------------------------------------------------------------------
+# qa-promotion re-resolution (issue #342): a conditional wide resolve_speaker
+# pass runs when the narrow result triggers the #282 rule-4 promotion signal.
+# ---------------------------------------------------------------------------
+
+
+class TestQaPromotionReresolution:
+    """Promotion is STICKY on the narrow signal (orchestrator ruling): the
+    wide pass only decides which slug is persisted, never whether
+    promote_turn_type_to_qa fires.
+    """
+
+    def _participants(self):
+        return [
+            {"slug": "maria-lopez", "display_name": "Maria Lopez", "party": "PSOE"},
+            {"slug": "carlos-ruiz", "display_name": "Carlos Ruiz", "party": "PP"},
+        ]
+
+    def _run(
+        self,
+        turn,
+        participants=None,
+        resolve_side_effect=None,
+        resolve_return=None,
+        wide_enabled=None,
+    ):
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        participants = participants if participants is not None else self._participants()
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = [turn]
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db)
+            )
+            mock_sidecars = stack.enter_context(
+                patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars")
+            )
+            stack.enter_context(
+                patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0))
+            )
+            if resolve_side_effect is not None:
+                mock_resolve = stack.enter_context(
+                    patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", side_effect=resolve_side_effect)
+                )
+            else:
+                mock_resolve = stack.enter_context(
+                    patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolve_return)
+                )
+            stack.enter_context(
+                patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=participants)
+            )
+            stack.enter_context(patch("subprocess.run", return_value=MagicMock(returncode=0)))
+            if wide_enabled is not None:
+                stack.enter_context(
+                    patch("congress_videos.speaker_turn_prepare_dag.QA_WIDE_CONTEXT_ENABLED", wide_enabled)
+                )
+            _prepare_turns_callable()
+
+        return mock_db, mock_resolve, mock_sidecars
+
+    def test_wide_accepted_writes_wide_slug_promotes(self, caplog):
+        """Wide result non-None and Gate B accepts it -> wide slug persisted, promotion
+        fires, and exactly one 'qa_reresolution' audit INFO line is emitted (folds
+        the audit-log assertion in here to keep the test count/PR size lean)."""
+        turn = _make_turn(1, "/data/v1.mp4")
+        narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
+        wide = {"participant_slug": "carlos-ruiz", "confidence": 0.90, "evidence": "..."}
+
+        with caplog.at_level(logging.INFO, logger="congress_videos.speaker_turn_prepare_dag"):
+            mock_db, mock_resolve, _ = self._run(turn, resolve_side_effect=[narrow, wide])
+
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "carlos-ruiz", 0.90, "ai_srt_context", 1
+        )
+        mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
+        assert mock_resolve.call_count == 2
+        assert mock_resolve.call_args_list[1][0][0]["turn_type"] == "qa"
+
+        audit_records = [r for r in caplog.records if "qa_reresolution" in r.getMessage()]
+        assert len(audit_records) == 1, f"exactly one qa_reresolution INFO line expected; got {len(audit_records)}"
+        message = audit_records[0].getMessage()
+        assert audit_records[0].name == "congress_videos.speaker_turn_prepare_dag"
+        assert "maria-lopez" in message and "carlos-ruiz" in message and "promoted=" in message
+
+    def test_wide_none_falls_back_to_narrow(self):
+        """Wide pass returns None -> narrow slug persisted, promotion still fires."""
+        turn = _make_turn(1, "/data/v1.mp4")
+        narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
+
+        mock_db, mock_resolve, _ = self._run(turn, resolve_side_effect=[narrow, None])
+
+        assert mock_resolve.call_count == 2, "the wide pass must be attempted before falling back"
+        assert mock_resolve.call_args_list[1][0][0]["turn_type"] == "qa"
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1
+        )
+        mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
+
+    def test_wide_rejected_by_gate_b_falls_back_to_narrow(self, caplog):
+        """Wide name absent from the chapter roster, narrow name present -> narrow wins,
+        promotion fires, and no WARNING is emitted (silent wide-reject)."""
+        turn = _make_turn(1, "/data/v1.mp4")
+        turn["key_speakers"] = ["Maria Lopez"]
+        narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
+        wide = {"participant_slug": "carlos-ruiz", "confidence": 0.90, "evidence": "..."}
+
+        with caplog.at_level(logging.WARNING, logger="congress_videos.speaker_turn_prepare_dag"):
+            mock_db, mock_resolve, _ = self._run(turn, resolve_side_effect=[narrow, wide])
+
+        assert mock_resolve.call_count == 2, "the wide pass must be attempted before falling back"
+        assert mock_resolve.call_args_list[1][0][0]["turn_type"] == "qa"
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1
+        )
+        mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert warnings == [], f"no WARNING expected on a silent wide-reject; got: {[r.getMessage() for r in warnings]}"
+
+    def test_both_rejected_no_write_no_promotion(self, caplog):
+        """Neither narrow nor wide names match the chapter roster -> no write,
+        no in-memory patch, no promotion; exactly one WARNING (existing format)."""
+        turn = _make_turn(1, "/data/v1.mp4")
+        turn["key_speakers"] = ["Someone Else"]
+        narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
+        wide = {"participant_slug": "carlos-ruiz", "confidence": 0.90, "evidence": "..."}
+
+        with caplog.at_level(logging.WARNING, logger="congress_videos.speaker_turn_prepare_dag"):
+            mock_db, mock_resolve, _ = self._run(turn, resolve_side_effect=[narrow, wide])
+
+        assert mock_resolve.call_count == 2, "the wide pass must be attempted before rejecting"
+        assert mock_resolve.call_args_list[1][0][0]["turn_type"] == "qa"
+        mock_db.mark_turn_resolved.assert_not_called()
+        mock_db.promote_turn_type_to_qa.assert_not_called()
+        assert turn["resolved_name"] == "Speaker Name", "resolved_name must NOT be patched on reject"
+
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1, f"exactly one WARNING expected; got {len(warnings)}"
+        message = warnings[0].getMessage()
+        assert "1" in message and "maria-lopez" in message and "Maria Lopez" in message
+
+    def test_kill_switch_skips_wide_pass(self):
+        """QA_WIDE_CONTEXT_ENABLED=False -> resolve_speaker called exactly once; narrow
+        written; promotion still fires."""
+        turn = _make_turn(1, "/data/v1.mp4")
+        narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
+
+        mock_db, mock_resolve, _ = self._run(turn, resolve_return=narrow, wide_enabled=False)
+
+        assert mock_resolve.call_count == 1
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1
+        )
+        mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
+
+    def test_wide_pass_does_not_mutate_original_turn(self):
+        """The wide pass invokes resolve_speaker on a shallow copy — the original
+        turn dict's turn_type is never mutated, and the copy is a distinct object."""
+        turn = _make_turn(1, "/data/v1.mp4")
+        turn["turn_type"] = "monologue"
+        narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
+        wide = {"participant_slug": "carlos-ruiz", "confidence": 0.90, "evidence": "..."}
+
+        mock_db, mock_resolve, _ = self._run(turn, resolve_side_effect=[narrow, wide])
+
+        assert turn["turn_type"] == "monologue", "original turn['turn_type'] must be untouched"
+        wide_call_arg = mock_resolve.call_args_list[1][0][0]
+        assert wide_call_arg is not turn, "wide pass must receive a shallow copy, not the original turn"
+        assert wide_call_arg["turn_type"] == "qa"
+
+    def test_sticky_promotion_when_wide_name_equals_previous(self):
+        """Wide winner's display name equals previous_name -> promotion still fires
+        (sticky rule) AND the wide slug is the one persisted."""
+        turn = _make_turn(1, "/data/v1.mp4")
+        turn["resolved_name"] = "Old Name"
+        participants = self._participants() + [
+            {"slug": "old-name-slug", "display_name": "Old Name", "party": "IND"}
+        ]
+        narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
+        wide = {"participant_slug": "old-name-slug", "confidence": 0.95, "evidence": "..."}
+
+        mock_db, mock_resolve, _ = self._run(
+            turn, participants=participants, resolve_side_effect=[narrow, wide]
+        )
+
+        mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "old-name-slug", 0.95, "ai_srt_context", 1
+        )
+
+    def test_wide_pass_raises_falls_back_to_narrow(self):
+        """The wide resolve_speaker call raises -> caught internally, narrow written,
+        and the sidecar step still runs (preparation is never blocked)."""
+        turn = _make_turn(1, "/data/v1.mp4")
+        narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
+
+        mock_db, mock_resolve, mock_sidecars = self._run(
+            turn, resolve_side_effect=[narrow, RuntimeError("wide boom")]
+        )
+
+        assert mock_resolve.call_count == 2, "the wide pass must be attempted before raising"
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1
+        )
+        mock_sidecars.assert_called_once()
+
+
+class TestQaReresolutionNoSignalRegression:
+    """Regression guard: when the narrow-computed promotion signal is False,
+    the resolution step must remain logically identical to pre-#342
+    behavior — exactly one resolve_speaker call, one crosscheck_slug call.
+    """
+
+    def test_no_signal_single_resolve_single_crosscheck_call(self):
+        """previous_name equals the narrow-resolved name (casefold) -> no wide pass,
+        exactly one resolve_speaker call and one crosscheck_slug call, one write,
+        zero promotions."""
+        from congress_videos.modules.speaker_roster_crosscheck import (
+            crosscheck_slug as real_crosscheck_slug,
+        )
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turn = _make_turn(1, "/data/v1.mp4")
+        turn["resolved_name"] = "Maria Lopez"
+        participants = [{"slug": "maria-lopez", "display_name": "Maria Lopez", "party": "PSOE"}]
+        narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
+
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = [turn]
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=narrow) as mock_resolve,
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=participants),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.crosscheck_slug",
+                side_effect=real_crosscheck_slug,
+            ) as mock_crosscheck,
+        ):
+            _prepare_turns_callable()
+
+        assert mock_resolve.call_count == 1
+        assert mock_crosscheck.call_count == 1
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1
+        )
+        mock_db.promote_turn_type_to_qa.assert_not_called()
