@@ -22,8 +22,8 @@ volumes:
 x-airflow-common:
   &airflow-common
   # Custom Airflow image with ffmpeg and Deno support (required for yt-dlp YouTube)
-  # Build with: docker build -t my-airflow:latest .
-  image: my-airflow:latest
+  # Promoted from the dev tag, byte-identical: docker tag my-airflow:dev my-airflow:prod
+  image: my-airflow:prod
   restart: unless-stopped
   environment:
     # LocalExecutor allows parallel task execution (required for triggering other DAGs)

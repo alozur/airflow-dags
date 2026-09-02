@@ -217,7 +217,7 @@ conda run -n airflow airflow tasks test congress_youtube_channel_monitor fetch_y
 ### Desplegar con Docker (desarrollo)
 ```bash
 # Crear .env con las variables requeridas, luego:
-docker build -t my-airflow:latest .
+docker build -t my-airflow:dev .
 docker compose up -d
 # UI disponible en http://localhost:8081
 ```
