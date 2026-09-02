@@ -2,7 +2,9 @@
 
 Loads the standalone script via importlib (mirrors
 tests/congress_videos/scripts/test_generate_youtube_token.py) instead of a
-package import, since scripts/ is not a package. Every test mocks the DB
+package import, since scripts/ is not a package. The audited script stays at
+repo-root scripts/ (DagBag safe-mode + its own sys.path hack), so _SCRIPT
+resolves via parents[3] rather than a sibling lookup. Every test mocks the DB
 connection/cursor — no live Postgres is required or contacted, and no test
 here ever asserts a write (INSERT/UPDATE/DELETE) was executed.
 """
@@ -11,7 +13,9 @@ import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock
 
-_SCRIPT = Path(__file__).resolve().parent / "audit_turn_resolution_propagation.py"
+_SCRIPT = (
+    Path(__file__).resolve().parents[3] / "scripts" / "audit_turn_resolution_propagation.py"
+)
 
 
 def _load_script():
