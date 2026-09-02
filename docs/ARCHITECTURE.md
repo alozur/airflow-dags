@@ -35,7 +35,7 @@ independientes de YouTube.
   |                 --> parse_description_links
   |                     [Paralelo]
   |                       scrape_press_release (BeautifulSoup)
-  |                       download_and_read_agenda (PyPDF2)
+  |                       download_and_read_agenda (pypdf)
   |                         --> extract_session_date
   |                             --> extract_agenda_section
   |     --> split_srt_by_silence (silencios >= 15s, chunks 10-20 min)

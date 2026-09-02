@@ -20,6 +20,7 @@ test_generic_thumbnail_dag.py.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from unittest.mock import MagicMock, patch
 
@@ -435,7 +436,7 @@ def test_art_direct_is_publicly_importable():
 
 
 class TestGenerateTitle:
-    """generate_title(summary, best, cfg) contracts."""
+    """generate_title(summary, best) contracts."""
 
     def _best_opt(
         self,
@@ -461,8 +462,7 @@ class TestGenerateTitle:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             return_value={"data": {"title": valid_title}, "error": None},
         )
-        cfg = _make_cfg()
-        result = generate_title("Debate sobre pensiones", self._best_opt(), cfg)
+        result = generate_title("Debate sobre pensiones", self._best_opt())
 
         assert result == valid_title
         assert mock_completion.call_count == 1
@@ -475,8 +475,7 @@ class TestGenerateTitle:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             return_value={"data": {"title": "Valid title aquí"}, "error": None},
         )
-        cfg = _make_cfg()
-        generate_title("Debate summary", self._best_opt(), cfg)
+        generate_title("Debate summary", self._best_opt())
 
         mock_fn.assert_called_once()
         # Verify no openai direct call was made via module import
@@ -502,8 +501,7 @@ class TestGenerateTitle:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             side_effect=_side_effect,
         )
-        cfg = _make_cfg()
-        result = generate_title("summary", self._best_opt(), cfg)
+        result = generate_title("summary", self._best_opt())
 
         assert call_count["n"] == 2
         assert result == short_title
@@ -526,8 +524,7 @@ class TestGenerateTitle:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             side_effect=_side_effect,
         )
-        cfg = _make_cfg()
-        result = generate_title("summary", self._best_opt(), cfg)
+        result = generate_title("summary", self._best_opt())
 
         assert call_count["n"] == 2
         assert "\U0001f525" not in result
@@ -541,10 +538,9 @@ class TestGenerateTitle:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             return_value={"data": {"title": bad_title}, "error": None},
         )
-        cfg = _make_cfg()
 
         with caplog.at_level(logging.WARNING):
-            result = generate_title("summary", self._best_opt(), cfg)
+            result = generate_title("summary", self._best_opt())
 
         # Must not raise
         assert isinstance(result, str)
@@ -568,10 +564,9 @@ class TestGenerateTitle:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             return_value={"data": {"title": emoji_only}, "error": None},
         )
-        cfg = _make_cfg()
 
         with pytest.raises(TitleGenerationError, match="both OpenAI attempts"):
-            generate_title("summary", self._best_opt(), cfg)
+            generate_title("summary", self._best_opt())
 
     def test_first_invalid_sanitisable_second_nothing_returns_sanitised(self, mocker):
         """Issue #317 (A-3): an invalid-but-sanitisable first candidate still
@@ -592,9 +587,8 @@ class TestGenerateTitle:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             side_effect=_side_effect,
         )
-        cfg = _make_cfg()
 
-        result = generate_title("summary", self._best_opt(), cfg)
+        result = generate_title("summary", self._best_opt())
 
         assert result
         assert "\U0001f525" not in result
@@ -617,8 +611,7 @@ class TestGenerateTitle:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             side_effect=_side_effect,
         )
-        cfg = _make_cfg()
-        result = generate_title("summary", self._best_opt(), cfg)
+        result = generate_title("summary", self._best_opt())
 
         assert call_count["n"] == 2
         assert result == normal_title
@@ -632,8 +625,7 @@ class TestGenerateTitle:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             return_value={"data": {"title": title}, "error": None},
         )
-        cfg = _make_cfg()
-        result = generate_title("summary", self._best_opt(), cfg)
+        result = generate_title("summary", self._best_opt())
 
         assert mock_completion.call_count == 1
         assert result == title
@@ -890,7 +882,6 @@ class TestTriangulateEdgeCases:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             return_value={"data": None, "error": "API error"},
         )
-        cfg = _make_cfg()
         best = {
             "label": "option_a",
             "style": "A",
@@ -900,7 +891,7 @@ class TestTriangulateEdgeCases:
             "main_score": 80.0,
         }
         with pytest.raises(TitleGenerationError, match="both OpenAI attempts"):
-            generate_title("summary", best, cfg)
+            generate_title("summary", best)
 
     def test_choose_best_preserves_all_fields(self):
         """choose_best_option returns the full original dict plus is_chosen=True."""
@@ -1632,13 +1623,6 @@ class TestArtDirectSiblingInjection:
 class TestGenerateTitleSiblingInjection:
     """Phase 4: generate_title optional sibling_titles injection."""
 
-    def _make_cfg(self) -> dict:
-        return {
-            "styles": [],
-            "participants_lookup": lambda slug: None,
-            "party_logo_map": None,
-        }
-
     def _valid_title_response(self, title: str = "Un título válido") -> dict:
         return {"data": {"title": title}, "error": None}
 
@@ -1660,7 +1644,6 @@ class TestGenerateTitleSiblingInjection:
         generate_title(
             "debate summary",
             best,
-            self._make_cfg(),
             sibling_titles=[
                 "Title A: La crisis sanitaria",
                 "Title B: El colapso del sistema",
@@ -1689,7 +1672,7 @@ class TestGenerateTitleSiblingInjection:
             side_effect=_capture,
         )
         best = {"style": "A", "prompt": "mercado"}
-        generate_title("debate summary", best, self._make_cfg())
+        generate_title("debate summary", best)
 
         assert captured_prompts, "generate_json_completion must be called"
         assert "NO REPITAS" not in captured_prompts[0], (
@@ -1713,7 +1696,7 @@ class TestGenerateTitleSiblingInjection:
             side_effect=_capture,
         )
         best = {"style": "A", "prompt": "mercado"}
-        generate_title("debate summary", best, self._make_cfg(), sibling_titles=[])
+        generate_title("debate summary", best, sibling_titles=[])
 
         assert captured_prompts, "generate_json_completion must be called"
         assert "NO REPITAS" not in captured_prompts[0], (
@@ -1972,9 +1955,8 @@ class TestQuestionMarkRejection:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             side_effect=_side_effect,
         )
-        cfg = _make_cfg()
         best = {"style": "A", "prompt": "debate"}
-        return generate_title("Debate summary", best, cfg), call_count
+        return generate_title("Debate summary", best), call_count
 
     def test_title_ending_in_question_mark_rejected(self, mocker) -> None:
         """_is_valid returns False for a title ending with ?."""
@@ -2024,9 +2006,8 @@ class TestQuestionMarkReprompt:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             side_effect=_side_effect,
         )
-        cfg = _make_cfg()
         best = {"style": "A", "prompt": "debate"}
-        result = generate_title("Debate summary", best, cfg)
+        result = generate_title("Debate summary", best)
 
         assert call_count["n"] == 2
         assert "interrogaci" in captured_prompts[1].lower(), (
@@ -2050,9 +2031,8 @@ class TestQuestionMarkReprompt:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             side_effect=_side_effect,
         )
-        cfg = _make_cfg()
         best = {"style": "A", "prompt": "debate"}
-        result = generate_title("Debate summary", best, cfg)
+        result = generate_title("Debate summary", best)
 
         assert result == "Feijóo critica la política del Gobierno"
 
@@ -2070,9 +2050,8 @@ class TestQuestionMarkReprompt:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             side_effect=_side_effect,
         )
-        cfg = _make_cfg()
         best = {"style": "A", "prompt": "debate"}
-        result = generate_title("Debate summary", best, cfg)
+        result = generate_title("Debate summary", best)
 
         assert call_count["n"] == 1, (
             "ESCÁNDALO: Sánchez admite el engaño must NOT trigger a reprompt"
@@ -2091,11 +2070,10 @@ class TestQuestionMarkSanitise:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             return_value={"data": {"title": "¿Precio del gas?"}, "error": None},
         )
-        cfg = _make_cfg()
         best = {"style": "A", "prompt": "debate"}
 
         with caplog.at_level(logging.WARNING):
-            result = generate_title("Debate summary", best, cfg)
+            result = generate_title("Debate summary", best)
 
         assert "?" not in result, f"Sanitised result must not contain '?': {result!r}"
         assert "¿" not in result, f"Sanitised result must not contain '¿': {result!r}"
@@ -2116,14 +2094,14 @@ class TestKeySpeakersParam:
         return {"data": {"title": title}, "error": None}
 
     def test_generate_title_without_key_speakers_completes(self, mocker) -> None:
-        """generate_title(summary, best, cfg) — without key_speakers — completes without error."""
+        """generate_title(summary, best) — without key_speakers — completes without error."""
         from congress_videos.modules.thumbnail_generation import generate_title
 
         mocker.patch(
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             return_value=self._valid_response(),
         )
-        result = generate_title("Debate summary", self._make_best(), _make_cfg())
+        result = generate_title("Debate summary", self._make_best())
         assert isinstance(result, str)
         assert len(result) > 0
 
@@ -2135,7 +2113,7 @@ class TestKeySpeakersParam:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             return_value=self._valid_response(),
         )
-        result = generate_title("Debate summary", self._make_best(), _make_cfg(), key_speakers=None)
+        result = generate_title("Debate summary", self._make_best(), key_speakers=None)
         assert isinstance(result, str)
 
     def test_generate_title_with_empty_key_speakers_completes(self, mocker) -> None:
@@ -2146,7 +2124,7 @@ class TestKeySpeakersParam:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             return_value=self._valid_response(),
         )
-        result = generate_title("Debate summary", self._make_best(), _make_cfg(), key_speakers=[])
+        result = generate_title("Debate summary", self._make_best(), key_speakers=[])
         assert isinstance(result, str)
 
     def test_key_speakers_string_list_injected_into_prompt(self, mocker) -> None:
@@ -2166,7 +2144,6 @@ class TestKeySpeakersParam:
         generate_title(
             "Debate summary",
             self._make_best(),
-            _make_cfg(),
             key_speakers=["Pedro Sánchez", "Feijóo"],
         )
 
@@ -2192,7 +2169,6 @@ class TestKeySpeakersParam:
         generate_title(
             "Debate summary",
             self._make_best(),
-            _make_cfg(),
             key_speakers=[{"name": "Ana Pastor"}],
         )
 
@@ -3158,13 +3134,6 @@ class TestGenerateTitlePromptInjection:
     def _make_best(self) -> dict:
         return {"style": "A", "prompt": "debate parlamentario"}
 
-    def _make_cfg(self) -> dict:
-        return {
-            "styles": [],
-            "participants_lookup": lambda slug: None,
-            "party_logo_map": None,
-        }
-
     def _capture_prompt(self, mocker, key_speakers):
         """Helper: call generate_title and return the first captured user_prompt."""
         from congress_videos.modules.thumbnail_generation import generate_title
@@ -3182,7 +3151,6 @@ class TestGenerateTitlePromptInjection:
         generate_title(
             "Debate summary",
             self._make_best(),
-            self._make_cfg(),
             key_speakers=key_speakers,
         )
         return captured[0] if captured else ""
@@ -3349,9 +3317,8 @@ class TestReorderingGuardReprompt:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             side_effect=_side_effect,
         )
-        cfg = _make_cfg()
         best = {"style": "A", "prompt": "debate"}
-        result = generate_title("Debate summary", best, cfg)
+        result = generate_title("Debate summary", best)
 
         assert call_count["n"] == 2
         assert "el título es una pregunta" in captured_prompts[1].lower(), (
@@ -3382,9 +3349,8 @@ class TestReorderingGuardReprompt:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             side_effect=_side_effect,
         )
-        cfg = _make_cfg()
         best = {"style": "A", "prompt": "debate"}
-        result = generate_title("Debate summary", best, cfg)
+        result = generate_title("Debate summary", best)
 
         assert call_count["n"] == 2
         assert "el título es una pregunta" in captured_prompts[1].lower(), (
@@ -3422,9 +3388,8 @@ class TestReorderingGuardReprompt:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             side_effect=_side_effect,
         )
-        cfg = _make_cfg()
         best = {"style": "A", "prompt": "debate"}
-        result = generate_title("Debate summary", best, cfg)
+        result = generate_title("Debate summary", best)
 
         assert call_count["n"] == 2
         assert "demasiado largo" in captured_prompts[1].lower(), (
@@ -3747,12 +3712,10 @@ class TestGenerateTitleForbiddenTitle:
             "congress_videos.modules.thumbnail_generation._request_title",
             side_effect=[prior_title, new_title],
         )
-        cfg = _make_cfg()
 
         result = generate_title(
             "Debate sobre pensiones",
             self._best_opt(),
-            cfg,
             forbidden_title=prior_title,
         )
 
@@ -3766,12 +3729,10 @@ class TestGenerateTitleForbiddenTitle:
             "congress_videos.modules.thumbnail_generation._request_title",
             return_value="Un título completamente distinto",
         )
-        cfg = _make_cfg()
 
         result = generate_title(
             "Debate sobre pensiones",
             self._best_opt(),
-            cfg,
             forbidden_title="Otro título anterior",
         )
 
@@ -3790,12 +3751,10 @@ class TestGenerateTitleForbiddenTitle:
             "congress_videos.modules.thumbnail_generation._request_title",
             return_value=prior_title,
         )
-        cfg = _make_cfg()
 
         result = generate_title(
             "Debate sobre pensiones",
             self._best_opt(),
-            cfg,
             forbidden_title=prior_title,
         )
 
@@ -3809,9 +3768,8 @@ class TestGenerateTitleForbiddenTitle:
             "congress_videos.modules.thumbnail_generation._request_title",
             return_value="Cualquier título válido aquí",
         )
-        cfg = _make_cfg()
 
-        generate_title("Debate sobre pensiones", self._best_opt(), cfg)
+        generate_title("Debate sobre pensiones", self._best_opt())
 
         assert mock_request.call_count == 1
 
@@ -3888,3 +3846,171 @@ class TestPersistResultsArchetype:
         persist_results(7, "vid123", "Un título", options, "option_a")
 
         assert mock_cursor.execute.call_count == 1
+
+
+class TestPersistResultsArtDirectionBrief:
+    """Spec: Art direction brief persistence (migration 043, #292) —
+    persist_results writes each option's own finalized art_direction_brief
+    to video_thumbnails.art_direction_brief as jsonb, independent of which
+    option was chosen."""
+
+    def _make_options_with_briefs(self, brief_a=None, brief_b=None):
+        options = [
+            {
+                "label": "option_a",
+                "output_url": "https://pikzels.com/a.png",
+                "local_path": "/a.png",
+                "main_score": 72.0,
+                "style": "style A",
+                "prompt": "prompt A",
+            },
+            {
+                "label": "option_b",
+                "output_url": "https://pikzels.com/b.png",
+                "local_path": "/b.png",
+                "main_score": 85.0,
+                "style": "style B",
+                "prompt": "prompt B",
+            },
+        ]
+        if brief_a is not None:
+            options[0]["art_direction_brief"] = brief_a
+        if brief_b is not None:
+            options[1]["art_direction_brief"] = brief_b
+        return options
+
+    def _params_containing(self, mock_cursor, needle):
+        all_calls = mock_cursor.execute.call_args_list
+        for c in all_calls:
+            params = c[0][1] if len(c[0]) > 1 else c[1].get("params", c[0][0])
+            if isinstance(params, (list, tuple)) and needle in params:
+                return params
+        return None
+
+    def test_sql_includes_art_direction_brief_column_and_jsonb_cast(
+        self, mock_psycopg2_connection
+    ):
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        options = self._make_options_with_briefs(
+            brief_a={"text": "foo"}, brief_b={"text": "bar"}
+        )
+        persist_results(7, "vid123", "Un título", options, "option_b")
+
+        sql_calls = [c.args[0] for c in mock_cursor.execute.call_args_list if c.args]
+        assert any(
+            "art_direction_brief" in s and "::jsonb" in s for s in sql_calls
+        )
+
+    def test_chosen_option_brief_round_trips_through_json(
+        self, mock_psycopg2_connection
+    ):
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        brief_b = {"text": "chosen brief", "framing": "close-up"}
+        options = self._make_options_with_briefs(
+            brief_a={"text": "not chosen"}, brief_b=brief_b
+        )
+        persist_results(7, "vid123", "Un título", options, "option_b")
+
+        chosen_params = self._params_containing(mock_cursor, "option_b")
+        assert chosen_params is not None
+        json_strs = [p for p in chosen_params if isinstance(p, str)]
+        decoded = [json.loads(s) for s in json_strs if _is_json(s)]
+        assert brief_b in decoded
+
+    def test_brief_with_non_ascii_text_preserves_literal_characters(
+        self, mock_psycopg2_connection
+    ):
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        brief_a = {"text": "PENSIÓN"}
+        options = self._make_options_with_briefs(brief_a=brief_a)
+        persist_results(7, "vid123", "Un título", options, "option_a")
+
+        chosen_params = self._params_containing(mock_cursor, "option_a")
+        assert chosen_params is not None
+        assert any(
+            isinstance(p, str) and "PENSIÓN" in p for p in chosen_params
+        )
+
+    def test_option_without_brief_key_binds_none(self, mock_psycopg2_connection):
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        options = self._make_options_with_briefs(brief_b={"text": "only b"})
+        persist_results(7, "vid123", "Un título", options, "option_b")
+
+        sql_calls = [c.args[0] for c in mock_cursor.execute.call_args_list if c.args]
+        assert any("art_direction_brief" in s for s in sql_calls)
+
+        option_a_params = self._params_containing(mock_cursor, "option_a")
+        assert option_a_params is not None
+        assert None in option_a_params
+        assert "{}" not in option_a_params
+        assert "null" not in option_a_params
+
+    def test_empty_dict_brief_binds_none(self, mock_psycopg2_connection):
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        options = self._make_options_with_briefs(brief_a={}, brief_b={"text": "b"})
+        persist_results(7, "vid123", "Un título", options, "option_b")
+
+        sql_calls = [c.args[0] for c in mock_cursor.execute.call_args_list if c.args]
+        assert any("art_direction_brief" in s for s in sql_calls)
+
+        option_a_params = self._params_containing(mock_cursor, "option_a")
+        assert option_a_params is not None
+        assert None in option_a_params
+
+    def test_non_dict_brief_binds_none(self, mock_psycopg2_connection):
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        options = self._make_options_with_briefs(
+            brief_a="a string", brief_b={"text": "b"}
+        )
+        persist_results(7, "vid123", "Un título", options, "option_b")
+
+        sql_calls = [c.args[0] for c in mock_cursor.execute.call_args_list if c.args]
+        assert any("art_direction_brief" in s for s in sql_calls)
+
+        option_a_params = self._params_containing(mock_cursor, "option_a")
+        assert option_a_params is not None
+        assert None in option_a_params
+
+    def test_two_options_produce_distinct_bound_json_strings(
+        self, mock_psycopg2_connection
+    ):
+        from congress_videos.modules.thumbnail_generation import persist_results
+
+        mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
+        brief_a = {"text": "brief for a"}
+        brief_b = {"text": "brief for b"}
+        options = self._make_options_with_briefs(brief_a=brief_a, brief_b=brief_b)
+        persist_results(7, "vid123", "Un título", options, "option_b")
+
+        params_a = self._params_containing(mock_cursor, "option_a")
+        params_b = self._params_containing(mock_cursor, "option_b")
+        assert params_a is not None
+        assert params_b is not None
+
+        json_a = next(
+            p for p in params_a if isinstance(p, str) and _is_json(p) and json.loads(p) == brief_a
+        )
+        json_b = next(
+            p for p in params_b if isinstance(p, str) and _is_json(p) and json.loads(p) == brief_b
+        )
+        assert json_a != json_b
+
+
+def _is_json(value: str) -> bool:
+    try:
+        json.loads(value)
+        return True
+    except (ValueError, TypeError):
+        return False

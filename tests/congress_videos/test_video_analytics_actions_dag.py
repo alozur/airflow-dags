@@ -1130,3 +1130,134 @@ class TestSnapshotAgeDays:
 
         now = datetime.now(tzinfo)
         assert _snapshot_age_days(now - timedelta(days=13, hours=2)) == 13
+
+
+class TestApplyActionsPreviousBriefForwarded:
+    """Spec: previous_brief steering (migration 043, #292) — apply_actions
+    forwards the chosen row's persisted art_direction_brief verbatim as
+    child_conf["previous_brief"] when it is a non-empty dict, and omits the
+    key otherwise. Forwarding is independent of the title checkpoint."""
+
+    def _run_with_chosen(self, mock_task_instance, chosen_row, checkpoint="48h"):
+        """Drive _run_apply_actions through the standard 8-patch stack and
+        return the mock used for trigger_dag_api, so callers can inspect
+        call_args.kwargs["conf"]."""
+        from congress_videos.video_analytics_actions_dag import _run_apply_actions
+
+        mock_task_instance.xcom_store["decisions"] = [_decision_row(checkpoint=checkpoint)]
+        mock_task_instance.run_id = "manual_run_1"
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
+                    return_value=True,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
+                    return_value=chosen_row,
+                )
+            )
+            mock_trigger = stack.enter_context(
+                patch(
+                    "congress_videos.video_analytics_actions_dag.trigger_dag_api",
+                    return_value=_thumbnail_dag_run(),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "congress_videos.video_analytics_actions_dag.time.sleep",
+                    return_value=None,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "airflow.models.XCom.get_one",
+                    return_value={
+                        "success": True,
+                        "chapter_id": 5,
+                        "output_path": "/tmp/thumb.png",
+                        "title": "Nuevo título",
+                    },
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "utils.youtube_helpers.get_authenticated_youtube_service",
+                    return_value=MagicMock(),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "utils.youtube_helpers.set_thumbnail_for_video",
+                    return_value={"success": True, "error": None},
+                )
+            )
+            _run_apply_actions(ti=mock_task_instance)
+
+        return mock_trigger
+
+    def test_brief_dict_present_is_forwarded_verbatim(self, mock_task_instance):
+        brief = {"text": "PENSIÓN", "background": "hemiciclo"}
+        chosen_row = {"art_direction_brief": brief}
+
+        mock_trigger = self._run_with_chosen(mock_task_instance, chosen_row)
+
+        conf = mock_trigger.call_args.kwargs["conf"]
+        assert conf["previous_brief"] == brief
+
+    def test_brief_none_key_is_omitted(self, mock_task_instance):
+        chosen_row = {"art_direction_brief": None}
+
+        mock_trigger = self._run_with_chosen(mock_task_instance, chosen_row)
+
+        conf = mock_trigger.call_args.kwargs["conf"]
+        assert "previous_brief" not in conf
+
+    def test_brief_empty_dict_is_omitted(self, mock_task_instance):
+        chosen_row = {"art_direction_brief": {}}
+
+        mock_trigger = self._run_with_chosen(mock_task_instance, chosen_row)
+
+        conf = mock_trigger.call_args.kwargs["conf"]
+        assert "previous_brief" not in conf
+
+    def test_brief_legacy_string_is_omitted(self, mock_task_instance):
+        """Historical pre-migration-043 rows never had a real dict brief;
+        a stray non-dict value must never leak into child_conf."""
+        chosen_row = {"art_direction_brief": "legacy string"}
+
+        mock_trigger = self._run_with_chosen(mock_task_instance, chosen_row)
+
+        conf = mock_trigger.call_args.kwargs["conf"]
+        assert "previous_brief" not in conf
+
+    def test_previous_archetype_still_forwarded_alongside_brief(self, mock_task_instance):
+        """Regression: adding previous_brief must not remove the existing
+        previous_archetype steering."""
+        brief = {"text": "brief"}
+        chosen_row = {"art_direction_brief": brief, "archetype": "denuncia"}
+
+        mock_trigger = self._run_with_chosen(mock_task_instance, chosen_row)
+
+        conf = mock_trigger.call_args.kwargs["conf"]
+        assert conf["previous_brief"] == brief
+        assert conf["previous_archetype"] == "denuncia"
+
+    def test_forwarded_at_non_title_checkpoint(self, mock_task_instance):
+        """Pins checkpoint-independence: the brief forwards even at 48h,
+        which is not a title-update checkpoint."""
+        brief = {"text": "brief at 48h"}
+        chosen_row = {"art_direction_brief": brief}
+
+        mock_trigger = self._run_with_chosen(mock_task_instance, chosen_row, checkpoint="48h")
+
+        conf = mock_trigger.call_args.kwargs["conf"]
+        assert conf["previous_brief"] == brief

@@ -23,16 +23,15 @@ A killed/interrupted run leaves the row 'in_progress' — terminal for the
 automated loop. Re-processing requires a maintainer to manually reset
 action_taken to NULL. 'failed' is likewise terminal, not auto-retried.
 
-Deviation from design's stated `previous_brief` steering: video_thumbnails
-only ever persists the RENDERED Pikzels prompt text and the OpenAI title,
-never the raw art-direction brief JSON that art_direct()/_finalize_brief()
-produce. Reconstructing a brief dict from rendered prompt text would be
-fragile prompt-parsing. This implementation steers regeneration using ONLY
-`previous_archetype` (reliably available via the migration 041 column) and
-`previous_title` (at the 24h checkpoint); `previous_brief` is intentionally
-left unset (art_direct's previous_brief stays None — no "REINTENTO"
-instruction is injected on the anti-convergence path, only the
-forbidden_archetype re-roll applies).
+`previous_brief` steering: since migration 043 (#292), video_thumbnails
+persists each option's own finalized art-direction brief JSON in
+``art_direction_brief``. When the chosen row carries a non-NULL brief,
+apply_actions forwards it verbatim as ``previous_brief`` in the child
+DAG's trigger conf, independent of the title checkpoint — art_direct()
+injects the "REINTENTO" anti-convergence instruction from it. Historical
+rows written before migration 043 have a NULL brief and degrade to
+steering via `previous_archetype` and `previous_title` (at the title
+checkpoint) only.
 """
 
 import logging
@@ -340,6 +339,9 @@ def _apply_one_action(db, row: dict, run_id: str) -> dict:
         "key_speakers": row.get("key_speakers") or [],
         "previous_archetype": chosen.get("archetype"),
     }
+    prior_brief = chosen.get("art_direction_brief")
+    if isinstance(prior_brief, dict) and prior_brief:
+        child_conf["previous_brief"] = prior_brief
     if is_title_checkpoint and chosen.get("openai_title"):
         child_conf["previous_title"] = chosen["openai_title"]
 

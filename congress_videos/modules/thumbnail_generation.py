@@ -689,7 +689,6 @@ def _choose_reprompt_instruction(title: str | None) -> str:
 def generate_title(
     summary: str,
     best: dict,
-    cfg: dict,
     sibling_titles: list[str] | None = None,
     key_speakers: list | None = None,
     forbidden_title: str | None = None,
@@ -705,7 +704,6 @@ def generate_title(
     Args:
         summary: Debate summary text used to contextualise the title.
         best: The chosen option dict (must contain ``style`` and ``prompt``).
-        cfg: Per-domain config dict (currently unused but kept for future extensibility).
         sibling_titles: When non-empty, injects a "NO REPITAS" block listing
             recent chosen titles to prevent tonal repetition.
             None or empty list → prompt unchanged (backward compatible).
@@ -877,6 +875,13 @@ def fetch_recent_thumbnail_history(
         return [], []
 
 
+def _brief_json(brief: object) -> str | None:
+    """Serialize an art-direction brief for the jsonb bind, or None for SQL NULL."""
+    if not isinstance(brief, dict) or not brief:
+        return None
+    return json.dumps(brief, ensure_ascii=False)
+
+
 def persist_results(
     chapter_id: int,
     youtube_video_id: str,
@@ -893,6 +898,11 @@ def persist_results(
     blank/whitespace-only/``None`` (issue #317) — a blank title must never
     clobber a previously stored one. The non-chosen row's ``openai_title``
     always stays explicitly ``NULL``, never resurrected from a prior value.
+
+    Each option's own ``art_direction_brief`` (migration 043, #292) is
+    persisted unconditionally as jsonb — both the chosen and non-chosen
+    rows keep their own finalized brief, unlike ``openai_title``. A
+    missing/falsy/non-dict brief binds SQL NULL, never ``"{}"``.
 
     Args:
         chapter_id: FK to ``video_chapters.chapter_id``.
@@ -912,25 +922,26 @@ def persist_results(
         INSERT INTO {table} AS vt (
             chapter_id, youtube_video_id, label, style, prompt,
             main_score, local_path, output_url, openai_title, is_chosen,
-            archetype
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            archetype, art_direction_brief
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
         ON CONFLICT (chapter_id, label) DO UPDATE SET
-            youtube_video_id = EXCLUDED.youtube_video_id,
-            style            = EXCLUDED.style,
-            prompt           = EXCLUDED.prompt,
-            main_score       = EXCLUDED.main_score,
-            local_path       = EXCLUDED.local_path,
-            output_url       = EXCLUDED.output_url,
+            youtube_video_id    = EXCLUDED.youtube_video_id,
+            style               = EXCLUDED.style,
+            prompt              = EXCLUDED.prompt,
+            main_score          = EXCLUDED.main_score,
+            local_path          = EXCLUDED.local_path,
+            output_url          = EXCLUDED.output_url,
             -- Issue #317. A bare COALESCE here would resurrect a stale title
             -- onto the NON-chosen row, which must stay explicitly NULL.
             -- Preservation is conditional on is_chosen; nothing else changes.
-            openai_title     = CASE
-                                   WHEN EXCLUDED.is_chosen
-                                   THEN COALESCE(EXCLUDED.openai_title, vt.openai_title)
-                                   ELSE NULL
-                               END,
-            is_chosen        = EXCLUDED.is_chosen,
-            archetype        = EXCLUDED.archetype
+            openai_title        = CASE
+                                       WHEN EXCLUDED.is_chosen
+                                       THEN COALESCE(EXCLUDED.openai_title, vt.openai_title)
+                                       ELSE NULL
+                                   END,
+            is_chosen           = EXCLUDED.is_chosen,
+            archetype           = EXCLUDED.archetype,
+            art_direction_brief = EXCLUDED.art_direction_brief
     """
 
     with pg.get_connection() as conn:
@@ -951,6 +962,7 @@ def persist_results(
                     openai_title,
                     is_chosen,
                     opt.get("archetype"),
+                    _brief_json(opt.get("art_direction_brief")),
                 )
                 cur.execute(sql, params)
 

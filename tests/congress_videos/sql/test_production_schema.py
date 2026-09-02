@@ -108,7 +108,7 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
     "video_thumbnails": (
         "thumbnail_id", "chapter_id", "youtube_video_id", "label", "style",
         "prompt", "main_score", "local_path", "output_url", "openai_title",
-        "is_chosen", "created_at", "archetype",
+        "is_chosen", "created_at", "archetype", "art_direction_brief",
     ),
     "speaker_turns": (
         "turn_id", "chapter_id", "start_seconds", "end_seconds",

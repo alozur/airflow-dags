@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 from googleapiclient.discovery import build
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 
 from utils.youtube_downloader import READY_LIVE_STATUSES, probe_live_status
 

@@ -1744,3 +1744,99 @@ class TestArchetypeCarriedOnOptionDict:
         result = self.mod._task_score_option("option_a", ti)
 
         assert result["archetype"] == "anuncio"
+
+
+class TestArtDirectionBriefCarriedOnOptionDict:
+    """Spec: Art direction brief persisted per option (migration 043, #292) —
+    carried end to end through _task_generate_thumbnail -> download -> score,
+    using each option's own brief source (art_direction / art_direction_retry)."""
+
+    def setup_method(self) -> None:
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        self.mod = dag_mod
+
+    def test_option_a_result_carries_art_direction_brief_verbatim(self, mocker) -> None:
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "resolve_participant_photo": {},
+                "art_direction": _FAKE_ART_BRIEF,
+            }
+        )
+
+        mocker.patch.object(self.mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mocker.patch.object(self.mod, "build_pikzels_prompt", return_value="prompt text")
+        mock_pkz = mocker.patch.object(self.mod, "_pkz")
+        mock_pkz.thumbnail_from_text.return_value = {"output": "https://pikzels/a.png"}
+
+        result = self.mod._task_generate_thumbnail("option_a", ti)
+
+        assert result["art_direction_brief"] == _FAKE_ART_BRIEF
+
+    def test_option_b_result_carries_art_direction_retry_brief_verbatim(
+        self, mocker
+    ) -> None:
+        retry_brief = {**_FAKE_ART_BRIEF, "text": "otro enfoque"}
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "resolve_participant_photo": {},
+                "art_direction_retry": retry_brief,
+            }
+        )
+
+        mocker.patch.object(self.mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mocker.patch.object(self.mod, "build_pikzels_prompt", return_value="prompt text")
+        mock_pkz = mocker.patch.object(self.mod, "_pkz")
+        mock_pkz.thumbnail_from_text.return_value = {"output": "https://pikzels/b.png"}
+
+        result = self.mod._task_generate_thumbnail("option_b", ti)
+
+        assert result["art_direction_brief"] == retry_brief
+        assert result["art_direction_brief"] != _FAKE_ART_BRIEF
+
+    def test_download_option_carries_art_direction_brief_from_generate_result(
+        self, mocker, tmp_path
+    ) -> None:
+        gen_result = {
+            "label": "option_a",
+            "style": "A",
+            "prompt": "p",
+            "output": "https://pikzels/a.png",
+            "art_direction_brief": _FAKE_ART_BRIEF,
+        }
+        conf = {**_FAKE_CONF, "output_path": str(tmp_path / "video.mp4")}
+        ti = _make_fake_ti(
+            {"validate_input": conf, "generate_thumbnail_option_a": gen_result}
+        )
+
+        mock_pkz = mocker.patch.object(self.mod, "_pkz")
+        mock_pkz.download.return_value = None
+
+        result = self.mod._task_download_option("option_a", ti)
+
+        assert result["art_direction_brief"] == _FAKE_ART_BRIEF
+
+    def test_score_option_preserves_art_direction_brief_via_spread(
+        self, mocker, tmp_path
+    ) -> None:
+        thumb_file = tmp_path / "option_a.png"
+        thumb_file.write_bytes(b"\x89PNG" * 10)
+        download_info = {
+            "label": "option_a",
+            "local_path": str(thumb_file),
+            "output_url": "u",
+            "style": "A",
+            "prompt": "p",
+            "art_direction_brief": _FAKE_ART_BRIEF,
+        }
+        ti = _make_fake_ti({"download_option_a": download_info})
+
+        mock_pkz = mocker.patch.object(self.mod, "_pkz")
+        mock_pkz.to_base64_data_url.return_value = "data:image/png;base64,xx"
+        mock_pkz.score_thumbnail.return_value = {"main_score": 90.0}
+
+        result = self.mod._task_score_option("option_a", ti)
+
+        assert result["art_direction_brief"] == _FAKE_ART_BRIEF
