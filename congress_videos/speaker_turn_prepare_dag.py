@@ -27,6 +27,7 @@ from congress_videos.config.constants import SPEAKER_TURN_PREPARE_DAG_ID
 from congress_videos.modules.database import CongressionalVideoDB
 from congress_videos.modules.speaker_placeholders import is_placeholder
 from congress_videos.modules.speaker_resolution import (
+    QA_WIDE_CONTEXT_ENABLED,
     SPEAKER_RESOLUTION_MIN_CONFIDENCE,
     resolve_speaker,
 )
@@ -52,6 +53,23 @@ DAG_ID = SPEAKER_TURN_PREPARE_DAG_ID
 # ---------------------------------------------------------------------------
 # Internal helpers (testable pure functions)
 # ---------------------------------------------------------------------------
+
+
+def _display_name_for(participants: list[dict], slug: str) -> str | None:
+    """Look up a participant's canonical display_name by slug (issue #342:
+    shared by both the narrow and the wide resolution pass)."""
+    return next((p["display_name"] for p in participants if p["slug"] == slug), None)
+
+
+def _is_qa_promotion_signal(previous_name: str | None, resolved_name: str | None) -> bool:
+    """Rule 4 (issue #282): true when the pre-resolution name and the newly
+    resolved display_name are two distinct real (non-placeholder, non-NULL)
+    names. Defensive on None/empty inputs (issue #342)."""
+    if not previous_name or not resolved_name:
+        return False
+    if is_placeholder(previous_name) or is_placeholder(resolved_name):
+        return False
+    return previous_name.casefold() != resolved_name.strip().casefold()
 
 
 def _validate_keep_intervals(raw) -> list[tuple[float, float]] | None:
@@ -277,66 +295,110 @@ def _prepare_turns_callable() -> None:
                 >= SPEAKER_RESOLUTION_MIN_CONFIDENCE
             )
             if not already_resolved:
-                resolution = resolve_speaker(turn, participants)
-                if resolution is not None:
-                    slug = resolution["participant_slug"]
-                    confidence = resolution["confidence"]
-                    display_name = next(
-                        (p["display_name"] for p in participants if p["slug"] == slug),
-                        None,
-                    )
+                narrow = resolve_speaker(turn, participants)
+                if narrow is not None:
+                    narrow_slug = narrow["participant_slug"]
+                    narrow_name = _display_name_for(participants, narrow_slug)
 
-                    # Gate B (issue #321): cross-check the resolved participant's
-                    # canonical display_name against the chapter's own
-                    # key_speakers/speakers rosters before persisting. Rejection
-                    # withholds BOTH the DB write and the in-memory resolved_name
-                    # patch — the incident this guards against is a wrong name
-                    # reaching the thumbnail/title sidecar seam via the patch,
-                    # not only via the DB write.
+                    # issue #342: compute the qa-promotion signal ONCE, from
+                    # the narrow result, before any write. Promotion is
+                    # STICKY on this signal — the (possibly widened) winner
+                    # below only decides which slug is persisted, never
+                    # whether promotion fires (preserves #282 rule 4 exactly).
+                    promote_signal = _is_qa_promotion_signal(previous_name, narrow_name)
                     mentions = chapter_roster_mentions(
                         turn.get("key_speakers"), turn.get("speakers")
                     )
-                    verdict = crosscheck_slug(display_name or "", mentions)
 
-                    if verdict == "reject":
+                    winner, winner_name, winner_verdict = narrow, narrow_name, None
+                    wide_slug = None
+                    if promote_signal and QA_WIDE_CONTEXT_ENABLED:
+                        # Re-resolve with turn_type='qa' on a shallow copy
+                        # (never mutate turn) so speaker_resolution's
+                        # qa-widened prompt path can disambiguate a
+                        # monologue-truncated narrow pass.
+                        try:
+                            wide = resolve_speaker({**turn, "turn_type": "qa"}, participants)
+                        except Exception as exc:
+                            logger.warning(
+                                "_prepare_turns_callable: turn_id=%d wide qa "
+                                "re-resolution raised (%s) — falling back to "
+                                "the narrow result",
+                                turn_id,
+                                exc,
+                            )
+                            wide = None
+                        if wide is not None:
+                            wide_slug = wide["participant_slug"]
+                            wide_name = _display_name_for(participants, wide_slug)
+                            # A wide-reject is silent (audit line below
+                            # records it) — the WARNING is reserved for the
+                            # final (narrow) verdict below.
+                            if wide_name and crosscheck_slug(wide_name, mentions) != "reject":
+                                winner, winner_name, winner_verdict = wide, wide_name, "ok"
+
+                    if winner_verdict is None:
+                        # Gate B (issue #321): cross-check the winner's
+                        # canonical display_name against the chapter's own
+                        # key_speakers/speakers rosters before persisting.
+                        # Rejection withholds BOTH the DB write and the
+                        # in-memory resolved_name patch — the incident this
+                        # guards against is a wrong name reaching the
+                        # thumbnail/title sidecar seam via the patch, not
+                        # only via the DB write.
+                        winner_verdict = crosscheck_slug(winner_name or "", mentions)
+
+                    promoted = False
+                    if winner_verdict == "reject":
                         logger.warning(
                             "_prepare_turns_callable: turn_id=%d chapter_id=%s "
                             "roster cross-check REJECTED slug=%r display_name=%r "
                             "against mentions=%r — write withheld",
                             turn_id,
                             turn.get("chapter_id"),
-                            slug,
-                            display_name,
+                            winner["participant_slug"],
+                            winner_name,
                             mentions,
                         )
                     else:
                         # Gate A (issue #321): mark_turn_resolved now scopes the
                         # write to sibling rows sharing this turn's speaker_label.
                         db.mark_turn_resolved(
-                            output_path, slug, confidence, "ai_srt_context", turn_id
+                            output_path,
+                            winner["participant_slug"],
+                            winner["confidence"],
+                            "ai_srt_context",
+                            turn_id,
                         )
                         # Patch in-memory so thumbnail/title steps see the real name.
-                        if display_name:
-                            turn["resolved_name"] = display_name
-                            # Rule 4 (issue #282): promote a group frozen at
-                            # 'monologue' to 'qa' when this resolution reveals
-                            # a SECOND distinct real speaker — the pre-patch
-                            # name and the newly resolved name are both real
-                            # and differ. Promote-only; never demotes qa.
-                            # Lives inside this same try/except: a promotion
-                            # failure logs a warning below and never blocks
-                            # preparation.
-                            if (
-                                previous_name
-                                and not is_placeholder(previous_name)
-                                and not is_placeholder(display_name)
-                                and previous_name.casefold() != display_name.strip().casefold()
-                            ):
+                        if winner_name:
+                            turn["resolved_name"] = winner_name
+                            # Rule 4 (issue #282): promotion is sticky on
+                            # promote_signal — never re-evaluated against
+                            # the winner's name. Promote-only; never demotes.
+                            if promote_signal:
                                 db.promote_turn_type_to_qa(output_path)
+                                promoted = True
                         logger.info(
                             "_prepare_turns_callable: turn_id=%d resolved → slug=%r",
                             turn_id,
-                            slug,
+                            winner["participant_slug"],
+                        )
+
+                    if promote_signal:
+                        # issue #342: one audit INFO line per re-pass event.
+                        logger.info(
+                            "_prepare_turns_callable: qa_reresolution turn_id=%d "
+                            "output_path=%s previous_name=%r narrow_slug=%r "
+                            "wide_slug=%r winner_slug=%r verdict=%s promoted=%s",
+                            turn_id,
+                            output_path,
+                            previous_name,
+                            narrow_slug,
+                            wide_slug,
+                            winner["participant_slug"],
+                            winner_verdict,
+                            promoted,
                         )
                 else:
                     logger.info(
