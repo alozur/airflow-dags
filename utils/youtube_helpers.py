@@ -323,7 +323,7 @@ def set_thumbnail_for_video(youtube, video_id: str, thumbnail_file: str) -> Dict
         }
 
 
-def update_video_title(youtube, video_id: str, title: str) -> Dict:
+def update_video_title(youtube, video_id: str, title: str | None) -> Dict:
     """
     Update a YouTube video's title without clobbering its other snippet
     fields (issue #102).
@@ -344,7 +344,22 @@ def update_video_title(youtube, video_id: str, title: str) -> Dict:
         Dict with result:
         - success: Boolean indicating if the update succeeded.
         - error: Error message (if failed), else None.
+
+    Raises:
+        ValueError: If ``title`` is None, empty, or whitespace-only. Raised
+            BEFORE any YouTube API call (issue #317). Deliberately placed
+            outside the try/except below: inside it, the bare
+            ``except Exception`` would flatten this contract violation into
+            an ordinary ``{"success": False, "error": "Title update failed:
+            ..."}``, indistinguishable from a network error and invisible to
+            any future caller that means to catch it by type.
     """
+    if not (title or "").strip():
+        raise ValueError(
+            f"update_video_title: refusing to publish a blank title to video "
+            f"{video_id} (got {title!r})"
+        )
+
     try:
         list_response = youtube.videos().list(part="snippet", id=video_id).execute()
         items = list_response.get("items", [])

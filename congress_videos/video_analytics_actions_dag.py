@@ -225,7 +225,9 @@ def _poll_thumbnail_dag_run(dag_run) -> dict:
 def _apply_one_action(db, row: dict, run_id: str) -> dict:
     """Claim, regenerate, publish, and finalize a single regenerate-decision row.
 
-    Returns {"snapshot_id": ..., "action": <final action_taken>}.
+    Returns {"snapshot_id", "youtube_video_id", "action", "applied", "error"}.
+    ``applied`` is quad-valued per key ("thumbnail"/"title"): True (published),
+    False (attempted and failed), None (never attempted) — see issue #317.
     """
     snapshot_id = row["snapshot_id"]
 
@@ -255,7 +257,17 @@ def _apply_one_action(db, row: dict, run_id: str) -> dict:
         "prior": prior,
         "new": {},
         "collisions": {},
+        "applied": {"thumbnail": None, "title": None},
     }
+
+    def _result(action: str) -> dict:
+        return {
+            "snapshot_id": snapshot_id,
+            "youtube_video_id": row["youtube_video_id"],
+            "action": action,
+            "applied": dict(detail["applied"]),  # copy: never alias the recorded detail
+            "error": detail.get("error"),
+        }
 
     is_title_checkpoint = row["checkpoint"] in TITLE_UPDATE_CHECKPOINTS
 
@@ -296,7 +308,7 @@ def _apply_one_action(db, row: dict, run_id: str) -> dict:
         )
         detail["error"] = str(exc)
         db.mark_action_taken(snapshot_id=snapshot_id, action="failed", detail=detail)
-        return {"snapshot_id": snapshot_id, "action": "failed"}
+        return _result("failed")
 
     detail["thumbnail_dag_run_id"] = dag_run.run_id
 
@@ -304,7 +316,7 @@ def _apply_one_action(db, row: dict, run_id: str) -> dict:
     if not thumb_result.get("success"):
         detail["error"] = thumb_result.get("error")
         db.mark_action_taken(snapshot_id=snapshot_id, action="failed", detail=detail)
-        return {"snapshot_id": snapshot_id, "action": "failed"}
+        return _result("failed")
 
     from utils.youtube_helpers import (
         get_authenticated_youtube_service,
@@ -320,21 +332,32 @@ def _apply_one_action(db, row: dict, run_id: str) -> dict:
     detail["new"]["local_path"] = thumb_result.get("output_path")
     detail["new"]["title"] = thumb_result.get("title")
     detail["youtube"] = {"thumbnail": thumb_publish}
+    detail["applied"]["thumbnail"] = thumb_publish.get("success") is True
 
     if not thumb_publish.get("success"):
         detail["error"] = thumb_publish.get("error")
         db.mark_action_taken(snapshot_id=snapshot_id, action="failed", detail=detail)
-        return {"snapshot_id": snapshot_id, "action": "failed"}
+        return _result("failed")
 
     if is_title_checkpoint:
-        title_publish = update_video_title(
-            youtube, row["youtube_video_id"], thumb_result.get("title", "")
-        )
+        try:
+            title_publish = update_video_title(
+                youtube, row["youtube_video_id"], thumb_result.get("title")
+            )
+        except ValueError as exc:
+            # Issue #317: update_video_title raises pre-API on a blank title.
+            # Convert to the SAME recorded-failure shape every other publish
+            # error already takes, so the batch finishes and EVERY claimed
+            # row is recorded. Per-row isolation, not a swallow: the row is
+            # durably marked "failed" with applied.title=False below.
+            # Turning the whole task RED on that record is issue #311's.
+            title_publish = {"success": False, "error": f"blank title refused: {exc}"}
         detail["youtube"]["title"] = title_publish
+        detail["applied"]["title"] = title_publish.get("success") is True
         if not title_publish.get("success"):
             detail["error"] = title_publish.get("error")
             db.mark_action_taken(snapshot_id=snapshot_id, action="failed", detail=detail)
-            return {"snapshot_id": snapshot_id, "action": "failed"}
+            return _result("failed")
 
     new_chosen = db.get_chosen_thumbnail(row["chapter_id"]) or {}
     detail["new"]["archetype"] = new_chosen.get("archetype")
@@ -352,7 +375,7 @@ def _apply_one_action(db, row: dict, run_id: str) -> dict:
 
     final_action = row["decision"]
     db.mark_action_taken(snapshot_id=snapshot_id, action=final_action, detail=detail)
-    return {"snapshot_id": snapshot_id, "action": final_action}
+    return _result(final_action)
 
 
 def _run_apply_actions(ti, **context):
