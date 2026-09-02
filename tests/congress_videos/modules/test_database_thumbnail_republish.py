@@ -22,7 +22,10 @@ import pytest
 # Columns the healer's write path must never reach (spec: "Upload-verification
 # state is never touched"). Union of the spec's explicit 5 plus design DD4's
 # additional upload_verified_at, held to design's stated "6 forbidden columns"
-# count so the guard below is exactly 3 methods x 6 names = 18 cases.
+# count (WU2a's reconciliation) so the base guard is 3 methods x 6 names = 18
+# cases. prepared_at is added on top (WU2b, closing a design DD4 loose end):
+# it is the PREPARE readiness gate from issue #146 and the healer must never
+# touch it either, bringing the guard to 3 methods x 7 names = 21 cases.
 FORBIDDEN_UPLOAD_STATE_COLUMNS = (
     "is_uploaded_to_youtube",
     "youtube_video_id",
@@ -30,6 +33,7 @@ FORBIDDEN_UPLOAD_STATE_COLUMNS = (
     "upload_attempts",
     "is_upload_abandoned",
     "upload_verified_at",
+    "prepared_at",
 )
 
 
