@@ -213,6 +213,155 @@ class TestUnpublishedThumbnailLabels:
 
 
 # ---------------------------------------------------------------------------
+# _turn_marking_problems (issue #332)
+# ---------------------------------------------------------------------------
+
+
+class TestTurnMarkingProblems:
+    def test_none_turn_updates_reports_missing_xcom(self):
+        from congress_videos.youtube_upload_dag import _turn_marking_problems
+
+        problems = _turn_marking_problems(None)
+        assert problems == [
+            "turn_upload_updates XCom missing after mark_turns_uploaded succeeded"
+        ]
+
+    def test_clean_payload_without_recorded_failures_key_returns_empty_list(self):
+        from congress_videos.youtube_upload_dag import _turn_marking_problems
+
+        turn_updates = {
+            "updated_turns": 3,
+            "failed_updates": 0,
+            "details": [
+                {"turn_id": 1, "youtube_video_id": "v1", "status": "updated"},
+            ],
+        }
+        assert _turn_marking_problems(turn_updates) == []
+
+    def test_failed_detail_with_turn_id_names_it(self):
+        from congress_videos.youtube_upload_dag import _turn_marking_problems
+
+        turn_updates = {
+            "updated_turns": 0,
+            "failed_updates": 1,
+            "details": [{"turn_id": 7, "status": "failed", "error": "boom"}],
+        }
+        problems = _turn_marking_problems(turn_updates)
+        assert len(problems) == 1
+        assert "turn_id=7" in problems[0]
+
+    def test_failed_detail_with_turn_id_none_uses_output_path_label(self):
+        from congress_videos.youtube_upload_dag import _turn_marking_problems
+
+        turn_updates = {
+            "updated_turns": 0,
+            "failed_updates": 1,
+            "details": [
+                {
+                    "turn_id": None,
+                    "status": "failed",
+                    "error": "boom",
+                    "matched_by": "output_path",
+                    "output_path": "/videos/turn-7.mp4",
+                }
+            ],
+        }
+        problems = _turn_marking_problems(turn_updates)
+        assert len(problems) == 1
+        assert "output_path=/videos/turn-7.mp4" in problems[0]
+        assert "turn_id=None" not in problems[0]
+
+    def test_counter_only_failure_with_empty_details_still_fires(self):
+        from congress_videos.youtube_upload_dag import _turn_marking_problems
+
+        turn_updates = {"updated_turns": 0, "failed_updates": 2, "details": []}
+        problems = _turn_marking_problems(turn_updates)
+        assert len(problems) == 1
+        assert "2" in problems[0]
+
+    def test_output_path_not_found_skip_is_a_distinct_sentence(self):
+        from congress_videos.youtube_upload_dag import _turn_marking_problems
+
+        turn_updates = {
+            "updated_turns": 0,
+            "failed_updates": 0,
+            "details": [
+                {
+                    "turn_id": None,
+                    "status": "skipped",
+                    "reason": "output_path_not_found",
+                    "matched_by": "output_path",
+                    "output_path": "/videos/turn-9.mp4",
+                }
+            ],
+        }
+        problems = _turn_marking_problems(turn_updates)
+        assert len(problems) == 1
+        assert "DB-update" not in problems[0]
+        assert "output_path=/videos/turn-9.mp4" in problems[0]
+
+    def test_upload_failed_or_missing_fields_skip_does_not_raise(self):
+        from congress_videos.youtube_upload_dag import _turn_marking_problems
+
+        turn_updates = {
+            "updated_turns": 0,
+            "failed_updates": 0,
+            "details": [
+                {"turn_id": 3, "status": "skipped", "reason": "upload_failed_or_missing_fields"}
+            ],
+        }
+        assert _turn_marking_problems(turn_updates) == []
+
+    def test_failed_and_output_path_not_found_together_produce_two_sentences(self):
+        from congress_videos.youtube_upload_dag import _turn_marking_problems
+
+        turn_updates = {
+            "updated_turns": 0,
+            "failed_updates": 1,
+            "details": [
+                {"turn_id": 7, "status": "failed", "error": "boom"},
+                {
+                    "turn_id": None,
+                    "status": "skipped",
+                    "reason": "output_path_not_found",
+                    "output_path": "/videos/turn-9.mp4",
+                },
+            ],
+        }
+        problems = _turn_marking_problems(turn_updates)
+        assert len(problems) == 2
+
+    def test_reasonless_skip_and_statusless_detail_are_both_ignored(self):
+        """Deviation from tasks 1.10 literal wording (see apply-progress): the
+        tasks artifact described this case as `status="failed"` lacking a
+        `reason`, but real `failed` details never carry `reason` (only
+        `error` — see upload_marking.py:156-160), and status=="failed" alone
+        must fire regardless of `reason` per design D4/spec, matching
+        test_failed_detail_with_turn_id_names_it above. This test instead
+        covers design D4's actual defensive-shape rows: a `skipped` detail
+        missing `reason` (no match against the exact `output_path_not_found`
+        string) and a detail missing `status` entirely — both ignored.
+        """
+        from congress_videos.youtube_upload_dag import _turn_marking_problems
+
+        turn_updates = {
+            "updated_turns": 0,
+            "failed_updates": 0,
+            "details": [
+                {"turn_id": 3, "status": "skipped"},
+                {"turn_id": 4},
+            ],
+        }
+        assert _turn_marking_problems(turn_updates) == []
+
+    def test_absent_details_key_and_zero_failed_updates_returns_empty_list(self):
+        from congress_videos.youtube_upload_dag import _turn_marking_problems
+
+        turn_updates = {"updated_turns": 5, "failed_updates": 0}
+        assert _turn_marking_problems(turn_updates) == []
+
+
+# ---------------------------------------------------------------------------
 # _check_upload_failures
 # ---------------------------------------------------------------------------
 
@@ -247,7 +396,14 @@ class TestCheckUploadFailures:
         from congress_videos.youtube_upload_dag import _check_upload_failures
 
         ti = _make_ti(
-            {"chapter_upload_updates": {"recorded_failures": 0, "failed_updates": 0}}
+            {
+                "chapter_upload_updates": {"recorded_failures": 0, "failed_updates": 0},
+                "turn_upload_updates": {
+                    "updated_turns": 0,
+                    "failed_updates": 0,
+                    "details": [],
+                },
+            }
         )
         _check_upload_failures(ti)  # should not raise
 
@@ -260,7 +416,12 @@ class TestCheckUploadFailures:
                     "updated_chapters": 0,
                     "failed_updates": 0,
                     "details": [],
-                }
+                },
+                "turn_upload_updates": {
+                    "updated_turns": 0,
+                    "failed_updates": 0,
+                    "details": [],
+                },
             }
         )
         _check_upload_failures(ti)  # should not raise
@@ -322,9 +483,139 @@ class TestCheckUploadFailures:
         from congress_videos.youtube_upload_dag import _check_upload_failures
 
         ti = _make_ti(
-            {"chapter_upload_updates": {"recorded_failures": 0, "failed_updates": 0}}
+            {
+                "chapter_upload_updates": {"recorded_failures": 0, "failed_updates": 0},
+                "turn_upload_updates": {
+                    "updated_turns": 0,
+                    "failed_updates": 0,
+                    "details": [],
+                },
+            }
         )
         _check_upload_failures(ti)  # should not raise — upload_results absent
+
+    # -----------------------------------------------------------------------
+    # Turn findings (issue #332)
+    # -----------------------------------------------------------------------
+
+    def test_raises_on_turn_failure_with_clean_chapter_and_thumbnail(self):
+        from congress_videos.youtube_upload_dag import _check_upload_failures
+
+        ti = _make_ti(
+            {
+                "chapter_upload_updates": {"recorded_failures": 0, "failed_updates": 0},
+                "turn_upload_updates": {
+                    "updated_turns": 0,
+                    "failed_updates": 1,
+                    "details": [{"turn_id": 42, "status": "failed", "error": "boom"}],
+                },
+            }
+        )
+        with pytest.raises(Exception) as exc_info:
+            _check_upload_failures(ti)
+        assert "turn_id=42" in str(exc_info.value)
+
+    def test_raises_one_combined_exception_for_chapter_thumbnail_and_turn_failures(self):
+        """Issue #332: extends #320 design D6 — three categories, ONE raise."""
+        from congress_videos.youtube_upload_dag import _check_upload_failures
+
+        ti = _make_ti(
+            {
+                "chapter_upload_updates": {
+                    "recorded_failures": 1,
+                    "failed_updates": 0,
+                    "details": [{"chapter_id": 5, "status": "failure_recorded"}],
+                },
+                "upload_results": {
+                    "upload_details": [
+                        {
+                            "youtube_video_id": "vid-thumb-fail",
+                            "chapter_id": 9,
+                            "turn_id": None,
+                            "thumbnail_success": False,
+                        }
+                    ]
+                },
+                "turn_upload_updates": {
+                    "updated_turns": 0,
+                    "failed_updates": 1,
+                    "details": [{"turn_id": 42, "status": "failed", "error": "boom"}],
+                },
+            }
+        )
+        with pytest.raises(Exception) as exc_info:
+            _check_upload_failures(ti)
+        message = str(exc_info.value)
+        assert "chapter_id=5" in message or "5" in message
+        assert "Chapter upload failures" in message
+        assert "custom thumbnail" in message
+        assert "turn_id=42" in message
+
+    def test_raises_on_missing_turn_xcom_with_clean_chapter(self):
+        from congress_videos.youtube_upload_dag import _check_upload_failures
+
+        ti = _make_ti(
+            {"chapter_upload_updates": {"recorded_failures": 0, "failed_updates": 0}}
+        )
+        with pytest.raises(Exception, match="turn_upload_updates XCom missing"):
+            _check_upload_failures(ti)
+
+    def test_missing_turn_xcom_does_not_hide_chapter_and_thumbnail_findings(self):
+        """Pins design D3: no short-circuit, no masking, even when BOTH the
+        chapter DB failure and the turn XCom-missing finding coexist."""
+        from congress_videos.youtube_upload_dag import _check_upload_failures
+
+        ti = _make_ti(
+            {
+                "chapter_upload_updates": {
+                    "recorded_failures": 1,
+                    "failed_updates": 0,
+                    "details": [{"chapter_id": 5, "status": "failure_recorded"}],
+                },
+                "upload_results": {
+                    "upload_details": [
+                        {
+                            "youtube_video_id": "vid-thumb-fail",
+                            "chapter_id": 9,
+                            "turn_id": None,
+                            "thumbnail_success": False,
+                        }
+                    ]
+                },
+                # turn_upload_updates deliberately absent
+            }
+        )
+        with pytest.raises(Exception) as exc_info:
+            _check_upload_failures(ti)
+        message = str(exc_info.value)
+        assert "Chapter upload failures" in message
+        assert "custom thumbnail" in message
+        assert "turn_upload_updates XCom missing" in message
+
+    def test_no_raise_when_chapter_thumbnail_and_turn_are_all_clean(self):
+        from congress_videos.youtube_upload_dag import _check_upload_failures
+
+        ti = _make_ti(
+            {
+                "chapter_upload_updates": {"recorded_failures": 0, "failed_updates": 0},
+                "upload_results": {
+                    "upload_details": [
+                        {
+                            "youtube_video_id": "vid-ok",
+                            "chapter_id": 9,
+                            "turn_id": None,
+                            "thumbnail_success": True,
+                        }
+                    ]
+                },
+                "turn_upload_updates": {
+                    "updated_turns": 1,
+                    "failed_updates": 0,
+                    "details": [{"turn_id": 42, "status": "updated"}],
+                },
+            }
+        )
+        _check_upload_failures(ti)  # should not raise
 
 
 # ---------------------------------------------------------------------------
