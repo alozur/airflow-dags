@@ -538,8 +538,6 @@ def score_turn_interest(window_text: str, completion_fn=None) -> Optional[int]:
             system_prompt=INTEREST_SCORING_SYSTEM_PROMPT,
             user_prompt=window_text[:8000],
             model=LLM_CHEAP,
-            temperature=0.0,
-            max_tokens=3,
         )
         content = ((resp or {}).get("content") or "").strip()
         m = re.search(r"-?\d+", content)
@@ -600,7 +598,6 @@ def select_pretrim_window(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         model=LLM_CHEAP,
-        max_tokens=200,
     )
 
     if result["error"] or result["data"] is None:

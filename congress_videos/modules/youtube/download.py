@@ -881,8 +881,6 @@ def summarize_one_chunk(chunk_ref: dict) -> dict:
                 chunk_content=chunk_srt[:15000],  # Limit to 15k chars
             ),
             model=LLM_CHEAP,
-            temperature=0.2,
-            max_tokens=1000,
         )
 
         if completion.get('error'):
@@ -1374,8 +1372,6 @@ def _analyze_single_chunk(
                     srt_content=window_srt_text,  # Full window — no truncation
                 ),
                 model=LLM_CHEAP,
-                temperature=0.3,
-                max_tokens=2000,
             )
             if completion.get('error'):
                 raise RuntimeError(completion['error'])

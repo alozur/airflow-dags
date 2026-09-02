@@ -649,17 +649,6 @@ class TestScoreTurnInterest:
         score_turn_interest("texto de prueba", completion_fn=_fn)
         assert called_with.get("model") == LLM_CHEAP
 
-    def test_uses_temperature_zero(self):
-        """score_turn_interest must pass temperature=0.0 to completion_fn."""
-        called_with = {}
-
-        def _fn(**kwargs):
-            called_with.update(kwargs)
-            return {"content": "5", "error": None}
-
-        score_turn_interest("texto de prueba", completion_fn=_fn)
-        assert called_with.get("temperature") == 0.0
-
     def test_env_override_forwards_to_completion_fn(self, monkeypatch):
         """End-to-end: LLM_CHEAP env → utils.llm_config → this call site.
 

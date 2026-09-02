@@ -493,8 +493,6 @@ def analyze_chapters_with_ai(
             system_prompt=CHAPTER_IDENTIFICATION_SYSTEM_PROMPT,
             user_prompt=user_prompt,
             model=model,
-            temperature=0.2,
-            max_tokens=2000,
         )
 
         if ai_result["error"]:
