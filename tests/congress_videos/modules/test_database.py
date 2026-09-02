@@ -685,3 +685,36 @@ class TestSelectUnpreparedTurnsProceduralGate:
         assert "stv.keep_intervals" in sql, (
             f"select_unprepared_turns must select stv.keep_intervals; got: {sql}"
         )
+
+
+# --------------------------------------------------------------------------- #
+# select_unprepared_turns — chapter span columns (issue #322)
+# --------------------------------------------------------------------------- #
+
+class TestSelectUnpreparedTurnsChapterSpan:
+
+    def test_query_selects_chapter_start_time_column(self, db):
+        """SQL must select vc.start_time so _chapter_span can anchor the
+        evidence-gate region's backward clamp to the chapter's own start."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.select_unprepared_turns(limit=2)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "vc.start_time" in sql, (
+            f"select_unprepared_turns must select vc.start_time; got: {sql}"
+        )
+
+    def test_query_selects_chapter_end_time_column(self, db):
+        """SQL must select vc.end_time so the chapter-wide prompt context
+        (slice 2) can bound the qa window to the chapter's own span."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.select_unprepared_turns(limit=2)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "vc.end_time" in sql, (
+            f"select_unprepared_turns must select vc.end_time; got: {sql}"
+        )

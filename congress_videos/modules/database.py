@@ -1043,6 +1043,7 @@ class CongressionalVideoDB:
                             stv.keep_intervals,
                             vc.video_id, vc.title AS chapter_title, vc.description,
                             vc.relevance_score, vc.key_speakers, vc.speakers,
+                            vc.start_time, vc.end_time,
                             ysv.session_number, ysv.session_date, stv.materialized_at,
                             stv.resolved_participant_slug,
                             stv.speaker_resolution_confidence

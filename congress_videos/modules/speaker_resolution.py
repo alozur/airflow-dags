@@ -26,7 +26,11 @@ from congress_videos.config.ai_prompts import (
     SPEAKER_RESOLUTION_USER_TEMPLATE,
 )
 from congress_videos.modules.announcement_patterns import has_announcement_phrase
-from congress_videos.srt_helpers import _parse_srt_blocks, find_srt_for_chapter
+from congress_videos.srt_helpers import (
+    _parse_srt_blocks,
+    _srt_timestamp_to_seconds,
+    find_srt_for_chapter,
+)
 from utils.llm_config import LLM_CHEAP
 
 logger = logging.getLogger(__name__)
@@ -56,6 +60,17 @@ REQUIRE_ANNOUNCEMENT_PHRASE: bool = True
 """Kill switch (issue #284): when True, resolve_speaker refuses to call
 completion_fn unless intro_text or turn_text contains a presiding-officer
 announcement phrase. Flip to False to fully revert the pre-gate."""
+
+QA_EVIDENCE_LOOKBACK_SECS: int = 600
+"""Backwards-only widening (issue #322) of the anchored evidence-gate
+region: how far before ``intro_anchor`` accepted evidence may be located,
+clamped to the chapter's own start. The forward edge
+(``start_seconds + TURN_CONTEXT_SECS``) is unaffected by this constant."""
+
+ANCHOR_JOIN_BLOCKS: int = 3
+"""Maximum number of consecutive SRT blocks joined by
+``_evidence_supported_in_blocks`` when locating evidence that straddles a
+block boundary (issue #322)."""
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +102,58 @@ def _evidence_supported(evidence: str | None, source_text: str) -> bool:
     normalized_text = _normalize_for_evidence(source_text)
     ratio = fuzz.partial_ratio(normalized_evidence, normalized_text)
     return ratio >= EVIDENCE_MIN_PARTIAL_RATIO
+
+
+def _evidence_supported_in_blocks(
+    evidence: str | None,
+    blocks: list[dict],
+    join_size: int = ANCHOR_JOIN_BLOCKS,
+) -> bool:
+    """True when *evidence* is located within a sliding join of up to
+    *join_size* consecutive *blocks* (issue #322).
+
+    Tries every window of 1..join_size consecutive blocks, in order, and
+    reuses ``_evidence_supported`` VERBATIM as the per-window primitive —
+    this keeps the 12-char floor, NFD normalization, and
+    EVIDENCE_MIN_PARTIAL_RATIO threshold identical to the pre-anchor gate.
+    ``blocks`` MUST already be pre-filtered to the accepted region by the
+    caller: this function only tries joins over what it is given, it does
+    not re-check any timestamp. Empty ``blocks`` is always False. Never
+    raises.
+    """
+    if not blocks:
+        return False
+
+    n = len(blocks)
+    for start_idx in range(n):
+        for size in range(1, join_size + 1):
+            end_idx = start_idx + size
+            if end_idx > n:
+                break
+            joined_text = "\n".join(b["text"] for b in blocks[start_idx:end_idx])
+            if _evidence_supported(evidence, joined_text):
+                return True
+    return False
+
+
+def _chapter_span(turn: dict) -> tuple[float, float] | None:
+    """Parse the chapter's ``[start, end)`` span from ``turn["start_time"]``/
+    ``turn["end_time"]`` (issue #322) — VARCHAR SRT-format strings added to
+    ``select_unprepared_turns`` from ``video_chapters``.
+
+    Returns ``(start_seconds, end_seconds)`` or ``None`` on a missing key,
+    non-str value, unparseable timestamp, or ``end <= start``. Never raises.
+    """
+    try:
+        start = _srt_timestamp_to_seconds(turn["start_time"])
+        end = _srt_timestamp_to_seconds(turn["end_time"])
+    except (KeyError, ValueError, TypeError):
+        return None
+
+    if end <= start:
+        return None
+
+    return (start, end)
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +264,23 @@ def _resolve_speaker_inner(
         if b["start_secs"] >= start_secs and b["start_secs"] < turn_end
     ]
 
+    # Anchored evidence-gate region (issue #322): the ONLY place accepted
+    # evidence may be located, uniform for every turn_type. Backward edge
+    # widens up to QA_EVIDENCE_LOOKBACK_SECS before intro_anchor, clamped to
+    # the chapter's own start when a valid chapter span is available (fails
+    # safe to 0.0 otherwise — D5). Forward edge is unchanged: no block at or
+    # after start_secs + TURN_CONTEXT_SECS can ever appear in region_blocks,
+    # so evidence past that edge is rejected by construction, regardless of
+    # confidence.
+    chapter_span = _chapter_span(turn)
+    chapter_start_seconds = chapter_span[0] if chapter_span is not None else 0.0
+    region_start = max(chapter_start_seconds, intro_anchor - QA_EVIDENCE_LOOKBACK_SECS)
+    region_end = turn_end
+    region_blocks = [
+        b for b in all_blocks
+        if region_start <= b["start_secs"] < region_end
+    ]
+
     # Both windows may be empty at the start of a session — still attempt resolution
     # if we have at least some turn-window content.
     if not intro_blocks and not turn_blocks:
@@ -290,11 +374,12 @@ def _resolve_speaker_inner(
         )
         return None
 
-    # Evidence verification (issue #284): independent of self-reported
-    # confidence — a candidate whose evidence cannot be located in the
-    # model-visible text is rejected even at confidence 0.99. Runs last so
-    # every earlier return path/log line above stays byte-identical.
-    if not _evidence_supported(evidence, combined_text):
+    # Evidence verification (issue #284, anchored per issue #322):
+    # independent of self-reported confidence — a candidate whose evidence
+    # cannot be located within region_blocks (the anchored gate) is rejected
+    # even at confidence 0.99. Runs last so every earlier return path/log
+    # line above stays byte-identical.
+    if not _evidence_supported_in_blocks(evidence, region_blocks):
         logger.info(
             "resolve_speaker: evidence not locatable in model-visible text "
             "for turn_id=%s — returning None",
