@@ -289,7 +289,8 @@ CREATE TABLE IF NOT EXISTS production.speaker_turn_trim_proposals (
 -- constituent turn_id, all sharing the same output_path (issue #129).
 -- Folds migrations 025 (create) + 027 (upload tracking) + 030 (prepared_at,
 -- issue #146) + 032 (verification/abandon, issue #141) + 033 (turn_type,
--- issue #176) + 034 (speaker resolution) + 040 (keep_intervals, issue #143).
+-- issue #176) + 034 (speaker resolution) + 040 (keep_intervals, issue #143)
+-- + 042 (thumbnail republish state, issue #331).
 -- Live production has NO CHECK on turn_type — do not add one.
 CREATE TABLE IF NOT EXISTS production.speaker_turn_videos (
     video_id                      SERIAL      PRIMARY KEY,
@@ -322,6 +323,14 @@ CREATE TABLE IF NOT EXISTS production.speaker_turn_videos (
     -- Added by migration 040: NULL = legacy single window; otherwise the
     -- keep-interval plan after procedural spans are excised (issue #143)
     keep_intervals                JSONB,
+
+    -- Added by migration 042 (thumbnail republish healer, issue #331).
+    -- Positive marker: thumbnail_republish_needed_at IS NULL = nothing to heal.
+    thumbnail_republish_needed_at  TIMESTAMPTZ,
+    thumbnail_republished_at       TIMESTAMPTZ,
+    thumbnail_republish_attempts   INTEGER     DEFAULT 0,
+    thumbnail_republish_abandoned  BOOLEAN     DEFAULT FALSE,
+    last_thumbnail_republish_error TEXT,
 
     CONSTRAINT uq_speaker_turn_videos_turn UNIQUE (turn_id)
 );

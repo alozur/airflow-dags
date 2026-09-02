@@ -400,6 +400,63 @@ def _unpublished_thumbnail_labels(upload_details: list | None) -> list[str]:
     return labels
 
 
+def _turn_marking_problems(turn_updates: dict | None) -> list[str]:
+    """Describe every turn-marking finding worth failing the daily upload gate.
+
+    Returns finished operator-facing sentences, ready to append to the
+    `_check_upload_failures` `problems` accumulator. Empty list == clean.
+
+    `turn_updates` is the `turn_upload_updates` XCom, shaped
+    `{"updated_turns", "failed_updates", "details"}` — note there is NO
+    `recorded_failures` key: turns have no DB-persisted failure concept
+    (accepted asymmetry, proposal D3; follow-up issue tracks it).
+
+    `None` means the XCom is absent, which is always an anomaly (issue #332
+    design D3): reported as a finding, never as a short-circuit raise, so it
+    cannot mask the chapter or thumbnail findings.
+    """
+    if turn_updates is None:
+        return ["turn_upload_updates XCom missing after mark_turns_uploaded succeeded"]
+
+    def _label(detail: dict) -> str:
+        turn_id = detail.get("turn_id")
+        if turn_id is not None:
+            return f"turn_id={turn_id}"
+        return f"output_path={detail.get('output_path')}"
+
+    details = turn_updates.get("details") or []
+    count = turn_updates.get("failed_updates") or 0
+
+    failed_details = [d for d in details if d.get("status") == "failed"]
+    not_found_details = [
+        d
+        for d in details
+        if d.get("status") == "skipped" and d.get("reason") == "output_path_not_found"
+    ]
+
+    problems = []
+    if failed_details or count > 0:
+        n = max(count, len(failed_details))
+        labels = [_label(d) for d in failed_details]
+        problems.append(
+            f"Turn upload failures: {n} DB-update failure(s) after a successful "
+            f"publish. Turns: {labels}. Those rows are still "
+            f"is_uploaded_to_youtube=FALSE and WILL be re-uploaded by the next "
+            f"19:00 UTC run — mark them manually."
+        )
+
+    if not_found_details:
+        labels = [_label(d) for d in not_found_details]
+        problems.append(
+            f"{len(not_found_details)} turn video(s) published but matched no "
+            f"speaker_turn_videos row: {labels}. Zero rows matched is never a "
+            f"benign no-op (the UPDATE has no is_uploaded_to_youtube=FALSE "
+            f"predicate) — these will be re-uploaded by the next run."
+        )
+
+    return problems
+
+
 def trigger_thumbnail_generation(ti, **context) -> str | None:
     """Run the generic thumbnail DAG and retain its result for upload configuration."""
     thumbnail_config = ti.xcom_pull(key="thumbnail_config") or {}
@@ -938,12 +995,14 @@ with (
     def _check_upload_failures(ti):
         """Raise after DB writes so failures are visible in the Airflow UI.
 
-        Accumulates two independent findings into ONE exception (issue #320
-        design D6): DB-recorded upload failures, and videos published without
-        their custom thumbnail. A first-wins raise would hide the thumbnail
-        finding permanently — the DB writes are already committed and the
-        XComs are immutable, so a retry would just re-raise the same DB error
-        forever without the thumbnail finding ever surfacing.
+        Accumulates four independent findings into ONE exception (issue #320
+        design D6, extended by issue #332): chapter DB-recorded upload
+        failures, videos published without their custom thumbnail, turn
+        DB-update failures, and turn output_path_not_found/missing-XCom
+        findings. A first-wins raise would hide later findings permanently —
+        the DB writes are already committed and the XComs are immutable, so a
+        retry would just re-raise the same earlier error forever without the
+        other findings ever surfacing.
         """
         updates = ti.xcom_pull(key="chapter_upload_updates")
         if updates is None:
@@ -981,6 +1040,10 @@ with (
                 f"thumbnail (DB writes already committed). Re-run "
                 f"set_thumbnail_for_video for: {', '.join(thumbnail_labels)}"
             )
+
+        # NEW (issue #332). Missing turn_upload_updates is a finding, not a
+        # short-circuit raise: it must not mask the two findings above.
+        problems.extend(_turn_marking_problems(ti.xcom_pull(key="turn_upload_updates")))
 
         if problems:
             raise Exception(" | ".join(problems))

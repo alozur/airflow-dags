@@ -339,3 +339,78 @@ class TestMarkTurnUploads:
         result = mark_turn_uploads(mock_db, upload_results)
 
         assert result["details"][0]["reason"] == "upload_failed_or_missing_fields"
+
+
+# --------------------------------------------------------------------------- #
+# mark_turn_uploads — thumbnail republish marker branch (issue #331)
+# --------------------------------------------------------------------------- #
+
+class TestMarkTurnUploadsThumbnailRepublishMarker:
+    """Independent `if`, not `elif` — fires on both dispatch paths. Identity
+    check: only literal False (of the FOUR-valued thumbnail_success) marks."""
+
+    @pytest.mark.parametrize(
+        "extra",
+        [{"thumbnail_success": True}, {"thumbnail_success": None}, {}],
+        ids=["true", "none", "absent"],
+    )
+    def test_non_false_thumbnail_success_never_marks(self, mock_db, extra):
+        detail = {"turn_id": 1, "youtube_video_id": "abc", "success": True, **extra}
+
+        mark_turn_uploads(mock_db, {"upload_details": [detail]})
+
+        mock_db.mark_turn_thumbnail_republish_needed.assert_not_called()
+
+    def test_marks_on_turn_id_branch_and_forwards_error(self, mock_db):
+        detail = {
+            "turn_id": 1, "youtube_video_id": "abc", "success": True,
+            "thumbnail_success": False, "thumbnail_error": "quota exceeded",
+        }
+
+        result = mark_turn_uploads(mock_db, {"upload_details": [detail]})
+
+        mock_db.mark_turn_thumbnail_republish_needed.assert_called_once_with(
+            output_path=None, turn_id=1, error_message="quota exceeded"
+        )
+        assert result["thumbnail_markers"] == 1
+        assert result["failed_updates"] == 0
+        assert result["updated_turns"] == 1
+
+    def test_marks_on_output_path_fallback_branch(self, mock_db):
+        mock_db.mark_turns_uploaded_by_output_path.return_value = 2
+        detail = {
+            "turn_id": None, "youtube_video_id": "abc", "video_file": "/path/turn1.mp4",
+            "success": True, "thumbnail_success": False,
+        }
+
+        result = mark_turn_uploads(mock_db, {"upload_details": [detail]})
+
+        mock_db.mark_turn_thumbnail_republish_needed.assert_called_once_with(
+            output_path="/path/turn1.mp4", turn_id=None, error_message=None
+        )
+        assert result["thumbnail_markers"] == 1
+
+    def test_upload_itself_failed_never_marks_even_if_thumbnail_false(self, mock_db):
+        detail = {
+            "turn_id": 1, "youtube_video_id": None, "success": False,
+            "thumbnail_success": False,
+        }
+
+        mark_turn_uploads(mock_db, {"upload_details": [detail]})
+
+        mock_db.mark_turn_thumbnail_republish_needed.assert_not_called()
+
+    def test_marker_write_failure_never_escapes_and_leaves_failed_updates_untouched(
+        self, mock_db
+    ):
+        mock_db.mark_turn_thumbnail_republish_needed.side_effect = Exception("db down")
+        detail = {
+            "turn_id": 1, "youtube_video_id": "abc", "success": True,
+            "thumbnail_success": False,
+        }
+
+        result = mark_turn_uploads(mock_db, {"upload_details": [detail]})  # must not raise
+
+        assert result["thumbnail_marker_failures"] == 1
+        assert result["failed_updates"] == 0
+        assert any(d.get("status") == "thumbnail_marker_failed" for d in result["details"])

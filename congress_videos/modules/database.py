@@ -11,6 +11,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 CHAPTER_UPLOAD_ABANDON_THRESHOLD = 3  # 3rd recorded failure excludes the chapter
+THUMBNAIL_REPUBLISH_ABANDON_THRESHOLD = 3  # 3rd recorded failure abandons the republish
+THUMBNAIL_REPUBLISH_CANDIDATE_LIMIT = 50   # over-fetch bound; the DAG may pass its own
 SHORTS_UPLOAD_ABANDON_THRESHOLD = 3   # 3rd recorded failure excludes the short
 SHORTS_SOURCE_VIDEO_COOLDOWN = 5      # other-video upload events before V is eligible again
 SHORTS_UPLOAD_HISTORY_LIMIT = 50      # bounded upload-history window
@@ -1011,6 +1013,214 @@ class CongressionalVideoDB:
                     cur.rowcount,
                 )
                 return cur.rowcount
+
+    def mark_turn_thumbnail_republish_needed(
+        self,
+        *,
+        output_path: str | None = None,
+        turn_id: int | None = None,
+        error_message: str | None = None,
+    ) -> int:
+        """Arm the thumbnail-republish marker for every row sharing one output_path.
+
+        Dual-key (issue #230's turn_id-primary / output_path-fallback reality).
+        Nulling thumbnail_republished_at re-arms a row that broke again;
+        attempts/abandoned are NOT reset — cumulative, never un-abandon.
+
+        Raises:
+            ValueError: If both output_path and turn_id are falsy.
+        """
+        if not output_path and not turn_id:
+            raise ValueError(
+                "mark_turn_thumbnail_republish_needed: output_path/turn_id required"
+            )
+
+        stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+        where_clause, where_param = (
+            ("WHERE output_path = %s", output_path)
+            if output_path
+            else (
+                f"WHERE output_path = (SELECT output_path FROM {stv_table} WHERE turn_id = %s)",
+                turn_id,
+            )
+        )
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {stv_table} SET
+                        thumbnail_republish_needed_at  = NOW(),
+                        thumbnail_republished_at       = NULL,
+                        last_thumbnail_republish_error = %s
+                    {where_clause}
+                    """,
+                    (error_message, where_param),
+                )
+                logger.info(
+                    "mark_turn_thumbnail_republish_needed: output_path=%r "
+                    "turn_id=%r marked for republish (%d rows)",
+                    output_path, turn_id, cur.rowcount,
+                )
+                return cur.rowcount
+
+    # ================ Thumbnail Republish Healer (issue #331, WU2a) ================
+    #
+    # Turn-only, thumbnail-only by construction: no item_type dispatch, no chapter
+    # branch. NEVER reuse record_upload_verification_failure's SET shape here — that
+    # method flips is_uploaded_to_youtube and would trigger a spurious FULL video
+    # re-upload for what is only a thumbnail-publish failure. The DD4 structural
+    # guard in test_database_thumbnail_republish.py enforces this permanently.
+
+    def select_turns_needing_thumbnail_republish(
+        self, limit: int = THUMBNAIL_REPUBLISH_CANDIDATE_LIMIT
+    ) -> List[Dict]:
+        """Return healer candidates, deduplicated one row per output_path.
+
+        Wrapped-dedup shape (mirrors select_unverified_uploads, database.py
+        ~1339): DISTINCT ON forces the inner ORDER BY to lead with the
+        dedup key, so priority ordering must live in an outer query.
+
+        The outer ORDER BY is attempts ASC, needed_at ASC, output_path ASC.
+        output_path is the real tiebreaker (issue #300): same-day siblings
+        tie on both prior keys, and without a total order Postgres may
+        return any permutation, making the per-run cap non-reproducible.
+
+        Args:
+            limit: Maximum candidates to return.
+
+        Returns:
+            List of dicts: turn_id, output_path, youtube_video_id,
+            thumbnail_republish_needed_at, thumbnail_republish_attempts.
+        """
+        stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT * FROM (
+                        SELECT DISTINCT ON (output_path)
+                            turn_id,
+                            output_path,
+                            youtube_video_id,
+                            thumbnail_republish_needed_at,
+                            thumbnail_republish_attempts
+                        FROM {stv_table}
+                        WHERE thumbnail_republish_needed_at IS NOT NULL
+                          AND thumbnail_republished_at IS NULL
+                          AND NOT COALESCE(thumbnail_republish_abandoned, FALSE)
+                          AND COALESCE(thumbnail_republish_attempts, 0)
+                              < {THUMBNAIL_REPUBLISH_ABANDON_THRESHOLD}
+                          AND is_uploaded_to_youtube = TRUE
+                          AND youtube_video_id IS NOT NULL
+                        ORDER BY output_path, turn_id
+                    ) dedup
+                    ORDER BY dedup.thumbnail_republish_attempts   ASC,
+                             dedup.thumbnail_republish_needed_at  ASC,
+                             dedup.output_path                    ASC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                rows = cur.fetchall()
+                logger.info(
+                    "select_turns_needing_thumbnail_republish: %d candidates "
+                    "(limit=%d)",
+                    len(rows), limit,
+                )
+                return rows
+
+    def mark_turn_thumbnail_republished(self, output_path: str) -> int:
+        """Record a successful republish. Sets exactly two columns.
+
+        Deliberately does NOT touch is_uploaded_to_youtube, youtube_video_id,
+        youtube_upload_date, upload_attempts, is_upload_abandoned, or
+        upload_verified_at — see the DD4 structural guard.
+
+        Args:
+            output_path: Absolute path shared by the healed turn's siblings.
+
+        Returns:
+            Number of rows updated (cur.rowcount).
+        """
+        stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {stv_table} SET
+                        thumbnail_republished_at       = NOW(),
+                        last_thumbnail_republish_error = NULL
+                    WHERE output_path = %s
+                    """,
+                    (output_path,),
+                )
+                logger.info(
+                    "mark_turn_thumbnail_republished: output_path=%r healed "
+                    "(%d rows)",
+                    output_path, cur.rowcount,
+                )
+                return cur.rowcount
+
+    def record_turn_thumbnail_republish_failure(
+        self,
+        output_path: str,
+        error_message: str | None = None,
+        *,
+        abandon: bool = False,
+    ) -> dict | None:
+        """Record a republish failure; abandon at threshold or immediately.
+
+        Increments thumbnail_republish_attempts and stores error_message.
+        Sets thumbnail_republish_abandoned=TRUE when either abandon=True
+        (missing thumbnail.png on disk, proposal D3 — no regeneration, no
+        further attempts) or the incremented attempts count reaches
+        THUMBNAIL_REPUBLISH_ABANDON_THRESHOLD. Deliberately does NOT touch
+        upload-verification state — see the DD4 structural guard.
+
+        Args:
+            output_path: Absolute path shared by the failed turn's siblings.
+            error_message: Description of the failure.
+            abandon: Force immediate abandonment regardless of attempt count.
+
+        Returns:
+            Dict with thumbnail_republish_attempts/thumbnail_republish_abandoned,
+            or None if no row matched output_path.
+        """
+        stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {stv_table} SET
+                        thumbnail_republish_attempts   = COALESCE(thumbnail_republish_attempts, 0) + 1,
+                        last_thumbnail_republish_error = %s,
+                        thumbnail_republish_abandoned  = (
+                            %s OR COALESCE(thumbnail_republish_attempts, 0) + 1
+                                  >= {THUMBNAIL_REPUBLISH_ABANDON_THRESHOLD}
+                        )
+                    WHERE output_path = %s
+                    RETURNING thumbnail_republish_attempts, thumbnail_republish_abandoned
+                    """,
+                    (error_message, abandon, output_path),
+                )
+                result = cur.fetchone()
+                if result and result.get('thumbnail_republish_abandoned'):
+                    logger.warning(
+                        "record_turn_thumbnail_republish_failure: output_path=%r "
+                        "abandoned after %s attempts (forced=%s)",
+                        output_path, result.get('thumbnail_republish_attempts'), abandon,
+                    )
+                else:
+                    logger.info(
+                        "record_turn_thumbnail_republish_failure: output_path=%r "
+                        "still eligible after this failure",
+                        output_path,
+                    )
+                return result
 
     def select_unprepared_turns(self, limit: int = 2) -> List[Dict]:
         """Select speaker turns that have not been prepared yet.

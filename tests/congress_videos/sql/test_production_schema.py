@@ -128,6 +128,9 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "is_upload_abandoned", "last_upload_error", "turn_type",
         "resolved_participant_slug", "speaker_resolution_confidence",
         "speaker_resolution_method", "keep_intervals",
+        "thumbnail_republish_needed_at", "thumbnail_republished_at",
+        "thumbnail_republish_attempts", "thumbnail_republish_abandoned",
+        "last_thumbnail_republish_error",
     ),
     "video_analytics_snapshots": (
         "snapshot_id", "chapter_id", "youtube_video_id", "checkpoint",
@@ -314,6 +317,18 @@ class TestProductionQualification:
             "group_spans is a CTE reference, not a base table — must stay unqualified"
         )
         assert "JOIN GROUP_SPANS GS" in block
+
+
+class TestUploadableTurnsUnaffectedByThumbnailRepublish:
+    """Migration 042 (issue #331) is purely additive on speaker_turn_videos
+    and must not touch the uploadable_turns view — it gates on
+    is_uploaded_to_youtube = FALSE, and every thumbnail-republish healer
+    candidate has that column TRUE, so the view is structurally
+    unaffected (design DD1)."""
+
+    def test_view_block_has_no_thumbnail_republish_token(self):
+        block = TestProductionQualification._view_block().upper()
+        assert "THUMBNAIL_REPUBLISH" not in block
 
 
 class TestVideoShortsTableSnapshot:
