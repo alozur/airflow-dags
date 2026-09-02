@@ -3,3 +3,7 @@ examples/
 docs/
 htmlcov/
 conftest.py
+# Regex match: also (harmlessly) excludes congress_videos/scripts/ (token
+# generator only, no DAG there). scripts/ itself holds no DAG either, but its
+# .py files sit inside the DagBag walk (repo mounts at /opt/airflow/dags/repo).
+scripts/

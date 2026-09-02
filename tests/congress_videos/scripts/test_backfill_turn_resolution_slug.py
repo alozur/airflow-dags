@@ -1,8 +1,10 @@
-"""Tests for the turn-resolution-slug backfill CLI (issue #339), read-only half.
+"""Tests for the turn-resolution-slug backfill CLI (issue #339).
 
-PR2 covers only dry-run planning. The `--execute` write path is a
-deliberate `NotImplementedError` stub. Every test mocks the DB
-connection/cursor — no write (INSERT/UPDATE/DELETE) is ever asserted.
+Covers both the dry-run planning half (PR2) and the `--execute` write
+half (PR3): transactional UPDATE per turn_id, drift/rowcount abort,
+autocommit guard, method-constraint preflight, and rollback-plan
+round-trip. Every test mocks the DB connection/cursor — no live
+Postgres is used anywhere in this file.
 """
 
 import importlib.util
@@ -222,6 +224,15 @@ class TestParseArgs:
         assert args.method == want_method
         assert args.execute is want_execute
 
+    def test_rollback_out_defaults_to_none_and_accepts_a_path(self):
+        args = backfill.parse_args(["--input", "p.json", "--confidence", "0.8"])
+        assert args.rollback_out is None
+
+        args = backfill.parse_args(
+            ["--input", "p.json", "--confidence", "0.8", "--rollback-out", "inv.json"]
+        )
+        assert args.rollback_out == "inv.json"
+
 
 def _fake_pg_connection(rows):
     """A MagicMock PostgresConnection whose get_connection() yields a mocked conn/cursor."""
@@ -275,10 +286,204 @@ class TestMainDryRun:
 
         assert backfill.main(["--input", path, "--confidence", confidence]) == 2
 
-    def test_execute_flag_raises_not_implemented_error(self, monkeypatch, tmp_path):
-        pg_conn, _conn, _cursor = _fake_pg_connection([])
-        monkeypatch.setattr(backfill, "PostgresConnection", lambda: pg_conn)
-        path = _write_plan(tmp_path, [{"turn_id": 1, "expected_current_slug": None, "new_slug": "a"}])
+class TestBuildUpdateQuery:
+    def test_never_predicates_on_output_path(self):
+        query = backfill.build_update_query(STV_TABLE)
 
-        with pytest.raises(NotImplementedError):
-            backfill.main(["--input", path, "--confidence", "1.0", "--execute"])
+        assert "output_path" not in query
+        assert "WHERE turn_id = %s" in query
+        assert "resolved_participant_slug = %s" in query
+        assert "resolved_participant_slug IS NOT DISTINCT FROM %s" in query
+
+
+def _apply_cursor(rowcounts):
+    """A MagicMock cursor whose .execute() sets .rowcount to the next of `rowcounts`."""
+    cursor = MagicMock()
+    cursor.__enter__ = MagicMock(return_value=cursor)
+    cursor.__exit__ = MagicMock(return_value=False)
+    values = iter(rowcounts)
+    cursor.execute.side_effect = lambda *a, **kw: setattr(cursor, "rowcount", next(values))
+    return cursor
+
+
+class TestApplyBackfill:
+    def test_happy_path_single_commit_all_updated_no_output_path_predicate(self):
+        # turn_id=9001 is deliberately not the MIN(turn_id) for its group — the
+        # write path has no representative filter, so it is corrected too.
+        cursor = _apply_cursor([1, 1])
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        entries = [
+            backfill.BackfillEntry(turn_id=t, expected_current_slug="old", new_slug="new")
+            for t in (9001, 3)
+        ]
+
+        statuses = backfill.apply_backfill(conn, STV_TABLE, entries, 0.9, "manual_backfill")
+
+        assert cursor.execute.call_count == 2
+        conn.commit.assert_called_once()
+        conn.rollback.assert_not_called()
+        assert statuses == {9001: "UPDATED", 3: "UPDATED"}
+        for call in cursor.execute.call_args_list:
+            assert "output_path" not in call[0][0]
+        # method/confidence are always the caller's, never inherited from a prior row
+        assert cursor.execute.call_args_list[0][0][1] == ("new", 0.9, "manual_backfill", 9001, "old")
+
+    def test_drift_aborts_and_rolls_back_the_whole_run(self):
+        cursor = _apply_cursor([1, 0, 1])  # turn_id=8124 is the 2nd of 3 — its slug drifted
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        entries = [
+            backfill.BackfillEntry(turn_id=t, expected_current_slug="old", new_slug="new")
+            for t in (1, 8124, 3)
+        ]
+
+        with pytest.raises(backfill.BackfillDriftError, match="8124"):
+            backfill.apply_backfill(conn, STV_TABLE, entries, 1.0, "manual")
+
+        conn.rollback.assert_called_once()
+        conn.commit.assert_not_called()
+        assert cursor.execute.call_count == 2  # stopped at the offending statement
+
+    @pytest.mark.parametrize("bad_rowcount", [0, 2])
+    def test_rowcount_deviation_any_value_but_one_aborts(self, bad_rowcount):
+        cursor = _apply_cursor([bad_rowcount])
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        entry = backfill.BackfillEntry(turn_id=1, expected_current_slug="old", new_slug="new")
+
+        with pytest.raises(backfill.BackfillDriftError):
+            backfill.apply_backfill(conn, STV_TABLE, [entry], 1.0, "manual")
+
+        conn.rollback.assert_called_once()
+        conn.commit.assert_not_called()
+
+
+class TestCheckAutocommitDisabled:
+    def test_admits_default_mock_but_refuses_literal_true(self):
+        conn = MagicMock()
+        backfill.check_autocommit_disabled(conn)  # admits: auto-generated attr isn't literal True
+
+        conn.autocommit = True
+        with pytest.raises(backfill.BackfillUsageError, match="autocommit"):
+            backfill.check_autocommit_disabled(conn)
+
+
+class TestWriteRollbackPlan:
+    def test_emits_an_inverse_plan_consumable_by_load_plan(self, tmp_path):
+        entries = [backfill.BackfillEntry(turn_id=8124, expected_current_slug="wrong", new_slug="right")]
+        out_path = tmp_path / "inverse.json"
+
+        backfill.write_rollback_plan(str(out_path), entries)
+        rollback_entries = backfill.load_plan(str(out_path))
+
+        assert rollback_entries == [
+            backfill.BackfillEntry(turn_id=8124, expected_current_slug="right", new_slug="wrong")
+        ]
+
+
+def _fake_pg_connection_for_execute(select_rows, update_rowcounts):
+    """MagicMock PostgresConnection: SELECTs return `select_rows`; each UPDATE
+    consumes the next `update_rowcounts` value as its rowcount."""
+    cursor = MagicMock()
+    cursor.fetchall.return_value = select_rows
+    cursor.__enter__ = MagicMock(return_value=cursor)
+    cursor.__exit__ = MagicMock(return_value=False)
+    values = iter(update_rowcounts)
+
+    def _execute(query, *_args, **_kwargs):
+        if query.strip().upper().startswith("UPDATE"):
+            cursor.rowcount = next(values)
+
+    cursor.execute.side_effect = _execute
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+    ctx = MagicMock()
+    ctx.__enter__ = MagicMock(return_value=conn)
+    ctx.__exit__ = MagicMock(return_value=False)
+    pg_conn = MagicMock()
+    pg_conn.get_qualified_table.side_effect = lambda name: f"production.{name}"
+    pg_conn.get_connection.return_value = ctx
+    return pg_conn, conn, cursor
+
+
+class TestMainExecute:
+    def test_happy_path_commits_writes_rollback_plan_and_exits_zero_rendering_updated(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        pg_conn, conn, cursor = _fake_pg_connection_for_execute([], [1, 1])
+        monkeypatch.setattr(backfill, "PostgresConnection", lambda: pg_conn)
+        path = _write_plan(
+            tmp_path,
+            [
+                {"turn_id": 1, "expected_current_slug": "old", "new_slug": "new"},
+                {"turn_id": 2, "expected_current_slug": "old2", "new_slug": "new2"},
+            ],
+        )
+        rollback_path = tmp_path / "inverse.json"
+
+        exit_code = backfill.main(
+            [
+                "--input", path, "--confidence", "1.0", "--execute", "--method", "manual_backfill",
+                "--rollback-out", str(rollback_path),
+            ]
+        )
+
+        assert exit_code == 0
+        update_calls = [
+            c for c in cursor.execute.call_args_list if c[0][0].strip().upper().startswith("UPDATE")
+        ]
+        assert len(update_calls) == 2
+        for call in update_calls:
+            assert "output_path" not in call[0][0]
+        conn.commit.assert_called_once()
+        conn.rollback.assert_not_called()
+        assert "UPDATED" in capsys.readouterr().out
+        rollback_entries = backfill.load_plan(str(rollback_path))
+        assert rollback_entries[0] == backfill.BackfillEntry(
+            turn_id=1, expected_current_slug="new", new_slug="old"
+        )
+
+    def test_drift_aborts_rolls_back_exits_3_and_renders_refused_drift(self, monkeypatch, tmp_path, capsys):
+        pg_conn, conn, _cursor = _fake_pg_connection_for_execute([], [0])
+        monkeypatch.setattr(backfill, "PostgresConnection", lambda: pg_conn)
+        path = _write_plan(
+            tmp_path, [{"turn_id": 8124, "expected_current_slug": "old", "new_slug": "new"}]
+        )
+
+        exit_code = backfill.main(["--input", path, "--confidence", "1.0", "--execute"])
+
+        assert exit_code == 3
+        conn.rollback.assert_called_once()
+        conn.commit.assert_not_called()
+        assert "REFUSED-DRIFT" in capsys.readouterr().out
+
+    def test_constraint_refusal_aborts_before_any_update_and_exits_3(self, monkeypatch, tmp_path):
+        pg_conn, _conn, cursor = _fake_pg_connection_for_execute(
+            [{"definition": "CHECK (speaker_resolution_method = ANY (ARRAY['fuzzy']))"}], []
+        )
+        monkeypatch.setattr(backfill, "PostgresConnection", lambda: pg_conn)
+        path = _write_plan(
+            tmp_path, [{"turn_id": 1, "expected_current_slug": "old", "new_slug": "new"}]
+        )
+
+        exit_code = backfill.main(["--input", path, "--confidence", "1.0", "--execute"])
+
+        assert exit_code == 3
+        update_calls = [
+            c for c in cursor.execute.call_args_list if c[0][0].strip().upper().startswith("UPDATE")
+        ]
+        assert update_calls == []
+
+    def test_autocommit_true_refuses_before_any_query(self, monkeypatch, tmp_path):
+        pg_conn, conn, cursor = _fake_pg_connection_for_execute([], [])
+        conn.autocommit = True
+        monkeypatch.setattr(backfill, "PostgresConnection", lambda: pg_conn)
+        path = _write_plan(
+            tmp_path, [{"turn_id": 1, "expected_current_slug": "old", "new_slug": "new"}]
+        )
+
+        exit_code = backfill.main(["--input", path, "--confidence", "1.0", "--execute"])
+
+        assert exit_code == 3
+        cursor.execute.assert_not_called()
