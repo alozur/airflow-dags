@@ -154,8 +154,6 @@ def _resolve_inner(
         CHAPTER_SPEAKER_RESOLUTION_SYSTEM_PROMPT,
         user_prompt,
         model=LLM_CHEAP,
-        temperature=0.0,
-        max_tokens=600,
     )
 
     if response.get("error") or not response.get("data"):

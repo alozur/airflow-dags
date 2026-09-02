@@ -185,19 +185,24 @@ class TestGenerateChatCompletion:
         call_kwargs = mock_create.call_args.kwargs
         assert call_kwargs["model"] == "gpt-4o"
 
-    def test_passes_temperature_and_max_tokens_to_api(self, mocker):
+    def test_never_sends_temperature_or_token_budget(self, mocker):
+        """Neither `temperature` nor any token-budget kwarg reaches `.create()` (issue #375).
+
+        Both configured production tiers are reasoning models: any explicit
+        `temperature` other than 1 is rejected with a 400, and
+        `max_completion_tokens` is a TOTAL budget covering reasoning tokens,
+        so a fixed number can silently exhaust itself on reasoning and return
+        empty content with no error. Neither kwarg is safe to send.
+        """
         fake_response = self._make_fake_response("ok")
         mock_create = mocker.patch(
             "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
         )
-        generate_chat_completion("sys", "usr", temperature=0.1, max_tokens=200)
+        generate_chat_completion("sys", "usr")
         call_kwargs = mock_create.call_args.kwargs
-        assert call_kwargs["temperature"] == 0.1
-        # The `max_tokens` Python parameter is forwarded on the wire as
-        # `max_completion_tokens` (issue #365) — GPT-5-family models reject
-        # `max_tokens` with a 400 "Unsupported parameter" error.
-        assert call_kwargs["max_completion_tokens"] == 200
+        assert "temperature" not in call_kwargs
         assert "max_tokens" not in call_kwargs
+        assert "max_completion_tokens" not in call_kwargs
 
     def test_never_sends_max_tokens_kwarg(self, mocker):
         """Regression guard for issue #365: `max_tokens` must never reach the wire.
@@ -213,16 +218,17 @@ class TestGenerateChatCompletion:
         generate_chat_completion("sys", "usr")
         assert "max_tokens" not in mock_create.call_args.kwargs
 
-    def test_max_completion_tokens_used_for_non_gpt5_model(self, mocker):
-        """No model-name branching: the wire kwarg is the same regardless of model."""
+    def test_no_budget_or_temperature_sent_for_any_model(self, mocker):
+        """No model-name branching: the wire shape is the same regardless of model."""
         fake_response = self._make_fake_response("ok")
         mock_create = mocker.patch(
             "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
         )
-        generate_chat_completion("sys", "usr", model="gpt-4o-mini", max_tokens=200)
+        generate_chat_completion("sys", "usr", model="gpt-4o-mini")
         call_kwargs = mock_create.call_args.kwargs
-        assert call_kwargs["max_completion_tokens"] == 200
+        assert "temperature" not in call_kwargs
         assert "max_tokens" not in call_kwargs
+        assert "max_completion_tokens" not in call_kwargs
 
     def test_sends_system_and_user_messages(self, mocker):
         fake_response = self._make_fake_response("ok")
@@ -328,6 +334,24 @@ class TestRequestTimeout:
 
 
 # ---------------------------------------------------------------------------
+# generate_chat_completion / generate_json_completion — removed params (#375)
+# ---------------------------------------------------------------------------
+
+class TestRemovedParametersRejected:
+    """`temperature` and `max_tokens` are no longer accepted by either helper.
+
+    No mock is needed: Python raises `TypeError` before the function body runs,
+    which is itself the proof that no OpenAI SDK access is attempted.
+    """
+
+    @pytest.mark.parametrize("fn", [generate_chat_completion, generate_json_completion])
+    @pytest.mark.parametrize("kwarg", ["temperature", "max_tokens"])
+    def test_removed_parameter_raises_type_error(self, fn, kwarg):
+        with pytest.raises(TypeError, match=kwarg):
+            fn("sys", "usr", **{kwarg: 0.5})
+
+
+# ---------------------------------------------------------------------------
 # generate_json_completion
 # ---------------------------------------------------------------------------
 
@@ -370,15 +394,14 @@ class TestGenerateJsonCompletion:
         result = generate_json_completion("sys", "usr")
         assert result["raw_content"] == '{"x": 1}'
 
-    def test_passes_model_and_temperature_to_chat_completion(self, mocker):
+    def test_passes_model_to_chat_completion(self, mocker):
         mock_chat = mocker.patch(
             "utils.ai_helpers.generate_chat_completion",
             return_value={"content": '{"ok": true}', "error": None},
         )
-        generate_json_completion("sys", "usr", model="gpt-4o-mini", temperature=0.0)
+        generate_json_completion("sys", "usr", model="gpt-4o-mini")
         call_kwargs = mock_chat.call_args.kwargs
         assert call_kwargs["model"] == "gpt-4o-mini"
-        assert call_kwargs["temperature"] == 0.0
 
     def test_result_has_required_keys(self, mocker):
         mocker.patch(
@@ -399,23 +422,21 @@ class TestGenerateJsonCompletion:
         assert result["error"] is None
         assert result["data"] == {"title": "Test"}
 
-    def test_json_completion_forwards_max_tokens_to_wire_param(self, mocker):
-        """Pins the public-signature-unchanged requirement (issue #365):
-
-        `generate_json_completion(max_tokens=...)` still ends up as
-        `max_completion_tokens=...` on the actual OpenAI SDK call, exercising the
-        real (unmocked) `generate_chat_completion` in between.
-        """
+    def test_json_completion_sends_no_budget_or_temperature_to_wire(self, mocker):
+        """End-to-end (issue #375): the real (unmocked) `generate_chat_completion`
+        sits between `generate_json_completion` and a mocked `.create()`, proving
+        the internal forward does not reintroduce either kwarg."""
         fake_response = MagicMock()
         fake_response.choices = [MagicMock()]
         fake_response.choices[0].message.content = '{"ok": true}'
         mock_create = mocker.patch(
             "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
         )
-        result = generate_json_completion("sys", "usr", max_tokens=120)
+        result = generate_json_completion("sys", "usr")
         call_kwargs = mock_create.call_args.kwargs
-        assert call_kwargs["max_completion_tokens"] == 120
+        assert "temperature" not in call_kwargs
         assert "max_tokens" not in call_kwargs
+        assert "max_completion_tokens" not in call_kwargs
         assert result["data"] == {"ok": True}
 
     def test_passes_timeout_to_chat_completion(self, mocker):

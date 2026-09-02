@@ -137,7 +137,7 @@ def cached_json_completion(
         user_prompt: User message with the request.
         model: Model identifier (default: ``LLM_CHEAP`` tier).
         **kw: Extra keyword args forwarded to ``generate_json_completion`` (e.g.
-            ``temperature``, ``max_tokens``). They also participate in the cache key.
+            ``timeout``). They also participate in the cache key.
 
     Returns:
         The same dict shape as ``generate_json_completion``:

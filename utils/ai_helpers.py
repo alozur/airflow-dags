@@ -120,22 +120,19 @@ def generate_chat_completion(
     system_prompt: str,
     user_prompt: str,
     model: str = LLM_DEFAULT,
-    temperature: float = 0.7,
-    max_tokens: int = 500,
     timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Generate a chat completion using OpenAI API.
 
+    Sampling temperature and token budgets are deliberately not parameters of
+    this helper (issue #375); see the note above `.create()`. All 14 production
+    call sites were updated to stop passing them.
+
     Args:
         system_prompt: System message defining AI behavior
         user_prompt: User message with the actual request
         model: OpenAI model to use (default: LLM_DEFAULT tier)
-        temperature: Sampling temperature 0-1 (default: 0.7)
-        max_tokens: Maximum tokens in the response (default: 500). Sent on the
-            wire as OpenAI's `max_completion_tokens` (issue #365) — the Python
-            parameter name is kept deliberately so the 13 existing call sites
-            need no change.
         timeout: Optional per-call read/write budget in seconds. None
             (default) uses LLM_TIMEOUT_SECONDS; the LLM_CONNECT_TIMEOUT_SECONDS
             connect budget always applies. Deliberately `Optional[float] = None`
@@ -185,18 +182,24 @@ def generate_chat_completion(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            # The wire kwarg name DELIBERATELY differs from the Python parameter
-            # name (`max_tokens` above). Both configured production tiers
-            # (`gpt-5.6-luna`, `gpt-5-nano`) are GPT-5-family and reject
-            # `max_tokens` with a 400 "Unsupported parameter" error (issue #365),
-            # while `max_completion_tokens` is accepted by every current Chat
-            # Completions model — a strict superset. Sent unconditionally, with
-            # no model-name branching, because the real prod model id
-            # `gpt-5.6-luna` does not even match a clean `gpt-5-` prefix.
-            # Do NOT "restore" `max_tokens` here — a regression test
-            # (test_never_sends_max_tokens_kwarg) asserts its absence.
-            max_completion_tokens=max_tokens,
-            temperature=temperature,
+            # Nothing about sampling or token budget is sent here, deliberately
+            # (issue #375). Both configured production tiers (`gpt-5.6-luna`,
+            # `gpt-5-nano`) are reasoning models:
+            #   * `temperature` — any explicit value other than 1 is rejected
+            #     with a 400 `unsupported_value`; measured live, 0.0-0.9 all
+            #     fail on both tiers, while OMITTING the kwarg is accepted by
+            #     reasoning and non-reasoning models alike.
+            #   * a token budget — `max_completion_tokens` is a TOTAL covering
+            #     reasoning AND output tokens, not output alone. Measured live
+            #     with a realistic scoring prompt on `gpt-5-nano`: omitting the
+            #     budget produced 320 reasoning tokens and the correct answer;
+            #     `max_completion_tokens=300` produced 300 reasoning tokens and
+            #     EMPTY content, with `error=None` — a 300-token budget is not
+            #     an obviously-too-small edge case, so no fixed number is safe.
+            # Do NOT "restore" `max_tokens`, `max_completion_tokens` or
+            # `temperature` here: regression tests assert their absence and a
+            # static guard fails any call site that passes them again. The
+            # request is bounded by the timeout below, not by a token cap.
             # Without this the SDK uses its own DEFAULT_TIMEOUT (read 600s,
             # connect 5s) with DEFAULT_MAX_RETRIES=2, so one stalled call can
             # hold a task ~30 min — and only 2 of ~5 DAGs set an
@@ -273,8 +276,6 @@ def generate_json_completion(
     system_prompt: str,
     user_prompt: str,
     model: str = LLM_CHEAP,
-    temperature: float = 0.3,
-    max_tokens: int = 500,
     timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
@@ -283,15 +284,14 @@ def generate_json_completion(
     This is a convenience function that combines generate_chat_completion
     and parse_json_response for JSON-based responses.
 
+    Sampling temperature and token budgets are deliberately not parameters of
+    this helper (issue #375); see generate_chat_completion. All 14 production
+    call sites were updated to stop passing them.
+
     Args:
         system_prompt: System message defining AI behavior
         user_prompt: User message with the actual request
         model: OpenAI model to use (default: LLM_CHEAP tier)
-        temperature: Sampling temperature 0-1 (default: 0.3 for more deterministic JSON)
-        max_tokens: Maximum tokens in the response (default: 500). Sent on the
-            wire as OpenAI's `max_completion_tokens` (issue #365) — the Python
-            parameter name is kept deliberately so the 13 existing call sites
-            need no change.
         timeout: Optional per-call read/write budget in seconds. None
             (default) uses LLM_TIMEOUT_SECONDS; the LLM_CONNECT_TIMEOUT_SECONDS
             connect budget always applies. Forwarded unchanged to
@@ -308,8 +308,6 @@ def generate_json_completion(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         model=model,
-        temperature=temperature,
-        max_tokens=max_tokens,
         timeout=timeout,
     )
 
