@@ -4,9 +4,11 @@ Slice 1: the upload-time marker method. Dual-key since the caller's reality
 is dual-key (issue #230).
 
 Slice 2 (this batch, WU2a): the healer DB layer — candidate selection,
-success recording, failure recording. The DD4 structural guard proving none
-of these methods can ever touch upload-verification state lives in a
-follow-up commit on this same branch (kept as its own reviewable unit).
+success recording, failure recording — plus the DD4 structural guard
+proving none of the three healer methods can ever touch upload-verification
+state (that would trigger a spurious full video re-upload, the exact bug
+this design rejects — see database.py's record_upload_verification_failure
+for the shape that must NOT be reused).
 
 Mirrors the mocked-cursor convention in test_database_turns.py:17.
 """
@@ -16,6 +18,19 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# Columns the healer's write path must never reach (spec: "Upload-verification
+# state is never touched"). Union of the spec's explicit 5 plus design DD4's
+# additional upload_verified_at, held to design's stated "6 forbidden columns"
+# count so the guard below is exactly 3 methods x 6 names = 18 cases.
+FORBIDDEN_UPLOAD_STATE_COLUMNS = (
+    "is_uploaded_to_youtube",
+    "youtube_video_id",
+    "youtube_upload_date",
+    "upload_attempts",
+    "is_upload_abandoned",
+    "upload_verified_at",
+)
 
 
 def _set_clause(query: str) -> str:
@@ -292,3 +307,50 @@ class TestRecordTurnThumbnailRepublishFailure:
         result = db.record_turn_thumbnail_republish_failure("/missing.mp4", "err")
 
         assert result is None
+
+
+class TestThumbnailRepublishNeverTouchesUploadState:
+    """DD4 structural guard. Reusing record_upload_verification_failure's SET
+    shape here would flip is_uploaded_to_youtube and re-queue a FULL video
+    re-upload for a thumbnail-only failure — exactly the bug this design
+    rejects. This is a text assertion on generated SQL: it fails RED before
+    the methods exist and is a permanent regression guard against a future
+    copy-paste of that method's SET list.
+    """
+
+    def _invoke(self, method_name, db, cursor):
+        if method_name == "select":
+            cursor.fetchall.return_value = []
+            db.select_turns_needing_thumbnail_republish()
+        elif method_name == "mark_republished":
+            db.mark_turn_thumbnail_republished(output_path="/a.mp4")
+        else:
+            cursor.fetchone.return_value = None
+            db.record_turn_thumbnail_republish_failure("/a.mp4", "err")
+        return cursor.execute.call_args[0][0]
+
+    @pytest.mark.parametrize(
+        "method_name",
+        ["select", "mark_republished", "record_failure"],
+    )
+    @pytest.mark.parametrize("forbidden_column", FORBIDDEN_UPLOAD_STATE_COLUMNS)
+    def test_forbidden_column_never_in_set_clause(self, method_name, forbidden_column):
+        db, cursor = _make_db()
+
+        query = self._invoke(method_name, db, cursor)
+
+        assert forbidden_column.upper() not in _set_clause(query)
+
+    def test_is_uploaded_to_youtube_never_appears_in_any_statement(self):
+        """Whole-statement check, stricter than the SET-clause slice above:
+        select's WHERE predicate legitimately READS is_uploaded_to_youtube
+        (DD3), so this check is scoped to the two write methods only."""
+        db, cursor = _make_db()
+
+        db.mark_turn_thumbnail_republished(output_path="/a.mp4")
+        assert "IS_UPLOADED_TO_YOUTUBE" not in cursor.execute.call_args[0][0].upper()
+
+        db, cursor = _make_db()
+        cursor.fetchone.return_value = None
+        db.record_turn_thumbnail_republish_failure("/a.mp4", "err")
+        assert "IS_UPLOADED_TO_YOUTUBE" not in cursor.execute.call_args[0][0].upper()
