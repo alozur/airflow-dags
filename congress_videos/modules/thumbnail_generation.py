@@ -689,7 +689,6 @@ def _choose_reprompt_instruction(title: str | None) -> str:
 def generate_title(
     summary: str,
     best: dict,
-    cfg: dict,
     sibling_titles: list[str] | None = None,
     key_speakers: list | None = None,
     forbidden_title: str | None = None,
@@ -705,7 +704,6 @@ def generate_title(
     Args:
         summary: Debate summary text used to contextualise the title.
         best: The chosen option dict (must contain ``style`` and ``prompt``).
-        cfg: Per-domain config dict (currently unused but kept for future extensibility).
         sibling_titles: When non-empty, injects a "NO REPITAS" block listing
             recent chosen titles to prevent tonal repetition.
             None or empty list → prompt unchanged (backward compatible).
