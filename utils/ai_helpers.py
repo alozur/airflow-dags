@@ -126,7 +126,10 @@ def generate_chat_completion(
         user_prompt: User message with the actual request
         model: OpenAI model to use (default: LLM_DEFAULT tier)
         temperature: Sampling temperature 0-1 (default: 0.7)
-        max_tokens: Maximum tokens in response (default: 500)
+        max_tokens: Maximum tokens in the response (default: 500). Sent on the
+            wire as OpenAI's `max_completion_tokens` (issue #365) — the Python
+            parameter name is kept deliberately so the 13 existing call sites
+            need no change.
 
     Returns:
         Dict with:
@@ -158,7 +161,17 @@ def generate_chat_completion(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=max_tokens,
+            # The wire kwarg name DELIBERATELY differs from the Python parameter
+            # name (`max_tokens` above). Both configured production tiers
+            # (`gpt-5.6-luna`, `gpt-5-nano`) are GPT-5-family and reject
+            # `max_tokens` with a 400 "Unsupported parameter" error (issue #365),
+            # while `max_completion_tokens` is accepted by every current Chat
+            # Completions model — a strict superset. Sent unconditionally, with
+            # no model-name branching, because the real prod model id
+            # `gpt-5.6-luna` does not even match a clean `gpt-5-` prefix.
+            # Do NOT "restore" `max_tokens` here — a regression test
+            # (test_never_sends_max_tokens_kwarg) asserts its absence.
+            max_completion_tokens=max_tokens,
             temperature=temperature,
         )
 
@@ -242,7 +255,10 @@ def generate_json_completion(
         user_prompt: User message with the actual request
         model: OpenAI model to use (default: LLM_CHEAP tier)
         temperature: Sampling temperature 0-1 (default: 0.3 for more deterministic JSON)
-        max_tokens: Maximum tokens in response (default: 500)
+        max_tokens: Maximum tokens in the response (default: 500). Sent on the
+            wire as OpenAI's `max_completion_tokens` (issue #365) — the Python
+            parameter name is kept deliberately so the 13 existing call sites
+            need no change.
 
     Returns:
         Dict with:
