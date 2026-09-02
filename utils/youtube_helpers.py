@@ -17,7 +17,88 @@ from typing import Dict, List, Optional
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
+
+
+# =============================================================================
+# ERROR CLASSIFICATION (issue #311)
+# =============================================================================
+
+_PERMANENT_YOUTUBE_STATUSES = {400, 401, 403, 404, 451}
+_TRANSIENT_YOUTUBE_STATUSES = {408, 409, 429}
+
+
+def _error_detail_fields(exc: BaseException) -> Dict[str, Optional[str]]:
+    """Extract reason/domain/location from an HttpError's ``error_details``.
+
+    ``error_details`` defaults to ``""`` (googleapiclient/errors.py:45) and,
+    for a real YouTube 403, is a LIST of ``{message, domain, reason,
+    location, locationType}`` dicts (errors.py:73-78). It can also land as a
+    bare dict (a ``detail`` key) or a plain string (only a ``message`` key
+    present) depending on which key the API body used. Only a dict — bare,
+    or the first item of a non-empty list — yields real values; every other
+    shape yields all-``None`` fields rather than crashing.
+    """
+    error_details = getattr(exc, "error_details", None)
+    detail: Optional[dict] = None
+    if isinstance(error_details, list) and error_details and isinstance(error_details[0], dict):
+        detail = error_details[0]
+    elif isinstance(error_details, dict):
+        detail = error_details
+
+    if detail is None:
+        return {"reason": None, "domain": None, "location": None}
+    return {
+        "reason": detail.get("reason"),
+        "domain": detail.get("domain"),
+        "location": detail.get("location"),
+    }
+
+
+def classify_youtube_error(exc: BaseException) -> Dict:
+    """Classify a YouTube Data API exception as permanent, transient or unknown.
+
+    Returns ``{"permanent": True|False|None, "status": int|None,
+    "reason": str|None, "domain": str|None, "location": str|None,
+    "message": str|None}``.
+
+    ``permanent`` is TRI-VALUED — compare with ``is True``/``is False``/
+    ``is None``, never truthiness (#320): ``False`` means "retry may work",
+    ``None`` means "we could not classify this", and those demand different
+    operator responses. 400/401/403/404/451 map to ``True``; 408/409/429 and
+    any 5xx map to ``False``; any other ``HttpError`` status, or a
+    non-``HttpError`` exception, maps to ``None``.
+
+    ``reason``/``domain``/``location`` come from
+    ``HttpError.error_details[0]``, NOT from ``HttpError.reason`` — that
+    attribute holds the human-readable message
+    (googleapiclient/errors.py:46,53-85), not the API's ``reason`` field.
+    """
+    if not isinstance(exc, HttpError):
+        return {
+            "permanent": None,
+            "status": None,
+            "reason": None,
+            "domain": None,
+            "location": None,
+            "message": None,
+        }
+
+    status = exc.status_code
+    if status in _PERMANENT_YOUTUBE_STATUSES:
+        permanent: Optional[bool] = True
+    elif status in _TRANSIENT_YOUTUBE_STATUSES or (status is not None and 500 <= status < 600):
+        permanent = False
+    else:
+        permanent = None
+
+    return {
+        "permanent": permanent,
+        "status": status,
+        "message": exc.reason,
+        **_error_detail_fields(exc),
+    }
 
 
 # =============================================================================
@@ -317,9 +398,14 @@ def set_thumbnail_for_video(youtube, video_id: str, thumbnail_file: str) -> Dict
     except Exception as e:
         error_msg = f"Thumbnail upload failed: {str(e)}"
         logging.error(error_msg)
+        # Enrichment only (issue #311, D3) — still returns, never raises.
+        # The two other production consumers (upload_video_to_youtube and
+        # the #320 thumbnail_success gate) read only "success"/"error", so
+        # additive keys are safe.
         return {
             "success": False,
             "error": error_msg,
+            **classify_youtube_error(e),
         }
 
 
@@ -382,7 +468,8 @@ def update_video_title(youtube, video_id: str, title: str | None) -> Dict:
     except Exception as e:
         error_msg = f"Title update failed: {str(e)}"
         logging.error(error_msg)
-        return {"success": False, "error": error_msg}
+        # Enrichment only (issue #311, D3) — still returns, never raises.
+        return {"success": False, "error": error_msg, **classify_youtube_error(e)}
 
 
 def upload_multiple_videos(
