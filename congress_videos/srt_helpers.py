@@ -3,9 +3,10 @@
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Optional
 
-from congress_videos.config.paths import DOWNLOADS_DIR, PROJECT_DATA_DIR
+from congress_videos.config.paths import DOWNLOADS_DIR, PROJECT_DATA_DIR, get_video_chapter_dir
 from utils.ai_helpers import generate_json_completion
 from utils.llm_config import LLM_CHEAP
 from utils.time_utils import parse_timestamp
@@ -320,6 +321,104 @@ def chapter_window_blocks(blocks: list[dict], start_time, end_time) -> list[dict
         return []
 
     return [b for b in blocks if b["start_secs"] < end_secs and b["end_secs"] > start_secs]
+
+
+# Fixed pad on both edges of a persisted chapter sidecar (issue #340) — not
+# a parameter/env knob. Reach verified against speaker_resolution.py's
+# INTRO_WINDOW_SECS=120 / TURN_CONTEXT_SECS=60 and the chapter-start-clamped
+# QA_EVIDENCE_LOOKBACK_SECS=600.
+CHAPTER_SRT_PAD_SECS: float = 180.0
+
+
+def write_chapter_srt_sidecar(
+    video_id: str,
+    chapter_id: int,
+    start_time,
+    end_time,
+    session_date: Optional[str] = None,
+    channel_slug: Optional[str] = None,
+) -> Optional[Path]:
+    """Persist a padded, absolute-timestamped SRT sidecar for one chapter.
+
+    Locates the source via ``find_srt_for_chapter`` (never passing
+    ``canonical_dir`` — a re-run must never read its own prior output),
+    windows it to ``[start_time - CHAPTER_SRT_PAD_SECS, end_time +
+    CHAPTER_SRT_PAD_SECS]`` (clamped at zero) with ``chapter_window_blocks``
+    (absolute timestamps, never re-timed), and writes ``subtitles.srt``
+    under ``get_video_chapter_dir(...)`` via tmp-file + ``os.replace``.
+
+    Best-effort: any filesystem error is caught, logged at WARNING, and
+    swallowed — MUST NOT fail the calling DAG task. Never creates (or
+    truncates) a file when the padded window yields zero blocks.
+
+    Returns the written ``Path``, or ``None`` on any failure.
+    """
+    if not video_id or not isinstance(chapter_id, int):
+        logger.warning(
+            "write_chapter_srt_sidecar: invalid video_id=%r chapter_id=%r — skipping",
+            video_id, chapter_id,
+        )
+        return None
+
+    try:
+        start_secs = start_time if isinstance(start_time, (int, float)) else _srt_timestamp_to_seconds(start_time)
+        end_secs = end_time if isinstance(end_time, (int, float)) else _srt_timestamp_to_seconds(end_time)
+        start_secs, end_secs = float(start_secs), float(end_secs)
+    except (ValueError, TypeError):
+        logger.warning(
+            "write_chapter_srt_sidecar: unparseable bounds start_time=%r end_time=%r "
+            "(video_id=%r chapter_id=%r)",
+            start_time, end_time, video_id, chapter_id,
+        )
+        return None
+
+    # D3: never pass canonical_dir — always resolve from legacy probes.
+    srt_path = find_srt_for_chapter(video_id, chapter_id, session_date)
+    if srt_path is None and session_date is not None:
+        srt_path = find_srt_for_chapter(video_id, chapter_id, None)
+    if srt_path is None:
+        logger.warning(
+            "write_chapter_srt_sidecar: no source SRT found for video_id=%r chapter_id=%r",
+            video_id, chapter_id,
+        )
+        return None
+
+    blocks = _parse_srt_blocks(srt_path)
+    windowed = chapter_window_blocks(
+        blocks,
+        max(0.0, start_secs - CHAPTER_SRT_PAD_SECS),
+        end_secs + CHAPTER_SRT_PAD_SECS,
+    )
+    if not windowed:
+        logger.warning(
+            "write_chapter_srt_sidecar: padded window yields no blocks for "
+            "video_id=%r chapter_id=%r — no file written",
+            video_id, chapter_id,
+        )
+        return None
+
+    # D1: source located (charset-validated) BEFORE building the target dir.
+    target_dir = get_video_chapter_dir(video_id, chapter_id, channel_slug)
+    target_path = target_dir / "subtitles.srt"
+    tmp_path = target_dir / "subtitles.srt.tmp"
+
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        tmp_path.write_text(_serialize_srt_blocks(windowed), encoding="utf-8")
+        os.replace(tmp_path, target_path)
+    except OSError as e:
+        logger.warning(
+            "write_chapter_srt_sidecar: failed to write sidecar for "
+            "video_id=%r chapter_id=%r: %s",
+            video_id, chapter_id, e, exc_info=True,
+        )
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+    return target_path
 
 
 def _window_srt_blocks_multi(

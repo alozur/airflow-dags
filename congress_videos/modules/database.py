@@ -200,7 +200,10 @@ class CongressionalVideoDB:
                     {
                         'video_id': str,
                         'chapters_saved': int,
-                        'error': str or None
+                        'error': str or None,
+                        # One entry per chapter actually inserted; [] when
+                        # skipped or its SAVEPOINT was rolled back (#340).
+                        'chapters': [{'chapter_id': int, 'start_time': str, 'end_time': str}]
                     }
                 ]
             }
@@ -242,11 +245,13 @@ class CongressionalVideoDB:
                             save_results['videos'].append({
                                 'video_id': video_id,
                                 'chapters_saved': 0,
-                                'error': video_data.get('error')
+                                'error': video_data.get('error'),
+                                'chapters': []
                             })
                             continue
 
                         cur.execute("SAVEPOINT sp_video")
+                        video_chapters: List[Dict[str, Any]] = []
                         try:
                             # Step 1: Upsert YouTube source video
                             video_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -325,6 +330,11 @@ class CongressionalVideoDB:
 
                                 chapter_id = cur.fetchone()['chapter_id']
                                 chapters_saved_count += 1
+                                video_chapters.append({
+                                    'chapter_id': chapter_id,
+                                    'start_time': start_time,
+                                    'end_time': end_time,
+                                })
 
                                 logger.info(
                                     f"Saved chapter {chapter_id}: '{title}' (score: {relevance_score}/5)"
@@ -340,7 +350,8 @@ class CongressionalVideoDB:
                             save_results['videos'].append({
                                 'video_id': video_id,
                                 'chapters_saved': chapters_saved_count,
-                                'error': None
+                                'error': None,
+                                'chapters': video_chapters
                             })
 
                             logger.info(
@@ -358,7 +369,8 @@ class CongressionalVideoDB:
                             save_results['videos'].append({
                                 'video_id': video_id,
                                 'chapters_saved': 0,
-                                'error': error_msg
+                                'error': error_msg,
+                                'chapters': []
                             })
 
         # `with conn:` has committed the videos whose savepoints were released.

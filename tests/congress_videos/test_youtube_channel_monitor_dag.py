@@ -510,3 +510,88 @@ class TestTargetDateGuardrail:
         row's own date field, not the DAG params override — it must appear
         exactly once, unchanged."""
         assert self._source().count('entry.get("target_date")') == 1
+
+
+_CHAPTERS_DB_RESULT = {
+    "total_videos_saved": 1,
+    "total_chapters_saved": 2,
+    "total_videos_failed": 0,
+    "videos": [
+        {
+            "video_id": "vidA",
+            "chapters_saved": 2,
+            "error": None,
+            "chapters": [
+                {"chapter_id": 11, "start_time": "00:01:00,000", "end_time": "00:02:00,000"},
+                {"chapter_id": 12, "start_time": "00:05:00,000", "end_time": "00:06:00,000"},
+            ],
+        }
+    ],
+}
+
+
+class TestRunSaveChaptersToDbWritesSrtSidecars:
+    """Phase 3 (#340): writer invoked once per chapter in db_save_results,
+    best-effort — a writer exception must not abort the loop or block XCom."""
+
+    @staticmethod
+    def _ti():
+        from unittest.mock import MagicMock
+
+        store: dict = {"scored_chapters": {"videos": [{"video_id": "vidA", "scored_chapters": []}]}}
+        ti = MagicMock(name="TaskInstance")
+        ti.xcom_store = store
+        ti.xcom_pull.side_effect = lambda key=None, **_kw: store.get(key)
+        ti.xcom_push.side_effect = lambda key, value, **_kw: store.__setitem__(key, value)
+        return ti
+
+    @pytest.fixture
+    def mock_db(self, mocker):
+        db = mocker.MagicMock()
+        db.save_youtube_chapters_to_db.return_value = _CHAPTERS_DB_RESULT
+        mocker.patch("congress_videos.modules.database.CongressionalVideoDB", return_value=db)
+        return db
+
+    def test_writer_called_once_per_chapter_with_correct_args(self, mock_db, mocker):
+        from congress_videos.youtube_channel_monitor_dag import _run_save_chapters_to_db
+
+        writer_spy = mocker.patch("congress_videos.srt_helpers.write_chapter_srt_sidecar")
+
+        _run_save_chapters_to_db(self._ti(), params={})
+
+        assert writer_spy.call_count == 2
+        calls = writer_spy.call_args_list
+        assert calls[0].args[:4] == ("vidA", 11, "00:01:00,000", "00:02:00,000")
+        assert calls[1].args[:4] == ("vidA", 12, "00:05:00,000", "00:06:00,000")
+
+    def test_writer_exception_does_not_abort_loop_or_xcom_push(self, mock_db, mocker):
+        from congress_videos.youtube_channel_monitor_dag import _run_save_chapters_to_db
+
+        writer_spy = mocker.patch(
+            "congress_videos.srt_helpers.write_chapter_srt_sidecar",
+            side_effect=[RuntimeError("boom"), None],
+        )
+        ti = self._ti()
+
+        result = _run_save_chapters_to_db(ti, params={})
+
+        # Both chapters attempted despite the first one raising; db_save_results
+        # is still pushed to XCom, unaffected by the writer.
+        assert writer_spy.call_count == 2
+        assert ti.xcom_store["db_save_results"] == _CHAPTERS_DB_RESULT
+        assert result == _CHAPTERS_DB_RESULT
+
+    def test_pushed_payload_has_no_raw_datetime_or_time_values(self, mock_db, mocker):
+        import datetime as datetime_mod
+
+        from congress_videos.youtube_channel_monitor_dag import _run_save_chapters_to_db
+
+        mocker.patch("congress_videos.srt_helpers.write_chapter_srt_sidecar")
+        ti = self._ti()
+
+        _run_save_chapters_to_db(ti, params={})
+
+        for chapter in ti.xcom_store["db_save_results"]["videos"][0]["chapters"]:
+            assert isinstance(chapter["start_time"], str)
+            assert isinstance(chapter["end_time"], str)
+            assert not isinstance(chapter["start_time"], (datetime_mod.date, datetime_mod.time))

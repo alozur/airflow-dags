@@ -147,6 +147,7 @@ def _write_turn_sidecars(
     Raises:
         Exception: Any sidecar write failure propagates so prepared_at is NOT set.
     """
+    from congress_videos.config.paths import get_video_chapter_dir
     from congress_videos.srt_helpers import (
         _parse_srt_blocks,
         _serialize_srt_blocks,
@@ -163,11 +164,22 @@ def _write_turn_sidecars(
     chapter_id = turn.get("chapter_id")
     session_date = turn.get("session_date")
 
+    # Issue #340 slice 2: prefer the persisted per-chapter sidecar written
+    # by the monitor DAG; find_srt_for_chapter falls back to the legacy
+    # downloads/ probes when the canonical file is absent or canonical_dir
+    # is None (no video_id/chapter_id to build it from).
+    canonical_dir = (
+        str(get_video_chapter_dir(str(video_id), chapter_id))
+        if video_id is not None and chapter_id is not None
+        else None
+    )
+
     srt_path = (
         find_srt_for_chapter(
             str(video_id),
             chapter_id,
             str(session_date) if session_date else None,
+            canonical_dir,
         )
         if video_id is not None
         else None

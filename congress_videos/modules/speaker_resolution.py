@@ -26,6 +26,7 @@ from congress_videos.config.ai_prompts import (
     SPEAKER_RESOLUTION_USER_TEMPLATE,
     SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE,
 )
+from congress_videos.config.paths import get_video_chapter_dir
 from congress_videos.modules.announcement_patterns import has_announcement_phrase
 from congress_videos.srt_helpers import (
     _parse_srt_blocks,
@@ -295,10 +296,22 @@ def _resolve_speaker_inner(
     chapter_id = turn.get("chapter_id")
     session_date = turn.get("session_date")
 
+    # Issue #340 slice 2: prefer the persisted per-chapter sidecar written
+    # by the monitor DAG; find_srt_for_chapter falls back to the legacy
+    # downloads/ probes when the canonical file is absent or canonical_dir
+    # is None. chapter_id must be truthy (this site already coerces it to
+    # 0 below) — a falsy chapter_id has no meaningful chapter directory.
+    canonical_dir = (
+        str(get_video_chapter_dir(str(video_id), chapter_id))
+        if video_id is not None and chapter_id
+        else None
+    )
+
     srt_path = find_srt_for_chapter(
         str(video_id) if video_id is not None else "",
         chapter_id or 0,
         str(session_date) if session_date else None,
+        canonical_dir,
     )
 
     if srt_path is None:
