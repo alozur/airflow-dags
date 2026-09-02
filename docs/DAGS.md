@@ -48,7 +48,7 @@ check_test_mode (BranchPythonOperator)
                                get_video_descriptions
                                  --> parse_description_links
                                      --> scrape_press_release (BeautifulSoup)
-                                     --> download_and_read_agenda (PyPDF2)
+                                     --> download_and_read_agenda (pypdf)
                                            --> extract_session_date
                                                --> extract_agenda_section
 
