@@ -140,7 +140,7 @@ Reference DAGs demonstrating Airflow patterns:
 
 **Key Settings:**
 - Executor: LocalExecutor
-- Airflow version: 2.10.2 (compatible with 2.7.x)
+- Airflow version: 2.11.1
 - Time zone: Europe/Madrid
 - DAG sync from `dev` branch every 15 seconds
 

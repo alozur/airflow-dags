@@ -124,7 +124,7 @@ Sincroniza manualmente el repositorio de DAGs desde GitHub. Solo se lanza de for
 
 | Categoría | Tecnología | Versión |
 |-----------|-----------|---------|
-| Orquestación | Apache Airflow | 2.10.2 |
+| Orquestación | Apache Airflow | 2.11.1 |
 | Base de datos | PostgreSQL | 16 |
 | Lenguaje | Python | 3.11+ |
 | Contenedores | Docker + Compose | Latest |
@@ -188,7 +188,7 @@ El token OAuth de YouTube (`congress_youtube_token.pickle`) se genera con el scr
 # Crear entorno
 conda create -n airflow python=3.11
 conda activate airflow
-pip install apache-airflow==2.10.2 apache-airflow-providers-postgres \
+pip install apache-airflow==2.11.1 apache-airflow-providers-postgres \
     openai beautifulsoup4 requests urllib3 google-auth google-auth-oauthlib \
     google-auth-httplib2 google-api-python-client Pillow pypdf \
     yt-dlp pytubefix openai-whisper psycopg2-binary python-dotenv ruff
