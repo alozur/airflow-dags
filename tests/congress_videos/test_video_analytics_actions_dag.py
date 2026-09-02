@@ -8,6 +8,7 @@ cap per video.
 from __future__ import annotations
 
 from contextlib import ExitStack
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1028,3 +1029,104 @@ class TestApplyActionsAdditionalFailureBranches:
         assert dag_run.refresh_from_db.call_count == 2
         mock_mark.assert_called_once()
         assert mock_mark.call_args.kwargs["action"] == "thumbnail_regenerated"
+
+
+# ---------------------------------------------------------------------------
+# Poll-loop progress visibility (issue #311, D7)
+# ---------------------------------------------------------------------------
+
+
+class TestPollThumbnailDagRunProgress:
+    """A ~30-minute bounded poll loop that logs nothing is indistinguishable
+    from a hung task while it is happening. These pin that the loop announces
+    itself on entry and reports progress periodically, so an operator can tell
+    "waiting" from "stuck" without waiting for the timeout."""
+
+    def test_entry_line_names_run_and_snapshot(self, caplog):
+        from congress_videos.video_analytics_actions_dag import _poll_thumbnail_dag_run
+
+        dag_run = _thumbnail_dag_run(state="success")
+
+        with caplog.at_level("INFO"), patch(
+            "congress_videos.video_analytics_actions_dag.time.sleep", return_value=None
+        ), patch("airflow.models.XCom.get_one", return_value={
+            "success": True, "chapter_id": 5, "output_path": "/tmp/t.png", "title": "x",
+        }):
+            _poll_thumbnail_dag_run(
+                dag_run, snapshot_id=42, checkpoint="7d", snapshot_age_days=13
+            )
+
+        entry = [r.message for r in caplog.records if "polling thumbnail DAG run" in r.message]
+        assert len(entry) == 1
+        assert "child_run_1" in entry[0]
+        assert "snapshot_id=42" in entry[0]
+        assert "checkpoint=7d" in entry[0]
+        # The first production run applied 13-day-old measurements; staleness
+        # of the decision's input belongs in the log next to the wait.
+        assert "13" in entry[0]
+
+    def test_progress_line_every_sixth_poll_with_elapsed_and_state(self, caplog):
+        from congress_videos.video_analytics_actions_dag import (
+            _POLL_PROGRESS_EVERY,
+            _THUMBNAIL_POLL_INTERVAL_SECONDS,
+            _poll_thumbnail_dag_run,
+        )
+
+        dag_run = _thumbnail_dag_run(state="running")
+        # Stay pending for two full progress cycles, then settle.
+        states = iter(["running"] * (_POLL_PROGRESS_EVERY * 2) + ["success"])
+        dag_run.refresh_from_db.side_effect = lambda: setattr(
+            dag_run, "state", next(states)
+        )
+
+        with caplog.at_level("INFO"), patch(
+            "congress_videos.video_analytics_actions_dag.time.sleep", return_value=None
+        ), patch("airflow.models.XCom.get_one", return_value={
+            "success": True, "chapter_id": 5, "output_path": "/tmp/t.png", "title": "x",
+        }):
+            _poll_thumbnail_dag_run(dag_run, snapshot_id=42)
+
+        progress = [r.message for r in caplog.records if "still waiting" in r.message]
+        assert len(progress) == 2, progress
+        assert "state=running" in progress[0]
+        # Elapsed must be real seconds, not a poll count.
+        first_elapsed = _POLL_PROGRESS_EVERY * _THUMBNAIL_POLL_INTERVAL_SECONDS
+        assert f"elapsed={first_elapsed}s" in progress[0]
+        assert f"elapsed={first_elapsed * 2}s" in progress[1]
+
+    def test_quiet_when_run_settles_before_first_progress_cycle(self, caplog):
+        """No progress spam on the common fast path."""
+        from congress_videos.video_analytics_actions_dag import _poll_thumbnail_dag_run
+
+        dag_run = _thumbnail_dag_run(state="success")
+
+        with caplog.at_level("INFO"), patch(
+            "congress_videos.video_analytics_actions_dag.time.sleep", return_value=None
+        ), patch("airflow.models.XCom.get_one", return_value={
+            "success": True, "chapter_id": 5, "output_path": "/tmp/t.png", "title": "x",
+        }):
+            _poll_thumbnail_dag_run(dag_run, snapshot_id=42)
+
+        assert not [r for r in caplog.records if "still waiting" in r.message]
+
+
+class TestSnapshotAgeDays:
+    """`collected_at` is newly projected; rows built before it — including every
+    hand-built test fixture — must degrade to None rather than crash."""
+
+    def test_none_collected_at_returns_none(self):
+        from congress_videos.video_analytics_actions_dag import _snapshot_age_days
+
+        assert _snapshot_age_days(None) is None
+
+    def test_unusable_value_returns_none_instead_of_raising(self):
+        from congress_videos.video_analytics_actions_dag import _snapshot_age_days
+
+        assert _snapshot_age_days("not-a-datetime") is None
+
+    @pytest.mark.parametrize("tzinfo", [None, timezone.utc])
+    def test_age_in_whole_days_for_naive_and_aware(self, tzinfo):
+        from congress_videos.video_analytics_actions_dag import _snapshot_age_days
+
+        now = datetime.now(tzinfo)
+        assert _snapshot_age_days(now - timedelta(days=13, hours=2)) == 13
