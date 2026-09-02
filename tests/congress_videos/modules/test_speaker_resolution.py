@@ -970,3 +970,233 @@ class TestSystemPromptEvidenceRule:
         prompt_lower = SPEAKER_RESOLUTION_SYSTEM_PROMPT.lower()
         assert "null" in prompt_lower
         assert "fabricat" in prompt_lower
+
+
+# ---------------------------------------------------------------------------
+# qa-gated wide prompt context (issue #322, slice 2)
+# ---------------------------------------------------------------------------
+
+class TestWideUserTemplate:
+    """SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE (D6): tail from INTRO WINDOW
+    onward is byte-identical to the narrow template; a new {chapter_text}
+    section renders before it."""
+
+    def test_chapter_text_prepended_tail_identical_to_narrow_template(self):
+        from congress_videos.config.ai_prompts import (
+            SPEAKER_RESOLUTION_USER_TEMPLATE,
+            SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE,
+        )
+
+        marker = "INTRO WINDOW"
+        wide_tail = SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE[SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE.index(marker):]
+        narrow_tail = SPEAKER_RESOLUTION_USER_TEMPLATE[SPEAKER_RESOLUTION_USER_TEMPLATE.index(marker):]
+        assert wide_tail == narrow_tail
+
+        rendered = SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE.format(
+            chapter_text="[00:10:00] Sample chapter text",
+            intro_text="intro sample",
+            turn_text="turn sample",
+            participant_roster="slug | Name | Party",
+        )
+        assert rendered.index("Sample chapter text") < rendered.index("intro sample")
+
+
+class TestNonQaPromptUnchanged:
+    """Approval test (issue #322 D4): non-qa turn_type keeps today's narrow
+    SPEAKER_RESOLUTION_USER_TEMPLATE prompt, byte-identical, both BEFORE and
+    AFTER the qa-gated wide-context branch is wired into the resolver.
+    Uses the _run_qa_case harness defined below (resolved at call time)."""
+
+    @pytest.mark.parametrize("turn_type", ["monologue", None])
+    def test_narrow_prompt_byte_identical_for_non_qa(self, turn_type):
+        from congress_videos.config.ai_prompts import SPEAKER_RESOLUTION_USER_TEMPLATE
+
+        _, user, _ = _run_qa_case(
+            [(900.0, 905.0, ANNOUNCEMENT_TEXT), (1000.0, 1005.0, _TURN_EVIDENCE_TEXT)],
+            turn_type=turn_type,
+        )
+
+        expected_prompt = SPEAKER_RESOLUTION_USER_TEMPLATE.format(
+            intro_text=ANNOUNCEMENT_TEXT,
+            turn_text=_TURN_EVIDENCE_TEXT,
+            participant_roster="pedro-sanchez | Pedro Sanchez | TEST",
+        )
+        assert user == expected_prompt
+
+
+# ---------------------------------------------------------------------------
+# _build_qa_chapter_text (issue #322, D7) — head+tail hybrid truncation
+# ---------------------------------------------------------------------------
+
+class TestBuildQaChapterText:
+    """Pure function: renders '[HH:MM:SS] text' per block, joined by '\\n'.
+    Passthrough under QA_CONTEXT_MAX_CHARS; block-granular head+tail hybrid
+    (always keeping the first and last block) joined by QA_TRUNCATION_MARKER
+    when over budget. Never raises."""
+
+    def test_empty_and_short_text_pass_through_unchanged(self):
+        from congress_videos.modules import speaker_resolution as sr
+
+        assert sr._build_qa_chapter_text([]) == ""
+
+        blocks = _make_blocks([(0.0, 5.0, "hola"), (5.0, 10.0, "mundo")])
+        result = sr._build_qa_chapter_text(blocks)
+        assert result == "[00:00:00] hola\n[00:00:05] mundo"
+        assert sr.QA_TRUNCATION_MARKER not in result
+
+    def test_truncation_keeps_head_and_tail_dropping_the_middle(self, monkeypatch):
+        """MAX/HEAD small enough that a single block already exceeds
+        HEAD_CHARS — the first block is still always kept (block-granular,
+        never mid-block), same for the last block in the tail."""
+        from congress_videos.modules import speaker_resolution as sr
+
+        monkeypatch.setattr(sr, "QA_CONTEXT_MAX_CHARS", 200)
+        monkeypatch.setattr(sr, "QA_CONTEXT_HEAD_CHARS", 40)
+        blocks = _make_blocks([
+            (i * 10.0, i * 10.0 + 5.0, f"bloque numero {i} con texto de relleno adicional")
+            for i in range(10)
+        ])
+
+        result = sr._build_qa_chapter_text(blocks)
+
+        assert result.startswith("[00:00:00] bloque numero 0")
+        assert result.rstrip().endswith("bloque numero 9 con texto de relleno adicional")
+        assert sr.QA_TRUNCATION_MARKER in result
+        assert "bloque numero 5 con texto de relleno adicional" not in result
+
+
+# ---------------------------------------------------------------------------
+# qa-gated wide prompt context wiring (issue #322, D1/D7/D8) —
+# resolve_speaker integration
+# ---------------------------------------------------------------------------
+
+_FAR_BACK_ANNOUNCEMENT = "Tiene la palabra el señor Sánchez, portavoz del grupo."
+_TURN_EVIDENCE_TEXT = "Comienzo mi intervencion en el turno de preguntas."
+
+
+def _run_qa_case(
+    blocks_data,
+    turn_type="qa",
+    start_time="00:10:00,000",  # chapter starts at 600s
+    end_time="00:40:00,000",  # chapter ends at 2400s
+    wide_enabled=True,
+):
+    """Shared harness for qa-gated wide-context cases (issue #322, D1/D4/D7):
+    turn anchored at start_seconds=1000 (region [600,1060) by default).
+    Returns (result, captured_user_prompt_or_None, llm_call_count)."""
+    from congress_videos.modules import speaker_resolution as sr
+
+    turn = _make_turn(start_seconds=1000.0)
+    if turn_type is not None:
+        turn["turn_type"] = turn_type
+    if start_time is not None:
+        turn["start_time"] = start_time
+    if end_time is not None:
+        turn["end_time"] = end_time
+    participants = _make_participants(["pedro-sanchez"])
+    blocks = _make_blocks(blocks_data)
+    captured = {}
+    call_count = []
+
+    def fake_completion(system, user, **kw):
+        call_count.append(1)
+        captured["user"] = user
+        return _ok_completion("pedro-sanchez", 0.95, evidence=_TURN_EVIDENCE_TEXT)
+
+    with (
+        patch.object(sr, "QA_WIDE_CONTEXT_ENABLED", wide_enabled),
+        patch("congress_videos.modules.speaker_resolution.find_srt_for_chapter", return_value="/fake/src.srt"),
+        patch("congress_videos.modules.speaker_resolution._parse_srt_blocks", return_value=blocks),
+    ):
+        result = sr.resolve_speaker(turn, participants, completion_fn=fake_completion)
+
+    return result, captured.get("user"), len(call_count)
+
+
+class TestQaGatedWideContext:
+    """turn_type == 'qa' + a parseable chapter span widens BOTH the prompt
+    and the announcement pre-gate in lockstep (D1/D4/D7), dropping text
+    at/after the forward edge; unparseable spans fail back to narrow,
+    logging loudly (D7)."""
+
+    def test_qa_turn_widens_prompt_and_pre_gate_dropping_forward_edge(self):
+        future_text = "Este texto pertenece a un turno futuro fuera de la region."
+        # Announcement only at anchor-300=700s: inside chapter/region,
+        # OUTSIDE the narrow intro window [880,1000) the pre-gate used to read.
+        result, user, call_count = _run_qa_case([
+            (700.0, 705.0, _FAR_BACK_ANNOUNCEMENT),
+            (1000.0, 1005.0, _TURN_EVIDENCE_TEXT),
+            (1200.0, 1205.0, future_text),  # >= region_end (1060), still inside chapter span
+        ])
+
+        assert call_count == 1  # pre-gate widened too (D4) — LLM reached
+        assert result is not None
+        assert "CHAPTER TRANSCRIPT" in user  # proves the wide branch ran
+        assert _FAR_BACK_ANNOUNCEMENT in user  # widening reached the announcement
+        assert future_text not in user  # forward-edge drop
+
+    def test_qa_turn_unparseable_chapter_span_falls_back_to_narrow(self, caplog):
+        """Unparseable start_time collapses prompt AND pre-gate to narrow
+        together (D4/D7): an announcement outside the narrow window is
+        vetoed (LLM never reached); one inside it still resolves, but with
+        the narrow (non-CHAPTER-TRANSCRIPT) prompt."""
+        with caplog.at_level("WARNING"):
+            vetoed, _, vetoed_calls = _run_qa_case(
+                [(700.0, 705.0, ANNOUNCEMENT_TEXT), (1000.0, 1005.0, _TURN_EVIDENCE_TEXT)],
+                start_time="not-a-timestamp",
+            )
+        assert vetoed is None
+        assert vetoed_calls == 0
+        assert any("chapter span" in rec.message.lower() for rec in caplog.records)
+
+        result, user, _ = _run_qa_case(
+            [(900.0, 905.0, ANNOUNCEMENT_TEXT), (1000.0, 1005.0, _TURN_EVIDENCE_TEXT)],
+            start_time="not-a-timestamp",
+        )
+        assert result is not None
+        assert "CHAPTER TRANSCRIPT" not in user
+
+
+class TestD4PreGateRebind:
+    """has_announcement_phrase reads the SAME text as the prompt; every
+    non-qa turn_type stays vetoed on the narrow window it always used."""
+
+    @pytest.mark.parametrize("turn_type", ["monologue", None])
+    def test_non_qa_pre_gate_still_vetoed(self, turn_type):
+        result, _, call_count = _run_qa_case(
+            [(700.0, 705.0, ANNOUNCEMENT_TEXT), (1000.0, 1005.0, _TURN_EVIDENCE_TEXT)],
+            turn_type=turn_type,
+        )
+
+        assert result is None
+        assert call_count == 0
+
+
+class TestD4FailSafeCollapse:
+    """QA_WIDE_CONTEXT_ENABLED=False collapses the qa pre-gate back to
+    narrow combined_text, in lockstep with the prompt — never
+    independently (the unparseable-chapter-span fail-safe is covered by
+    TestQaGatedWideContext's collapse test above)."""
+
+    def test_kill_switch_disabled_qa_pre_gate_reverts_to_narrow(self):
+        # Would pass the WIDE pre-gate (anchor-300s) but must be vetoed once
+        # the kill switch collapses the prompt back to narrow.
+        result, _, call_count = _run_qa_case(
+            [(700.0, 705.0, ANNOUNCEMENT_TEXT), (1000.0, 1005.0, _TURN_EVIDENCE_TEXT)],
+            wide_enabled=False,
+        )
+
+        assert result is None
+        assert call_count == 0
+
+    def test_kill_switch_disabled_uses_narrow_prompt_when_announcement_in_narrow_window(self):
+        """Kill-switch off + qa turn_type + a valid chapter span: the LLM is
+        still reached (announcement is in the narrow window too), but the
+        prompt sent must be the narrow template, not the wide one."""
+        result, user, _ = _run_qa_case(
+            [(900.0, 905.0, ANNOUNCEMENT_TEXT), (1000.0, 1005.0, _TURN_EVIDENCE_TEXT)],
+            wide_enabled=False,
+        )
+
+        assert result is not None
+        assert "CHAPTER TRANSCRIPT" not in user

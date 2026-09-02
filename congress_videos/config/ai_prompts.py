@@ -340,6 +340,25 @@ SPEAKER_RESOLUTION_USER_TEMPLATE = (
     '"confidence": <float 0.0-1.0>, "evidence": "<key phrase from the transcript>"}}'
 )
 
+# Wide variant (issue #322, D6): used ONLY for turn_type == 'qa' turns with
+# a parseable chapter span, whose announcement may predate the fixed 120s
+# intro window. Tail from "INTRO WINDOW" onward is BYTE-IDENTICAL to
+# SPEAKER_RESOLUTION_USER_TEMPLATE above — a regression test enforces this.
+SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE = (
+    "CHAPTER TRANSCRIPT (full chapter, timestamped — the presiding officer's "
+    "announcement of this speaker may appear anywhere in this text):\n"
+    "{chapter_text}\n\n"
+    "INTRO WINDOW (president's introduction, up to 120 seconds before the turn starts):\n"
+    "{intro_text}\n\n"
+    "TURN WINDOW (first 60 seconds of the speaker's own turn):\n"
+    "{turn_text}\n\n"
+    "KNOWN PARTICIPANTS (slug | display_name | party — one per line):\n"
+    "{participant_roster}\n\n"
+    "Identify who is speaking. Return ONLY valid JSON:\n"
+    '{{"participant_slug": "<slug from the list above or null>", '
+    '"confidence": <float 0.0-1.0>, "evidence": "<key phrase from the transcript>"}}'
+)
+
 
 # Turn Name Resolution — LLM fallback for congress_videos.modules.speaker_turns
 # (issue #131). Reached only when the regex/fuzzy text gate fails to attribute

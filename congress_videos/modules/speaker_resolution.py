@@ -24,11 +24,13 @@ from rapidfuzz import fuzz
 from congress_videos.config.ai_prompts import (
     SPEAKER_RESOLUTION_SYSTEM_PROMPT,
     SPEAKER_RESOLUTION_USER_TEMPLATE,
+    SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE,
 )
 from congress_videos.modules.announcement_patterns import has_announcement_phrase
 from congress_videos.srt_helpers import (
     _parse_srt_blocks,
     _srt_timestamp_to_seconds,
+    chapter_window_blocks,
     find_srt_for_chapter,
 )
 from utils.llm_config import LLM_CHEAP
@@ -71,6 +73,19 @@ ANCHOR_JOIN_BLOCKS: int = 3
 """Maximum number of consecutive SRT blocks joined by
 ``_evidence_supported_in_blocks`` when locating evidence that straddles a
 block boundary (issue #322)."""
+
+QA_WIDE_CONTEXT_ENABLED: bool = True
+"""Kill switch (issue #322): qa turns with a parseable chapter span get
+wide prompt context + a matching wide pre-gate (D4); False reverts both."""
+
+QA_CONTEXT_MAX_CHARS: int = 40_000
+"""Hard cap on rendered qa chapter text; over this, head+tail hybrid (D7)."""
+
+QA_CONTEXT_HEAD_CHARS: int = 4_000
+"""Opening slice size for the head+tail hybrid — covers the agenda (D7)."""
+
+QA_TRUNCATION_MARKER: str = "\n[... transcript truncated ...]\n"
+"""Marker joining head/tail slices when qa chapter text is truncated (D7)."""
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +169,64 @@ def _chapter_span(turn: dict) -> tuple[float, float] | None:
         return None
 
     return (start, end)
+
+
+def _render_chapter_block(block: dict) -> str:
+    """Render one SRT block as ``[HH:MM:SS] text`` (issue #322, D6)."""
+    total = max(0, int(block["start_secs"]))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f"[{h:02d}:{m:02d}:{s:02d}] {block['text']}"
+
+
+def _build_qa_chapter_text(blocks: list[dict]) -> str:
+    """Render *blocks* as ``[HH:MM:SS] text`` joined by ``\\n`` (D7).
+
+    Passthrough when under ``QA_CONTEXT_MAX_CHARS``. Otherwise a
+    block-granular head+tail hybrid: an opening slice capped at
+    ``QA_CONTEXT_HEAD_CHARS`` (first block always kept — carries the
+    chapter-opening agenda/roll-call) plus a tail nearest the turn (last
+    block always kept), joined by ``QA_TRUNCATION_MARKER``. Head/tail never
+    overlap. Empty ``blocks`` returns ``""``. Never raises.
+    """
+    if not blocks:
+        return ""
+
+    rendered = [_render_chapter_block(b) for b in blocks]
+    full_text = "\n".join(rendered)
+    if len(full_text) <= QA_CONTEXT_MAX_CHARS:
+        return full_text
+
+    # Head: always keep the first block (block-granular, never mid-block).
+    head_lines = [rendered[0]]
+    head_len = len(rendered[0])
+    head_end_idx = 1
+    for i in range(1, len(rendered)):
+        line = rendered[i]
+        added = len(line) + 1  # +1 for the joining newline
+        if head_len + added > QA_CONTEXT_HEAD_CHARS:
+            break
+        head_lines.append(line)
+        head_len += added
+        head_end_idx = i + 1
+    head_text = "\n".join(head_lines)
+
+    # Tail: always keep the last block (nearest the turn).
+    tail_lines = [rendered[-1]]
+    tail_len = len(rendered[-1])
+    remaining_budget = max(
+        0, QA_CONTEXT_MAX_CHARS - len(head_text) - len(QA_TRUNCATION_MARKER) - tail_len
+    )
+    for i in range(len(rendered) - 2, head_end_idx - 1, -1):
+        line = rendered[i]
+        added = len(line) + 1
+        if added > remaining_budget:
+            break
+        tail_lines.insert(0, line)
+        remaining_budget -= added
+    tail_text = "\n".join(tail_lines)
+
+    return f"{head_text}{QA_TRUNCATION_MARKER}{tail_text}"
 
 
 # ---------------------------------------------------------------------------
@@ -292,15 +365,35 @@ def _resolve_speaker_inner(
 
     intro_text = "\n".join(b["text"] for b in intro_blocks) if intro_blocks else "(no intro)"
     turn_text = "\n".join(b["text"] for b in turn_blocks) if turn_blocks else "(no turn context)"
-
-    # Announcement pre-gate (issue #284): refuse to call completion_fn at
-    # all unless the presiding officer's announcement phrase appears
-    # somewhere in the model-visible text. Calling an LLM with no textual
-    # basis for attribution invites a hallucinated name.
     combined_text = f"{intro_text}\n{turn_text}"
-    if REQUIRE_ANNOUNCEMENT_PHRASE and not has_announcement_phrase(combined_text):
+
+    # qa-gated chapter-wide prompt context (issue #322, D1/D7/D8): only for
+    # turn_type == 'qa' with a parseable chapter span and the kill switch
+    # on. chapter_text is the single source of truth both the pre-gate (D4)
+    # and the prompt builder below read, so they can never drift apart.
+    turn_type = turn.get("turn_type")
+    chapter_text: str | None = None
+    if QA_WIDE_CONTEXT_ENABLED and turn_type == "qa":
+        if chapter_span is not None:
+            prompt_blocks = chapter_window_blocks(all_blocks, chapter_start_seconds, region_end)
+            chapter_text = _build_qa_chapter_text(prompt_blocks)
+        else:
+            logger.warning(
+                "resolve_speaker: turn_id=%s is turn_type='qa' but the chapter "
+                "span is unparseable — falling back to narrow intro+turn "
+                "prompt context",
+                turn.get("turn_id"),
+            )
+
+    wide_context_active = chapter_text is not None
+    prompt_text_for_gate = chapter_text if wide_context_active else combined_text
+
+    # Announcement pre-gate (issue #284, rebound per #322 D4): reads the
+    # SAME text the prompt will show the model — wide for qa, narrow
+    # otherwise — so the two can never disagree.
+    if REQUIRE_ANNOUNCEMENT_PHRASE and not has_announcement_phrase(prompt_text_for_gate):
         logger.info(
-            "resolve_speaker: no announcement phrase in intro+turn text for "
+            "resolve_speaker: no announcement phrase in model-visible text for "
             "turn_id=%s — skipping LLM call",
             turn.get("turn_id"),
         )
@@ -313,11 +406,19 @@ def _resolve_speaker_inner(
     ]
     participant_roster = "\n".join(roster_lines)
 
-    user_prompt = SPEAKER_RESOLUTION_USER_TEMPLATE.format(
-        intro_text=intro_text,
-        turn_text=turn_text,
-        participant_roster=participant_roster,
-    )
+    if wide_context_active:
+        user_prompt = SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE.format(
+            chapter_text=chapter_text,
+            intro_text=intro_text,
+            turn_text=turn_text,
+            participant_roster=participant_roster,
+        )
+    else:
+        user_prompt = SPEAKER_RESOLUTION_USER_TEMPLATE.format(
+            intro_text=intro_text,
+            turn_text=turn_text,
+            participant_roster=participant_roster,
+        )
 
     # Call the LLM (or injected stub)
     if completion_fn is None:

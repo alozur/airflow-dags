@@ -718,3 +718,16 @@ class TestSelectUnpreparedTurnsChapterSpan:
         assert "vc.end_time" in sql, (
             f"select_unprepared_turns must select vc.end_time; got: {sql}"
         )
+
+    def test_query_selects_turn_type_column(self, db):
+        """SQL must select stv.turn_type so resolve_speaker can gate the
+        chapter-wide prompt context to turn_type == 'qa' (slice 2)."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.select_unprepared_turns(limit=2)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "stv.turn_type" in sql, (
+            f"select_unprepared_turns must select stv.turn_type; got: {sql}"
+        )
