@@ -2,10 +2,17 @@
 
 TDD RED cycle: written before implementation.
 Tests: mark_turn_resolved + select_unprepared_turns resolution columns.
+
+Issue #321 (Gate A — sibling-label scoping): mark_turn_resolved gained a
+required 5th positional ``representative_turn_id`` and its UPDATE WHERE
+clause became a subselect joining speaker_turns on speaker_label, instead
+of a bare ``output_path=%s`` filter.
 """
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 def _make_conn(rows=None):
@@ -33,7 +40,8 @@ def _make_conn(rows=None):
 # ---------------------------------------------------------------------------
 
 class TestMarkTurnResolved:
-    """mark_turn_resolved(output_path, slug, confidence, method) updates all grouped rows."""
+    """mark_turn_resolved(output_path, slug, confidence, method, representative_turn_id)
+    updates only the sibling rows sharing BOTH output_path and speaker_label (Gate A)."""
 
     def test_sql_updates_resolved_participant_slug(self):
         """UPDATE must set resolved_participant_slug."""
@@ -43,7 +51,7 @@ class TestMarkTurnResolved:
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
             db.mark_turn_resolved(
-                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context"
+                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501
             )
 
         query = cursor.execute.call_args[0][0].upper()
@@ -57,7 +65,7 @@ class TestMarkTurnResolved:
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
             db.mark_turn_resolved(
-                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context"
+                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501
             )
 
         query = cursor.execute.call_args[0][0].upper()
@@ -71,7 +79,7 @@ class TestMarkTurnResolved:
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
             db.mark_turn_resolved(
-                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context"
+                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501
             )
 
         query = cursor.execute.call_args[0][0].upper()
@@ -85,27 +93,60 @@ class TestMarkTurnResolved:
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
             db.mark_turn_resolved(
-                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context"
+                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501
             )
 
         query = cursor.execute.call_args[0][0].upper()
         assert "OUTPUT_PATH" in query and "WHERE" in query
 
-    def test_sql_passes_all_four_params(self):
-        """UPDATE must pass slug, confidence, method, output_path as params."""
+    def test_sql_where_is_label_scoped_subselect(self):
+        """UPDATE WHERE must be a subselect joining speaker_turns on speaker_label
+        for the representative turn's label — not a bare output_path=%s filter
+        (issue #321 Gate A: withholds attribution from mismatched siblings)."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_turn_resolved(
+                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501
+            )
+
+        query = cursor.execute.call_args[0][0].upper().replace("\n", " ")
+        assert "TURN_ID IN" in query, f"WHERE must scope via a turn_id subselect; got: {query}"
+        assert "SPEAKER_TURNS" in query, f"subselect must join speaker_turns; got: {query}"
+        assert "SPEAKER_LABEL" in query, f"subselect must match on speaker_label; got: {query}"
+
+    def test_sql_passes_all_five_params(self):
+        """UPDATE must pass slug, confidence, method, output_path, and
+        representative_turn_id as params."""
         from congress_videos.modules.database import CongressionalVideoDB
 
         pg_mock, cursor = _make_conn()
         output_path = "/data/turns/1/video.mp4"
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
-            db.mark_turn_resolved(output_path, "pedro-sanchez", 0.92, "ai_srt_context")
+            db.mark_turn_resolved(output_path, "pedro-sanchez", 0.92, "ai_srt_context", 501)
 
         params = cursor.execute.call_args[0][1]
         assert "pedro-sanchez" in params
         assert 0.92 in params
         assert "ai_srt_context" in params
         assert output_path in params
+        assert 501 in params
+
+    def test_representative_turn_id_is_required(self):
+        """The 5th positional arg has no default — an un-migrated 4-arg caller
+        must fail loudly rather than blanket-writing (issue #321)."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            with pytest.raises(TypeError):
+                db.mark_turn_resolved(
+                    "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context"
+                )
 
     def test_returns_none(self):
         """mark_turn_resolved must return None (void operation)."""
@@ -115,7 +156,7 @@ class TestMarkTurnResolved:
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
             result = db.mark_turn_resolved(
-                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context"
+                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501
             )
 
         assert result is None
@@ -294,3 +335,16 @@ class TestSelectUnpreparedTurnsResolutionColumns:
 
         query = cursor.execute.call_args[0][0].upper()
         assert "SPEAKER_RESOLUTION_CONFIDENCE" in query
+
+    def test_sql_selects_vc_speakers(self):
+        """Query must SELECT vc.speakers alongside vc.key_speakers (issue #321
+        Gate B needs both rosters to build chapter_roster_mentions)."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn(rows=[])
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.select_unprepared_turns(limit=2)
+
+        query = cursor.execute.call_args[0][0].upper()
+        assert "VC.SPEAKERS" in query, f"must SELECT vc.speakers; got: {query}"

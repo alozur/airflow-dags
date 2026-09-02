@@ -24,9 +24,15 @@ from rapidfuzz import fuzz
 from congress_videos.config.ai_prompts import (
     SPEAKER_RESOLUTION_SYSTEM_PROMPT,
     SPEAKER_RESOLUTION_USER_TEMPLATE,
+    SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE,
 )
 from congress_videos.modules.announcement_patterns import has_announcement_phrase
-from congress_videos.srt_helpers import _parse_srt_blocks, find_srt_for_chapter
+from congress_videos.srt_helpers import (
+    _parse_srt_blocks,
+    _srt_timestamp_to_seconds,
+    chapter_window_blocks,
+    find_srt_for_chapter,
+)
 from utils.llm_config import LLM_CHEAP
 
 logger = logging.getLogger(__name__)
@@ -56,6 +62,30 @@ REQUIRE_ANNOUNCEMENT_PHRASE: bool = True
 """Kill switch (issue #284): when True, resolve_speaker refuses to call
 completion_fn unless intro_text or turn_text contains a presiding-officer
 announcement phrase. Flip to False to fully revert the pre-gate."""
+
+QA_EVIDENCE_LOOKBACK_SECS: int = 600
+"""Backwards-only widening (issue #322) of the anchored evidence-gate
+region: how far before ``intro_anchor`` accepted evidence may be located,
+clamped to the chapter's own start. The forward edge
+(``start_seconds + TURN_CONTEXT_SECS``) is unaffected by this constant."""
+
+ANCHOR_JOIN_BLOCKS: int = 3
+"""Maximum number of consecutive SRT blocks joined by
+``_evidence_supported_in_blocks`` when locating evidence that straddles a
+block boundary (issue #322)."""
+
+QA_WIDE_CONTEXT_ENABLED: bool = True
+"""Kill switch (issue #322): qa turns with a parseable chapter span get
+wide prompt context + a matching wide pre-gate (D4); False reverts both."""
+
+QA_CONTEXT_MAX_CHARS: int = 40_000
+"""Hard cap on rendered qa chapter text; over this, head+tail hybrid (D7)."""
+
+QA_CONTEXT_HEAD_CHARS: int = 4_000
+"""Opening slice size for the head+tail hybrid — covers the agenda (D7)."""
+
+QA_TRUNCATION_MARKER: str = "\n[... transcript truncated ...]\n"
+"""Marker joining head/tail slices when qa chapter text is truncated (D7)."""
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +117,116 @@ def _evidence_supported(evidence: str | None, source_text: str) -> bool:
     normalized_text = _normalize_for_evidence(source_text)
     ratio = fuzz.partial_ratio(normalized_evidence, normalized_text)
     return ratio >= EVIDENCE_MIN_PARTIAL_RATIO
+
+
+def _evidence_supported_in_blocks(
+    evidence: str | None,
+    blocks: list[dict],
+    join_size: int = ANCHOR_JOIN_BLOCKS,
+) -> bool:
+    """True when *evidence* is located within a sliding join of up to
+    *join_size* consecutive *blocks* (issue #322).
+
+    Tries every window of 1..join_size consecutive blocks, in order, and
+    reuses ``_evidence_supported`` VERBATIM as the per-window primitive —
+    this keeps the 12-char floor, NFD normalization, and
+    EVIDENCE_MIN_PARTIAL_RATIO threshold identical to the pre-anchor gate.
+    ``blocks`` MUST already be pre-filtered to the accepted region by the
+    caller: this function only tries joins over what it is given, it does
+    not re-check any timestamp. Empty ``blocks`` is always False. Never
+    raises.
+    """
+    if not blocks:
+        return False
+
+    n = len(blocks)
+    for start_idx in range(n):
+        for size in range(1, join_size + 1):
+            end_idx = start_idx + size
+            if end_idx > n:
+                break
+            joined_text = "\n".join(b["text"] for b in blocks[start_idx:end_idx])
+            if _evidence_supported(evidence, joined_text):
+                return True
+    return False
+
+
+def _chapter_span(turn: dict) -> tuple[float, float] | None:
+    """Parse the chapter's ``[start, end)`` span from ``turn["start_time"]``/
+    ``turn["end_time"]`` (issue #322) — VARCHAR SRT-format strings added to
+    ``select_unprepared_turns`` from ``video_chapters``.
+
+    Returns ``(start_seconds, end_seconds)`` or ``None`` on a missing key,
+    non-str value, unparseable timestamp, or ``end <= start``. Never raises.
+    """
+    try:
+        start = _srt_timestamp_to_seconds(turn["start_time"])
+        end = _srt_timestamp_to_seconds(turn["end_time"])
+    except (KeyError, ValueError, TypeError):
+        return None
+
+    if end <= start:
+        return None
+
+    return (start, end)
+
+
+def _render_chapter_block(block: dict) -> str:
+    """Render one SRT block as ``[HH:MM:SS] text`` (issue #322, D6)."""
+    total = max(0, int(block["start_secs"]))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f"[{h:02d}:{m:02d}:{s:02d}] {block['text']}"
+
+
+def _build_qa_chapter_text(blocks: list[dict]) -> str:
+    """Render *blocks* as ``[HH:MM:SS] text`` joined by ``\\n`` (D7).
+
+    Passthrough when under ``QA_CONTEXT_MAX_CHARS``. Otherwise a
+    block-granular head+tail hybrid: an opening slice capped at
+    ``QA_CONTEXT_HEAD_CHARS`` (first block always kept — carries the
+    chapter-opening agenda/roll-call) plus a tail nearest the turn (last
+    block always kept), joined by ``QA_TRUNCATION_MARKER``. Head/tail never
+    overlap. Empty ``blocks`` returns ``""``. Never raises.
+    """
+    if not blocks:
+        return ""
+
+    rendered = [_render_chapter_block(b) for b in blocks]
+    full_text = "\n".join(rendered)
+    if len(full_text) <= QA_CONTEXT_MAX_CHARS:
+        return full_text
+
+    # Head: always keep the first block (block-granular, never mid-block).
+    head_lines = [rendered[0]]
+    head_len = len(rendered[0])
+    head_end_idx = 1
+    for i in range(1, len(rendered)):
+        line = rendered[i]
+        added = len(line) + 1  # +1 for the joining newline
+        if head_len + added > QA_CONTEXT_HEAD_CHARS:
+            break
+        head_lines.append(line)
+        head_len += added
+        head_end_idx = i + 1
+    head_text = "\n".join(head_lines)
+
+    # Tail: always keep the last block (nearest the turn).
+    tail_lines = [rendered[-1]]
+    tail_len = len(rendered[-1])
+    remaining_budget = max(
+        0, QA_CONTEXT_MAX_CHARS - len(head_text) - len(QA_TRUNCATION_MARKER) - tail_len
+    )
+    for i in range(len(rendered) - 2, head_end_idx - 1, -1):
+        line = rendered[i]
+        added = len(line) + 1
+        if added > remaining_budget:
+            break
+        tail_lines.insert(0, line)
+        remaining_budget -= added
+    tail_text = "\n".join(tail_lines)
+
+    return f"{head_text}{QA_TRUNCATION_MARKER}{tail_text}"
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +337,23 @@ def _resolve_speaker_inner(
         if b["start_secs"] >= start_secs and b["start_secs"] < turn_end
     ]
 
+    # Anchored evidence-gate region (issue #322): the ONLY place accepted
+    # evidence may be located, uniform for every turn_type. Backward edge
+    # widens up to QA_EVIDENCE_LOOKBACK_SECS before intro_anchor, clamped to
+    # the chapter's own start when a valid chapter span is available (fails
+    # safe to 0.0 otherwise — D5). Forward edge is unchanged: no block at or
+    # after start_secs + TURN_CONTEXT_SECS can ever appear in region_blocks,
+    # so evidence past that edge is rejected by construction, regardless of
+    # confidence.
+    chapter_span = _chapter_span(turn)
+    chapter_start_seconds = chapter_span[0] if chapter_span is not None else 0.0
+    region_start = max(chapter_start_seconds, intro_anchor - QA_EVIDENCE_LOOKBACK_SECS)
+    region_end = turn_end
+    region_blocks = [
+        b for b in all_blocks
+        if region_start <= b["start_secs"] < region_end
+    ]
+
     # Both windows may be empty at the start of a session — still attempt resolution
     # if we have at least some turn-window content.
     if not intro_blocks and not turn_blocks:
@@ -208,15 +365,35 @@ def _resolve_speaker_inner(
 
     intro_text = "\n".join(b["text"] for b in intro_blocks) if intro_blocks else "(no intro)"
     turn_text = "\n".join(b["text"] for b in turn_blocks) if turn_blocks else "(no turn context)"
-
-    # Announcement pre-gate (issue #284): refuse to call completion_fn at
-    # all unless the presiding officer's announcement phrase appears
-    # somewhere in the model-visible text. Calling an LLM with no textual
-    # basis for attribution invites a hallucinated name.
     combined_text = f"{intro_text}\n{turn_text}"
-    if REQUIRE_ANNOUNCEMENT_PHRASE and not has_announcement_phrase(combined_text):
+
+    # qa-gated chapter-wide prompt context (issue #322, D1/D7/D8): only for
+    # turn_type == 'qa' with a parseable chapter span and the kill switch
+    # on. chapter_text is the single source of truth both the pre-gate (D4)
+    # and the prompt builder below read, so they can never drift apart.
+    turn_type = turn.get("turn_type")
+    chapter_text: str | None = None
+    if QA_WIDE_CONTEXT_ENABLED and turn_type == "qa":
+        if chapter_span is not None:
+            prompt_blocks = chapter_window_blocks(all_blocks, chapter_start_seconds, region_end)
+            chapter_text = _build_qa_chapter_text(prompt_blocks)
+        else:
+            logger.warning(
+                "resolve_speaker: turn_id=%s is turn_type='qa' but the chapter "
+                "span is unparseable — falling back to narrow intro+turn "
+                "prompt context",
+                turn.get("turn_id"),
+            )
+
+    wide_context_active = chapter_text is not None
+    prompt_text_for_gate = chapter_text if wide_context_active else combined_text
+
+    # Announcement pre-gate (issue #284, rebound per #322 D4): reads the
+    # SAME text the prompt will show the model — wide for qa, narrow
+    # otherwise — so the two can never disagree.
+    if REQUIRE_ANNOUNCEMENT_PHRASE and not has_announcement_phrase(prompt_text_for_gate):
         logger.info(
-            "resolve_speaker: no announcement phrase in intro+turn text for "
+            "resolve_speaker: no announcement phrase in model-visible text for "
             "turn_id=%s — skipping LLM call",
             turn.get("turn_id"),
         )
@@ -229,11 +406,19 @@ def _resolve_speaker_inner(
     ]
     participant_roster = "\n".join(roster_lines)
 
-    user_prompt = SPEAKER_RESOLUTION_USER_TEMPLATE.format(
-        intro_text=intro_text,
-        turn_text=turn_text,
-        participant_roster=participant_roster,
-    )
+    if wide_context_active:
+        user_prompt = SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE.format(
+            chapter_text=chapter_text,
+            intro_text=intro_text,
+            turn_text=turn_text,
+            participant_roster=participant_roster,
+        )
+    else:
+        user_prompt = SPEAKER_RESOLUTION_USER_TEMPLATE.format(
+            intro_text=intro_text,
+            turn_text=turn_text,
+            participant_roster=participant_roster,
+        )
 
     # Call the LLM (or injected stub)
     if completion_fn is None:
@@ -290,11 +475,12 @@ def _resolve_speaker_inner(
         )
         return None
 
-    # Evidence verification (issue #284): independent of self-reported
-    # confidence — a candidate whose evidence cannot be located in the
-    # model-visible text is rejected even at confidence 0.99. Runs last so
-    # every earlier return path/log line above stays byte-identical.
-    if not _evidence_supported(evidence, combined_text):
+    # Evidence verification (issue #284, anchored per issue #322):
+    # independent of self-reported confidence — a candidate whose evidence
+    # cannot be located within region_blocks (the anchored gate) is rejected
+    # even at confidence 0.99. Runs last so every earlier return path/log
+    # line above stays byte-identical.
+    if not _evidence_supported_in_blocks(evidence, region_blocks):
         logger.info(
             "resolve_speaker: evidence not locatable in model-visible text "
             "for turn_id=%s — returning None",

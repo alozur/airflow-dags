@@ -1038,11 +1038,13 @@ class CongressionalVideoDB:
                         SELECT DISTINCT ON (stv.output_path)
                             stv.turn_id, stv.output_path, st.chapter_id, st.resolved_name,
                             st.start_seconds, st.end_seconds, st.interest_score,
+                            stv.turn_type,
                             MIN(st.start_seconds) OVER (PARTITION BY stv.output_path) AS group_start_seconds,
                             MAX(st.end_seconds) OVER (PARTITION BY stv.output_path) AS group_end_seconds,
                             stv.keep_intervals,
                             vc.video_id, vc.title AS chapter_title, vc.description,
-                            vc.relevance_score, vc.key_speakers,
+                            vc.relevance_score, vc.key_speakers, vc.speakers,
+                            vc.start_time, vc.end_time,
                             ysv.session_number, ysv.session_date, stv.materialized_at,
                             stv.resolved_participant_slug,
                             stv.speaker_resolution_confidence
@@ -1118,20 +1120,32 @@ class CongressionalVideoDB:
         slug: str,
         confidence: float,
         method: str,
+        representative_turn_id: int,
     ) -> None:
-        """Persist the speaker resolution result for all rows sharing output_path.
+        """Persist the speaker resolution result for label-matching sibling rows.
 
         Updates resolved_participant_slug, speaker_resolution_confidence, and
-        speaker_resolution_method on ALL speaker_turn_videos rows that share the
-        given output_path (grouped-turn consistency, mirrors mark_turns_uploaded).
+        speaker_resolution_method on the speaker_turn_videos rows that share
+        BOTH the given output_path AND the representative turn's
+        speaker_turns.speaker_label (Gate A, issue #321). A grouped clip can
+        contain multiple diarization speaker_label values; a sibling whose
+        label differs from the representative's never receives the
+        representative's resolved slug (resolved_participant_slug stays NULL).
 
         Args:
             output_path: Absolute path to the grouped turn's video.mp4 file.
             slug: Validated participant slug from congress_participants.
             confidence: Model confidence in [0.0, 1.0].
             method: Resolution method, one of 'ai_srt_context', 'fuzzy', 'manual'.
+            representative_turn_id: turn_id of the turn that was actually
+                resolved — its speaker_label scopes which sibling rows may
+                receive the write. Required (no default) so an un-migrated
+                caller fails loudly instead of silently blanket-writing.
         """
         stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+        st_table = self.pg_conn.get_qualified_table('speaker_turns')
+
+        group_size = self._count_records('speaker_turn_videos', 'output_path = %s', (output_path,))
 
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
@@ -1141,16 +1155,30 @@ class CongressionalVideoDB:
                     SET resolved_participant_slug = %s,
                         speaker_resolution_confidence = %s,
                         speaker_resolution_method = %s
-                    WHERE output_path = %s
+                    WHERE turn_id IN (
+                        SELECT stv2.turn_id
+                        FROM {stv_table} stv2
+                        JOIN {st_table} st2 ON stv2.turn_id = st2.turn_id
+                        WHERE stv2.output_path = %s
+                          AND st2.speaker_label = (
+                              SELECT st3.speaker_label FROM {st_table} st3
+                              WHERE st3.turn_id = %s
+                          )
+                    )
                     """,
-                    (slug, confidence, method, output_path),
+                    (slug, confidence, method, output_path, representative_turn_id),
                 )
                 logger.info(
-                    "mark_turn_resolved: output_path=%s → slug=%r confidence=%.2f method=%s",
+                    "mark_turn_resolved: output_path=%s representative_turn_id=%s → "
+                    "slug=%r confidence=%.2f method=%s (%d/%d sibling rows updated; "
+                    "label-mismatched siblings withheld)",
                     output_path,
+                    representative_turn_id,
                     slug,
                     confidence,
                     method,
+                    cur.rowcount,
+                    group_size,
                 )
 
     def promote_turn_type_to_qa(self, output_path: str) -> int:

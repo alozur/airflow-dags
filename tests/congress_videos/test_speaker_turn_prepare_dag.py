@@ -4,6 +4,7 @@ TDD cycle: RED tests written first; GREEN implementations follow.
 """
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
 from pathlib import Path
@@ -49,7 +50,12 @@ def _make_turn(turn_id: int = 1, output_path: str = "/data/video.mp4") -> dict:
         "chapter_title": "Test Chapter",
         "description": "A test description",
         "relevance_score": 4,
-        "key_speakers": ["Speaker Name"],
+        # issue #321: empty by default -> chapter_roster_mentions() yields no
+        # mentions -> crosscheck_slug() fails open ("no_opinion") so existing
+        # resolution tests unrelated to Gate B are unaffected. Gate B tests
+        # override key_speakers/speakers explicitly.
+        "key_speakers": [],
+        "speakers": [],
         "session_number": 1,
         "session_date": "2026-01-01",
         "materialized_at": "2026-01-01T00:00:00",
@@ -1206,6 +1212,137 @@ class TestPromotionHook:
             _prepare_turns_callable()
 
         mock_sidecars.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Roster cross-check gate (Gate B, issue #321)
+# ---------------------------------------------------------------------------
+
+
+class TestRosterCrosscheckGate:
+    """Before persisting, the resolved slug's display_name is cross-checked
+    against the chapter's key_speakers/speakers rosters (issue #321).
+
+    reject -> withhold mark_turn_resolved, the in-memory resolved_name patch,
+              and promote_turn_type_to_qa; log a WARNING.
+    accept / no_opinion -> write proceeds with representative_turn_id=turn_id.
+    """
+
+    def _resolution(self, slug="felix-bolanos-garcia", confidence=0.92):
+        return {"participant_slug": slug, "confidence": confidence, "evidence": "..."}
+
+    def _participants(self, slug="felix-bolanos-garcia", display_name="Félix Bolaños García"):
+        return [{"slug": slug, "display_name": display_name, "party": "PSOE"}]
+
+    def test_reject_withholds_write_and_patch_and_promotion(self, caplog):
+        """A candidate absent from the chapter roster is rejected: no DB write,
+        no in-memory resolved_name patch, no qa promotion; WARNING logged."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turn = _make_turn(1, "/data/v1.mp4")
+        turn["key_speakers"] = ["Señor Carazo"]
+        turn["speakers"] = ["Señora Funez"]
+        turn["resolved_name"] = "Pedro Sanchez"
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = [turn]
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=self._resolution()),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+            caplog.at_level(logging.WARNING, logger="congress_videos.speaker_turn_prepare_dag"),
+        ):
+            _prepare_turns_callable()
+
+        mock_db.mark_turn_resolved.assert_not_called()
+        mock_db.promote_turn_type_to_qa.assert_not_called()
+        assert turn["resolved_name"] == "Pedro Sanchez", "resolved_name must NOT be patched on reject"
+
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert warnings, "a WARNING-or-higher log entry must be emitted on reject"
+        message = warnings[0].getMessage()
+        assert "1" in message, f"WARNING must include turn_id; got: {message}"
+        assert "100" in message, f"WARNING must include chapter_id; got: {message}"
+        assert "felix-bolanos-garcia" in message, f"WARNING must include candidate slug; got: {message}"
+        assert "Félix Bolaños García" in message, f"WARNING must include display_name; got: {message}"
+        assert "Señor Carazo" in message, f"WARNING must include the filtered mentions; got: {message}"
+
+    def test_accept_write_proceeds_with_representative_turn_id(self):
+        """A candidate matching the chapter roster is accepted: write proceeds
+        with representative_turn_id=turn_id (Gate A wiring)."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turn = _make_turn(7, "/data/v1.mp4")
+        turn["key_speakers"] = ["Félix Bolaños García"]
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = [turn]
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=self._resolution()),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "felix-bolanos-garcia", 0.92, "ai_srt_context", 7
+        )
+        assert turn["resolved_name"] == "Félix Bolaños García"
+
+    def test_no_opinion_placeholder_only_roster_fails_open(self):
+        """Both rosters contain only placeholders -> no_opinion -> write proceeds
+        unchanged (identical to pre-Gate-B behavior)."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turn = _make_turn(3, "/data/v1.mp4")
+        turn["key_speakers"] = ["Ministra"]
+        turn["speakers"] = ["Presidente"]
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = [turn]
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=self._resolution()),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "felix-bolanos-garcia", 0.92, "ai_srt_context", 3
+        )
+
+    def test_no_opinion_empty_roster_fails_open(self):
+        """Both rosters empty -> no_opinion -> write proceeds unchanged."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turn = _make_turn(4, "/data/v1.mp4")
+        turn["key_speakers"] = []
+        turn["speakers"] = []
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = [turn]
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=self._resolution()),
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._participants()),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "felix-bolanos-garcia", 0.92, "ai_srt_context", 4
+        )
 
 
 # ---------------------------------------------------------------------------
