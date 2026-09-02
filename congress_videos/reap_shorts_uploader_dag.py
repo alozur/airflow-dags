@@ -239,7 +239,6 @@ with DAG(
                     system_prompt=SHORTS_METADATA_SYSTEM_PROMPT,
                     user_prompt=user_prompt,
                     model=LLM_DEFAULT,
-                    max_tokens=400,
                 )
                 if ai_result.get("data"):
                     ai_title = ai_result["data"].get("title", "").strip()

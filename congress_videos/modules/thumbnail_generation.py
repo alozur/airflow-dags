@@ -164,10 +164,8 @@ def _rank_candidates_via_llm(candidates: list[str], completion_fn) -> str:
         system_prompt=LAPIDARY_RANKING_SYSTEM_PROMPT,
         user_prompt=user_prompt,
         # LLM_CHEAP (not LLM_DEFAULT like this file's other calls): this
-        # ranking call is deterministic index-only output (max_tokens=5).
+        # ranking call emits a single index, so the cheap tier suffices.
         model=LLM_CHEAP,
-        temperature=0.2,
-        max_tokens=5,
     )
 
     content: str = (response or {}).get("content") or ""
@@ -337,8 +335,6 @@ def _call_art_direction_api(user_prompt: str) -> Optional[dict]:
             system_prompt=ART_DIRECTION_SYSTEM_PROMPT,
             user_prompt=user_prompt,
             model=LLM_DEFAULT,
-            max_tokens=400,
-            temperature=0.7,
         )
     except Exception as exc:
         logger.warning("art_direct: generate_json_completion raised: %s", exc)
@@ -653,8 +649,6 @@ def _request_title(user_prompt: str) -> Optional[str]:
         system_prompt=THUMBNAIL_TITLE_SYSTEM_PROMPT,
         user_prompt=user_prompt,
         model=LLM_DEFAULT,
-        max_tokens=120,
-        temperature=0.7,
     )
     if result.get("error"):
         logger.warning("generate_title: OpenAI error: %s", result["error"])

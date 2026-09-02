@@ -699,8 +699,6 @@ def _llm_resolve_name(
             TURN_NAME_RESOLUTION_SYSTEM_PROMPT,
             user_prompt,
             model=LLM_CHEAP,
-            temperature=0.0,
-            max_tokens=200,
         )
     except Exception as exc:  # noqa: BLE001 never raise
         log.warning(

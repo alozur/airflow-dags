@@ -98,8 +98,6 @@ def generate_youtube_description(
             system_prompt=YOUTUBE_DESCRIPTION_SYSTEM_PROMPT,
             user_prompt=user_prompt,
             model=LLM_DEFAULT,
-            temperature=0.7,
-            max_tokens=1000,
         )
 
         if result["error"]:
@@ -485,8 +483,6 @@ def score_chapters_relevance(merged_chapters):
                     system_prompt=CHAPTER_RELEVANCE_SCORING_SYSTEM_PROMPT,
                     user_prompt=user_prompt,
                     model=LLM_CHEAP,
-                    temperature=0.3,
-                    max_tokens=500
                 )
 
                 if result['error']:
