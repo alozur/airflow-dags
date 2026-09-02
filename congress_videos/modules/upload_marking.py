@@ -124,7 +124,8 @@ def mark_turn_uploads(db, upload_results: dict | None) -> dict:
             `{"upload_details": [{"turn_id", "youtube_video_id", "video_file", "success"}, ...]}`.
 
     Returns:
-        `{"updated_turns", "failed_updates", "details"}`.
+        `{"updated_turns", "failed_updates", "thumbnail_markers",
+        "thumbnail_marker_failures", "details"}`.
     """
     if not upload_results or not upload_results.get("upload_details"):
         logger.info("No turn upload results to process")
@@ -132,6 +133,8 @@ def mark_turn_uploads(db, upload_results: dict | None) -> dict:
 
     updated_count = 0
     failed_count = 0
+    thumbnail_markers = 0
+    thumbnail_marker_failures = 0
     details = []
 
     for upload_detail in upload_results["upload_details"]:
@@ -201,9 +204,41 @@ def mark_turn_uploads(db, upload_results: dict | None) -> dict:
                 "reason": "upload_failed_or_missing_fields",
             })
 
+        # Independent of the two success branches above. Identity check, not
+        # truthiness -- thumbnail_success is FOUR-valued; only literal False
+        # is a failure (issue #320, _unpublished_thumbnail_labels).
+        if success and upload_detail.get("thumbnail_success") is False:
+            try:
+                rows = db.mark_turn_thumbnail_republish_needed(
+                    output_path=output_path,
+                    turn_id=turn_id,
+                    error_message=upload_detail.get("thumbnail_error"),
+                )
+                thumbnail_markers += 1
+                details.append({
+                    "turn_id": turn_id,
+                    "output_path": output_path,
+                    "status": "thumbnail_republish_marked",
+                    "rows": rows,
+                })
+            except Exception as e:
+                thumbnail_marker_failures += 1
+                details.append({
+                    "turn_id": turn_id,
+                    "output_path": output_path,
+                    "status": "thumbnail_marker_failed",
+                    "error": str(e),
+                })
+                logger.error(
+                    "Failed to RECORD thumbnail republish marker for turn %s "
+                    "(output_path=%r); now unrecorded: %s", turn_id, output_path, e,
+                )
+
     result = {
         "updated_turns": updated_count,
         "failed_updates": failed_count,
+        "thumbnail_markers": thumbnail_markers,
+        "thumbnail_marker_failures": thumbnail_marker_failures,
         "details": details,
     }
     logger.info("Marked %d turns uploaded, %d failed", updated_count, failed_count)

@@ -1012,6 +1012,56 @@ class CongressionalVideoDB:
                 )
                 return cur.rowcount
 
+    def mark_turn_thumbnail_republish_needed(
+        self,
+        *,
+        output_path: str | None = None,
+        turn_id: int | None = None,
+        error_message: str | None = None,
+    ) -> int:
+        """Arm the thumbnail-republish marker for every row sharing one output_path.
+
+        Dual-key (issue #230's turn_id-primary / output_path-fallback reality).
+        Nulling thumbnail_republished_at re-arms a row that broke again;
+        attempts/abandoned are NOT reset — cumulative, never un-abandon.
+
+        Raises:
+            ValueError: If both output_path and turn_id are falsy.
+        """
+        if not output_path and not turn_id:
+            raise ValueError(
+                "mark_turn_thumbnail_republish_needed: output_path/turn_id required"
+            )
+
+        stv_table = self.pg_conn.get_qualified_table('speaker_turn_videos')
+        where_clause, where_param = (
+            ("WHERE output_path = %s", output_path)
+            if output_path
+            else (
+                f"WHERE output_path = (SELECT output_path FROM {stv_table} WHERE turn_id = %s)",
+                turn_id,
+            )
+        )
+
+        with self.pg_conn.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {stv_table} SET
+                        thumbnail_republish_needed_at  = NOW(),
+                        thumbnail_republished_at       = NULL,
+                        last_thumbnail_republish_error = %s
+                    {where_clause}
+                    """,
+                    (error_message, where_param),
+                )
+                logger.info(
+                    "mark_turn_thumbnail_republish_needed: output_path=%r "
+                    "turn_id=%r marked for republish (%d rows)",
+                    output_path, turn_id, cur.rowcount,
+                )
+                return cur.rowcount
+
     def select_unprepared_turns(self, limit: int = 2) -> List[Dict]:
         """Select speaker turns that have not been prepared yet.
 
