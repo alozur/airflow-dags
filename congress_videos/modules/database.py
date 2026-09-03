@@ -420,16 +420,21 @@ class CongressionalVideoDB:
         """
         uploadable_chapters_view = self.pg_conn.get_qualified_table("uploadable_chapters")
 
+        if limit:
+            limit = int(limit)
+
         with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
             query = f"""
                     SELECT * FROM {uploadable_chapters_view}
                     WHERE relevance_score >= %s
                     ORDER BY relevance_score DESC, created_at DESC
                 """
+            params = (min_relevance_score,)
             if limit:
-                query += f" LIMIT {limit}"
+                query += " LIMIT %s"
+                params = (min_relevance_score, limit)
 
-            cur.execute(query, (min_relevance_score,))
+            cur.execute(query, params)
             chapters = cur.fetchall()
             logger.info(
                 f"Retrieved {len(chapters)} uploadable chapters (min_score={min_relevance_score}, limit={limit})"
