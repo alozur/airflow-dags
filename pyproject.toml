@@ -129,7 +129,6 @@ indent-style = "space"
 "congress_videos/modules/youtube/download.py" = ["B905", "C901", "SIM103", "SIM108"]
 "congress_videos/modules/youtube/youtube_channel.py" = ["B007", "C901", "F841", "SIM102"]
 "congress_videos/modules/youtube/youtube_upload.py" = ["C901"]
-"congress_videos/post_upload_verification_dag.py" = ["C901"]
 "congress_videos/reap_api.py" = ["N818"]
 "congress_videos/reap_clip_preparer_dag.py" = ["C901"]
 "congress_videos/reap_shorts_uploader_dag.py" = ["B905", "C901"]
