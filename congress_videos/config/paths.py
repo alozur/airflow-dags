@@ -255,6 +255,28 @@ def get_chapter_short_file_path(
     return get_chapter_shorts_dir(source_video_id, chapter_id, channel_slug) / f"{clip_id}.mp4"
 
 
+def get_chapter_short_srt_path(
+    source_video_id: str,
+    chapter_id: int,
+    clip_id: str,
+    channel_slug: str | None = None,
+) -> Path:
+    """Return the canonical SRT sidecar path for a Reap short (no side effects, no mkdir).
+
+    Sibling of ``get_chapter_short_file_path``: ``{shorts_dir}/{clip_id}.srt``.
+
+    Args:
+        source_video_id: YouTube source video identifier.
+        chapter_id:      Database chapter ID.
+        clip_id:         Reap clip identifier (used as filename stem).
+        channel_slug:    Channel slug (defaults to ``DEFAULT_CHANNEL``).
+
+    Returns:
+        ``Path`` to ``{shorts_dir}/{clip_id}.srt``.
+    """
+    return get_chapter_shorts_dir(source_video_id, chapter_id, channel_slug) / f"{clip_id}.srt"
+
+
 # -------------------------
 # Path Validation
 # -------------------------
