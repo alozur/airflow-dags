@@ -381,3 +381,56 @@ class TestTimelinePersistence:
 
         _sql, params = self._chapter_insert(cur)
         assert params[8] == json.dumps([])
+
+
+# --------------------------------------------------------------------------- #
+# 5. get_chapter_srt_context (issue #431 — PR1)
+# --------------------------------------------------------------------------- #
+
+
+class TestGetChapterSrtContext:
+    """db.get_chapter_srt_context(chapter_id) -> {video_id, start_time, end_time,
+    session_date} or None. Consumed by the PR1 short-sidecar hook and the PR3
+    upload-time content-analysis hook, neither of which can read chapter bounds
+    off the uploadable_turns row (see design F1)."""
+
+    def test_returns_context_dict_for_existing_chapter(self):
+        cur = _make_cursor()
+        db, _conn = _make_db(cur)
+        cur.fetchone.return_value = {
+            "video_id": "vidA",
+            "start_time": "00:05:00,000",
+            "end_time": "00:10:00,000",
+            "session_date": date(2024, 1, 15),
+        }
+
+        result = db.get_chapter_srt_context(chapter_id=7)
+
+        assert result == {
+            "video_id": "vidA",
+            "start_time": "00:05:00,000",
+            "end_time": "00:10:00,000",
+            "session_date": date(2024, 1, 15),
+        }
+
+    def test_returns_none_for_missing_chapter(self):
+        cur = _make_cursor()
+        db, _conn = _make_db(cur)
+        cur.fetchone.return_value = None
+
+        result = db.get_chapter_srt_context(chapter_id=9999)
+
+        assert result is None
+
+    def test_query_uses_left_join_to_source_videos(self):
+        cur = _make_cursor()
+        db, _conn = _make_db(cur)
+        cur.fetchone.return_value = None
+
+        db.get_chapter_srt_context(chapter_id=7)
+
+        sql = cur.execute.call_args[0][0]
+        assert "LEFT JOIN" in sql
+        assert "youtube_source_videos" in sql
+        assert "start_time" in sql
+        assert "end_time" in sql
