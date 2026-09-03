@@ -85,7 +85,7 @@ Ruff is **not** installed via conda/pip: it is a pinned `uv` dev dependency
 - **Speed:** 10-100x faster than traditional tools (flake8, black, isort)
 - **Features:**
   - Linting (replaces flake8), including mccabe complexity (`C90`/`C901`)
-  - Formatting (replaces black) — declared in config, **not** gated in CI yet
+  - Formatting (replaces black) — declared in config, gated in CI (`ruff format --check`, issue #391)
   - Import sorting (replaces isort)
 
 **Installation:** already included via `uv sync --only-group dev` (no
@@ -99,7 +99,7 @@ uv run ruff check .
 # Fix auto-fixable issues
 uv run ruff check --fix .
 
-# Format code (declared, not CI-gated — see coding-standards.md)
+# Format code (same command CI checks with --check — see coding-standards.md)
 uv run ruff format .
 ```
 
@@ -136,7 +136,7 @@ uv run ruff check .
 # Auto-fix issues
 uv run ruff check --fix .
 
-# Format code (not CI-gated yet — see coding-standards.md)
+# Format code (same command CI checks with --check — see coding-standards.md)
 uv run ruff format .
 ```
 
@@ -239,6 +239,7 @@ conda run -n airflow pytest tests/
 import pytest
 from congreso_youtube.congreso_utils import process_video_data
 
+
 def test_process_video_data():
     result = process_video_data(video_id="test123", session=15)
     assert result["video_id"] == "test123"
@@ -256,9 +257,11 @@ conda run -n airflow python -m pytest tests/dags/test_dag_validation.py
 import pytest
 from airflow.models import DagBag
 
+
 def test_no_import_errors():
     dag_bag = DagBag(include_examples=False)
     assert len(dag_bag.import_errors) == 0
+
 
 def test_dag_has_tags():
     dag_bag = DagBag(include_examples=False)
@@ -314,9 +317,9 @@ today those checks run locally (`uv run pytest`) and via
 from airflow.providers.postgres.operators.postgres import PostgresOperator
 
 task = PostgresOperator(
-    task_id='load_data',
-    postgres_conn_id='postgres_dev',  # or 'postgres_prod'
-    sql='INSERT INTO dev_congreso.videos ...',
+    task_id="load_data",
+    postgres_conn_id="postgres_dev",  # or 'postgres_prod'
+    sql="INSERT INTO dev_congreso.videos ...",
 )
 ```
 
