@@ -1740,7 +1740,7 @@ class TestDynamicDateInScoringPrompt:
 
     def test_built_prompt_contains_current_year(self, mocker):
         """Spec #14: injected date contains the current year."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         captured_prompts = []
 

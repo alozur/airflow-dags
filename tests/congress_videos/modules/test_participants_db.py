@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-from unittest.mock import MagicMock, call, patch
-
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -718,7 +715,6 @@ class TestMigration016:
 
         content = Path(self._MIGRATION_PATH).read_text(encoding="utf-8")
         # We should not find NOT NULL after nickname TEXT
-        import re
 
         # Check that nickname column definition has no NOT NULL
         assert "nickname TEXT NOT NULL" not in content

@@ -15,7 +15,7 @@ All tests use stub VadFn / YamnetFn; no real model, no Docker, no audio files.
 from __future__ import annotations
 
 import dataclasses
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 

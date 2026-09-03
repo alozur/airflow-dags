@@ -92,7 +92,6 @@ class TestPrepareOradorUploadConfig:
 
     def test_no_ai_or_ffmpeg_service_calls(self, tmp_path):
         """prepare_orador_upload_config must not call any AI service (no subprocess for ffmpeg)."""
-        import subprocess
         from unittest.mock import patch
 
         from congress_videos.modules.youtube.youtube_upload import prepare_orador_upload_config

@@ -6,7 +6,7 @@ B3: get_processed_video_ids retry-window exclusion — three scenarios
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock
 
 import pytest
 

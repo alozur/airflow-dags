@@ -8,8 +8,7 @@ all injected/faked.
 from __future__ import annotations
 
 import dataclasses
-from typing import get_type_hints
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -1197,7 +1196,7 @@ class TestDetectTurns:
 
     def test_gap_merge_applied(self):
         """Two same-speaker changes with tiny gap → gap merge applied."""
-        from congress_videos.modules.speaker_turns import Turn, detect_turns
+        from congress_videos.modules.speaker_turns import detect_turns
 
         chapter = _make_chapter()
         # Two consecutive changes to SPEAKER_01 with 0.5s gap between them

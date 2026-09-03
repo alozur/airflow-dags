@@ -11,9 +11,7 @@ Covers all 5 rows from the design threat matrix:
 from __future__ import annotations
 
 import subprocess
-from unittest.mock import MagicMock, call, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # helpers

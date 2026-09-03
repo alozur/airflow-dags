@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import logging
-import os
-from datetime import date
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock
 
 import pytest
 
