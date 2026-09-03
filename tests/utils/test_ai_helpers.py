@@ -9,8 +9,8 @@ import openai
 import pytest
 
 from utils.ai_helpers import (
-    classify_openai_error,
     clamp_value,
+    classify_openai_error,
     generate_chat_completion,
     generate_json_completion,
     parse_json_response,

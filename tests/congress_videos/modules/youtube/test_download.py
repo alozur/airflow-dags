@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from unittest.mock import MagicMock
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1463,6 +1463,7 @@ class TestValidateChapterRanges:
     def test_start_equals_end_is_discarded(self, caplog):
         """Spec #5: start == end → discarded with WARNING."""
         import logging
+
         from congress_videos.modules.youtube.download import _validate_chapter_ranges
 
         chapters = [self._make_ch("00:03:00", "00:03:00")]
@@ -1475,6 +1476,7 @@ class TestValidateChapterRanges:
     def test_start_greater_than_end_is_discarded(self, caplog):
         """Spec #5: start > end → discarded with WARNING."""
         import logging
+
         from congress_videos.modules.youtube.download import _validate_chapter_ranges
 
         chapters = [self._make_ch("00:10:00", "00:02:00")]
@@ -1659,7 +1661,7 @@ class TestDynamicDateInScoringPrompt:
 
         score_chapters_relevance(merged)
 
-        current_year = str(datetime.now(tz=timezone.utc).year)
+        current_year = str(datetime.now(tz=UTC).year)
         assert current_year in captured_prompts[0]
 
     def test_current_date_es_returns_spanish_month(self):

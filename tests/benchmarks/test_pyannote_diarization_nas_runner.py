@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
 RUNNER = Path("benchmarks/pyannote_diarization/run_nas_benchmark.sh")
 
 

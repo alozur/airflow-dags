@@ -28,7 +28,6 @@ from congress_videos.config.paths import (
     get_video_chapter_dir,
 )
 
-
 # ---------------------------------------------------------------------------
 # Module-level constants
 # ---------------------------------------------------------------------------
@@ -266,6 +265,8 @@ class TestOradorHelpersImportPurity:
         # Re-import inside the test body to confirm no Airflow/DB dependency at import time.
         from congress_videos.config.paths import (  # noqa: PLC0415
             get_orador_artifact_path as _a,
+        )
+        from congress_videos.config.paths import (
             get_orador_video_dir as _v,
         )
         assert callable(_v)

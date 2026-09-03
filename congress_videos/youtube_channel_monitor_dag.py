@@ -20,17 +20,17 @@ Congress website directly.
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.operators.python import BranchPythonOperator, PythonOperator, ShortCircuitOperator
 
+from congress_videos.config import speaker_normalization_config as snc
 from congress_videos.config.constants import (
-    YOUTUBE_CHANNEL_ID,
     TARGET_VIDEO_TITLE,
     VAD_ENABLED,
+    YOUTUBE_CHANNEL_ID,
 )
-from congress_videos.config import speaker_normalization_config as snc
 from congress_videos.modules import youtube as yt_channel
 from congress_videos.modules.vad_helpers import trim_chapter_silence_with_vad
 from utils.airflow_helpers import xcom_task
@@ -107,7 +107,7 @@ def _resolve_target_date(context) -> str:
     )
     if logical is not None:
         return logical.strftime("%Y-%m-%d")
-    return str(context.get("ds") or datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    return str(context.get("ds") or datetime.now(UTC).strftime("%Y-%m-%d"))
 
 
 def _slim_transcriptions_for_xcom(result):
@@ -733,10 +733,10 @@ with DAG(
     def _normalize_speakers(**context):
         """Load chapters from t9_db XCom and normalize each chapter's speakers."""
         import json as _json
+        from datetime import datetime
+
         from congress_videos.modules.speaker_normalization import normalize_chapter_speakers
         from utils.postgres_helpers import PostgresConnection
-
-        from datetime import datetime
 
         ti = context["ti"]
         db_save_results = ti.xcom_pull(key="db_save_results")

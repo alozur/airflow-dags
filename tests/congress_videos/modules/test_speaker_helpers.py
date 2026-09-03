@@ -6,7 +6,6 @@ import pytest
 
 from congress_videos.modules.speaker_helpers import format_speaker_context, format_speaker_list
 
-
 # ---------------------------------------------------------------------------
 # format_speaker_list
 # ---------------------------------------------------------------------------

@@ -92,8 +92,8 @@ class TestFetchWikidataPhotos:
 
     def test_user_agent_header_set_from_constant(self, mock_requests):
         """requests.get is called with User-Agent header from WIKIDATA_USER_AGENT constant."""
-        from congress_videos.modules.participants_enrichment import fetch_wikidata_photos
         from congress_videos.config.constants import WIKIDATA_USER_AGENT
+        from congress_videos.modules.participants_enrichment import fetch_wikidata_photos
 
         fixture_data = _load_wikidata_fixture()
         mock_requests.get.return_value = mock_requests.make_response(
@@ -110,8 +110,9 @@ class TestFetchWikidataPhotos:
 
     def test_http_503_raises_exception(self, mock_requests):
         """HTTP 503 → raise_for_status raises, exception propagates to caller."""
-        from congress_videos.modules.participants_enrichment import fetch_wikidata_photos
         import requests as req_lib
+
+        from congress_videos.modules.participants_enrichment import fetch_wikidata_photos
 
         error_response = mock_requests.make_response(status_code=503)
         error_response.raise_for_status.side_effect = req_lib.HTTPError("503 Server Error")
@@ -408,8 +409,8 @@ class TestFetchCongresCodParlamentario:
 
     def test_browser_user_agent_sent(self, mock_requests):
         """POST is called with User-Agent header equal to CONGRESO_BROWSER_USER_AGENT."""
-        from congress_videos.modules.participants_enrichment import fetch_congreso_cod_parlamentario
         from congress_videos.config.constants import CONGRESO_BROWSER_USER_AGENT
+        from congress_videos.modules.participants_enrichment import fetch_congreso_cod_parlamentario
 
         mock_requests.post.return_value = mock_requests.make_response(status_code=200, json_data=[])
 

@@ -223,8 +223,9 @@ class TestNoSubprocessImport:
             if "speaker_turns_api" in key:
                 del sys.modules[key]
 
-        import congress_videos.modules.speaker_turns_api as sta
         import inspect
+
+        import congress_videos.modules.speaker_turns_api as sta
 
         source = inspect.getsource(sta)
         assert "import subprocess" not in source

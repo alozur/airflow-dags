@@ -7,7 +7,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 ADAPTER = Path("benchmarks/pyannote_diarization/vad_speech_intervals.py")
 
 

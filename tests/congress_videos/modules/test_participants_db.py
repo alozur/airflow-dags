@@ -296,8 +296,8 @@ class TestLookupParticipantFuzzy:
     @staticmethod
     def _stub_rapidfuzz(monkeypatch, score: float) -> None:
         """Install a stub rapidfuzz.fuzz.token_sort_ratio returning score*100."""
-        import types
         import sys
+        import types
 
         stub_fuzz = types.SimpleNamespace(
             token_sort_ratio=lambda a, b: score * 100,
@@ -314,8 +314,8 @@ class TestLookupParticipantFuzzy:
 
         score_map keys are (a, b) tuples; any unrecognised pair returns 0.
         """
-        import types
         import sys
+        import types
 
         def _ratio(a: str, b: str) -> float:
             return score_map.get((a, b), 0.0) * 100

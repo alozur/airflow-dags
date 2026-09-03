@@ -12,14 +12,13 @@ from congress_videos.srt_helpers import (
     _serialize_srt_blocks,
     _srt_timestamp_to_seconds,
     _window_srt_blocks,
+    _window_srt_text,
     find_srt_for_chapter,
     score_turn_interest,
-    write_chapter_srt_sidecar,
-    _window_srt_text,
     select_pretrim_window,
+    write_chapter_srt_sidecar,
 )
 from utils.llm_config import LLM_CHEAP
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -401,10 +400,11 @@ class TestParseSrtToTextBatch2:
     def test_pathological_srt_triggers_warning_and_caps(self, tmp_path, caplog):
         """SRT >300k parsed chars triggers WARNING and caps to PRETRIM_MAX_CHARS."""
         import logging
+
         from congress_videos.srt_helpers import (
-            parse_srt_to_text,
-            PRETRIM_MAX_CHARS,
             _PRETRIM_PATHOLOGICAL_THRESHOLD,
+            PRETRIM_MAX_CHARS,
+            parse_srt_to_text,
         )
 
         # Build a file whose parsed text exceeds the pathological threshold.

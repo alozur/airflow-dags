@@ -36,7 +36,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
@@ -48,13 +48,12 @@ from airflow.operators.python import PythonOperator
 from congress_videos.config.constants import (
     SPEAKER_TURN_VIDEOS_DAG_ID as MATERIALIZE_DAG_ID,
 )
-
 from congress_videos.modules.participants_db import lookup_participant_fuzzy
 from congress_videos.modules.sidecar_api_error import SidecarApiError
 from congress_videos.modules.speaker_turns import (
     ANNOUNCEMENT_WINDOW_SECONDS,
-    detect_turns,
     _upsert_turns,
+    detect_turns,
 )
 from congress_videos.modules.speaker_turns_api import api_diarize_fn, check_diarize_api_health
 from congress_videos.modules.vad_helpers import _find_source_video, extract_audio_wav
@@ -322,7 +321,7 @@ dag = DAG(
         "On completion chains to speaker_turn_videos via trigger_materialize."
     ),
     schedule="0 14 * * *",  # Single daily run in the NAS quiet window (issue #187)
-    start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+    start_date=datetime(2024, 1, 1, tzinfo=UTC),
     catchup=False,
     max_active_runs=1,
     default_args=default_args,

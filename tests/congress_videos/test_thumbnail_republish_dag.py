@@ -6,9 +6,8 @@ MAX_THUMBNAIL_CALLS_PER_RUN cap.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
-
 
 # ---------------------------------------------------------------------------
 # DAG load + hygiene
@@ -101,7 +100,7 @@ class TestStalenessGuard:
     def test_fresh_run_returns_true(self):
         from congress_videos.thumbnail_republish_dag import _staleness_guard
 
-        assert _staleness_guard(data_interval_end=datetime.now(timezone.utc)) is True
+        assert _staleness_guard(data_interval_end=datetime.now(UTC)) is True
 
     def test_no_data_interval_end_returns_true(self):
         from congress_videos.thumbnail_republish_dag import _staleness_guard
@@ -112,14 +111,14 @@ class TestStalenessGuard:
         """150 minutes ago is still within the 180m tolerance -- must proceed."""
         from congress_videos.thumbnail_republish_dag import _staleness_guard
 
-        recent = datetime.now(timezone.utc) - timedelta(minutes=150)
+        recent = datetime.now(UTC) - timedelta(minutes=150)
         assert _staleness_guard(data_interval_end=recent) is True
 
     def test_beyond_180m_tolerance_returns_false(self):
         """4 hours ago exceeds the 180m tolerance -- must skip."""
         from congress_videos.thumbnail_republish_dag import _staleness_guard
 
-        stale = datetime.now(timezone.utc) - timedelta(hours=4)
+        stale = datetime.now(UTC) - timedelta(hours=4)
         assert _staleness_guard(data_interval_end=stale) is False
 
 
@@ -354,8 +353,8 @@ class TestHealThumbnailsCallable:
 
 class TestRunSelectCandidates:
     def test_passes_candidate_limit_and_pushes_xcom(self, mock_task_instance):
-        from congress_videos.thumbnail_republish_dag import _run_select_candidates
         from congress_videos.modules.thumbnail_republish import CANDIDATE_LIMIT
+        from congress_videos.thumbnail_republish_dag import _run_select_candidates
 
         with patch(
             "congress_videos.thumbnail_republish_dag.CongressionalVideoDB"

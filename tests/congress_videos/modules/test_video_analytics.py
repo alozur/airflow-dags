@@ -12,18 +12,17 @@ Covers:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _utcnow() -> datetime:
-    return datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    return datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
 
 
 def _video(chapter_id: int, youtube_video_id: str, hours_ago: float) -> dict:
@@ -272,7 +271,7 @@ class TestShouldPersist:
         from congress_videos.config.analytics_config import METRIC_FIELDS
         from congress_videos.modules.video_analytics import should_persist
 
-        metrics = {field: None for field in METRIC_FIELDS}
+        metrics = dict.fromkeys(METRIC_FIELDS)
         assert should_persist(metrics) is False
 
     def test_all_zero_returns_false(self):
@@ -282,7 +281,7 @@ class TestShouldPersist:
         from congress_videos.config.analytics_config import METRIC_FIELDS
         from congress_videos.modules.video_analytics import should_persist
 
-        metrics = {field: 0 for field in METRIC_FIELDS}
+        metrics = dict.fromkeys(METRIC_FIELDS, 0)
         assert should_persist(metrics) is False
 
     def test_one_nonzero_returns_true(self):
@@ -292,7 +291,7 @@ class TestShouldPersist:
         from congress_videos.config.analytics_config import METRIC_FIELDS
         from congress_videos.modules.video_analytics import should_persist
 
-        metrics = {field: 0 for field in METRIC_FIELDS}
+        metrics = dict.fromkeys(METRIC_FIELDS, 0)
         metrics["views"] = 1
         assert should_persist(metrics) is True
 
@@ -303,7 +302,7 @@ class TestShouldPersist:
         from congress_videos.config.analytics_config import METRIC_FIELDS
         from congress_videos.modules.video_analytics import should_persist
 
-        metrics = {field: None for field in METRIC_FIELDS}
+        metrics = dict.fromkeys(METRIC_FIELDS)
         metrics["estimatedMinutesWatched"] = 90.6
         assert should_persist(metrics) is True
 

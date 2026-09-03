@@ -29,7 +29,6 @@ from congress_videos.modules.materialization import (
     plan_turn_materialization,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -719,7 +718,7 @@ class TestClassifyTurnTypeChapter263Regression:
             tid: {"start_seconds": s, "end_seconds": e, "speaker_label": label}
             for tid, (s, e, label) in zip(turn_ids, real_segments)
         }
-        resolved_by_id = {tid: None for tid in turn_ids}  # names never resolved (the bug symptom)
+        resolved_by_id = dict.fromkeys(turn_ids)  # names never resolved (the bug symptom)
 
         assert classify_turn_type(turn_ids, resolved_by_id, rows) == QA
 

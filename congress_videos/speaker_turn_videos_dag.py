@@ -46,7 +46,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
@@ -57,6 +57,8 @@ from airflow.operators.python import PythonOperator
 # raising AirflowDagDuplicatedIdException at parse time.
 from congress_videos.config.constants import (
     SPEAKER_TURN_PREPARE_DAG_ID as PREPARE_DAG_ID,
+)
+from congress_videos.config.constants import (
     SPEAKER_TURN_VIDEOS_DAG_ID,
 )
 from congress_videos.config.paths import DOWNLOADS_DIR, get_orador_video_dir
@@ -454,7 +456,7 @@ dag = DAG(
         "On completion chains to speaker_turn_prepare via trigger_prepare."
     ),
     schedule=None,
-    start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+    start_date=datetime(2024, 1, 1, tzinfo=UTC),
     catchup=False,
     max_active_runs=1,
     max_active_tasks=1,

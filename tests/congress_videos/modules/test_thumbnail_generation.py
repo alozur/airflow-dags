@@ -26,7 +26,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helpers / shared fixtures
 # ---------------------------------------------------------------------------
@@ -124,8 +123,8 @@ class TestResolveParticipantPhoto:
     def test_photo_url_none_no_logo_returns_empty_result(self):
         """When photo_url is NULL and no party logo, EMPTY_RESULT returned + WARNING logged."""
         from congress_videos.modules.thumbnail_generation import (
-            resolve_participant_photo,
             EMPTY_RESULT,
+            resolve_participant_photo,
         )
 
         participant = {"normalized_name": "garcia_maria", "photo_url": None}
@@ -140,8 +139,8 @@ class TestResolveParticipantPhoto:
     def test_participant_not_found_returns_empty_result(self):
         """When lookup returns None (unknown slug), EMPTY_RESULT returned + WARNING logged."""
         from congress_videos.modules.thumbnail_generation import (
-            resolve_participant_photo,
             EMPTY_RESULT,
+            resolve_participant_photo,
         )
 
         cfg = _make_cfg(lookup_return=None)
@@ -189,9 +188,10 @@ class TestSlugResolution:
     def test_absent_slug_none_returns_empty_result_no_lookup(self, caplog):
         """slug=None → EMPTY_RESULT returned + WARNING logged, lookup never called."""
         import logging
+
         from congress_videos.modules.thumbnail_generation import (
-            resolve_participant_photo,
             EMPTY_RESULT,
+            resolve_participant_photo,
         )
 
         cfg = _make_cfg(lookup_raises=True)  # lookup raises if called
@@ -207,9 +207,10 @@ class TestSlugResolution:
     def test_empty_string_slug_returns_empty_result_no_lookup(self, caplog):
         """slug='' → EMPTY_RESULT + WARNING, lookup never called."""
         import logging
+
         from congress_videos.modules.thumbnail_generation import (
-            resolve_participant_photo,
             EMPTY_RESULT,
+            resolve_participant_photo,
         )
 
         cfg = _make_cfg(lookup_raises=True)
@@ -225,9 +226,10 @@ class TestSlugResolution:
     def test_whitespace_slug_returns_empty_result_no_lookup(self, caplog):
         """slug='   ' → EMPTY_RESULT + WARNING, lookup never called."""
         import logging
+
         from congress_videos.modules.thumbnail_generation import (
-            resolve_participant_photo,
             EMPTY_RESULT,
+            resolve_participant_photo,
         )
 
         cfg = _make_cfg(lookup_raises=True)
@@ -245,9 +247,10 @@ class TestSlugResolution:
     ):
         """Unknown slug (lookup returns None) → EMPTY_RESULT + WARNING, no raise."""
         import logging
+
         from congress_videos.modules.thumbnail_generation import (
-            resolve_participant_photo,
             EMPTY_RESULT,
+            resolve_participant_photo,
         )
 
         cfg = _make_cfg(lookup_return=None)
@@ -265,9 +268,10 @@ class TestSlugResolution:
     ):
         """photo_url=None + party_logo_map=None → EMPTY_RESULT + WARNING, no HTTP call."""
         import logging
+
         from congress_videos.modules.thumbnail_generation import (
-            resolve_participant_photo,
             EMPTY_RESULT,
+            resolve_participant_photo,
         )
 
         participant = {"slug": "garcia-ana", "photo_url": None}
@@ -288,9 +292,10 @@ class TestSlugResolution:
     def test_http_404_returns_empty_result_with_warning(self, caplog):
         """HTTP 404 for photo_url (no logo fallback) → EMPTY_RESULT + WARNING."""
         import logging
+
         from congress_videos.modules.thumbnail_generation import (
-            resolve_participant_photo,
             EMPTY_RESULT,
+            resolve_participant_photo,
         )
 
         participant = {
@@ -316,10 +321,12 @@ class TestSlugResolution:
     def test_request_exception_returns_empty_result_with_warning(self, caplog):
         """requests.RequestException → EMPTY_RESULT + WARNING."""
         import logging
+
         import requests as req
+
         from congress_videos.modules.thumbnail_generation import (
-            resolve_participant_photo,
             EMPTY_RESULT,
+            resolve_participant_photo,
         )
 
         participant = {
@@ -846,10 +853,11 @@ class TestTriangulateEdgeCases:
 
     def test_resolve_photo_request_exception_falls_back_to_logo(self, tmp_path):
         """When requests.get raises RequestException, fallback to party logo."""
+        import requests as req
+
         from congress_videos.modules.thumbnail_generation import (
             resolve_participant_photo,
         )
-        import requests as req
 
         logo_file = tmp_path / "logo.png"
         logo_bytes = b"\x89PNG" + b"\xbb" * 16
@@ -955,8 +963,8 @@ class TestArtDirect:
     def test_malformed_response_reprompts_once_then_default(self, mocker) -> None:
         """Malformed response (missing keys) → reprompt once → _DEFAULT_ART_BRIEF on second failure."""
         from congress_videos.modules.thumbnail_generation import (
-            art_direct,
             _DEFAULT_ART_BRIEF,
+            art_direct,
         )
 
         call_count = {"n": 0}
@@ -1060,8 +1068,8 @@ class TestArtDirect:
 
     def test_uses_art_direction_system_prompt(self, mocker) -> None:
         """art_direct must use ART_DIRECTION_SYSTEM_PROMPT as the system prompt."""
-        from congress_videos.modules.thumbnail_generation import art_direct
         from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
+        from congress_videos.modules.thumbnail_generation import art_direct
 
         captured = {}
 
@@ -1081,6 +1089,7 @@ class TestArtDirect:
     def test_warning_logged_on_fallback(self, mocker, caplog) -> None:
         """A WARNING is logged when falling back to _DEFAULT_ART_BRIEF."""
         import logging
+
         from congress_videos.modules.thumbnail_generation import art_direct
 
         mocker.patch(
@@ -1798,6 +1807,7 @@ class TestFetchRecentThumbnailHistory:
     ) -> None:
         """When PostgresConnection raises, return ([], []) and log WARNING."""
         import logging
+
         from congress_videos.modules.thumbnail_generation import (
             fetch_recent_thumbnail_history,
         )

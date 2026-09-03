@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -274,7 +274,7 @@ dag = DAG(
         "advisory records only, nothing is auto-cut"
     ),
     schedule=None,
-    start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+    start_date=datetime(2024, 1, 1, tzinfo=UTC),
     catchup=False,
     default_args=default_args,
     tags=["congress_videos", "trim-proposals", "on-demand"],

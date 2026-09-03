@@ -23,7 +23,6 @@ from unittest.mock import patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Hard-coded canned LLM responses — human-reviewed snapshots.
 # Mix of: proper-name + verb + complement titles, one edge case (ALL-CAPS hook

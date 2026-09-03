@@ -5,10 +5,9 @@ Spec: DAG Shape and Scheduling / No Public YouTube Writes.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # DAG load + structure
@@ -246,7 +245,7 @@ class TestFetchAnalyticsHappyPath:
             {
                 "chapter_id": 7,
                 "youtube_video_id": "happy123",
-                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+                "youtube_upload_date": datetime.now(UTC) - timedelta(hours=30),
             }
         ]
         mock_ti = MagicMock()
@@ -290,12 +289,12 @@ class TestFetchAnalyticsApiErrorPath:
             {
                 "chapter_id": 1,
                 "youtube_video_id": "fails111",
-                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+                "youtube_upload_date": datetime.now(UTC) - timedelta(hours=30),
             },
             {
                 "chapter_id": 2,
                 "youtube_video_id": "ok222",
-                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+                "youtube_upload_date": datetime.now(UTC) - timedelta(hours=30),
             },
         ]
         mock_ti = MagicMock()
@@ -348,12 +347,12 @@ class TestFetchAnalyticsMissingVideoId:
             {
                 "chapter_id": 1,
                 "youtube_video_id": None,
-                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+                "youtube_upload_date": datetime.now(UTC) - timedelta(hours=30),
             },
             {
                 "chapter_id": 2,
                 "youtube_video_id": "valid456",
-                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+                "youtube_upload_date": datetime.now(UTC) - timedelta(hours=30),
             },
         ]
         mock_ti = MagicMock()
@@ -399,7 +398,7 @@ class TestFetchAnalyticsDagLevelIdempotency:
             {
                 "chapter_id": 9,
                 "youtube_video_id": "idem789",
-                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+                "youtube_upload_date": datetime.now(UTC) - timedelta(hours=30),
             }
         ]
 
@@ -459,7 +458,7 @@ class TestStalenessGuard:
         THEN it returns True (proceed)."""
         from congress_videos.video_analytics_dag import _staleness_guard
 
-        assert _staleness_guard(data_interval_end=datetime.now(timezone.utc)) is True
+        assert _staleness_guard(data_interval_end=datetime.now(UTC)) is True
 
     def test_no_data_interval_end_returns_true(self):
         """GIVEN no data_interval_end in context
@@ -475,7 +474,7 @@ class TestStalenessGuard:
         THEN it returns False (skip)."""
         from congress_videos.video_analytics_dag import _staleness_guard
 
-        stale = datetime.now(timezone.utc) - timedelta(hours=6)
+        stale = datetime.now(UTC) - timedelta(hours=6)
         assert _staleness_guard(data_interval_end=stale) is False
 
 
@@ -516,7 +515,7 @@ class TestFetchAnalyticsCollectedPairsFailure:
             {
                 "chapter_id": 1,
                 "youtube_video_id": "dbfail1",
-                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+                "youtube_upload_date": datetime.now(UTC) - timedelta(hours=30),
             }
         ]
         mock_ti = MagicMock()
@@ -554,7 +553,7 @@ class TestFetchAnalyticsServiceBuildFailure:
             {
                 "chapter_id": 1,
                 "youtube_video_id": "svcfail1",
-                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+                "youtube_upload_date": datetime.now(UTC) - timedelta(hours=30),
             }
         ]
         mock_ti = MagicMock()
@@ -589,7 +588,7 @@ class TestFetchAnalyticsSkipAndRetry:
             {
                 "chapter_id": 1,
                 "youtube_video_id": "zeroed1",
-                "youtube_upload_date": datetime.now(timezone.utc) - timedelta(hours=30),
+                "youtube_upload_date": datetime.now(UTC) - timedelta(hours=30),
             }
         ]
         mock_ti = MagicMock()

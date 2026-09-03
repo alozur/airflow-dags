@@ -4,10 +4,9 @@
 from __future__ import annotations
 
 import inspect
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # DAG load tests
@@ -168,6 +167,7 @@ class TestFilterFinishedStreamsTopology:
         """When the guard drops every candidate (total_matches == 0), the
         downstream branch must route to 'no_plenary_sessions'."""
         from unittest.mock import MagicMock
+
         from congress_videos.youtube_channel_monitor_dag import dag
 
         branch = {t.task_id: t for t in dag.tasks}["check_if_plenary_found"]
@@ -338,7 +338,7 @@ class TestResolveTargetDate:
 
         context = {
             "params": {"target_date": "2026-08-20"},
-            "logical_date": datetime(2026, 8, 25, tzinfo=timezone.utc),
+            "logical_date": datetime(2026, 8, 25, tzinfo=UTC),
         }
         assert _resolve_target_date(context) == "2026-08-20"
 
@@ -347,7 +347,7 @@ class TestResolveTargetDate:
 
         context = {
             "params": {"target_date": None},
-            "logical_date": datetime(2026, 8, 24, 15, 30, tzinfo=timezone.utc),
+            "logical_date": datetime(2026, 8, 24, 15, 30, tzinfo=UTC),
         }
         assert _resolve_target_date(context) == "2026-08-24"
 
@@ -356,7 +356,7 @@ class TestResolveTargetDate:
 
         context = {
             "params": {},
-            "data_interval_end": datetime(2026, 8, 23, 9, 0, tzinfo=timezone.utc),
+            "data_interval_end": datetime(2026, 8, 23, 9, 0, tzinfo=UTC),
         }
         assert _resolve_target_date(context) == "2026-08-23"
 
@@ -386,7 +386,7 @@ class TestResolveTargetDate:
 
         context = {
             "params": {"target_date": None, "lookback_days": 1},
-            "logical_date": datetime(2026, 8, 24, 0, 30, tzinfo=timezone.utc),
+            "logical_date": datetime(2026, 8, 24, 0, 30, tzinfo=UTC),
         }
         assert _resolve_target_date(context) == "2026-08-24"
 

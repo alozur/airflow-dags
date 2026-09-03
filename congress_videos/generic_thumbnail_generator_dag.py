@@ -39,7 +39,7 @@ from __future__ import annotations
 import os
 import pathlib
 import shutil
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.models.taskinstance import TaskInstance
@@ -412,7 +412,7 @@ with DAG(
         "score-gated retry, picks the best, generates a title, and persists results."
     ),
     schedule=None,
-    start_date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+    start_date=datetime(2025, 1, 1, tzinfo=UTC),
     catchup=False,
     tags=["thumbnail", "pikzels", "generic", "on-demand"],
     max_active_runs=3,

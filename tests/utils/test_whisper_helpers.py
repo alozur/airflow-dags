@@ -20,7 +20,6 @@ from utils.whisper_helpers import (
     transcribe_audio_file_with_local_whisper,
 )
 
-
 # ---------------------------------------------------------------------------
 # format_timestamp_srt
 # ---------------------------------------------------------------------------

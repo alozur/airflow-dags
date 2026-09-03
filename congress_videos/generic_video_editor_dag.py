@@ -31,7 +31,7 @@ Task graph::
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.models.taskinstance import TaskInstance
@@ -140,7 +140,7 @@ _DEFAULT_ARGS = {
     "depends_on_past": False,
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
-    "start_date": datetime(2024, 1, 1, tzinfo=timezone.utc),
+    "start_date": datetime(2024, 1, 1, tzinfo=UTC),
 }
 
 with DAG(

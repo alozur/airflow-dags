@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import inspect
 import os
+from datetime import UTC
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -39,7 +40,7 @@ class TestGetVideoDetailsFunctionSignatureDefault:
         from unittest.mock import MagicMock, patch
 
         video_id = "EXCLUDED_3H"
-        end_time = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat().replace("+00:00", "Z")
+        end_time = (datetime.now(UTC) - timedelta(hours=3)).isoformat().replace("+00:00", "Z")
 
         api_response = {
             "items": [
@@ -77,7 +78,7 @@ class TestGetVideoDetailsFunctionSignatureDefault:
         from unittest.mock import MagicMock, patch
 
         video_id = "INCLUDED_13H"
-        end_time = (datetime.now(timezone.utc) - timedelta(hours=13)).isoformat().replace("+00:00", "Z")
+        end_time = (datetime.now(UTC) - timedelta(hours=13)).isoformat().replace("+00:00", "Z")
 
         api_response = {
             "items": [
@@ -115,7 +116,7 @@ class TestGetVideoDetailsFunctionSignatureDefault:
         from unittest.mock import MagicMock, patch
 
         video_id = "CUSTOM_7H"
-        end_time = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat().replace("+00:00", "Z")
+        end_time = (datetime.now(UTC) - timedelta(hours=7)).isoformat().replace("+00:00", "Z")
 
         api_response = {
             "items": [
@@ -165,7 +166,8 @@ class TestDAGFreshnessDefault:
         min_hours_since_end is absent from params, and confirming get_video_details
         is called with min_hours_since_end=12 (not 2).
         """
-        import importlib, sys
+        import importlib
+        import sys
         # Ensure the DAG module is freshly loaded
         for mod in list(sys.modules.keys()):
             if "youtube_channel_monitor_dag" in mod:

@@ -14,7 +14,6 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -118,8 +117,9 @@ class TestSpeakerTurnPrepareDagLoads:
 
     def test_dag_has_no_expand_call(self):
         """DAG source must not use .expand() as a live method call (no dynamic task mapping)."""
-        from congress_videos.speaker_turn_prepare_dag import dag
         import ast
+
+        from congress_videos.speaker_turn_prepare_dag import dag
 
         # Resolve the DAG source relative to this test file so the test is
         # portable across worktrees.

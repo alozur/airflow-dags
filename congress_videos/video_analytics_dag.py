@@ -19,7 +19,7 @@ DAG, video_analytics_actions, which uses the separate upload-purpose token.
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
@@ -51,7 +51,7 @@ def _staleness_guard(**context) -> bool:
     """
     data_interval_end = context.get("data_interval_end")
     if data_interval_end:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         staleness = now - data_interval_end
         if staleness > timedelta(minutes=STALE_RUN_TOLERANCE_MINUTES):
             logging.info(
@@ -114,7 +114,7 @@ def _fetch_analytics(ti, **context) -> list:
             exc,
         )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     pending = pending_checkpoints(now, candidate_rows, collected=already_collected)
 
     if not pending:
@@ -143,7 +143,7 @@ def _fetch_analytics(ti, **context) -> list:
             now - timedelta(hours=threshold_hours),
         )
         if upload_date.tzinfo is None:
-            upload_date = upload_date.replace(tzinfo=timezone.utc)
+            upload_date = upload_date.replace(tzinfo=UTC)
 
         start_date = upload_date.strftime("%Y-%m-%d")
         end_date = (upload_date + timedelta(hours=threshold_hours + 48)).strftime(
@@ -154,7 +154,7 @@ def _fetch_analytics(ti, **context) -> list:
             resp = (
                 service.reports()
                 .query(
-                    ids=f"channel==MINE",
+                    ids="channel==MINE",
                     startDate=start_date,
                     endDate=end_date,
                     metrics=",".join(METRIC_FIELDS),

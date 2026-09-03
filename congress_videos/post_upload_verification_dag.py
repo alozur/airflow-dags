@@ -15,7 +15,7 @@ Mirrors video_analytics_dag end-to-end in structure.
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
@@ -48,7 +48,7 @@ def _staleness_guard(**context) -> bool:
     """
     data_interval_end = context.get("data_interval_end")
     if data_interval_end:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         staleness = now - data_interval_end
         if staleness > timedelta(minutes=STALE_RUN_TOLERANCE_MINUTES):
             logging.info(
