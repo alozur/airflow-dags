@@ -296,3 +296,34 @@ class TestVerifyAndRecordCallable:
 
             assert result == {"verified": 0, "failures": 0, "skipped": 0, "errors": 0}
             mock_check.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _verify_one_candidate helper (extracted from _verify_and_record)
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyOneCandidateApiCallsThreading:
+    """_verify_one_candidate must thread api_calls_made explicitly through its
+    return value, never via a closure or shared mutable state (design D2).
+    """
+
+    def test_api_calls_made_is_returned_not_closed_over(self):
+        from congress_videos.post_upload_verification_dag import _verify_one_candidate
+
+        candidate = {"item_type": "chapter", "id": 1, "youtube_video_id": "vid1", "output_path": None}
+        mock_db = MagicMock()
+
+        with patch(
+            "congress_videos.post_upload_verification_dag.check_video_status",
+            return_value=("ok", "api_ok"),
+        ):
+            # Two independent calls with different starting counters. If the
+            # counter were held in a closure/global instead of threaded through
+            # the argument and return value, the second call would observe
+            # state left over from the first instead of starting fresh at 0.
+            result_a = _verify_one_candidate(candidate, None, 5, mock_db)
+            result_b = _verify_one_candidate(candidate, None, 0, mock_db)
+
+        assert result_a == (6, 1, 0, 0, 0)
+        assert result_b == (1, 1, 0, 0, 0)
