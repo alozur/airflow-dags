@@ -114,7 +114,10 @@ CREATE TABLE IF NOT EXISTS production.video_chapters (
     turns_detected_at TIMESTAMPTZ,
 
     -- Added by migration 032 (post-upload verification, issue #141)
-    upload_verified_at TIMESTAMPTZ
+    upload_verified_at TIMESTAMPTZ,
+
+    -- Added by migration 045 (mentioned people, issue #432)
+    mentioned_participant_slugs TEXT[]
 );
 
 -- Table: video_shorts
