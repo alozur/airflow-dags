@@ -440,7 +440,7 @@ def _prepare_turns_callable() -> None:
             if rc != 0:
                 logger.warning(
                     "_prepare_turns_callable: ffmpeg decode check failed for turn_id=%d "
-                    "(rc=%d) — prepared_at NOT set; will retry next night",
+                    "(rc=%d) — prepared_at NOT set; will retry on the next chain-triggered run",
                     turn_id,
                     rc,
                 )
@@ -453,7 +453,7 @@ def _prepare_turns_callable() -> None:
         except Exception as exc:
             logger.warning(
                 "_prepare_turns_callable: turn_id=%d preparation failed (%s) "
-                "— prepared_at NOT set; will retry next night",
+                "— prepared_at NOT set; will retry on the next chain-triggered run",
                 turn_id,
                 exc,
             )
