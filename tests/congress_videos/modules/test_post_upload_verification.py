@@ -255,6 +255,49 @@ class TestSelectUnverifiedUploads:
 
         assert result == []
 
+    def test_sql_uses_safe_concat_interval_idiom_everywhere(self, mock_psycopg2_connection):
+        """All 4 substitution points must use (%s || ' hours')::interval — no
+        INTERVAL '%s hours' literal may remain."""
+        _, _, mock_cursor = mock_psycopg2_connection
+        mock_cursor.fetchall.return_value = []
+
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        db = CongressionalVideoDB()
+        db.select_unverified_uploads()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert sql.count("(%s || ' hours')::interval") == 4
+        assert "INTERVAL '%s hours'" not in sql
+
+    def test_default_params_are_strings_with_older_bound_first(self, mock_psycopg2_connection):
+        """Default min_h=1, max_h=48 → params are strings, max_h (older bound) first
+        in each BETWEEN pair, matching the existing str(retry_after_hours) idiom."""
+        _, _, mock_cursor = mock_psycopg2_connection
+        mock_cursor.fetchall.return_value = []
+
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        db = CongressionalVideoDB()
+        db.select_unverified_uploads()
+
+        _, params = mock_cursor.execute.call_args[0]
+        assert params == ("48", "1", "48", "1")
+
+    def test_custom_bounds_preserve_order_and_stringify(self, mock_psycopg2_connection):
+        """min_h=2, max_h=9 → params are ("9", "2", "9", "2") — order-regression
+        guard: the older bound (max_h) must stay first in each pair."""
+        _, _, mock_cursor = mock_psycopg2_connection
+        mock_cursor.fetchall.return_value = []
+
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        db = CongressionalVideoDB()
+        db.select_unverified_uploads(min_h=2, max_h=9)
+
+        _, params = mock_cursor.execute.call_args[0]
+        assert params == ("9", "2", "9", "2")
+
 
 # ---------------------------------------------------------------------------
 # Phase 3: DB methods — mark_upload_verified

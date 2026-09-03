@@ -1558,8 +1558,8 @@ class CongressionalVideoDB:
                     FROM {chapters_table}
                     WHERE is_uploaded_to_youtube = TRUE
                       AND upload_verified_at IS NULL
-                      AND youtube_upload_date BETWEEN NOW() - INTERVAL '%s hours'
-                                                  AND NOW() - INTERVAL '%s hours'
+                      AND youtube_upload_date BETWEEN NOW() - (%s || ' hours')::interval
+                                                  AND NOW() - (%s || ' hours')::interval
 
                     UNION ALL
 
@@ -1581,10 +1581,10 @@ class CongressionalVideoDB:
                     ) dedup_turns
                     WHERE is_uploaded_to_youtube = TRUE
                       AND upload_verified_at IS NULL
-                      AND youtube_upload_date BETWEEN NOW() - INTERVAL '%s hours'
-                                                  AND NOW() - INTERVAL '%s hours'
+                      AND youtube_upload_date BETWEEN NOW() - (%s || ' hours')::interval
+                                                  AND NOW() - (%s || ' hours')::interval
                     """,
-                (max_h, min_h, max_h, min_h),
+                (str(max_h), str(min_h), str(max_h), str(min_h)),
             )
             rows = cur.fetchall()
             logger.info(
