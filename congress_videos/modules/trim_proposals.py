@@ -113,6 +113,90 @@ def is_voice_free(
 # ---------------------------------------------------------------------------
 
 
+def _clip_segments_to_window(
+    voiced_segments: list[tuple[float, float]],
+    turn_start: float,
+    turn_end: float,
+) -> list[tuple[float, float]]:
+    """Clip *voiced_segments* to the [turn_start, turn_end] window.
+
+    Args:
+        voiced_segments: Voiced (start, end) intervals (may overlap/be unsorted).
+        turn_start:      Turn window start (seconds).
+        turn_end:        Turn window end (seconds).
+
+    Returns:
+        Clipped (start, end) pairs, each fully within [turn_start, turn_end].
+    """
+    # Clip segments to the turn window and sort
+    clipped: list[tuple[float, float]] = []
+    for s, e in voiced_segments:
+        cs = max(s, turn_start)
+        ce = min(e, turn_end)
+        if ce > cs:
+            clipped.append((cs, ce))
+    return clipped
+
+
+def _merge_sorted_segments(
+    clipped: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Sort *clipped* segments and merge overlapping/adjacent ones.
+
+    Args:
+        clipped: Clipped (start, end) pairs, non-empty.
+
+    Returns:
+        Merged, sorted (start, end) pairs with no overlaps.
+    """
+    # Sort and merge overlapping/adjacent voiced segments
+    clipped.sort(key=lambda seg: seg[0])
+    merged: list[tuple[float, float]] = [clipped[0]]
+    for seg_start, seg_end in clipped[1:]:
+        prev_start, prev_end = merged[-1]
+        if seg_start <= prev_end:
+            merged[-1] = (prev_start, max(prev_end, seg_end))
+        else:
+            merged.append((seg_start, seg_end))
+    return merged
+
+
+def _complement_gaps(
+    merged: list[tuple[float, float]],
+    turn_start: float,
+    turn_end: float,
+    min_duration: float,
+) -> list[tuple[float, float]]:
+    """Take the complement of *merged* voiced segments within the turn window.
+
+    Args:
+        merged:       Merged, sorted (start, end) voiced pairs.
+        turn_start:   Turn window start (seconds).
+        turn_end:     Turn window end (seconds).
+        min_duration: Minimum gap length (seconds) to include.
+
+    Returns:
+        List of (gap_start, gap_end) pairs, each within [turn_start, turn_end],
+        with duration >= min_duration.
+    """
+    # Take complement within [turn_start, turn_end]
+    gaps: list[tuple[float, float]] = []
+    cursor = turn_start
+    for voiced_start, voiced_end in merged:
+        if voiced_start > cursor:
+            gap_start = cursor
+            gap_end = voiced_start
+            if gap_end - gap_start >= min_duration:
+                gaps.append((gap_start, gap_end))
+        cursor = max(cursor, voiced_end)
+
+    # Trailing gap after last voiced segment
+    if cursor < turn_end and turn_end - cursor >= min_duration:
+        gaps.append((cursor, turn_end))
+
+    return gaps
+
+
 def _silence_gaps(
     voiced_segments: list[tuple[float, float]],
     turn_start: float,
@@ -137,13 +221,7 @@ def _silence_gaps(
     if turn_end <= turn_start:
         return []
 
-    # Clip segments to the turn window and sort
-    clipped: list[tuple[float, float]] = []
-    for s, e in voiced_segments:
-        cs = max(s, turn_start)
-        ce = min(e, turn_end)
-        if ce > cs:
-            clipped.append((cs, ce))
+    clipped = _clip_segments_to_window(voiced_segments, turn_start, turn_end)
 
     if not clipped:
         # No voiced segments — entire turn is one gap
@@ -152,32 +230,9 @@ def _silence_gaps(
             return [gap]
         return []
 
-    # Sort and merge overlapping/adjacent voiced segments
-    clipped.sort(key=lambda seg: seg[0])
-    merged: list[tuple[float, float]] = [clipped[0]]
-    for seg_start, seg_end in clipped[1:]:
-        prev_start, prev_end = merged[-1]
-        if seg_start <= prev_end:
-            merged[-1] = (prev_start, max(prev_end, seg_end))
-        else:
-            merged.append((seg_start, seg_end))
+    merged = _merge_sorted_segments(clipped)
 
-    # Take complement within [turn_start, turn_end]
-    gaps: list[tuple[float, float]] = []
-    cursor = turn_start
-    for voiced_start, voiced_end in merged:
-        if voiced_start > cursor:
-            gap_start = cursor
-            gap_end = voiced_start
-            if gap_end - gap_start >= min_duration:
-                gaps.append((gap_start, gap_end))
-        cursor = max(cursor, voiced_end)
-
-    # Trailing gap after last voiced segment
-    if cursor < turn_end and turn_end - cursor >= min_duration:
-        gaps.append((cursor, turn_end))
-
-    return gaps
+    return _complement_gaps(merged, turn_start, turn_end, min_duration)
 
 
 # ---------------------------------------------------------------------------

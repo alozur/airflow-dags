@@ -66,6 +66,70 @@ def _split_into_blocks(srt_text: str) -> list[str]:
     return [b for b in _BLOCK_SEPARATOR.split(srt_text.strip()) if b.strip()]
 
 
+def _accumulate_window_end_block(
+    block_lengths: list[int],
+    start_block: int,
+    n_blocks: int,
+    window_chars: int,
+    separator: str,
+) -> int:
+    """Greedily accumulate whole blocks starting at *start_block*.
+
+    Stops before the block that would push the window past *window_chars*,
+    but always includes at least one block.
+
+    Args:
+        block_lengths: Character length of each SRT block.
+        start_block: Index of the first block in this window.
+        n_blocks: Total number of blocks.
+        window_chars: Target maximum window size in characters.
+        separator: Text inserted between joined blocks.
+
+    Returns:
+        Index of the last block included in this window.
+    """
+    end_block = start_block
+    size = block_lengths[start_block]
+    while end_block + 1 < n_blocks:
+        next_size = size + len(separator) + block_lengths[end_block + 1]
+        if next_size > window_chars:
+            break
+        end_block += 1
+        size = next_size
+    return end_block
+
+
+def _step_back_for_overlap(
+    block_lengths: list[int],
+    start_block: int,
+    next_start: int,
+    overlap_chars: int,
+    separator: str,
+) -> int:
+    """Step *next_start* back by ~overlap_chars worth of whole blocks.
+
+    Args:
+        block_lengths: Character length of each SRT block.
+        start_block: Index of the first block in the current window.
+        next_start: Proposed first block index for the next window.
+        overlap_chars: Target overlap size in characters.
+        separator: Text inserted between joined blocks.
+
+    Returns:
+        The (possibly stepped-back) first block index for the next window.
+    """
+    if overlap_chars > 0:
+        back = 0
+        acc = 0
+        while next_start - back - 1 > start_block:
+            acc += len(separator) + block_lengths[next_start - back - 1]
+            if acc >= overlap_chars:
+                break
+            back += 1
+        next_start = max(start_block + 1, next_start - back)
+    return next_start
+
+
 def window_srt(
     srt_text: str,
     window_chars: int = DEFAULT_WINDOW_CHARS,
@@ -114,14 +178,9 @@ def window_srt(
     while start_block < n_blocks:
         # Greedily accumulate whole blocks until adding the next would exceed
         # window_chars (but always include at least one block).
-        end_block = start_block
-        size = block_lengths[start_block]
-        while end_block + 1 < n_blocks:
-            next_size = size + len(separator) + block_lengths[end_block + 1]
-            if next_size > window_chars:
-                break
-            end_block += 1
-            size = next_size
+        end_block = _accumulate_window_end_block(
+            block_lengths, start_block, n_blocks, window_chars, separator
+        )
 
         win_blocks = blocks[start_block:end_block + 1]
         text = separator.join(win_blocks)
@@ -142,15 +201,9 @@ def window_srt(
         # Step the next window back by ~overlap_chars worth of whole blocks so
         # adjacent windows share content around the seam.
         next_start = end_block + 1
-        if overlap_chars > 0:
-            back = 0
-            acc = 0
-            while next_start - back - 1 > start_block:
-                acc += len(separator) + block_lengths[next_start - back - 1]
-                if acc >= overlap_chars:
-                    break
-                back += 1
-            next_start = max(start_block + 1, next_start - back)
+        next_start = _step_back_for_overlap(
+            block_lengths, start_block, next_start, overlap_chars, separator
+        )
         start_block = next_start
 
     logger.info(
