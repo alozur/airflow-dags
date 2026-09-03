@@ -134,7 +134,8 @@ fuera, asi que ese ORDER BY interno es el que decide quien ocupa la unica plaza 
 ```
 ensure_data_directory (PythonOperator)
   --> check_upload_quota (PythonOperator, cuenta subidas de hoy y cola pendiente)
-      --> skip_if_quota_reached (ShortCircuitOperator, corta el run si la cola esta vacia)
+      --> skip_if_quota_reached (ShortCircuitOperator, corta el run si llega tarde,
+          si ya se subio el cupo del dia o si la cola esta vacia)
           --> get_uploadable_item (PythonOperator, uploadable_turns LIMIT 1; siempre item_type="turn")
               --> generate_youtube_metadata (PythonOperator, titulo formato noticia + descripcion)
                   --> prepare_thumbnail_config (PythonOperator, resuelve orador y arma el config)

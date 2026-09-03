@@ -105,7 +105,7 @@ Publica un turno de orador al día. Consulta la vista `uploadable_turns`, genera
 **Schedule:** `0 19 * * *` (19:00 UTC cada día) — la fuente autoritativa es [DAGS.md](DAGS.md), donde un test la vigila
 **Parámetros:**
 - `max_chapters`: heredado y **no leído** por el DAG; el tope real es `DAILY_LONG_FORM_UPLOAD_LIMIT = 1`
-- `min_relevance_score`: Puntuación mínima para subir (por defecto 2, escala 0-5)
+- `min_relevance_score`: Umbral que usa `check_upload_quota` al contar capitulos pendientes (por defecto 2, escala 0-5)
 - `isTesting`: Siempre `false` en producción para que los vídeos sean públicos
 - `dry_run`: Ejecuta el pipeline sin disparar la subida (por defecto `false`)
 

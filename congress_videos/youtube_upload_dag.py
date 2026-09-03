@@ -75,7 +75,7 @@ _THUMBNAIL_RESULT_TASK_ID = "thumbnail_result"
 
 
 def should_upload(**context):
-    """Return True when queue_size is non-empty (queue_size > 0).
+    """Return True only when the run is current, the daily cap is unspent and the queue is non-empty.
 
     Used as the python_callable for t1_skip (ShortCircuitOperator).
     Receives full Airflow context via **context (REQ-GATE-01).

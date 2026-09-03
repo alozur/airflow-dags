@@ -47,7 +47,8 @@ independientes de YouTube.
   |
   +-- congress_youtube_chapter_uploader  (19:00 UTC diario)
   |     ensure_data_directory
-  |     check_upload_quota --> skip_if_quota_reached (corta si la cola esta vacia)
+  |     check_upload_quota --> skip_if_quota_reached (corta si el run llega tarde,
+  |         si ya se subio el cupo del dia o si la cola esta vacia)
   |     get_uploadable_item (vista uploadable_turns, LIMIT 1; siempre item_type="turn")
   |     generate_youtube_metadata (titulo formato noticia + descripcion)
   |     prepare_thumbnail_config --> generate_thumbnail (dispara generic_thumbnail_generator)
