@@ -1256,10 +1256,10 @@ class CongressionalVideoDB:
 
         Returns turns where prepared_at IS NULL and is_uploaded_to_youtube = FALSE,
         ordered by COALESCE(interest_score, 1) DESC (uploadable_turns priority order).
-        Used exclusively by the speaker_turn_prepare DAG nightly loop.
+        Used exclusively by the speaker_turn_prepare DAG preparation loop.
 
         Args:
-            limit: Maximum number of turns to return (default: 2, the nightly buffer).
+            limit: Maximum number of turns to return (default: 2, the per-run buffer).
 
         Returns:
             List of speaker_turn_videos rows joined to speaker_turns.
