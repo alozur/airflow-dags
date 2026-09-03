@@ -716,6 +716,127 @@ def _get_source_duration(source_path: str) -> float | None:
 # ---------------------------------------------------------------------------
 
 
+def _warn_overlays_exceeding_duration(
+    overlays: list[dict], duration: float | None, source_path: str
+) -> None:
+    """Log a warning for each overlay whose end time exceeds the source duration.
+
+    ``duration`` uses an identity check (``is not None``) rather than
+    truthiness: a probed duration of ``0.0`` is a valid (if degenerate)
+    value and must still gate the warning loop.
+
+    Args:
+        overlays: List of overlay dicts (tipo, tiempo_inicio, tiempo_fin, titulo, …).
+        duration: Probed source duration in seconds, or ``None`` if the probe failed.
+        source_path: Absolute path to the source video (for the warning message).
+    """
+    if duration is not None:
+        for overlay in overlays:
+            t_end = _parse_time(overlay["tiempo_fin"])
+            if t_end > duration:
+                logger.warning(
+                    "Overlay tiempo_fin=%.1f exceeds source duration=%.1f for %r.",
+                    t_end, duration, source_path,
+                )
+
+
+def _run_drawtext_overlay(
+    source_path: str,
+    output_path: str,
+    overlays: list[dict],
+    domain_cfg: dict,
+    timeout: int,
+) -> dict:
+    """Render *overlays* onto *source_path* via the ffmpeg drawtext filter.
+
+    Args:
+        source_path: Absolute path to the source video.
+        output_path: Absolute path where the edited video will be written.
+        overlays: List of overlay dicts (tipo, tiempo_inicio, tiempo_fin, titulo, …).
+        domain_cfg: Domain config dict (from :func:`get_domain_config`).
+        timeout: ffmpeg subprocess timeout in seconds.
+
+    Returns:
+        ``{"success": True, "output_path": output_path}``
+
+    Raises:
+        RuntimeError: When ffmpeg exits with a non-zero return code.
+    """
+    filter_str = build_drawtext_filter(overlays, domain_cfg)
+    cmd = build_ffmpeg_drawtext_cmd(source_path, output_path, filter_str)
+    logger.info("Running ffmpeg drawtext (timeout=%ds): %s", timeout, " ".join(cmd))
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg failed (rc={result.returncode}): {result.stderr}"
+        )
+    logger.info("drawtext overlay applied: %r → %r", source_path, output_path)
+    return {"success": True, "output_path": output_path}
+
+
+def _run_pillow_overlay(
+    source_path: str,
+    output_path: str,
+    overlays: list[dict],
+    domain_cfg: dict,
+    timeout: int,
+) -> dict:
+    """Render *overlays* as PNGs and composite them via ffmpeg filter_complex.
+
+    ``dims`` uses an identity check (``is None``) rather than truthiness:
+    a probed ``(0, 0)`` would still be a "present" value, distinct from a
+    failed probe. Temp PNG files are tracked in a function-local list and
+    always cleaned up via ``finally``, even when ffmpeg raises.
+
+    Args:
+        source_path: Absolute path to the source video.
+        output_path: Absolute path where the edited video will be written.
+        overlays: List of overlay dicts (tipo, tiempo_inicio, tiempo_fin, titulo, …).
+        domain_cfg: Domain config dict (from :func:`get_domain_config`).
+        timeout: ffmpeg subprocess timeout in seconds.
+
+    Returns:
+        ``{"success": True, "output_path": output_path}``
+
+    Raises:
+        RuntimeError: When ffmpeg exits with a non-zero return code.
+    """
+    dims = _get_source_dimensions(source_path)
+    W, H = dims if dims is not None else (1280, 720)
+    if dims is None:
+        logger.warning("Could not probe video dimensions; defaulting to %dx%d.", W, H)
+
+    tmp_files: list[str] = []
+    try:
+        png_slots: list[tuple[str, float, float]] = []
+        for overlay in overlays:
+            img = render_pillow_overlay(overlay, domain_cfg, W, H)
+            fd, tmp_path = tempfile.mkstemp(suffix=".png")
+            os.close(fd)
+            img.save(tmp_path)
+            tmp_files.append(tmp_path)
+            t_start = _parse_time(overlay["tiempo_inicio"])
+            t_end = _parse_time(overlay["tiempo_fin"])
+            png_slots.append((tmp_path, t_start, t_end))
+
+        cmd = build_ffmpeg_pillow_cmd(source_path, output_path, png_slots)
+        logger.info("Running ffmpeg pillow composite (timeout=%ds): %s", timeout, " ".join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg failed (rc={result.returncode}): {result.stderr}"
+            )
+    finally:
+        for tmp in tmp_files:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    logger.info("Pillow overlay applied: %r → %r", source_path, output_path)
+    return {"success": True, "output_path": output_path}
+
+
 def apply_overlays(
     source_path: str,
     output_path: str,
@@ -765,61 +886,12 @@ def apply_overlays(
     duration = _get_source_duration(source_path)
 
     # Warn if any overlay exceeds source duration.
-    if duration is not None:
-        for overlay in overlays:
-            t_end = _parse_time(overlay["tiempo_fin"])
-            if t_end > duration:
-                logger.warning(
-                    "Overlay tiempo_fin=%.1f exceeds source duration=%.1f for %r.",
-                    t_end, duration, source_path,
-                )
+    _warn_overlays_exceeding_duration(overlays, duration, source_path)
 
     timeout = compute_ffmpeg_timeout(duration if duration is not None else 0)
 
     if renderer == "drawtext":
-        filter_str = build_drawtext_filter(overlays, domain_cfg)
-        cmd = build_ffmpeg_drawtext_cmd(source_path, output_path, filter_str)
-        logger.info("Running ffmpeg drawtext (timeout=%ds): %s", timeout, " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"ffmpeg failed (rc={result.returncode}): {result.stderr}"
-            )
-        logger.info("drawtext overlay applied: %r → %r", source_path, output_path)
-        return {"success": True, "output_path": output_path}
+        return _run_drawtext_overlay(source_path, output_path, overlays, domain_cfg, timeout)
 
     # Pillow path: render PNGs, composite via filter_complex.
-    dims = _get_source_dimensions(source_path)
-    W, H = dims if dims is not None else (1280, 720)
-    if dims is None:
-        logger.warning("Could not probe video dimensions; defaulting to %dx%d.", W, H)
-
-    tmp_files: list[str] = []
-    try:
-        png_slots: list[tuple[str, float, float]] = []
-        for overlay in overlays:
-            img = render_pillow_overlay(overlay, domain_cfg, W, H)
-            fd, tmp_path = tempfile.mkstemp(suffix=".png")
-            os.close(fd)
-            img.save(tmp_path)
-            tmp_files.append(tmp_path)
-            t_start = _parse_time(overlay["tiempo_inicio"])
-            t_end = _parse_time(overlay["tiempo_fin"])
-            png_slots.append((tmp_path, t_start, t_end))
-
-        cmd = build_ffmpeg_pillow_cmd(source_path, output_path, png_slots)
-        logger.info("Running ffmpeg pillow composite (timeout=%ds): %s", timeout, " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"ffmpeg failed (rc={result.returncode}): {result.stderr}"
-            )
-    finally:
-        for tmp in tmp_files:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-
-    logger.info("Pillow overlay applied: %r → %r", source_path, output_path)
-    return {"success": True, "output_path": output_path}
+    return _run_pillow_overlay(source_path, output_path, overlays, domain_cfg, timeout)

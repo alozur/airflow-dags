@@ -109,7 +109,7 @@ class TestC901BaselineCoverage:
     observed at this change's tip, not the stale proposal-time snapshot.
     """
 
-    EXPECTED_C901_FILE_COUNT = 29
+    EXPECTED_C901_FILE_COUNT = 28
 
     def test_exactly_the_measured_number_of_entries_carry_c901(self):
         per_file_ignores = _load_pyproject()["tool"]["ruff"]["lint"]["per-file-ignores"]
