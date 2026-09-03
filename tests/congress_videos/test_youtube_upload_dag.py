@@ -3213,7 +3213,8 @@ def _documented_schedule(markdown: str, dag_id: str) -> str:
     )
     crons = re.findall(r"^\*\*Schedule:\*\*\s*`([^`]+)`", sections[0], flags=re.M)
     assert len(crons) == 1, (
-        f"Expected exactly one '**Schedule:** `<cron>`' line in the {dag_id} section of docs/DAGS.md; found {len(crons)}."
+        f"Expected exactly one '**Schedule:** `<cron>`' line in the {dag_id} section "
+        f"of docs/DAGS.md; found {len(crons)}."
     )
     return crons[0].strip()
 
@@ -3268,12 +3269,7 @@ class TestDocsScheduleConsistency:
 
     def test_extractor_rejects_two_schedule_lines_in_one_section(self):
         """Two schedules under one heading IS the drift — fail loudly, do not pick one."""
-        markdown = (
-            "## 2. congress_youtube_chapter_uploader\n"
-            "\n"
-            "**Schedule:** `0 19 * * *`\n"
-            "**Schedule:** `0 12 * * *`\n"
-        )
+        markdown = "## 2. congress_youtube_chapter_uploader\n\n**Schedule:** `0 19 * * *`\n**Schedule:** `0 12 * * *`\n"
 
         with pytest.raises(AssertionError, match="exactly one '\\*\\*Schedule:\\*\\*"):
             _documented_schedule(markdown, DAG_ID)
