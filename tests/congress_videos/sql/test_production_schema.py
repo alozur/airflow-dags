@@ -2,7 +2,7 @@
 snapshot (issues #238, #299, #304).
 
 Guards against the snapshot silently drifting from the latest applied view
-migration (currently 040) and from the live production DDL for the 11
+migration (currently 044) and from the live production DDL for the 11
 snapshotted base tables. Static SQL-text checks only — no DB connection.
 """
 
@@ -16,6 +16,14 @@ import pytest
 SCHEMA_PATH = Path(__file__).resolve().parents[3] / "congress_videos" / "sql" / "production_schema.sql"
 
 MIGRATION_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "congress_videos"
+    / "sql"
+    / "migrations"
+    / "044_deterministic_turn_publish_order.sql"
+)
+
+MIGRATION_040_PATH = (
     Path(__file__).resolve().parents[3]
     / "congress_videos"
     / "sql"
@@ -37,7 +45,7 @@ def _normalize_view_sql(text: str, view_name: str = "UPLOADABLE_TURNS") -> str:
 
     `CREATE OR REPLACE VIEW` is rewritten to `CREATE VIEW` so a migration that
     uses one form stays comparable to a snapshot that uses the other (038 vs
-    the snapshot's DROP + CREATE). No-op for uploadable_turns/040.
+    the snapshot's DROP + CREATE). No-op for uploadable_turns/044.
     """
     target = view_name.upper()
     stripped = re.sub(r"--[^\n]*", " ", text)  # also kills the DOWN block
@@ -530,16 +538,60 @@ class TestVideoChaptersIndexCompleteness:
 
 class TestSnapshotLockstepWithLatestMigration:
     """The snapshot's uploadable_turns view must be semantically identical to
-    the latest applied view migration (040), modulo comments/qualification/
+    the latest applied view migration (044), modulo comments/qualification/
     whitespace."""
 
-    def test_normalized_view_matches_migration_040(self):
+    def test_normalized_view_matches_migration_044(self):
         snapshot_sql = SCHEMA_PATH.read_text(encoding="utf-8")
         migration_sql = MIGRATION_PATH.read_text(encoding="utf-8")
 
         assert _normalize_view_sql(snapshot_sql) == _normalize_view_sql(migration_sql), (
             "production_schema.sql's uploadable_turns view has drifted from "
-            "migration 040 — update the snapshot to stay in lockstep"
+            "migration 044 — update the snapshot to stay in lockstep"
+        )
+
+
+class TestUploadableTurns044PublishOrder:
+    """044: FIFO tie-break appended to the outer ORDER BY so LIMIT 1 is
+    deterministic by contract, not by plan stability (issue #328)."""
+
+    _TIEBREAK_SUFFIX = (
+        "ORDER BY COALESCE(DEDUP.INTEREST_SCORE, 1) DESC, "
+        "DEDUP.RELEVANCE_SCORE DESC, "
+        "DEDUP.SESSION_DATE DESC, "
+        "DEDUP.MATERIALIZED_AT ASC, "
+        "DEDUP.TURN_ID ASC"
+    )
+
+    def test_outer_order_by_is_editorial_keys_then_fifo_tiebreak(self):
+        """The three editorial keys keep their exact text/direction, and the
+        FIFO tie-break plus the turn_id backstop are appended strictly after
+        them — the whole ORDER BY is the last thing in the normalized view,
+        so one suffix check covers ordering, positioning, and direction."""
+        normalized = _normalize_view_sql(SCHEMA_PATH.read_text(encoding="utf-8"))
+        assert normalized.endswith(self._TIEBREAK_SUFFIX), (
+            "outer ORDER BY must end with the three unchanged editorial keys "
+            "followed by materialized_at ASC, turn_id ASC"
+        )
+
+    def test_tiebreak_carries_fifo_intent_comment(self):
+        """The materialized_at ASC clause must name its FIFO intent inline,
+        so a future reader does not mistake it for accidental ordering."""
+        block = TestProductionQualification._view_block().upper()
+        assert "FIFO" in block
+        assert "#328" in block
+
+    def test_migration_044_body_is_040_plus_tiebreak(self):
+        """The transcription guard: migration 044's body must be migration
+        040's body with ONLY the two new tie-break keys appended. Comment-,
+        whitespace- and qualification-immune — this is what makes eligibility
+        preservation a mechanically enforced fact, not a reviewer's hope."""
+        migration_044 = _normalize_view_sql(MIGRATION_PATH.read_text(encoding="utf-8"))
+        migration_040 = _normalize_view_sql(MIGRATION_040_PATH.read_text(encoding="utf-8"))
+
+        assert migration_044 == migration_040 + ", DEDUP.MATERIALIZED_AT ASC, DEDUP.TURN_ID ASC", (
+            "migration 044's view body must equal migration 040's body with "
+            "exactly the FIFO tie-break appended to the ORDER BY"
         )
 
 
