@@ -248,7 +248,7 @@ class TestGetConnection:
 
         from utils.postgres_helpers import PostgresConnection
 
-        with pytest.raises(RuntimeError, match="boom"):
+        with pytest.raises(RuntimeError, match="boom"):  # noqa: SIM117 - pytest.raises is the assertion boundary, not just another context manager
             with PostgresConnection().get_connection():
                 raise RuntimeError("boom")
 
