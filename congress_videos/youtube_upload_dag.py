@@ -1112,7 +1112,8 @@ with DAG(
     )
 
     # Task dependencies (14 tasks total)
-    # t0 > t1_quota > t1_skip > t1_item > t2 > t3_prepare > t4_generate > t5 > t6 > t7 > [t8_db, t8_turns] > t8_backfill > t9
+    # t0 > t1_quota > t1_skip > t1_item > t2 > t3_prepare > t4_generate > t5 > t6 > t7 >
+    #   [t8_db, t8_turns] > t8_backfill > t9
     (
         t0
         >> t1_quota

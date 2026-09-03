@@ -36,7 +36,10 @@ INDEXES = [
     ),
     (
         "idx_video_shorts_pending_downloaded",
-        "is_uploaded = FALSE AND is_upload_abandoned = FALSE AND local_file_path IS NOT NULL AND reap_status = 'downloaded'",
+        (
+            "is_uploaded = FALSE AND is_upload_abandoned = FALSE AND local_file_path IS NOT NULL AND "
+            "reap_status = 'downloaded'"
+        ),
     ),
 ]
 

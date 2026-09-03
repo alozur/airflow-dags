@@ -608,7 +608,8 @@ with DAG(
             return result
 
         # Extract session_number and session_date from session_date_data
-        # Structure: {'total_processed': int, 'videos': [{'video_id': str, 'session_number': int, 'target_date': str, ...}]}
+        # Structure: {'total_processed': int, 'videos': [{'video_id': str,
+        #   'session_number': int, 'target_date': str, ...}]}
         session_number = None
         session_date_str = None
 

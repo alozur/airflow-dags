@@ -62,7 +62,12 @@ _ROLE_KEYWORDS = (
 _ROLE_ONLY_RE = re.compile(
     r"^(?:"
     + r"|".join(_ROLE_KEYWORDS)
-    + r")(?:\s+(?:del?\s+[a-záéíóúàèìòùüñ]\w*|los?\s+[a-záéíóúàèìòùüñ]\w*|las?\s+[a-záéíóúàèìòùüñ]\w*|[a-záéíóúàèìòùüñ]\w*))*$",
+    + (
+        r")(?:\s+(?:del?\s+[a-záéíóúàèìòùüñ]\w*|"
+        r"los?\s+[a-záéíóúàèìòùüñ]\w*|"
+        r"las?\s+[a-záéíóúàèìòùüñ]\w*|"
+        r"[a-záéíóúàèìòùüñ]\w*))*$"
+    ),
     re.IGNORECASE,
 )
 

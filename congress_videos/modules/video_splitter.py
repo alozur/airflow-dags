@@ -399,7 +399,8 @@ def extract_chapters_from_video(uploadable_chapters, data_directory):
             extraction_results["failed_extractions"] += 1
 
     logging.info(
-        f"Chapter extraction complete: {extraction_results['successful_extractions']}/{extraction_results['total_chapters']} "
+        f"Chapter extraction complete: {extraction_results['successful_extractions']}/"
+        f"{extraction_results['total_chapters']} "
         f"chapters extracted successfully"
     )
 

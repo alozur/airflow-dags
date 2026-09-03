@@ -17,6 +17,12 @@ from pypdf import PdfReader
 
 from utils.youtube_downloader import READY_LIVE_STATUSES, probe_live_status
 
+# Browser User-Agent used to spoof requests that would otherwise be blocked
+# (e.g. scraping pages that reject default library user agents).
+_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
 
 def fetch_youtube_channel_videos(channel_id: str, max_results: int = 10):
     """
@@ -564,7 +570,7 @@ def scrape_press_release(parsed_links):
 
     # Headers to make the request look like it's from a real browser
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": _BROWSER_USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
         "Accept-Encoding": "gzip, deflate, br",
@@ -676,7 +682,7 @@ def download_and_read_agenda(parsed_links, target_date: str):
 
     # Headers to make the request look like it's from a real browser
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": _BROWSER_USER_AGENT,
         "Accept": "application/pdf,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
         "Accept-Encoding": "gzip, deflate, br",
