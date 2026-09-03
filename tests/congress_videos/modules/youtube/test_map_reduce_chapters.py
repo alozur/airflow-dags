@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from congress_videos.modules.youtube.map_reduce_chapters import (
     Window,
     _resolve_seams,
@@ -162,6 +164,92 @@ class TestMapChapters:
         results = map_chapters(windows, identify)
         assert results[0] == []
         assert results[1] == [_ch("00:00:10", "00:01:00")]
+
+
+class TestMapChaptersBoundedConcurrency:
+    """#208 item 6 — map_chapters runs windows on a bounded thread pool.
+
+    The order/isolation/call-count cases are approval tests: the sequential
+    loop already satisfies them, so they PASS before the concurrency change
+    and MUST still PASS after it (behavior-preservation). The pool-usage
+    cases are true RED — they FAIL against today's sequential loop because
+    no ``ThreadPoolExecutor`` is constructed at all.
+    """
+
+    def test_max_workers_constant_is_four(self):
+        from congress_videos.modules.youtube.map_reduce_chapters import (
+            MAP_MAX_WORKERS,
+        )
+
+        assert MAP_MAX_WORKERS == 4
+
+    def test_multi_window_batch_uses_bounded_thread_pool(self, mocker):
+        """RED: no pool exists today, so this assertion fails pre-GREEN."""
+        windows = [Window(i, str(i), i, i + 1) for i in range(3)]
+        pool_spy = mocker.patch("concurrent.futures.ThreadPoolExecutor")
+        pool_instance = pool_spy.return_value.__enter__.return_value
+        pool_instance.map.return_value = [[] for _ in windows]
+
+        map_chapters(windows, lambda text: [])
+
+        pool_spy.assert_called_once_with(max_workers=4)
+
+    def test_single_window_does_not_construct_thread_pool(self, mocker):
+        """Approval test: today's single-window path never uses a pool either."""
+        windows = [Window(0, "only", 0, 1)]
+        pool_spy = mocker.patch("concurrent.futures.ThreadPoolExecutor")
+
+        results = map_chapters(windows, lambda text: [_ch("00:00:10", "00:01:00")])
+
+        pool_spy.assert_not_called()
+        assert results == [[_ch("00:00:10", "00:01:00")]]
+
+    def test_identify_fn_called_exactly_once_per_window(self):
+        """Approval test: today's loop already calls once per window."""
+        n = 4
+        windows = [Window(i, str(i), i, i + 1) for i in range(n)]
+        calls = []
+
+        def identify(text):
+            calls.append(text)
+            return []
+
+        map_chapters(windows, identify)
+
+        assert sorted(calls) == ["0", "1", "2", "3"]
+        assert len(calls) == n
+
+    def test_results_returned_in_window_order_despite_reverse_completion(self):
+        """Approval test: order must survive out-of-order completion timing."""
+        n = 4
+        windows = [Window(i, str(i), i, i + 1) for i in range(n)]
+
+        def identify(text):
+            index = int(text)
+            time.sleep(0.05 * (n - index))  # later windows finish first
+            return [_ch("00:00:10", "00:01:00", title=text)]
+
+        results = map_chapters(windows, identify)
+
+        assert [r[0]["title"] for r in results] == ["0", "1", "2", "3"]
+
+    def test_one_bad_window_isolated_under_concurrency(self):
+        """Approval test: a raising window degrades to [] without sinking siblings."""
+        n = 4
+        windows = [Window(i, str(i), i, i + 1) for i in range(n)]
+
+        def identify(text):
+            time.sleep(0.01)
+            if text == "2":
+                raise RuntimeError("boom")
+            return [_ch("00:00:10", "00:01:00", title=text)]
+
+        results = map_chapters(windows, identify)
+
+        assert results[2] == []
+        assert results[0] == [_ch("00:00:10", "00:01:00", title="0")]
+        assert results[1] == [_ch("00:00:10", "00:01:00", title="1")]
+        assert results[3] == [_ch("00:00:10", "00:01:00", title="3")]
 
 
 # ---------------------------------------------------------------------------

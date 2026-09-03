@@ -21,6 +21,7 @@ Design contract (sdd/chunking-v1-improvements/design):
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import re
 from collections.abc import Callable
@@ -34,6 +35,12 @@ logger = logging.getLogger(__name__)
 # tokens, comfortably inside gpt-4o-mini's 128k context with room for the prompt.
 DEFAULT_WINDOW_CHARS = 80_000
 DEFAULT_OVERLAP_PCT = 0.12
+
+# Bounded worker count for the map phase's thread pool (#208 item 6). Windows
+# are independent (no shared mutable state — see design C5), so a small pool
+# overlaps their LLM calls without risking provider rate limits. Set to 1 to
+# restore today's fully sequential behaviour without a code revert.
+MAP_MAX_WORKERS = 4
 
 # Two chapters from adjacent windows whose ranges overlap by more than this
 # fraction of the shorter chapter are treated as the SAME chapter and merged
@@ -227,9 +234,15 @@ def map_chapters(
     Returns:
         One chapter list per window, in window order. A window that yields no
         chapters contributes an empty list (never dropped, never raises).
+
+    Runs on a bounded ``MAP_MAX_WORKERS``-worker thread pool when there is
+    more than one window (#208 item 6). A single window is handled inline
+    without constructing a pool. ``executor.map`` yields in submission order
+    by contract, so results stay in window order regardless of which worker
+    finishes first.
     """
-    results: list[list[dict]] = []
-    for window in windows:
+
+    def _run_one(window: Window) -> list[dict]:
         try:
             chapters = identify_fn(window.text) or []
         except Exception:  # noqa: BLE001 — one bad window must not sink the rest
@@ -239,8 +252,13 @@ def map_chapters(
                 exc_info=True,
             )
             chapters = []
-        results.append(list(chapters))
-    return results
+        return list(chapters)
+
+    if len(windows) <= 1:
+        return [_run_one(window) for window in windows]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAP_MAX_WORKERS) as executor:
+        return list(executor.map(_run_one, windows))
 
 
 def _secs(value: str | float) -> float:
