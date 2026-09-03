@@ -172,13 +172,13 @@ def utility_function(param: str) -> Dict[str, Any]:
 ### Pre-Commit Validation
 ```bash
 # Syntax validation
-conda run -n airflow python <dag_file>.py
+uv run python <dag_file>.py
 
-# Linting
-conda run -n airflow ruff check <file>.py
+# Linting (config lives in pyproject.toml [tool.ruff]; gated by .github/workflows/lint.yml)
+uv run ruff check <file>.py
 
-# Format check
-conda run -n airflow ruff format --check <file>.py
+# Format check (declared, not CI-gated — see Ruff Configuration below)
+uv run ruff format --check <file>.py
 ```
 
 ### DAG Testing
