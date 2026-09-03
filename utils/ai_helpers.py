@@ -24,17 +24,13 @@ try:
     openai.api_key = os.getenv("OPENAI_API_KEY")
 except ImportError:
     openai = None
-    logging.warning(
-        "OpenAI module not installed. AI functions will not work. Install with: pip install openai"
-    )
+    logging.warning("OpenAI module not installed. AI functions will not work. Install with: pip install openai")
 
 # Codes observed on the `insufficient_quota` / billing-exhaustion family (issue #311
 # comment 4). Checked against BOTH exc.type and exc.code because the observed
 # production payload splits the discriminator across the two attributes:
 # {'type': 'insufficient_quota', 'code': 'credit_balance_exhausted'}.
-_QUOTA_CODES = frozenset(
-    {"insufficient_quota", "credit_balance_exhausted", "billing_hard_limit_reached"}
-)
+_QUOTA_CODES = frozenset({"insufficient_quota", "credit_balance_exhausted", "billing_hard_limit_reached"})
 
 # Process-local latch: once a permanent OpenAI failure (quota/billing exhaustion,
 # 401/403 auth failure) is observed, every subsequent generate_chat_completion call

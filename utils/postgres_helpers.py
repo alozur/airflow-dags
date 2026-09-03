@@ -20,15 +20,15 @@ class PostgresConnection:
     """Manages PostgreSQL connection using environment variables from .env"""
 
     def __init__(self):
-        self.host = os.getenv('POSTGRES_HOST')
-        self.port = os.getenv('POSTGRES_PORT')
-        self.database = os.getenv('POSTGRES_DB')
-        self.user = os.getenv('POSTGRES_USER')
-        self.password = os.getenv('POSTGRES_PASSWORD')
-        self.schema = os.getenv('POSTGRES_SCHEMA', 'public')  # Default to 'public' if not set
+        self.host = os.getenv("POSTGRES_HOST")
+        self.port = os.getenv("POSTGRES_PORT")
+        self.database = os.getenv("POSTGRES_DB")
+        self.user = os.getenv("POSTGRES_USER")
+        self.password = os.getenv("POSTGRES_PASSWORD")
+        self.schema = os.getenv("POSTGRES_SCHEMA", "public")  # Default to 'public' if not set
 
         # Validate required environment variables
-        required_vars = ['POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_DB', 'POSTGRES_USER', 'POSTGRES_PASSWORD']
+        required_vars = ["POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD"]
         missing_vars = [var for var in required_vars if not os.getenv(var)]
 
         if missing_vars:
@@ -50,11 +50,9 @@ class PostgresConnection:
                 long-running DDL such as migrations.
         """
         if statement_timeout_ms is None:
-            statement_timeout_ms = int(
-                os.getenv('POSTGRES_STATEMENT_TIMEOUT_MS', DEFAULT_STATEMENT_TIMEOUT_MS)
-            )
-        lock_timeout_ms = int(os.getenv('POSTGRES_LOCK_TIMEOUT_MS', DEFAULT_LOCK_TIMEOUT_MS))
-        connect_timeout_s = int(os.getenv('POSTGRES_CONNECT_TIMEOUT_S', DEFAULT_CONNECT_TIMEOUT_S))
+            statement_timeout_ms = int(os.getenv("POSTGRES_STATEMENT_TIMEOUT_MS", DEFAULT_STATEMENT_TIMEOUT_MS))
+        lock_timeout_ms = int(os.getenv("POSTGRES_LOCK_TIMEOUT_MS", DEFAULT_LOCK_TIMEOUT_MS))
+        connect_timeout_s = int(os.getenv("POSTGRES_CONNECT_TIMEOUT_S", DEFAULT_CONNECT_TIMEOUT_S))
 
         conn = psycopg2.connect(
             host=self.host,
@@ -64,10 +62,7 @@ class PostgresConnection:
             password=self.password,
             cursor_factory=RealDictCursor,
             connect_timeout=connect_timeout_s,
-            options=(
-                f"-c statement_timeout={int(statement_timeout_ms)} "
-                f"-c lock_timeout={int(lock_timeout_ms)}"
-            ),
+            options=(f"-c statement_timeout={int(statement_timeout_ms)} -c lock_timeout={int(lock_timeout_ms)}"),
             application_name=f"airflow-{self.schema}",
         )
         try:

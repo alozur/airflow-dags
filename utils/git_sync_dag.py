@@ -34,7 +34,6 @@ with DAG(
     catchup=False,
     tags=["utility", "git", "sync"],
 ) as dag:
-
     # Configure git with credentials for this pull
     configure_git = BashOperator(
         task_id="configure_git",

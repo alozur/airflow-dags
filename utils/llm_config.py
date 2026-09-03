@@ -63,6 +63,4 @@ LLM_DEFAULT: str = os.getenv("LLM_DEFAULT") or "gpt-5.6-luna"
 LLM_CHEAP: str = os.getenv("LLM_CHEAP") or "gpt-5-nano"
 
 LLM_TIMEOUT_SECONDS: float = _positive_float_env("LLM_TIMEOUT_SECONDS", 120.0)
-LLM_CONNECT_TIMEOUT_SECONDS: float = _positive_float_env(
-    "LLM_CONNECT_TIMEOUT_SECONDS", 10.0
-)
+LLM_CONNECT_TIMEOUT_SECONDS: float = _positive_float_env("LLM_CONNECT_TIMEOUT_SECONDS", 10.0)
