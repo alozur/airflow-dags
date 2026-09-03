@@ -9,8 +9,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
-
 MIGRATION_PATH = (
     Path(__file__).resolve().parents[3] / "congress_videos" / "sql" / "migrations" / "034_add_speaker_resolution.sql"
 )

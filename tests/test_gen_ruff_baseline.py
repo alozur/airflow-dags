@@ -12,8 +12,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GENERATOR_PATH = REPO_ROOT / "scripts" / "gen_ruff_baseline.py"
 

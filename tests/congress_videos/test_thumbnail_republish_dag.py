@@ -7,7 +7,7 @@ MAX_THUMBNAIL_CALLS_PER_RUN cap.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------

@@ -9,8 +9,6 @@ from __future__ import annotations
 import subprocess
 from unittest.mock import MagicMock
 
-import pytest
-
 from utils.codec_detection import (
     cut_mode_for_reencode,
     detect_video_codec,

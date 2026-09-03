@@ -666,7 +666,7 @@ class TestTriggerUploadWithConfig:
 
 def _make_context_for_should_upload(queue_size: int, hour: int, uploads_today: int = 0) -> dict:
     """Build a minimal Airflow context for should_upload tests."""
-    from datetime import datetime, timezone
+    from datetime import datetime
     from unittest.mock import MagicMock
 
     logical_date = datetime(2026, 7, 31, hour, 0, 0, tzinfo=UTC)
@@ -747,7 +747,7 @@ class TestShouldUpload:
 
     def test_stale_run_returns_false(self):
         """data_interval_end ~2h in the past, queue above threshold → False (stale skip)."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         from congress_videos.youtube_upload_dag import should_upload
 
@@ -757,7 +757,7 @@ class TestShouldUpload:
 
     def test_fresh_run_proceeds_to_threshold(self):
         """data_interval_end ~1 min in the past, queue above threshold → True (threshold applies)."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         from congress_videos.youtube_upload_dag import should_upload
 
@@ -776,7 +776,7 @@ class TestShouldUpload:
 
     def test_staleness_boundary_strictly_greater(self):
         """data_interval_end exactly 30 min in the past → True (guard uses strict >, not >=)."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         from unittest.mock import patch
 
         from congress_videos.youtube_upload_dag import (

@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone
 
-import pytest
-
 # ---------------------------------------------------------------------------
 # DAG load + structure
 # ---------------------------------------------------------------------------
@@ -164,7 +162,7 @@ class TestFetchAnalyticsUsesCollectedPairs:
     def test_fetch_analytics_passes_collected_set_to_pending_checkpoints(self, monkeypatch):
         """The collected set from DB must be forwarded as the 'collected'
         argument to pending_checkpoints(), NOT an empty set."""
-        from unittest.mock import MagicMock, call, patch
+        from unittest.mock import MagicMock, patch
 
         from congress_videos.video_analytics_dag import _fetch_analytics
 
@@ -394,7 +392,7 @@ class TestFetchAnalyticsDagLevelIdempotency:
              runs twice for the same checkpoint
         THEN no duplicate row is written — ON CONFLICT DO NOTHING holds
              end-to-end, not just at the DB-method level."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         from congress_videos.video_analytics_dag import (
             _fetch_analytics,

@@ -8,7 +8,6 @@ schema change.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 MIGRATION_PATH = (

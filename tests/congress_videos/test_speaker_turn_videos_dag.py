@@ -15,8 +15,7 @@ import importlib
 import json
 import re
 import sys
-from datetime import date
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
