@@ -43,7 +43,7 @@ PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 INIT_PY_ENTRY = '"__init__.py" = ["F401"]  # permanent: re-exports (29 of them in modules/youtube/).'
 
 DEFAULT_RUFF_VERSION = "0.16.5"
-DEFAULT_BASE_SHA = "a4f5377"
+DEFAULT_BASE_SHA = "b5260d7"
 
 
 def repo_relative_posix(raw_path: str) -> str:

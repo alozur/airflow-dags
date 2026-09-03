@@ -4,6 +4,11 @@ name: Lint
 # Unlike pip-audit.yml this workflow is NOT informational: a non-zero
 # `ruff check` fails the check. Rule set, line length and the grandfathered
 # per-file-ignores baseline all live in pyproject.toml. No --fix in CI.
+#
+# `ruff format --check` is also blocking (issue #391): the whole repo was
+# formatted once and CI now guards against drift. Job name stays "ruff
+# check" — it is a REQUIRED status check on the dev branch ruleset; never
+# rename it.
 
 on:
   pull_request:
@@ -37,3 +42,7 @@ jobs:
 
       - name: Ruff lint (blocking)
         run: uv run --no-sync ruff check --output-format=github .
+
+      - name: Ruff format (blocking)
+        # Fix locally with: uv run ruff format .
+        run: uv run --no-sync ruff format --check .

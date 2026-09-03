@@ -91,13 +91,15 @@ ignore = []  # no rule is globally disabled; debt lives in per-file-ignores belo
 max-complexity = 10
 
 [tool.ruff.format]
-# Declared, NOT gated: the repo has never been formatted. Repo-wide `ruff format`
-# is a separate follow-up issue; CI does not run `ruff format --check`.
+# Declared AND gated (issue #391): the whole repo was formatted once and CI
+# now blocks drift via the "Ruff format (blocking)" step in lint.yml. Only
+# these two keys are set — the shape is locked by
+# TestRuffFormatConfig.test_format_block_declares_only_the_two_gated_keys.
 quote-style = "double"
 indent-style = "space"
 
 # --- ruff baseline: generated, do not edit by hand ---
-# Generated from dev tip a4f5377 with ruff 0.16.5 by scripts/gen_ruff_baseline.py.
+# Generated from dev tip b5260d7 with ruff 0.16.5 by scripts/gen_ruff_baseline.py.
 # Regenerate/verify:
 #   uv run ruff check . --no-cache --output-format json \
 #     --config 'lint.per-file-ignores = { "__init__.py" = ["F401"] }' \
@@ -113,7 +115,6 @@ indent-style = "space"
 "benchmarks/pyannote_diarization/server.py" = ["C901", "SIM105", "SIM115"]
 "benchmarks/pyannote_diarization/vad_speech_intervals.py" = ["E501"]
 "benchmarks/yamnet_applause/server.py" = ["C901", "N806", "SIM105", "SIM115"]
-"conftest.py" = ["E501"]
 "congress_videos/config/ai_prompts.py" = ["E501"]
 "congress_videos/config/youtube_channels.py" = ["F401"]
 "congress_videos/generic_thumbnail_generator_dag.py" = ["F401"]
@@ -135,7 +136,6 @@ indent-style = "space"
 "congress_videos/modules/video_analytics.py" = ["F401", "SIM110"]
 "congress_videos/modules/video_editor.py" = ["F401", "N803", "N806", "SIM105"]
 "congress_videos/modules/video_splitter.py" = ["C901", "E501", "SIM102"]
-"congress_videos/modules/youtube/__init__.py" = ["E501"]
 "congress_videos/modules/youtube/download.py" = ["B905", "C901", "E501", "SIM103", "SIM108"]
 "congress_videos/modules/youtube/youtube_ai.py" = ["E501", "F401"]
 "congress_videos/modules/youtube/youtube_channel.py" = ["B007", "C901", "E501", "F401", "F841", "SIM102"]
@@ -171,8 +171,7 @@ indent-style = "space"
 "tests/congress_videos/modules/test_post_upload_verification.py" = ["F401"]
 "tests/congress_videos/modules/test_speaker_resolution.py" = ["F401"]
 "tests/congress_videos/modules/test_speaker_turns.py" = ["F401"]
-"tests/congress_videos/modules/test_speaker_turns_api.py" = ["E501", "F401"]
-"tests/congress_videos/modules/test_thumbnail_generation.py" = ["E501"]
+"tests/congress_videos/modules/test_speaker_turns_api.py" = ["F401"]
 "tests/congress_videos/modules/test_title_news_format_golden.py" = ["F401", "SIM103"]
 "tests/congress_videos/modules/test_trim_proposals.py" = ["F401"]
 "tests/congress_videos/modules/test_vad_chapter_adjust.py" = ["F401"]
@@ -198,16 +197,15 @@ indent-style = "space"
 "tests/congress_videos/test_integrity_dag_wiring.py" = ["F401"]
 "tests/congress_videos/test_post_upload_verification_dag.py" = ["F401", "SIM117"]
 "tests/congress_videos/test_reap_api.py" = ["B017", "F401"]
-"tests/congress_videos/test_reap_clip_preparer_dag.py" = ["E501"]
 "tests/congress_videos/test_reap_processor_dag.py" = ["F401", "F841"]
-"tests/congress_videos/test_speaker_turn_prepare_dag.py" = ["E501", "F401", "UP022"]
+"tests/congress_videos/test_speaker_turn_prepare_dag.py" = ["F401", "UP022"]
 "tests/congress_videos/test_speaker_turn_videos_dag.py" = ["B905", "F401"]
-"tests/congress_videos/test_srt_helpers.py" = ["E501", "N806"]
+"tests/congress_videos/test_srt_helpers.py" = ["N806"]
 "tests/congress_videos/test_thumbnail_republish_dag.py" = ["F401", "SIM117"]
 "tests/congress_videos/test_video_analytics_actions_dag.py" = ["F401"]
 "tests/congress_videos/test_video_analytics_dag.py" = ["F401", "F841"]
 "tests/congress_videos/test_youtube_channel_monitor_dag.py" = ["F401"]
-"tests/congress_videos/test_youtube_upload_dag.py" = ["E501", "F401"]
+"tests/congress_videos/test_youtube_upload_dag.py" = ["F401"]
 "tests/test_gen_ruff_baseline.py" = ["F401"]
 "tests/utils/test_ai_helpers.py" = ["F401"]
 "tests/utils/test_codec_detection.py" = ["F401", "F841"]
@@ -220,7 +218,7 @@ indent-style = "space"
 "tests/utils/test_youtube_helpers_extended.py" = ["F401"]
 "utils/ai_chapter_analyzer.py" = ["C901", "E501", "F401", "UP035"]
 "utils/ai_helpers.py" = ["F401", "UP035"]
-"utils/airflow_helpers.py" = ["F401", "W293"]
+"utils/airflow_helpers.py" = ["F401"]
 "utils/llm_cache.py" = ["SIM117"]
 "utils/migrations_dag.py" = ["SIM117"]
 "utils/time_utils.py" = ["B904"]
