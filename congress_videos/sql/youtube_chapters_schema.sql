@@ -91,10 +91,7 @@ CREATE TABLE IF NOT EXISTS development.video_chapters (
 
     -- Timestamps
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-    -- Added by migration 045 (mentioned people, issue #432)
-    mentioned_participant_slugs TEXT[]
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Indexes for performance

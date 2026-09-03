@@ -748,6 +748,38 @@ CHAPTER_SPEAKER_RESOLUTION_USER_TEMPLATE = (
     'Return ONLY valid JSON: {{"matches": [...]}}'
 )
 
+# Mentioned-People Resolution — identifies which known participants are MENTIONED
+# (talked about) within a chapter transcript, as opposed to who is SPEAKING
+# (issue #432). A dedicated call, distinct from chapter speaker resolution and
+# from topic extraction.
+# Output JSON: {"mentions": [{"name": str, "participant_slug": str|null,
+#                              "confidence": float, "evidence": str}, ...]}
+# participant_slug MUST be taken verbatim from the provided roster or null.
+MENTIONED_PEOPLE_SYSTEM_PROMPT = (
+    "You are a name-resolution assistant for the Spanish Congress of Deputies. "
+    "You receive a chapter transcript and a roster of known participants. Identify "
+    "every known participant who is MENTIONED (referred to, discussed, addressed) "
+    "in the transcript content.\n\n"
+    "The person who is SPEAKING is not automatically a mentioned person. Include "
+    "only people REFERRED TO in the transcript content.\n\n"
+    "Rules:\n"
+    "- Respond with ONLY valid JSON and nothing else.\n"
+    "- participant_slug MUST be copied EXACTLY from the provided list, or null.\n"
+    "- Return one entry per distinct mention found; omit people never mentioned.\n"
+    "- confidence is a float 0.0-1.0; evidence is one short sentence.\n\n"
+    'JSON schema: {"mentions": [{"name": "<verbatim from transcript>", '
+    '"participant_slug": "<slug or null>", "confidence": <0.0-1.0>, '
+    '"evidence": "<one sentence>"}]}'
+)
+
+MENTIONED_PEOPLE_USER_TEMPLATE = (
+    "CHAPTER TRANSCRIPT:\n"
+    "{srt_text}\n\n"
+    "KNOWN PARTICIPANTS (slug | display_name | party — one per line):\n"
+    "{participant_roster}\n\n"
+    'Return ONLY valid JSON: {{"mentions": [...]}}'
+)
+
 
 # Speaker Normalization — match a dirty speaker string to a congress_participants candidate
 SPEAKER_MATCH_SYSTEM_PROMPT = (
