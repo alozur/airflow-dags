@@ -7,7 +7,6 @@ to identify interesting chapters/segments for content extraction.
 
 import logging
 import os
-from typing import Dict, List
 
 import openai
 

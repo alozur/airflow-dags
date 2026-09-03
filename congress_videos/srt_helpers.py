@@ -4,7 +4,6 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Optional
 
 from congress_videos.config.paths import DOWNLOADS_DIR, PROJECT_DATA_DIR, get_video_chapter_dir
 from utils.ai_helpers import generate_json_completion

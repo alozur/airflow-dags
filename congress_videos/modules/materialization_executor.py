@@ -39,7 +39,6 @@ import logging
 import os
 import subprocess
 import tempfile
-from pathlib import Path
 
 from congress_videos.modules.materialization import MaterializationPlan
 from congress_videos.modules.video_splitter import (

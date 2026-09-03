@@ -12,7 +12,7 @@ Functions:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from congress_videos.config.analytics_config import (

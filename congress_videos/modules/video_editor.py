@@ -28,7 +28,7 @@ import tempfile
 from pathlib import Path
 
 from congress_videos.config.paths import PROJECT_DATA_DIR
-from congress_videos.config.video_editor_config import ConfigError, get_domain_config
+from congress_videos.config.video_editor_config import get_domain_config
 from congress_videos.modules.video_splitter import (
     compute_ffmpeg_timeout,
     convert_srt_time_to_seconds,

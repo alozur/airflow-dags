@@ -8,7 +8,7 @@ Includes text generation, JSON response parsing, and error handling utilities.
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from utils.llm_config import (
     LLM_CHEAP,

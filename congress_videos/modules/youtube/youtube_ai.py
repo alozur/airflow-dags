@@ -6,7 +6,7 @@ and to evaluate video interest scores for upload prioritization.
 """
 
 import logging
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 
 from congress_videos.config.ai_prompts import (
     CHAPTER_RELEVANCE_SCORING_SYSTEM_PROMPT,

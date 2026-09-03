@@ -12,7 +12,6 @@ different token files.
 import json
 import logging
 import os
-from typing import Dict, List, Optional
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
