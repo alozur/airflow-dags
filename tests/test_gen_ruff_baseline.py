@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -330,3 +332,216 @@ class TestMainErrorHandling:
         captured = capsys.readouterr()
         assert exit_code == 2
         assert "gen_ruff_baseline:" in captured.err
+
+
+class TestFindGrowth:
+    """`find_growth` is the REMOVE-ONLY verdict primitive (issue #269): shrinkage
+    (fewer codes, fewer paths) is always fine and never reported; only a path or
+    code the committed baseline never covered counts as growth.
+    """
+
+    def test_identical_committed_and_regenerated_report_no_growth(self):
+        committed = {"utils/foo.py": ["F401", "SIM117"]}
+        regenerated = {"utils/foo.py": ["F401", "SIM117"]}
+
+        assert gen_ruff_baseline.find_growth(committed, regenerated) == {}
+
+    def test_code_order_difference_reports_no_growth(self):
+        committed = {"utils/foo.py": ["SIM117", "F401"]}
+        regenerated = {"utils/foo.py": ["F401", "SIM117"]}
+
+        assert gen_ruff_baseline.find_growth(committed, regenerated) == {}
+
+    def test_path_absent_from_regenerated_is_shrinkage_not_growth(self):
+        committed = {"utils/foo.py": ["F401"], "utils/gone.py": ["C901"]}
+        regenerated = {"utils/foo.py": ["F401"]}
+
+        assert gen_ruff_baseline.find_growth(committed, regenerated) == {}
+
+    def test_fewer_codes_on_existing_path_is_shrinkage_not_growth(self):
+        committed = {"utils/foo.py": ["F401", "SIM117"]}
+        regenerated = {"utils/foo.py": ["F401"]}
+
+        assert gen_ruff_baseline.find_growth(committed, regenerated) == {}
+
+    def test_new_path_reports_whole_code_list(self):
+        committed = {}
+        regenerated = {"utils/new_file.py": ["F401", "C901"]}
+
+        assert gen_ruff_baseline.find_growth(committed, regenerated) == {"utils/new_file.py": ["C901", "F401"]}
+
+    def test_new_code_on_existing_path_reports_only_the_new_code(self):
+        committed = {"utils/foo.py": ["F401"]}
+        regenerated = {"utils/foo.py": ["F401", "C901"]}
+
+        assert gen_ruff_baseline.find_growth(committed, regenerated) == {"utils/foo.py": ["C901"]}
+
+    def test_bare_init_py_on_regenerated_side_is_skipped(self):
+        committed = {}
+        regenerated = {"__init__.py": ["F401", "C901"]}
+
+        assert gen_ruff_baseline.find_growth(committed, regenerated) == {}
+
+    def test_header_differences_never_affect_the_verdict(self):
+        entries = {"utils/foo.py": ["F401"]}
+        block_a = gen_ruff_baseline.render_block(entries, base_sha="aaaaaaa", ruff_version="0.16.5")
+        block_b = gen_ruff_baseline.render_block(entries, base_sha="bbbbbbb", ruff_version="0.17.0")
+        pyproject_a = "[tool.other]\nvalue = 1\n\n" + block_a
+        pyproject_b = "[tool.other]\nvalue = 1\n\n" + block_b
+
+        committed_a = gen_ruff_baseline.parse_committed_entries(pyproject_a)
+        committed_b = gen_ruff_baseline.parse_committed_entries(pyproject_b)
+
+        assert gen_ruff_baseline.find_growth(committed_a, entries) == {}
+        assert gen_ruff_baseline.find_growth(committed_b, entries) == {}
+
+
+class TestMainCheckRemoveOnly:
+    """`--check-remove-only` is the CLI surface for `find_growth`: exit 1 only on
+    real growth, exit 0 on no-drift or any shrinkage shape, exit 2 on bad input.
+    """
+
+    def _write_pyproject_with_entries(self, tmp_path, entries):
+        block = gen_ruff_baseline.render_block(entries, base_sha="deadbee", ruff_version="0.16.5")
+        pyproject_path = tmp_path / "pyproject.toml"
+        pyproject_path.write_text("[tool.other]\nvalue = 1\n\n" + block, encoding="utf-8")
+        return pyproject_path
+
+    def test_check_and_check_remove_only_are_mutually_exclusive(self, tmp_path, monkeypatch):
+        pyproject_path = self._write_pyproject_with_entries(tmp_path, {})
+        stdin = io.StringIO()
+
+        def _boom():
+            raise AssertionError("stdin must not be read before argparse validates mutually exclusive flags")
+
+        monkeypatch.setattr(stdin, "read", _boom)
+        monkeypatch.setattr(sys, "stdin", stdin)
+
+        with pytest.raises(SystemExit) as exc_info:
+            gen_ruff_baseline.main(["--check", "--check-remove-only", "--pyproject", str(pyproject_path)])
+
+        assert exc_info.value.code == 2
+
+    def test_growth_exits_1_and_names_path_and_new_code(self, tmp_path, monkeypatch, capsys):
+        pyproject_path = self._write_pyproject_with_entries(tmp_path, {"utils/foo.py": ["F401"]})
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                json.dumps(
+                    [
+                        {"filename": "utils/foo.py", "code": "F401"},
+                        {"filename": "utils/new_file.py", "code": "C901"},
+                    ]
+                )
+            ),
+        )
+
+        exit_code = gen_ruff_baseline.main(
+            ["--check-remove-only", "--pyproject", str(pyproject_path), "--base-sha", "deadbee"]
+        )
+
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert "utils/new_file.py" in captured.out
+        assert "C901" in captured.out
+
+    def test_shrinkage_by_code_exits_0(self, tmp_path, monkeypatch):
+        pyproject_path = self._write_pyproject_with_entries(tmp_path, {"utils/foo.py": ["F401", "SIM117"]})
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps([{"filename": "utils/foo.py", "code": "F401"}])))
+
+        exit_code = gen_ruff_baseline.main(
+            ["--check-remove-only", "--pyproject", str(pyproject_path), "--base-sha", "deadbee"]
+        )
+
+        assert exit_code == 0
+
+    def test_shrinkage_by_path_exits_0(self, tmp_path, monkeypatch):
+        pyproject_path = self._write_pyproject_with_entries(
+            tmp_path, {"utils/foo.py": ["F401"], "utils/gone.py": ["C901"]}
+        )
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps([{"filename": "utils/foo.py", "code": "F401"}])))
+
+        exit_code = gen_ruff_baseline.main(
+            ["--check-remove-only", "--pyproject", str(pyproject_path), "--base-sha", "deadbee"]
+        )
+
+        assert exit_code == 0
+
+    def test_no_drift_exits_0(self, tmp_path, monkeypatch):
+        pyproject_path = self._write_pyproject_with_entries(tmp_path, {"utils/foo.py": ["F401"]})
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps([{"filename": "utils/foo.py", "code": "F401"}])))
+
+        exit_code = gen_ruff_baseline.main(
+            ["--check-remove-only", "--pyproject", str(pyproject_path), "--base-sha", "deadbee"]
+        )
+
+        assert exit_code == 0
+
+    def test_blank_stdin_exits_2(self, tmp_path, monkeypatch):
+        pyproject_path = self._write_pyproject_with_entries(tmp_path, {})
+        monkeypatch.setattr(sys, "stdin", io.StringIO("   "))
+
+        exit_code = gen_ruff_baseline.main(["--check-remove-only", "--pyproject", str(pyproject_path)])
+
+        assert exit_code == 2
+
+    def test_unparseable_committed_region_exits_2(self, tmp_path, monkeypatch):
+        pyproject_path = tmp_path / "pyproject.toml"
+        pyproject_path.write_text("[tool.other]\nvalue = 1\n", encoding="utf-8")
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps([{"filename": "utils/foo.py", "code": "F401"}])))
+
+        exit_code = gen_ruff_baseline.main(["--check-remove-only", "--pyproject", str(pyproject_path)])
+
+        assert exit_code == 2
+
+
+class TestCliEndToEnd:
+    """Subprocess-level smoke tests: the argparse wiring and stdin/exit-code
+    contract must hold when invoked exactly as CI will invoke it.
+    """
+
+    def _write_pyproject_with_entries(self, tmp_path, entries):
+        block = gen_ruff_baseline.render_block(entries, base_sha="deadbee", ruff_version="0.16.5")
+        pyproject_path = tmp_path / "pyproject.toml"
+        pyproject_path.write_text("[tool.other]\nvalue = 1\n\n" + block, encoding="utf-8")
+        return pyproject_path
+
+    def test_growth_via_subprocess_exits_1(self, tmp_path):
+        pyproject_path = self._write_pyproject_with_entries(tmp_path, {"utils/foo.py": ["F401"]})
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(GENERATOR_PATH),
+                "--check-remove-only",
+                "--pyproject",
+                str(pyproject_path),
+                "--base-sha",
+                "deadbee",
+            ],
+            input=json.dumps(
+                [
+                    {"filename": "utils/foo.py", "code": "F401"},
+                    {"filename": "utils/new_file.py", "code": "C901"},
+                ]
+            ),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 1
+
+    def test_empty_stdin_via_subprocess_exits_2(self, tmp_path):
+        pyproject_path = self._write_pyproject_with_entries(tmp_path, {"utils/foo.py": ["F401"]})
+
+        result = subprocess.run(
+            [sys.executable, str(GENERATOR_PATH), "--check-remove-only", "--pyproject", str(pyproject_path)],
+            input="",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 2
