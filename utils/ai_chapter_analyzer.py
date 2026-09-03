@@ -22,7 +22,7 @@ from utils.time_utils import parse_timestamp
 logger = logging.getLogger(__name__)
 
 # OpenAI API configuration
-openai.api_key = os.getenv('OPENAI_API_KEY')
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 
 def parse_timestamp_to_seconds(timestamp: str) -> float:
@@ -117,7 +117,7 @@ def detect_silence_gaps(
     # Parse SRT format to extract timestamps and text
     # SRT format: timestamp1 --> timestamp2 followed by text
     # Supports both HH:MM:SS and HH:MM:SS,mmm formats
-    pattern = r'(\d{1,2}:\d{2}:\d{2}(?:,\d{3})?)\s*-->\s*(\d{1,2}:\d{2}:\d{2}(?:,\d{3})?)\s*\n(.+?)(?=\n\d{1,2}:\d{2}:\d{2}(?:,\d{3})?\s*-->|\Z)'
+    pattern = r"(\d{1,2}:\d{2}:\d{2}(?:,\d{3})?)\s*-->\s*(\d{1,2}:\d{2}:\d{2}(?:,\d{3})?)\s*\n(.+?)(?=\n\d{1,2}:\d{2}:\d{2}(?:,\d{3})?\s*-->|\Z)"
 
     entries = re.findall(pattern, srt_content, re.DOTALL)
 
@@ -135,13 +135,13 @@ def detect_silence_gaps(
 
     # Determine effective threshold.
     if use_adaptive:
-        effective_threshold = _adaptive_silence_threshold(
-            all_gaps, percentile=adaptive_percentile
-        )
+        effective_threshold = _adaptive_silence_threshold(all_gaps, percentile=adaptive_percentile)
         logger.info(
-            "Adaptive silence threshold: %.2fs (p%.0f of %d gaps); "
-            "fixed fallback: %ds",
-            effective_threshold, adaptive_percentile, len(all_gaps), min_silence_seconds,
+            "Adaptive silence threshold: %.2fs (p%.0f of %d gaps); fixed fallback: %ds",
+            effective_threshold,
+            adaptive_percentile,
+            len(all_gaps),
+            min_silence_seconds,
         )
     else:
         effective_threshold = float(min_silence_seconds)
@@ -160,21 +160,23 @@ def detect_silence_gaps(
         if gap_duration >= effective_threshold:
             current_end_seconds = parse_timestamp_to_seconds(current_end_time)
             next_start_seconds = parse_timestamp_to_seconds(next_start_time)
-            silence_gaps.append({
-                "gap_start": current_end_time,
-                "gap_end": next_start_time,
-                "gap_duration_seconds": gap_duration,
-                "gap_midpoint_seconds": (current_end_seconds + next_start_seconds) // 2,
-                "previous_text": current_entry[2].strip()[:100],
-                "next_text": next_entry[2].strip()[:100],
-            })
+            silence_gaps.append(
+                {
+                    "gap_start": current_end_time,
+                    "gap_end": next_start_time,
+                    "gap_duration_seconds": gap_duration,
+                    "gap_midpoint_seconds": (current_end_seconds + next_start_seconds) // 2,
+                    "previous_text": current_entry[2].strip()[:100],
+                    "next_text": next_entry[2].strip()[:100],
+                }
+            )
 
     # Adaptive fallback: if no gaps passed the adaptive threshold, retry with fixed.
     if use_adaptive and not silence_gaps:
         logger.warning(
-            "Adaptive threshold %.2fs produced 0 gaps; "
-            "falling back to fixed threshold %ds",
-            effective_threshold, min_silence_seconds,
+            "Adaptive threshold %.2fs produced 0 gaps; falling back to fixed threshold %ds",
+            effective_threshold,
+            min_silence_seconds,
         )
         for i in range(len(entries) - 1):
             current_entry = entries[i]
@@ -185,14 +187,16 @@ def detect_silence_gaps(
             if gap_duration >= min_silence_seconds:
                 current_end_seconds = parse_timestamp_to_seconds(current_end_time)
                 next_start_seconds = parse_timestamp_to_seconds(next_start_time)
-                silence_gaps.append({
-                    "gap_start": current_end_time,
-                    "gap_end": next_start_time,
-                    "gap_duration_seconds": gap_duration,
-                    "gap_midpoint_seconds": (current_end_seconds + next_start_seconds) // 2,
-                    "previous_text": current_entry[2].strip()[:100],
-                    "next_text": next_entry[2].strip()[:100],
-                })
+                silence_gaps.append(
+                    {
+                        "gap_start": current_end_time,
+                        "gap_end": next_start_time,
+                        "gap_duration_seconds": gap_duration,
+                        "gap_midpoint_seconds": (current_end_seconds + next_start_seconds) // 2,
+                        "previous_text": current_entry[2].strip()[:100],
+                        "next_text": next_entry[2].strip()[:100],
+                    }
+                )
 
     threshold_used = effective_threshold if not (use_adaptive and not silence_gaps) else min_silence_seconds
     logger.info(f"Found {len(silence_gaps)} silence gaps of {threshold_used}+ seconds")
@@ -254,7 +258,7 @@ def chunk_by_silence(
     if not silence_gaps:
         logger.warning("No silence gaps found, returning entire content as single chunk")
         # Parse first and last timestamps (with or without milliseconds)
-        timestamps = re.findall(r'\d{1,2}:\d{2}:\d{2}(?:,\d{3})?', srt_content)
+        timestamps = re.findall(r"\d{1,2}:\d{2}:\d{2}(?:,\d{3})?", srt_content)
         if len(timestamps) >= 2:
             start_time = timestamps[0]
             end_time = timestamps[-1]
@@ -264,18 +268,20 @@ def chunk_by_silence(
             end_time = "00:00:00"
             duration = 0
 
-        return [{
-            "chunk_number": 1,
-            "start_time": start_time,
-            "end_time": end_time,
-            "duration_seconds": duration,
-            "duration_minutes": round(duration / 60, 1),
-            "content": srt_content
-        }]
+        return [
+            {
+                "chunk_number": 1,
+                "start_time": start_time,
+                "end_time": end_time,
+                "duration_seconds": duration,
+                "duration_minutes": round(duration / 60, 1),
+                "content": srt_content,
+            }
+        ]
 
     # Extract all SRT entries with timestamps
     # Supports both HH:MM:SS and HH:MM:SS,mmm formats
-    pattern = r'(\d{1,2}:\d{2}:\d{2}(?:,\d{3})?)\s*-->\s*(\d{1,2}:\d{2}:\d{2}(?:,\d{3})?)\s*\n(.+?)(?=\n\d{1,2}:\d{2}:\d{2}(?:,\d{3})?\s*-->|\Z)'
+    pattern = r"(\d{1,2}:\d{2}:\d{2}(?:,\d{3})?)\s*-->\s*(\d{1,2}:\d{2}:\d{2}(?:,\d{3})?)\s*\n(.+?)(?=\n\d{1,2}:\d{2}:\d{2}(?:,\d{3})?\s*-->|\Z)"
     entries = re.findall(pattern, srt_content, re.DOTALL)
 
     chunks = []
@@ -285,7 +291,7 @@ def chunk_by_silence(
     min_chunk_seconds = min_chunk_duration_minutes * 60
 
     for gap in silence_gaps:
-        gap_midpoint = gap['gap_midpoint_seconds']
+        gap_midpoint = gap["gap_midpoint_seconds"]
 
         # Find the entry index at this gap
         gap_entry_idx = None
@@ -309,14 +315,16 @@ def chunk_by_silence(
             for entry in chunk_entries:
                 chunk_content += f"{entry[0]} --> {entry[1]}\n{entry[2]}\n\n"
 
-            chunks.append({
-                "chunk_number": len(chunks) + 1,
-                "start_time": chunk_start_time,
-                "end_time": chunk_end_time,
-                "duration_seconds": chunk_duration,
-                "duration_minutes": round(chunk_duration / 60, 1),
-                "content": chunk_content.strip()
-            })
+            chunks.append(
+                {
+                    "chunk_number": len(chunks) + 1,
+                    "start_time": chunk_start_time,
+                    "end_time": chunk_end_time,
+                    "duration_seconds": chunk_duration,
+                    "duration_minutes": round(chunk_duration / 60, 1),
+                    "content": chunk_content.strip(),
+                }
+            )
 
             # Start new chunk
             chunk_start_idx = gap_entry_idx
@@ -332,14 +340,16 @@ def chunk_by_silence(
         for entry in chunk_entries:
             chunk_content += f"{entry[0]} --> {entry[1]}\n{entry[2]}\n\n"
 
-        chunks.append({
-            "chunk_number": len(chunks) + 1,
-            "start_time": chunk_start_time,
-            "end_time": chunk_end_time,
-            "duration_seconds": chunk_duration,
-            "duration_minutes": round(chunk_duration / 60, 1),
-            "content": chunk_content.strip()
-        })
+        chunks.append(
+            {
+                "chunk_number": len(chunks) + 1,
+                "start_time": chunk_start_time,
+                "end_time": chunk_end_time,
+                "duration_seconds": chunk_duration,
+                "duration_minutes": round(chunk_duration / 60, 1),
+                "content": chunk_content.strip(),
+            }
+        )
 
     # Post-process: Merge chunks that are too small (less than min_chunk_duration_minutes)
     merged_chunks = []
@@ -348,30 +358,33 @@ def chunk_by_silence(
         current_chunk = chunks[i]
 
         # If chunk is too small and not the last one, merge with next
-        while (current_chunk['duration_seconds'] < min_chunk_seconds and
-               i < len(chunks) - 1):
+        while current_chunk["duration_seconds"] < min_chunk_seconds and i < len(chunks) - 1:
             next_chunk = chunks[i + 1]
 
             # Merge current and next chunk
             current_chunk = {
                 "chunk_number": len(merged_chunks) + 1,
-                "start_time": current_chunk['start_time'],
-                "end_time": next_chunk['end_time'],
-                "duration_seconds": (parse_timestamp_to_seconds(next_chunk['end_time']) -
-                                   parse_timestamp_to_seconds(current_chunk['start_time'])),
-                "content": current_chunk['content'] + "\n\n" + next_chunk['content']
+                "start_time": current_chunk["start_time"],
+                "end_time": next_chunk["end_time"],
+                "duration_seconds": (
+                    parse_timestamp_to_seconds(next_chunk["end_time"])
+                    - parse_timestamp_to_seconds(current_chunk["start_time"])
+                ),
+                "content": current_chunk["content"] + "\n\n" + next_chunk["content"],
             }
-            current_chunk['duration_minutes'] = round(current_chunk['duration_seconds'] / 60, 1)
+            current_chunk["duration_minutes"] = round(current_chunk["duration_seconds"] / 60, 1)
             i += 1
 
         # Renumber chunk
-        current_chunk['chunk_number'] = len(merged_chunks) + 1
+        current_chunk["chunk_number"] = len(merged_chunks) + 1
         merged_chunks.append(current_chunk)
         i += 1
 
     logger.info(f"Created {len(merged_chunks)} chunks based on silence gaps (min: {min_chunk_duration_minutes} min)")
     for chunk in merged_chunks:
-        logger.info(f"  Chunk {chunk['chunk_number']}: {chunk['start_time']} - {chunk['end_time']} ({chunk['duration_minutes']} min)")
+        logger.info(
+            f"  Chunk {chunk['chunk_number']}: {chunk['start_time']} - {chunk['end_time']} ({chunk['duration_minutes']} min)"
+        )
 
     return merged_chunks
 
@@ -427,7 +440,7 @@ def analyze_chapters_with_ai(
     agenda_content: str,
     min_duration_minutes: int = 15,
     max_duration_minutes: int = 30,
-    model: str = LLM_CHEAP
+    model: str = LLM_CHEAP,
 ) -> dict:
     """
     Use AI to identify topic changes in transcription based on content similarity.
@@ -465,13 +478,7 @@ def analyze_chapters_with_ai(
             "error": str (if failed)
         }
     """
-    result = {
-        "success": False,
-        "total_chapters": 0,
-        "total_duration_seconds": 0,
-        "chapters": [],
-        "error": None
-    }
+    result = {"success": False, "total_chapters": 0, "total_duration_seconds": 0, "chapters": [], "error": None}
 
     if not srt_content:
         result["error"] = "Empty SRT content provided"
@@ -510,15 +517,17 @@ def analyze_chapters_with_ai(
             end_seconds = parse_timestamp_to_seconds(chapter.get("end_time", "00:00:00"))
             duration_seconds = max(0, end_seconds - start_seconds)
 
-            chapters.append({
-                "chapter_number": idx,
-                "title": chapter.get("title", ""),
-                "start_time": chapter.get("start_time", "00:00:00"),
-                "end_time": chapter.get("end_time", "00:00:00"),
-                "duration_seconds": duration_seconds,
-                "duration_minutes": round(duration_seconds / 60, 1),
-                "topics": chapter.get("topics", []),
-            })
+            chapters.append(
+                {
+                    "chapter_number": idx,
+                    "title": chapter.get("title", ""),
+                    "start_time": chapter.get("start_time", "00:00:00"),
+                    "end_time": chapter.get("end_time", "00:00:00"),
+                    "duration_seconds": duration_seconds,
+                    "duration_minutes": round(duration_seconds / 60, 1),
+                    "topics": chapter.get("topics", []),
+                }
+            )
 
         # Sort chapters by start time
         chapters.sort(key=lambda x: parse_timestamp_to_seconds(x["start_time"]))

@@ -152,8 +152,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
     pg_conn = PostgresConnection()
-    stv_table = pg_conn.get_qualified_table('speaker_turn_videos')
-    st_table = pg_conn.get_qualified_table('speaker_turns')
+    stv_table = pg_conn.get_qualified_table("speaker_turn_videos")
+    st_table = pg_conn.get_qualified_table("speaker_turns")
 
     with pg_conn.get_connection() as conn:
         if args.mode in ("uniform", "both"):

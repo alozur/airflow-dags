@@ -131,16 +131,12 @@ def load_plan(path) -> list[BackfillEntry]:
 
         expected = item.get("expected_current_slug")
         if expected is not None and not isinstance(expected, str):
-            raise BackfillInputError(
-                f"entry {index}: expected_current_slug must be a string or null, got {expected!r}"
-            )
+            raise BackfillInputError(f"entry {index}: expected_current_slug must be a string or null, got {expected!r}")
         new_slug = item["new_slug"]
         if not isinstance(new_slug, str) or not new_slug:
             raise BackfillInputError(f"entry {index}: new_slug must be a non-empty string")
 
-        entries.append(
-            BackfillEntry(turn_id=turn_id, expected_current_slug=expected, new_slug=new_slug)
-        )
+        entries.append(BackfillEntry(turn_id=turn_id, expected_current_slug=expected, new_slug=new_slug))
     return entries
 
 
@@ -222,8 +218,7 @@ def render_summary(
         f"Method: {method}  Confidence: {confidence}",
         f"Entries: {len(entries)}",
         "",
-        f"{'turn_id':>10} | {'speaker_label':<16} | {'old_slug':<28} | "
-        f"{'new_slug':<28} | {'status':<12} | output_path",
+        f"{'turn_id':>10} | {'speaker_label':<16} | {'old_slug':<28} | {'new_slug':<28} | {'status':<12} | output_path",
     ]
 
     status_counts: dict[str, int] = {}
@@ -254,9 +249,7 @@ def build_update_query(stv_table: str) -> str:
 def check_autocommit_disabled(conn) -> None:
     """Refuse an autocommit connection (`is True`, not truthiness — MagicMock-safe)."""
     if getattr(conn, "autocommit", False) is True:
-        raise BackfillUsageError(
-            "connection is in autocommit mode; the backfill requires transactional writes"
-        )
+        raise BackfillUsageError("connection is in autocommit mode; the backfill requires transactional writes")
 
 
 def apply_backfill(
@@ -300,15 +293,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments. Dry run is the absence of `--execute`."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True, help="Path to the JSON plan file.")
-    parser.add_argument(
-        "--confidence", required=True, type=float, help="Confidence in [0.0, 1.0] for every entry."
-    )
-    parser.add_argument(
-        "--method", default="manual", help="speaker_resolution_method marker (default: manual)."
-    )
-    parser.add_argument(
-        "--execute", action="store_true", help="Perform writes. Absent (default) = dry run."
-    )
+    parser.add_argument("--confidence", required=True, type=float, help="Confidence in [0.0, 1.0] for every entry.")
+    parser.add_argument("--method", default="manual", help="speaker_resolution_method marker (default: manual).")
+    parser.add_argument("--execute", action="store_true", help="Perform writes. Absent (default) = dry run.")
     parser.add_argument(
         "--rollback-out", default=None, help="Write the inverse plan here after a successful --execute."
     )

@@ -50,6 +50,7 @@ _TEST_ENV: dict[str, str] = {
 for _key, _value in _TEST_ENV.items():
     os.environ.setdefault(_key, _value)
 
+
 # ---------------------------------------------------------------------------
 # 3. Stub heavy/optional third-party modules BEFORE production code imports them.
 # ---------------------------------------------------------------------------
@@ -92,7 +93,9 @@ _install_stub_module(
     },
 )
 
-_install_stub_module("pytubefix", attrs={"YouTube": object, "cli": types.SimpleNamespace(on_progress=lambda *a, **k: None)})
+_install_stub_module(
+    "pytubefix", attrs={"YouTube": object, "cli": types.SimpleNamespace(on_progress=lambda *a, **k: None)}
+)
 _install_stub_module("pytubefix.cli", attrs={"on_progress": lambda *a, **k: None})
 _install_stub_module("whisper", attrs={"load_model": lambda *_a, **_kw: None})
 

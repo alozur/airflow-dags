@@ -41,7 +41,7 @@ from utils.postgres_helpers import PostgresConnection
 
 load_env_if_local()
 
-DAGS_REPO_PATH = Path(os.getenv('AIRFLOW__CORE__DAGS_FOLDER', '/opt/airflow/dags/repo'))
+DAGS_REPO_PATH = Path(os.getenv("AIRFLOW__CORE__DAGS_FOLDER", "/opt/airflow/dags/repo"))
 
 # Two-int pg_advisory_lock() namespace, ASCII 'MIGR' packed into 32 bits
 # (< 2**31, so it fits the signed int4 the two-arg advisory-lock form takes).
@@ -53,8 +53,8 @@ _MIGRATION_LOCK_NAMESPACE = 0x4D494752
 # Dedicated DDL migration role (issue #203) — least-privilege split from the
 # per-environment runtime role. Both-or-neither: a partially configured stack
 # must never authenticate as a half-provisioned role.
-MIGRATION_USER_ENV = 'MIGRATION_POSTGRES_USER'
-MIGRATION_PASSWORD_ENV = 'MIGRATION_POSTGRES_PASSWORD'
+MIGRATION_USER_ENV = "MIGRATION_POSTGRES_USER"
+MIGRATION_PASSWORD_ENV = "MIGRATION_POSTGRES_PASSWORD"
 
 # Owner role per target schema (issue #291). DDL executed by the dedicated
 # migration role must create objects owned by the stack's runtime-owner role —
@@ -64,10 +64,10 @@ MIGRATION_PASSWORD_ENV = 'MIGRATION_POSTGRES_PASSWORD'
 # relies on the membership grants airflow_dev/airflow_prod -> airflow_migrations
 # provisioned on 2026-09-01.
 SCHEMA_OWNER_ROLES = {
-    'development': 'airflow_dev',
-    'production': 'airflow_prod',
+    "development": "airflow_dev",
+    "production": "airflow_prod",
 }
-MIGRATION_OWNER_ROLE_ENV = 'MIGRATION_OWNER_ROLE'
+MIGRATION_OWNER_ROLE_ENV = "MIGRATION_OWNER_ROLE"
 
 
 class MigrationPrivilegeError(RuntimeError):
@@ -83,15 +83,13 @@ def _require_schema_create(cur, role: str, schema: str) -> None:
     """Fail loudly if *role* lacks CREATE on *schema* — every migration DDL
     statement would otherwise fail opaquely with InsufficientPrivilege after
     SET ROLE has already succeeded (issue #310)."""
-    cur.execute(
-        "SELECT has_schema_privilege(%s, %s, 'CREATE') AS has_create", (role, schema)
-    )
+    cur.execute("SELECT has_schema_privilege(%s, %s, 'CREATE') AS has_create", (role, schema))
     row = cur.fetchone()
-    if not row or not row['has_create']:
+    if not row or not row["has_create"]:
         raise MigrationPrivilegeError(
             f"Owner role '{role}' has no CREATE on schema '{schema}' — every "
             f"migration DDL statement would fail. Run as superuser: "
-            f'GRANT CREATE ON SCHEMA {schema} TO {role}; '
+            f"GRANT CREATE ON SCHEMA {schema} TO {role}; "
             f"(codified in congress_videos/sql/grant_permissions*.sql — issue #310)"
         )
 
@@ -113,18 +111,14 @@ def _assume_owner_role(conn, cur, schema: str) -> None:
     """
     role = _owner_role_for_schema(schema)
     if not role:
-        logging.info(
-            "No owner role mapped for schema '%s' — running as connection role", schema
-        )
+        logging.info("No owner role mapped for schema '%s' — running as connection role", schema)
         return
     try:
         cur.execute(f'SET ROLE "{role}"')
         logging.info("Assumed owner role '%s' for schema '%s'", role, schema)
     except Exception:
         conn.rollback()
-        logging.warning(
-            "SET ROLE %s failed — continuing as connection role", role, exc_info=True
-        )
+        logging.warning("SET ROLE %s failed — continuing as connection role", role, exc_info=True)
         return
 
     _require_schema_create(cur, role, schema)
@@ -144,17 +138,15 @@ def _migration_connection() -> PostgresConnection:
         pg.user, pg.password = user, password
         logging.info("Migrations using dedicated role '%s'", user)
     else:
-        logging.info(
-            "%s/%s unset or partial — using POSTGRES_USER", MIGRATION_USER_ENV, MIGRATION_PASSWORD_ENV
-        )
+        logging.info("%s/%s unset or partial — using POSTGRES_USER", MIGRATION_USER_ENV, MIGRATION_PASSWORD_ENV)
     return pg
 
 
 default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'email_on_failure': False,
-    'retries': 0,
+    "owner": "airflow",
+    "depends_on_past": False,
+    "email_on_failure": False,
+    "retries": 0,
 }
 
 
@@ -200,10 +192,11 @@ def _apply_pending_migrations(**context) -> None:
             )
         logging.info(
             "Acquired migration advisory lock for schema '%s' (namespace=%d)",
-            schema, _MIGRATION_LOCK_NAMESPACE,
+            schema,
+            _MIGRATION_LOCK_NAMESPACE,
         )
 
-        migration_files = sorted(DAGS_REPO_PATH.glob('*/sql/migrations/*.sql'))
+        migration_files = sorted(DAGS_REPO_PATH.glob("*/sql/migrations/*.sql"))
 
         if not migration_files:
             logging.info("No migration files found under %s", DAGS_REPO_PATH)
@@ -212,11 +205,12 @@ def _apply_pending_migrations(**context) -> None:
         with pg.get_connection(statement_timeout_ms=0) as conn:
             with conn.cursor() as cur:
                 cur.execute(f"SELECT migration FROM {schema}.schema_migrations")
-                applied = {row['migration'] for row in cur.fetchall()}
+                applied = {row["migration"] for row in cur.fetchall()}
 
         logging.info(
             "Found %d migration file(s), %d already applied",
-            len(migration_files), len(applied),
+            len(migration_files),
+            len(applied),
         )
 
         applied_count = 0
@@ -246,7 +240,8 @@ def _apply_pending_migrations(**context) -> None:
 
         logging.info(
             "Migrations complete — %d applied, %d skipped",
-            applied_count, len(applied),
+            applied_count,
+            len(applied),
         )
     # Lock release is implicit: pg.get_connection's context manager closes
     # this session on any exit path, and a session-scoped advisory lock dies
@@ -254,22 +249,21 @@ def _apply_pending_migrations(**context) -> None:
 
 
 with DAG(
-    'run_migrations',
+    "run_migrations",
     default_args=default_args,
-    description='Apply pending SQL migrations across all projects',
+    description="Apply pending SQL migrations across all projects",
     schedule=None,
     start_date=datetime(2025, 1, 1),
     catchup=False,
-    tags=['maintenance', 'migrations'],
+    tags=["maintenance", "migrations"],
 ) as dag:
-
     t1 = PythonOperator(
-        task_id='ensure_migrations_table',
+        task_id="ensure_migrations_table",
         python_callable=_ensure_migrations_table,
     )
 
     t2 = PythonOperator(
-        task_id='apply_pending_migrations',
+        task_id="apply_pending_migrations",
         python_callable=_apply_pending_migrations,
     )
 
