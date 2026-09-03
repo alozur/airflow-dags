@@ -137,7 +137,6 @@ indent-style = "space"
 "congress_videos/modules/video_splitter.py" = ["C901", "E501", "SIM102"]
 "congress_videos/modules/youtube/__init__.py" = ["E501"]
 "congress_videos/modules/youtube/download.py" = ["B905", "C901", "E501", "SIM103", "SIM108"]
-"congress_videos/modules/youtube/map_reduce_chapters.py" = ["C901"]
 "congress_videos/modules/youtube/youtube_ai.py" = ["E501", "F401"]
 "congress_videos/modules/youtube/youtube_channel.py" = ["B007", "C901", "E501", "F401", "F841", "SIM102"]
 "congress_videos/modules/youtube/youtube_upload.py" = ["C901"]
