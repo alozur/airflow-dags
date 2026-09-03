@@ -26,7 +26,6 @@ from congress_videos.config.ai_prompts import (
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
 from congress_videos.modules.database import CongressionalVideoDB
 from utils.ai_helpers import generate_json_completion, truncate_text
-from utils.airflow_helpers import xcom_task
 from utils.env_loader import load_env_if_local
 from utils.llm_config import LLM_DEFAULT
 from utils.whisper_helpers import transcribe_audio_file
@@ -259,7 +258,7 @@ with DAG(
     def _trigger_youtube_upload(ti, **context):
         import time
 
-        from airflow.models import DagRun, XCom
+        from airflow.models import XCom
 
         pending_shorts = ti.xcom_pull(key="pending_shorts") or []
         shorts_metadata = ti.xcom_pull(key="shorts_metadata") or []

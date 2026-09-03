@@ -15,7 +15,7 @@ Mirrors video_analytics_dag end-to-end in structure.
 
 import logging
 import os
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator, ShortCircuitOperator

@@ -36,7 +36,7 @@ and prod after rollout — no code action, deployment step only.
 
 import logging
 import os
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator, ShortCircuitOperator

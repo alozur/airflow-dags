@@ -19,7 +19,7 @@ DAG, video_analytics_actions, which uses the separate upload-purpose token.
 
 import logging
 import os
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
