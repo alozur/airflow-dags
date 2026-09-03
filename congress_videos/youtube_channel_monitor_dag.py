@@ -359,7 +359,7 @@ with DAG(
             db = CongressionalVideoDB()
             for video_id in failed_ids:
                 logging.warning("Integrity probe FAILED for %s — deferring 12h.", video_id)
-                db.record_source_integrity_failure(video_id, retry_after_hours=12)
+            db.record_source_integrity_failures(failed_ids, retry_after_hours=12)
         return enriched
 
     t3c2_integrity = PythonOperator(

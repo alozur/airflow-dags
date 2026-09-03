@@ -48,7 +48,7 @@ airflow-dags/
 │   │   ├── grant_permissions.sql            # Permisos para entorno de desarrollo
 │   │   └── grant_permissions_production.sql # Permisos para producción
 │   ├── youtube_channel_monitor_dag.py  # DAG principal: monitorización y análisis
-│   ├── youtube_upload_dag.py           # DAG de subida de capítulos a YouTube
+│   ├── youtube_upload_dag.py           # DAG de subida de turnos de orador a YouTube
 │   └── requirements.txt
 │
 ├── utils/                         # Utilidades compartidas entre todos los proyectos
@@ -100,13 +100,14 @@ Monitoriza el canal YouTube del Congreso, obtiene la sesión plenaria del día, 
 ### 2. `congress_youtube_chapter_uploader`
 **Fichero:** `congress_videos/youtube_upload_dag.py`
 
-Consulta la vista `uploadable_chapters` de la base de datos, genera metadatos con IA, crea miniaturas, extrae los fragmentos de vídeo con ffmpeg y los sube a YouTube.
+Publica un turno de orador al día. Consulta la vista `uploadable_turns`, genera metadatos con IA, delega la miniatura en `generic_thumbnail_generator` y sube el vídeo a YouTube. El nombre del DAG dice `chapter` por compatibilidad: ver "Nomenclatura" en [DAGS.md](DAGS.md).
 
-**Schedule:** `0 12 * * *` (12:00 cada día)
+**Schedule:** `0 19 * * *` (19:00 UTC cada día) — la fuente autoritativa es [DAGS.md](DAGS.md), donde un test la vigila
 **Parámetros:**
-- `max_chapters`: Máximo de capítulos a subir por ejecución (por defecto 5)
-- `min_relevance_score`: Puntuación mínima para subir (por defecto 2, escala 0-5)
+- `max_chapters`: heredado y **no leído** por el DAG; el tope real es `DAILY_LONG_FORM_UPLOAD_LIMIT = 1`
+- `min_relevance_score`: Umbral que usa `check_upload_quota` al contar capitulos pendientes (por defecto 2, escala 0-5)
 - `isTesting`: Siempre `false` en producción para que los vídeos sean públicos
+- `dry_run`: Ejecuta el pipeline sin disparar la subida (por defecto `false`)
 
 ### 3. `generic_youtube_uploader`
 **Fichero:** `utils/youtube_uploader_dag.py`

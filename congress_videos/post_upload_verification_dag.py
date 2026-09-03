@@ -63,6 +63,134 @@ def _staleness_guard(**context) -> bool:
     return True
 
 
+def _build_youtube_service_or_none(token_file):
+    """Build the authenticated YouTube service, or None if that fails.
+
+    On failure, non-200 oembed responses are treated as unknown rather than
+    aborting the run.
+    """
+    from utils.youtube_helpers import get_authenticated_youtube_service
+
+    try:
+        youtube_service = get_authenticated_youtube_service(token_file)
+    except Exception as exc:
+        logging.warning(
+            "post_upload_verification: could not build YouTube service: %s — will treat all non-200 oembed as unknown",
+            exc,
+        )
+        youtube_service = None
+    return youtube_service
+
+
+def _verify_one_candidate(
+    candidate: dict,
+    youtube_service,
+    api_calls_made: int,
+    db: CongressionalVideoDB,
+) -> tuple[int, int, int, int, int]:
+    """Verify a single candidate and write its outcome to the DB.
+
+    Returns (api_calls_made, verified, failures, skipped, errors) — the
+    possibly-incremented api_calls_made counter followed by this candidate's
+    per-outcome deltas. api_calls_made is threaded explicitly through the
+    return value; it is never mutated via closure.
+    """
+    import requests
+
+    verified = 0
+    failures = 0
+    skipped = 0
+    errors = 0
+
+    youtube_video_id = candidate.get("youtube_video_id") or ""
+    item_type = candidate.get("item_type", "chapter")
+    item_id = candidate.get("id")
+    output_path = candidate.get("output_path")
+
+    # The identifier used for writes: output_path for turns, chapter_id for chapters
+    write_id = output_path if (item_type == "turn" and output_path) else item_id
+
+    if api_calls_made >= MAX_API_CALLS_PER_RUN:
+        logging.info(
+            "post_upload_verification: cap reached (%d), leaving %s id=%s for next run",
+            MAX_API_CALLS_PER_RUN,
+            item_type,
+            item_id,
+        )
+        skipped += 1
+        return api_calls_made, verified, failures, skipped, errors
+
+    try:
+        status, detail = check_video_status(
+            youtube_video_id,
+            http_get=requests.get,
+            youtube_service=youtube_service,
+        )
+        # Only oembed non-200 paths consume Data API quota
+        if detail != "oembed_200":
+            api_calls_made += 1
+
+    except Exception as exc:
+        logging.error(
+            "post_upload_verification: unexpected error checking %s id=%s yt_id=%s: %s",
+            item_type,
+            item_id,
+            youtube_video_id,
+            exc,
+        )
+        errors += 1
+        return api_calls_made, verified, failures, skipped, errors
+
+    if status == "ok":
+        try:
+            db.mark_upload_verified(item_type, write_id)
+            verified += 1
+            logging.info(
+                "post_upload_verification: verified %s id=%s yt_id=%s",
+                item_type,
+                write_id,
+                youtube_video_id,
+            )
+        except Exception as exc:
+            logging.error(
+                "post_upload_verification: DB error marking verified %s id=%s: %s",
+                item_type,
+                write_id,
+                exc,
+            )
+            errors += 1
+
+    elif status == "abandoned":
+        try:
+            db.record_upload_verification_failure(item_type, write_id, detail)
+            failures += 1
+            logging.info(
+                "post_upload_verification: recorded failure for %s id=%s detail=%s",
+                item_type,
+                write_id,
+                detail,
+            )
+        except Exception as exc:
+            logging.error(
+                "post_upload_verification: DB error recording failure %s id=%s: %s",
+                item_type,
+                write_id,
+                exc,
+            )
+            errors += 1
+
+    else:
+        # processing or unknown — leave the row unmodified
+        logging.debug(
+            "post_upload_verification: no write for %s id=%s status=%s",
+            item_type,
+            item_id,
+            status,
+        )
+
+    return api_calls_made, verified, failures, skipped, errors
+
+
 def _verify_and_record(ti, **context) -> dict:
     """Verify each candidate upload and write outcomes to the DB.
 
@@ -78,10 +206,6 @@ def _verify_and_record(ti, **context) -> dict:
 
     Returns a summary dict pushed to XCom 'verification_summary'.
     """
-    import requests
-
-    from utils.youtube_helpers import get_authenticated_youtube_service
-
     candidates = ti.xcom_pull(key="candidates") or []
 
     if not candidates:
@@ -96,14 +220,7 @@ def _verify_and_record(ti, **context) -> dict:
         MAX_API_CALLS_PER_RUN,
     )
 
-    try:
-        youtube_service = get_authenticated_youtube_service(_TOKEN_FILE)
-    except Exception as exc:
-        logging.warning(
-            "post_upload_verification: could not build YouTube service: %s — will treat all non-200 oembed as unknown",
-            exc,
-        )
-        youtube_service = None
+    youtube_service = _build_youtube_service_or_none(_TOKEN_FILE)
 
     db = CongressionalVideoDB()
     api_calls_made = 0
@@ -113,91 +230,11 @@ def _verify_and_record(ti, **context) -> dict:
     errors = 0
 
     for candidate in candidates:
-        youtube_video_id = candidate.get("youtube_video_id") or ""
-        item_type = candidate.get("item_type", "chapter")
-        item_id = candidate.get("id")
-        output_path = candidate.get("output_path")
-
-        # The identifier used for writes: output_path for turns, chapter_id for chapters
-        write_id = output_path if (item_type == "turn" and output_path) else item_id
-
-        if api_calls_made >= MAX_API_CALLS_PER_RUN:
-            logging.info(
-                "post_upload_verification: cap reached (%d), leaving %s id=%s for next run",
-                MAX_API_CALLS_PER_RUN,
-                item_type,
-                item_id,
-            )
-            skipped += 1
-            continue
-
-        try:
-            status, detail = check_video_status(
-                youtube_video_id,
-                http_get=requests.get,
-                youtube_service=youtube_service,
-            )
-            # Only oembed non-200 paths consume Data API quota
-            if detail != "oembed_200":
-                api_calls_made += 1
-
-        except Exception as exc:
-            logging.error(
-                "post_upload_verification: unexpected error checking %s id=%s yt_id=%s: %s",
-                item_type,
-                item_id,
-                youtube_video_id,
-                exc,
-            )
-            errors += 1
-            continue
-
-        if status == "ok":
-            try:
-                db.mark_upload_verified(item_type, write_id)
-                verified += 1
-                logging.info(
-                    "post_upload_verification: verified %s id=%s yt_id=%s",
-                    item_type,
-                    write_id,
-                    youtube_video_id,
-                )
-            except Exception as exc:
-                logging.error(
-                    "post_upload_verification: DB error marking verified %s id=%s: %s",
-                    item_type,
-                    write_id,
-                    exc,
-                )
-                errors += 1
-
-        elif status == "abandoned":
-            try:
-                db.record_upload_verification_failure(item_type, write_id, detail)
-                failures += 1
-                logging.info(
-                    "post_upload_verification: recorded failure for %s id=%s detail=%s",
-                    item_type,
-                    write_id,
-                    detail,
-                )
-            except Exception as exc:
-                logging.error(
-                    "post_upload_verification: DB error recording failure %s id=%s: %s",
-                    item_type,
-                    write_id,
-                    exc,
-                )
-                errors += 1
-
-        else:
-            # processing or unknown — leave the row unmodified
-            logging.debug(
-                "post_upload_verification: no write for %s id=%s status=%s",
-                item_type,
-                item_id,
-                status,
-            )
+        api_calls_made, dv, df, ds, de = _verify_one_candidate(candidate, youtube_service, api_calls_made, db)
+        verified += dv
+        failures += df
+        skipped += ds
+        errors += de
 
     result = {
         "verified": verified,

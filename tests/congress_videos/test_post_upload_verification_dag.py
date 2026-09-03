@@ -239,3 +239,91 @@ class TestVerifyAndRecordCallable:
 
             mock_check.assert_not_called()
             mock_db.mark_upload_verified.assert_not_called()
+
+    def test_characterizes_full_summary_dict_for_mixed_batch(self, mock_task_instance):
+        """Characterization (pinned before extraction): the exact 5-key summary dict
+        for a mixed batch — one verified (no API charge), one abandoned (charged),
+        one erroring (unincremented) — including the api_calls_made tally.
+        """
+        candidates = [
+            {"item_type": "chapter", "id": 1, "youtube_video_id": "okvid", "output_path": None},
+            {"item_type": "chapter", "id": 2, "youtube_video_id": "abandonedvid", "output_path": None},
+            {"item_type": "chapter", "id": 3, "youtube_video_id": "badvid", "output_path": None},
+        ]
+        mock_task_instance.xcom_push(key="candidates", value=candidates)
+
+        def _mixed_check(video_id, *, http_get, youtube_service=None):
+            if video_id == "okvid":
+                return ("ok", "oembed_200")
+            if video_id == "abandonedvid":
+                return ("abandoned", "empty_items")
+            raise RuntimeError("network error")
+
+        with (
+            patch(
+                "congress_videos.post_upload_verification_dag.check_video_status",
+                side_effect=_mixed_check,
+            ),
+            patch("congress_videos.post_upload_verification_dag.CongressionalVideoDB") as mock_db_cls,
+        ):
+            mock_db_cls.return_value = MagicMock()
+
+            callable_fn = self._get_callable()
+            result = callable_fn(ti=mock_task_instance)
+
+            assert result == {
+                "verified": 1,
+                "failures": 1,
+                "skipped": 0,
+                "errors": 1,
+                "api_calls_made": 1,
+            }
+
+    def test_characterizes_empty_candidates_four_key_dict(self, mock_task_instance):
+        """Characterization (pinned before extraction): the empty-candidates path
+        keeps its current 4-key dict shape — no api_calls_made key.
+        """
+        mock_task_instance.xcom_pull.return_value = []
+
+        with (
+            patch("congress_videos.post_upload_verification_dag.check_video_status") as mock_check,
+            patch("congress_videos.post_upload_verification_dag.CongressionalVideoDB") as mock_db_cls,
+        ):
+            mock_db_cls.return_value = MagicMock()
+
+            callable_fn = self._get_callable()
+            result = callable_fn(ti=mock_task_instance)
+
+            assert result == {"verified": 0, "failures": 0, "skipped": 0, "errors": 0}
+            mock_check.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _verify_one_candidate helper (extracted from _verify_and_record)
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyOneCandidateApiCallsThreading:
+    """_verify_one_candidate must thread api_calls_made explicitly through its
+    return value, never via a closure or shared mutable state (design D2).
+    """
+
+    def test_api_calls_made_is_returned_not_closed_over(self):
+        from congress_videos.post_upload_verification_dag import _verify_one_candidate
+
+        candidate = {"item_type": "chapter", "id": 1, "youtube_video_id": "vid1", "output_path": None}
+        mock_db = MagicMock()
+
+        with patch(
+            "congress_videos.post_upload_verification_dag.check_video_status",
+            return_value=("ok", "api_ok"),
+        ):
+            # Two independent calls with different starting counters. If the
+            # counter were held in a closure/global instead of threaded through
+            # the argument and return value, the second call would observe
+            # state left over from the first instead of starting fresh at 0.
+            result_a = _verify_one_candidate(candidate, None, 5, mock_db)
+            result_b = _verify_one_candidate(candidate, None, 0, mock_db)
+
+        assert result_a == (6, 1, 0, 0, 0)
+        assert result_b == (1, 1, 0, 0, 0)

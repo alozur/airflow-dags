@@ -57,6 +57,43 @@ def _significant_tokens(normalized_text: str) -> set[str]:
     return {token for token in normalized_text.split() if len(token) >= _MIN_TOKEN_LEN and token not in COURTESY_TOKENS}
 
 
+def _mention_name_from_entry(entry) -> str | None:
+    """Extract a real mention name from one roster entry, or ``None``.
+
+    Accepts a dict with a ``name`` key, or a plain ``str``. Any other type,
+    a blank/whitespace-only name, or a known placeholder name yields
+    ``None``. Never raises.
+    """
+    try:
+        if isinstance(entry, dict):
+            name = str(entry.get("name", ""))
+        elif isinstance(entry, str):
+            name = entry
+        else:
+            return None
+    except Exception:
+        return None
+    name = name.strip()
+    if not name:
+        return None
+    if is_placeholder(name):
+        return None
+    return name
+
+
+def _dedupe_case_insensitive(names: list[str]) -> list[str]:
+    """Order-preserving dedup of ``names``, keeping the first casing seen."""
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for name in names:
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(name)
+    return deduped
+
+
 def chapter_roster_mentions(key_speakers, speakers) -> list[str]:
     """Return the deduped, non-placeholder mentions from both roster arrays.
 
@@ -75,31 +112,12 @@ def chapter_roster_mentions(key_speakers, speakers) -> list[str]:
             if not array:
                 continue
             for entry in array:
-                try:
-                    if isinstance(entry, dict):
-                        name = str(entry.get("name", ""))
-                    elif isinstance(entry, str):
-                        name = entry
-                    else:
-                        continue
-                except Exception:
-                    continue
-                name = name.strip()
-                if not name:
-                    continue
-                if is_placeholder(name):
+                name = _mention_name_from_entry(entry)
+                if name is None:
                     continue
                 mentions.append(name)
 
-        seen: set[str] = set()
-        deduped: list[str] = []
-        for name in mentions:
-            key = name.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(name)
-        return deduped
+        return _dedupe_case_insensitive(mentions)
     except Exception:
         return []
 

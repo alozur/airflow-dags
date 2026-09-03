@@ -7,6 +7,7 @@ import logging
 import pytest
 
 from congress_videos.srt_helpers import (
+    _blocks_to_prompt_text,
     _find_phrase_in_blocks,
     _parse_srt_blocks,
     _serialize_srt_blocks,
@@ -80,6 +81,49 @@ class TestParseSrtBlocks:
     def test_missing_file_returns_empty_list(self):
         blocks = _parse_srt_blocks("/nonexistent/file.srt")
         assert blocks == []
+
+
+# ---------------------------------------------------------------------------
+# _blocks_to_prompt_text (single-parse prompt derivation, issue #208 item 7b)
+# ---------------------------------------------------------------------------
+
+
+class TestBlocksToPromptTextParity:
+    """`_blocks_to_prompt_text` must be byte-identical to `parse_srt_to_text`
+    for well-formed, millisecond-precision SRT content (independent oracle:
+    the pre-existing `parse_srt_to_text` implementation)."""
+
+    def test_matches_parse_srt_to_text_for_sample_srt(self, srt_file):
+        from congress_videos.srt_helpers import parse_srt_to_text
+
+        blocks = _parse_srt_blocks(srt_file)
+        derived = _blocks_to_prompt_text(blocks)
+
+        assert derived == parse_srt_to_text(srt_file)
+
+    def test_matches_with_max_chars_cap(self, srt_file):
+        from congress_videos.srt_helpers import PRETRIM_MAX_CHARS, parse_srt_to_text
+
+        blocks = _parse_srt_blocks(srt_file)
+        derived = _blocks_to_prompt_text(blocks, max_chars=PRETRIM_MAX_CHARS)
+
+        assert derived == parse_srt_to_text(srt_file, max_chars=PRETRIM_MAX_CHARS)
+
+    def test_multi_line_text_block_parity(self, tmp_path):
+        from congress_videos.srt_helpers import parse_srt_to_text
+
+        srt = (
+            "1\n00:00:01,000 --> 00:00:05,000\nLine one\nLine two\nLine three\n\n"
+            "2\n00:00:06,000 --> 00:00:10,000\nSecond block\n\n"
+        )
+        path = tmp_path / "multiline.srt"
+        path.write_text(srt, encoding="utf-8")
+
+        blocks = _parse_srt_blocks(str(path))
+        derived = _blocks_to_prompt_text(blocks)
+
+        assert derived == parse_srt_to_text(str(path))
+        assert "Line one Line two Line three" in derived
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +225,7 @@ class TestFindSrtForChapter:
 class TestSelectPretrimWindow:
     def _patch_ai(self, mocker, start_phrase: str, end_phrase: str):
         return mocker.patch(
-            "congress_videos.srt_helpers.generate_json_completion",
+            "congress_videos.srt_helpers.cached_json_completion",
             return_value={
                 "error": None,
                 "data": {"start_phrase": start_phrase, "end_phrase": end_phrase},
@@ -229,7 +273,7 @@ class TestSelectPretrimWindow:
 
     def test_ai_call_error_returns_none(self, mocker, srt_file):
         mocker.patch(
-            "congress_videos.srt_helpers.generate_json_completion",
+            "congress_videos.srt_helpers.cached_json_completion",
             return_value={"error": "API timeout", "data": None},
         )
 
@@ -239,7 +283,7 @@ class TestSelectPretrimWindow:
 
     def test_ai_returns_empty_phrases_returns_none(self, mocker, srt_file):
         mocker.patch(
-            "congress_videos.srt_helpers.generate_json_completion",
+            "congress_videos.srt_helpers.cached_json_completion",
             return_value={"error": None, "data": {"start_phrase": "", "end_phrase": ""}},
         )
 
@@ -249,7 +293,7 @@ class TestSelectPretrimWindow:
 
     def test_ai_returns_wrong_keys_returns_none(self, mocker, srt_file):
         mocker.patch(
-            "congress_videos.srt_helpers.generate_json_completion",
+            "congress_videos.srt_helpers.cached_json_completion",
             return_value={"error": None, "data": {"wrong_key": "value"}},
         )
 
@@ -287,6 +331,87 @@ class TestSelectPretrimWindow:
 
         _, kwargs = mock_ai.call_args
         assert kwargs.get("model") == LLM_CHEAP
+
+    def test_parses_srt_file_exactly_once(self, mocker, srt_file):
+        """The SRT file must be read/parsed exactly once (issue #208 item 7b) —
+        no separate `parse_srt_to_text` read plus a second `_parse_srt_blocks`
+        read of the same file."""
+        self._patch_ai(
+            mocker,
+            start_phrase="El presidente compareció ante el Congreso",
+            end_phrase="quedan a disposición de sus señorías",
+        )
+        open_spy = mocker.patch("congress_videos.srt_helpers.open", wraps=open, create=True)
+
+        select_pretrim_window(srt_file, target_secs=360)
+
+        assert open_spy.call_count == 1
+
+    def test_ms_less_timestamp_srt_returns_none(self, mocker, tmp_path):
+        """Documented out-of-scope divergence: `_parse_srt_blocks` requires
+        millisecond-precision timestamps, so a ms-less SRT yields zero
+        blocks and `select_pretrim_window` still returns None (same outcome
+        as before the single-parse refactor, different guard fires first)."""
+        self._patch_ai(mocker, start_phrase="Hello", end_phrase="world")
+        srt = "1\n00:00:01 --> 00:00:05\nHello world\n\n"
+        path = tmp_path / "msless.srt"
+        path.write_text(srt, encoding="utf-8")
+
+        result = select_pretrim_window(str(path), target_secs=360)
+
+        assert result is None
+
+    def test_cached_json_completion_receives_derived_prompt_text(self, mocker, srt_file):
+        """The exact single-parse-derived prompt text must reach
+        cached_json_completion, with model passed as a keyword (issue #208
+        item 8)."""
+        from congress_videos.srt_helpers import PRETRIM_MAX_CHARS
+
+        mock_ai = self._patch_ai(
+            mocker,
+            start_phrase="El presidente compareció ante el Congreso",
+            end_phrase="quedan a disposición de sus señorías",
+        )
+
+        select_pretrim_window(srt_file, target_secs=360)
+
+        expected_srt_text = _blocks_to_prompt_text(_parse_srt_blocks(srt_file), max_chars=PRETRIM_MAX_CHARS)
+        _, kwargs = mock_ai.call_args
+        assert kwargs.get("model") == LLM_CHEAP
+        assert expected_srt_text in kwargs.get("user_prompt", "")
+        assert kwargs.get("system_prompt")
+
+    def test_repeat_call_with_identical_inputs_is_a_cache_hit(self, mocker, srt_file):
+        """A second select_pretrim_window call with identical SRT content and
+        params must be served from the LLM cache without invoking the
+        underlying completion again (issue #208 item 8)."""
+        store: dict[str, dict] = {}
+
+        def _fake_get_cached(key):
+            return store.get(key)
+
+        def _fake_put_cached(key, model, response):
+            store[key] = response
+
+        mock_generate = mocker.patch(
+            "utils.llm_cache.generate_json_completion",
+            return_value={
+                "error": None,
+                "data": {
+                    "start_phrase": "El presidente compareció ante el Congreso",
+                    "end_phrase": "quedan a disposición de sus señorías",
+                },
+            },
+        )
+        mocker.patch("utils.llm_cache.get_cached", side_effect=_fake_get_cached)
+        mocker.patch("utils.llm_cache.put_cached", side_effect=_fake_put_cached)
+
+        first = select_pretrim_window(srt_file, target_secs=360)
+        second = select_pretrim_window(srt_file, target_secs=360)
+
+        assert mock_generate.call_count == 1
+        assert first == second
+        assert first is not None
 
 
 # ---------------------------------------------------------------------------

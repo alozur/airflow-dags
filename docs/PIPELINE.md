@@ -4,18 +4,21 @@ Vista por fases del flujo completo de `congress_videos`, desde que aparece una
 sesión nueva en el canal del Congreso hasta que sus fragmentos están publicados
 y medidos. El detalle tarea a tarea de cada DAG está en [DAGS.md](DAGS.md).
 
-> **Orden objetivo (issue #117):** el orden conceptual correcto es refinar por
-> orador **antes** de subir (la unidad de publicación debería ser el turno de
-> orador, no el capítulo temático). Hoy la Fase 2 es una cadena on-demand
-> paralela y el uploader consume capítulos sin refinar; la reordenación está
-> pendiente de diseño en #117.
+> **Unidad de publicación (issues #117 y #171):** la unidad publicada es el
+> **turno de orador**, no el capítulo temático. La reordenación se diseñó en
+> #117 y se completó en #171: el uploader dejó de seleccionar capítulos y hoy
+> lee la vista `uploadable_turns`. La Fase 2 dejó de ser una rama paralela y
+> pasó a ser un paso previo obligatorio de la Fase 1: un turno solo es
+> publicable si su MP4 está materializado y preparado.
 
 ```
-Fase 0 (ingesta+análisis)  →  Fase 1 (subida de capítulos)  →  Fase 4 (analítica)
-        │                            ▲
-        └── Fase 2 (refinamiento por orador, on-demand — futuro: delante de Fase 1)
+Fase 0 (ingesta+análisis)  →  Fase 2 (refinamiento por orador)  →  Fase 1 (subida de turnos)  →  Fase 4 (analítica)
+        │
         └── Fase 3 (shorts Reap)
 ```
+
+Los números de fase son históricos: la Fase 2 se numeró cuando iba después de
+la Fase 1. Se mantienen para no romper las referencias externas.
 
 ---
 
@@ -36,26 +39,33 @@ Detecta y analiza la sesión; no publica nada.
    relevancia (0-5) → recorte de silencios de borde → normalización de
    oradores → persistencia en `video_chapters`.
 
-## Fase 1 — Subida de capítulos · `congress_youtube_chapter_uploader`
+## Fase 1 — Subida de turnos · `congress_youtube_chapter_uploader`
 
-Publica los capítulos más relevantes como vídeos independientes.
+Publica un turno de orador al día como vídeo independiente (19:00 UTC,
+`DAILY_LONG_FORM_UPLOAD_LIMIT = 1`). El DAG conserva el nombre `chapter` por
+compatibilidad; ver "Nomenclatura" en [DAGS.md](DAGS.md).
 
 1. **Guardas**: cuota diaria de subidas y guarda de staleness (evita runs
    obsoletos re-planificados tras un `git_sync`).
-2. **Selección**: lee la vista `uploadable_chapters` (relevancia mínima,
-   orador resuelto).
+2. **Selección**: lee la vista `uploadable_turns` con `LIMIT 1` y sin ordenar
+   por fuera, así que el orden interno de la vista (migración 044) decide qué
+   turno se publica. La selección por capítulo, que leía `uploadable_chapters`,
+   se retiró en #171; esa vista sigue viva pero la consumen otros DAGs.
 3. **Metadata + miniatura**: título formato noticia anclado a `key_speakers` y
    descripción por IA; dispara `generic_thumbnail_generator` (Pikzels con
    dirección de arte, zona segura, arquetipo dramático y cita lapidaria).
-4. **Corte**: extrae el capítulo del vídeo fuente con ffmpeg (frame-accurate,
-   re-encode consciente del códec).
-5. **Publicación**: sube al canal, marca el capítulo como subido, propaga el
+4. **Corte**: no hay corte. El MP4 del turno ya lo materializó la Fase 2, así
+   que `extract_chapter_videos` solo reutiliza su `output_path`. La rama ffmpeg
+   sigue en el código pero no se alcanza con `item_type="turn"`.
+5. **Publicación**: sube al canal, marca el turno como subido, propaga el
    `video_id` a la miniatura y registra fallos.
 
-## Fase 2 — Refinamiento por orador (on-demand · epic #16)
+## Fase 2 — Refinamiento por orador (epic #16)
 
 Cadena que convierte capítulos temáticos en turnos de orador listos para
-publicar. Los tres DAGs se disparan vía API (`schedule=None`).
+publicar. Es el paso previo obligatorio de la Fase 1: sin un MP4 materializado
+y marcado como preparado, el turno no entra en `uploadable_turns`. Los DAGs de
+la cadena se disparan vía API (`schedule=None`).
 
 1. **`speaker_turns`** (#86): diarización pyannote vía el sidecar
    `diarize-api` → turnos de orador nombrados dentro de cada capítulo
@@ -65,9 +75,14 @@ publicar. Los tres DAGs se disparan vía API (`schedule=None`).
    aprobación de operador (la voz siempre prevalece; cero cortes automáticos).
 3. **`speaker_turn_videos`** (#88): materializa un MP4 por turno (o grupo de
    turnos cortos consecutivos) ejecutando solo los cortes aprobados.
+4. **`speaker_turn_prepare`** (#146): genera los sidecars (`subtitles.srt`),
+   valida el MP4 con un decode de ffmpeg y solo entonces marca `prepared_at`.
+   Es la puerta de entrada a `uploadable_turns`.
 
-Los vídeos materializados **no se suben automáticamente** todavía; la
-integración con la fase de subida es el objeto de #117.
+Los vídeos materializados sí se suben automáticamente desde #171: son la única
+fuente de la Fase 1. El paso que los habilita es `speaker_turn_prepare`, que
+escribe los sidecars y marca `prepared_at`; hasta entonces el turno no aparece
+en `uploadable_turns`.
 
 ## Fase 3 — Shorts · pipeline Reap
 

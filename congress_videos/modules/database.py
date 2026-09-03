@@ -420,16 +420,21 @@ class CongressionalVideoDB:
         """
         uploadable_chapters_view = self.pg_conn.get_qualified_table("uploadable_chapters")
 
+        if limit:
+            limit = int(limit)
+
         with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
             query = f"""
                     SELECT * FROM {uploadable_chapters_view}
                     WHERE relevance_score >= %s
                     ORDER BY relevance_score DESC, created_at DESC
                 """
+            params = (min_relevance_score,)
             if limit:
-                query += f" LIMIT {limit}"
+                query += " LIMIT %s"
+                params = (min_relevance_score, limit)
 
-            cur.execute(query, (min_relevance_score,))
+            cur.execute(query, params)
             chapters = cur.fetchall()
             logger.info(
                 f"Retrieved {len(chapters)} uploadable chapters (min_score={min_relevance_score}, limit={limit})"
@@ -1553,8 +1558,8 @@ class CongressionalVideoDB:
                     FROM {chapters_table}
                     WHERE is_uploaded_to_youtube = TRUE
                       AND upload_verified_at IS NULL
-                      AND youtube_upload_date BETWEEN NOW() - INTERVAL '%s hours'
-                                                  AND NOW() - INTERVAL '%s hours'
+                      AND youtube_upload_date BETWEEN NOW() - (%s || ' hours')::interval
+                                                  AND NOW() - (%s || ' hours')::interval
 
                     UNION ALL
 
@@ -1576,10 +1581,10 @@ class CongressionalVideoDB:
                     ) dedup_turns
                     WHERE is_uploaded_to_youtube = TRUE
                       AND upload_verified_at IS NULL
-                      AND youtube_upload_date BETWEEN NOW() - INTERVAL '%s hours'
-                                                  AND NOW() - INTERVAL '%s hours'
+                      AND youtube_upload_date BETWEEN NOW() - (%s || ' hours')::interval
+                                                  AND NOW() - (%s || ' hours')::interval
                     """,
-                (max_h, min_h, max_h, min_h),
+                (str(max_h), str(min_h), str(max_h), str(min_h)),
             )
             rows = cur.fetchall()
             logger.info(
@@ -1758,6 +1763,34 @@ class CongressionalVideoDB:
             row = cur.fetchone()
             return dict(row) if row else None
 
+    def _upsert_source_integrity_failure(self, cur, video_id: str, retry_after_hours: int) -> None:
+        """Execute the integrity-failure upsert for one video using an open cursor.
+
+        Shared by `record_source_integrity_failure` (single) and
+        `record_source_integrity_failures` (batch) so both apply the exact same
+        SQL and forward-only `GREATEST(...)` semantics.
+
+        Args:
+            cur: An open cursor on an active connection.
+            video_id: YouTube video ID.
+            retry_after_hours: Hours to defer re-download.
+        """
+        tbl = self.pg_conn.get_qualified_table("youtube_source_videos")
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+        cur.execute(
+            f"""
+                    INSERT INTO {tbl} (video_id, video_url, is_processed, download_retry_after)
+                    VALUES (%s, %s, FALSE, NOW() + (%s || ' hours')::interval)
+                    ON CONFLICT (video_id) DO UPDATE SET
+                        download_retry_after = GREATEST(
+                            {tbl}.download_retry_after,
+                            EXCLUDED.download_retry_after),
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+            (video_id, video_url, str(retry_after_hours)),
+        )
+
     def record_source_integrity_failure(self, video_id: str, retry_after_hours: int = 12) -> None:
         """Early-upsert an integrity failure for a source video.
 
@@ -1778,22 +1811,31 @@ class CongressionalVideoDB:
             video_id: YouTube video ID.
             retry_after_hours: Hours to defer re-download (default 12).
         """
-        tbl = self.pg_conn.get_qualified_table("youtube_source_videos")
-        video_url = f"https://www.youtube.com/watch?v={video_id}"
-
         with self.pg_conn.get_connection() as conn, conn, conn.cursor() as cur:
-            cur.execute(
-                f"""
-                        INSERT INTO {tbl} (video_id, video_url, is_processed, download_retry_after)
-                        VALUES (%s, %s, FALSE, NOW() + (%s || ' hours')::interval)
-                        ON CONFLICT (video_id) DO UPDATE SET
-                            download_retry_after = GREATEST(
-                                {tbl}.download_retry_after,
-                                EXCLUDED.download_retry_after),
-                            updated_at = CURRENT_TIMESTAMP
-                        """,
-                (video_id, video_url, str(retry_after_hours)),
-            )
+            self._upsert_source_integrity_failure(cur, video_id, retry_after_hours)
+
+    def record_source_integrity_failures(self, video_ids: list[str], retry_after_hours: int = 12) -> None:
+        """Record integrity failures for a batch of videos over one connection.
+
+        Opens exactly ONE connection for the whole batch (unlike calling
+        `record_source_integrity_failure` per id, which opens one per call),
+        but each item still commits in its own transaction scope via a
+        per-item `with conn:` block. An exception on a later item propagates
+        (is never swallowed) and does not roll back an earlier item's
+        already-committed row.
+
+        Args:
+            video_ids: YouTube video IDs to record failures for. An empty
+                list is a no-op — no connection is opened.
+            retry_after_hours: Hours to defer re-download (default 12).
+        """
+        if not video_ids:
+            return
+
+        with self.pg_conn.get_connection() as conn:
+            for video_id in video_ids:
+                with conn, conn.cursor() as cur:
+                    self._upsert_source_integrity_failure(cur, video_id, retry_after_hours)
 
     def update_chapter_speakers(
         self,

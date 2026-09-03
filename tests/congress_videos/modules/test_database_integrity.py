@@ -133,6 +133,95 @@ class TestRecordSourceIntegrityFailure:
 
 
 # ---------------------------------------------------------------------------
+# A2: record_source_integrity_failures (batch, one connection, per-item commit)
+# ---------------------------------------------------------------------------
+
+
+class TestRecordSourceIntegrityFailures:
+    def _fresh_conn(self, mocker):
+        """Patch psycopg2.connect with a fresh mock connection/cursor pair,
+        independent of the shared `db` fixture connection, so call counts on
+        `psycopg2.connect` itself can be asserted."""
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_connect = mocker.patch("psycopg2.connect", return_value=mock_conn)
+        return mock_connect, mock_conn, mock_cursor
+
+    def test_one_connection_opened_for_a_batch(self, db, mocker):
+        """get_connection (psycopg2.connect) is called exactly once for a 3-id batch."""
+        instance, _ = db
+        mock_connect, _, _ = self._fresh_conn(mocker)
+
+        instance.record_source_integrity_failures(["a", "b", "c"])
+
+        assert mock_connect.call_count == 1
+
+    def test_upserts_each_id_in_order(self, db, mocker):
+        """Each id is upserted sequentially, in the order given."""
+        instance, _ = db
+        self._fresh_conn(mocker)
+        calls = []
+        mocker.patch.object(
+            instance,
+            "_upsert_source_integrity_failure",
+            side_effect=lambda cur, video_id, retry_after_hours: calls.append(video_id),
+        )
+
+        instance.record_source_integrity_failures(["a", "b", "c"])
+
+        assert calls == ["a", "b", "c"]
+
+    def test_empty_list_opens_no_connection(self, db, mocker):
+        """An empty video_ids list is a no-op — no connection is opened."""
+        instance, _ = db
+        mock_connect, _, _ = self._fresh_conn(mocker)
+
+        instance.record_source_integrity_failures([])
+
+        mock_connect.assert_not_called()
+
+    def test_exception_on_later_item_reraises(self, db, mocker):
+        """An exception on a later item propagates (is never swallowed)."""
+        instance, _ = db
+        self._fresh_conn(mocker)
+
+        def side_effect(cur, video_id, retry_after_hours):
+            if video_id == "b":
+                raise RuntimeError("boom")
+
+        mocker.patch.object(instance, "_upsert_source_integrity_failure", side_effect=side_effect)
+
+        with pytest.raises(RuntimeError):
+            instance.record_source_integrity_failures(["a", "b", "c"])
+
+    def test_earlier_item_transaction_exits_cleanly_before_later_failure(self, db, mocker):
+        """Item 1's `with conn:` block must exit cleanly (no exception) before
+        item 2 raises, proving each item commits its own transaction
+        independently of the others on the shared connection."""
+        instance, _ = db
+        _, mock_conn, _ = self._fresh_conn(mocker)
+        exit_exc_types = []
+        mock_conn.__exit__ = MagicMock(side_effect=lambda exc_type, exc, tb: exit_exc_types.append(exc_type) or False)
+
+        def side_effect(cur, video_id, retry_after_hours):
+            if video_id == "b":
+                raise RuntimeError("boom")
+
+        mocker.patch.object(instance, "_upsert_source_integrity_failure", side_effect=side_effect)
+
+        with pytest.raises(RuntimeError):
+            instance.record_source_integrity_failures(["a", "b", "c"])
+
+        assert exit_exc_types[0] is None, "item 'a' must exit its with-conn block without an exception"
+        assert exit_exc_types[1] is RuntimeError, "item 'b' must exit its with-conn block with the raised exception"
+
+
+# ---------------------------------------------------------------------------
 # B3: get_processed_video_ids retry-window exclusion
 # ---------------------------------------------------------------------------
 
