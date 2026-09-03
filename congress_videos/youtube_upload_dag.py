@@ -1,22 +1,33 @@
 """
 Congress YouTube Chapter Uploader DAG
 
-This DAG uploads individual chapters from congressional videos to YouTube:
+Publishes one speaker turn per day to YouTube. Runs at 19:00 UTC; the daily
+long-form cap is DAILY_LONG_FORM_UPLOAD_LIMIT = 1.
 
-1. Ensure data directory exists
-2. Query the highest-priority uploadable chapter from uploadable_chapters view
-   - Ordered by relevance_score DESC (highest relevance first)
-   - Then by created_at DESC (most recent first)
-   - Only chapters not yet uploaded to YouTube
+Selection is turn-only: _run_get_uploadable_item calls
+db.get_uploadable_turns(limit=1), which runs `SELECT * FROM uploadable_turns
+LIMIT 1` against production.uploadable_turns with no external ORDER BY. The
+view's own ordering therefore decides who takes the single daily slot
+(migration 044):
 
-The uploadable_chapters view filters chapters with:
-- is_uploaded_to_youtube = FALSE
-- relevance_score >= 2 (configurable in view)
-- is_upload_abandoned = FALSE
-- Joined with source video metadata
+    COALESCE(interest_score, 1) DESC,
+    relevance_score DESC,
+    session_date DESC,
+    materialized_at ASC,   -- FIFO tie-break (issue #328)
+    turn_id ASC            -- total-order backstop
 
-This allows uploading the most relevant and recent congressional debate chapters
-as standalone YouTube videos.
+uploadable_turns admits a turn whose video is materialized and prepared, not
+uploaded, not abandoned, whose source chapter has relevance_score >= 2 and is
+itself not uploaded, which is not procedural (issue #143), and whose published
+duration clears 300 seconds (issue #234).
+
+Naming: the task ids extract_chapter_videos / mark_chapters_uploaded, the XCom
+keys chapter_extraction_results / chapter_upload_updates and this DAG's own id
+keep the word "chapter" deliberately. A task id and an XCom key are persisted
+identity in Airflow, so renaming them would orphan task and XCom history. Since
+issue #171 they carry speaker turns; the chapter branch is still in this module
+but is unreachable in production, because selection only ever returns
+item_type="turn". See the "Nomenclatura" subsection in docs/DAGS.md.
 """
 
 import logging
