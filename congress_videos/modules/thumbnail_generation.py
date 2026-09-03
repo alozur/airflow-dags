@@ -817,10 +817,9 @@ def fetch_recent_thumbnail_history(
         pg = PostgresConnection()
         table = pg.get_qualified_table("video_thumbnails")
         sql = f"SELECT prompt, openai_title FROM {table} WHERE is_chosen = TRUE ORDER BY chapter_id DESC LIMIT %s"
-        with pg.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (limit,))
-                rows = cur.fetchall()
+        with pg.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (limit,))
+            rows = cur.fetchall()
 
         if not rows:
             return [], []
@@ -903,27 +902,26 @@ def persist_results(
             art_direction_brief = EXCLUDED.art_direction_brief
     """
 
-    with pg.get_connection() as conn:
-        with conn.cursor() as cur:
-            for opt in options:
-                is_chosen = opt["label"] == best_label
-                openai_title = normalised_title if is_chosen else None
+    with pg.get_connection() as conn, conn.cursor() as cur:
+        for opt in options:
+            is_chosen = opt["label"] == best_label
+            openai_title = normalised_title if is_chosen else None
 
-                params = (
-                    chapter_id,
-                    youtube_video_id,
-                    opt["label"],
-                    opt.get("style"),
-                    opt.get("prompt"),
-                    opt.get("main_score"),
-                    opt["local_path"],
-                    opt.get("output_url"),
-                    openai_title,
-                    is_chosen,
-                    opt.get("archetype"),
-                    _brief_json(opt.get("art_direction_brief")),
-                )
-                cur.execute(sql, params)
+            params = (
+                chapter_id,
+                youtube_video_id,
+                opt["label"],
+                opt.get("style"),
+                opt.get("prompt"),
+                opt.get("main_score"),
+                opt["local_path"],
+                opt.get("output_url"),
+                openai_title,
+                is_chosen,
+                opt.get("archetype"),
+                _brief_json(opt.get("art_direction_brief")),
+            )
+            cur.execute(sql, params)
 
     logger.info(
         "persist_results: upserted %d thumbnail rows for chapter_id=%d (chosen=%s)",
