@@ -21,14 +21,12 @@ MIGRATION_PATH = (
 
 
 class TestMigration028FileExists:
-
     def test_migration_file_exists(self):
         """Migration file must exist at the expected path."""
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
 
 class TestMigration028ViewStructure:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -46,9 +44,7 @@ class TestMigration028ViewStructure:
     def test_contains_distinct_on_output_path(self):
         """View must use DISTINCT ON (stv.output_path) to deduplicate grouped turns."""
         sql = self._sql().upper()
-        assert "DISTINCT ON (STV.OUTPUT_PATH)" in sql, (
-            "Migration must contain DISTINCT ON (stv.output_path)"
-        )
+        assert "DISTINCT ON (STV.OUTPUT_PATH)" in sql, "Migration must contain DISTINCT ON (stv.output_path)"
 
     def test_inner_order_by_output_path_then_turn_id(self):
         """Inner ORDER BY must be stv.output_path, stv.turn_id for deterministic dedup."""
@@ -68,9 +64,7 @@ class TestMigration028ViewStructure:
     def test_outer_order_by_session_date_desc(self):
         """Outer SELECT must include session_date DESC in ORDER BY."""
         sql = self._sql().upper()
-        assert re.search(r"SESSION_DATE\s+DESC", sql), (
-            "Outer ORDER BY must include session_date DESC"
-        )
+        assert re.search(r"SESSION_DATE\s+DESC", sql), "Outer ORDER BY must include session_date DESC"
 
     def test_filters_stv_not_uploaded(self):
         """View must filter stv.is_uploaded_to_youtube = FALSE."""
@@ -87,20 +81,14 @@ class TestMigration028ViewStructure:
     def test_filters_relevance_score_gte_2(self):
         """View must filter relevance_score >= 2."""
         sql = self._sql()
-        assert re.search(r"relevance_score\s*>=\s*2", sql, re.IGNORECASE), (
-            "View must filter relevance_score >= 2"
-        )
+        assert re.search(r"relevance_score\s*>=\s*2", sql, re.IGNORECASE), "View must filter relevance_score >= 2"
 
     def test_no_public_schema_qualification(self):
         """Migration must not use public.-qualified table names (runner sets search_path)."""
         sql = self._sql()
-        assert not re.search(r"\bpublic\.\w+", sql), (
-            "Migration must not contain public.-qualified table names"
-        )
+        assert not re.search(r"\bpublic\.\w+", sql), "Migration must not contain public.-qualified table names"
 
     def test_no_production_schema_qualification(self):
         """Migration must not use production.-qualified table names."""
         sql = self._sql()
-        assert not re.search(r"\bproduction\.\w+", sql), (
-            "Migration must not contain production.-qualified table names"
-        )
+        assert not re.search(r"\bproduction\.\w+", sql), "Migration must not contain production.-qualified table names"

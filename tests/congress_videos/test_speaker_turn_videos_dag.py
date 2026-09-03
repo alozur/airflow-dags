@@ -15,8 +15,7 @@ import importlib
 import json
 import re
 import sys
-from datetime import date
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -33,6 +32,7 @@ def _fresh():
 # ---------------------------------------------------------------------------
 # 2.8 DAG load test
 # ---------------------------------------------------------------------------
+
 
 class TestDagLoads:
     def test_dag_imports_cleanly(self):
@@ -83,23 +83,20 @@ class TestDagLoads:
         """trigger callable must call trigger_dag_api with speaker_turn_prepare_dag.DAG_ID."""
         import importlib
         import sys
+
         for m in list(sys.modules.keys()):
             if "speaker_turn_videos_dag" in m or "speaker_turn_prepare_dag" in m:
                 del sys.modules[m]
         mod = importlib.import_module("congress_videos.speaker_turn_videos_dag")
         import congress_videos.speaker_turn_prepare_dag as stp_dag
 
-        mock_trigger = mocker.patch(
-            "congress_videos.speaker_turn_videos_dag.trigger_dag_api"
-        )
+        mock_trigger = mocker.patch("congress_videos.speaker_turn_videos_dag.trigger_dag_api")
         mod._trigger_prepare()
 
         mock_trigger.assert_called_once()
         call_kwargs = mock_trigger.call_args
         dag_id_arg = call_kwargs[1].get("dag_id") or call_kwargs[0][0]
-        assert dag_id_arg == stp_dag.DAG_ID, (
-            f"Expected dag_id={stp_dag.DAG_ID!r}, got {dag_id_arg!r}"
-        )
+        assert dag_id_arg == stp_dag.DAG_ID, f"Expected dag_id={stp_dag.DAG_ID!r}, got {dag_id_arg!r}"
         conf_arg = call_kwargs[1].get("conf")
         assert conf_arg == {}, f"Expected conf={{}}, got {conf_arg!r}"
 
@@ -107,6 +104,7 @@ class TestDagLoads:
 # ---------------------------------------------------------------------------
 # 2.9 select_turns skips already-materialized turns
 # ---------------------------------------------------------------------------
+
 
 class TestSelectTurns:
     """Turns already in speaker_turn_videos must be excluded from the XCom output."""
@@ -125,8 +123,12 @@ class TestSelectTurns:
         # video_id comes from the JOIN to video_chapters; speaker_turns has no
         # video_id or session_date column.
         cur.description = [
-            ("turn_id",), ("chapter_id",), ("video_id",),
-            ("start_seconds",), ("end_seconds",), ("resolved_name",),
+            ("turn_id",),
+            ("chapter_id",),
+            ("video_id",),
+            ("start_seconds",),
+            ("end_seconds",),
+            ("resolved_name",),
         ]
         # PostgresConnection uses RealDictCursor, so real rows are dict-like.
         # Convert the tuple fixtures into dict rows so the mock matches prod and
@@ -186,7 +188,8 @@ class TestSelectTurns:
         """
         mod = _fresh()
         cur = self._make_pg_mock(
-            monkeypatch, mod,
+            monkeypatch,
+            mod,
             turns_rows=[(1, 10, "vid1", 0.0, 100.0, None)],
             already_materialized_ids=[],
         )
@@ -207,7 +210,8 @@ class TestSelectTurns:
         """_select_task SQL must include st.resolved_name so _materialize_task can classify turns."""
         mod = _fresh()
         cur = self._make_pg_mock(
-            monkeypatch, mod,
+            monkeypatch,
+            mod,
             turns_rows=[(1, 10, "vid1", 0.0, 100.0, None)],
             already_materialized_ids=[],
         )
@@ -217,9 +221,7 @@ class TestSelectTurns:
         mod._select_task(ti=ti, dag_run=MagicMock(conf={"chapter_id": 10}))
 
         select_sql = cur.execute.call_args_list[0].args[0].lower()
-        assert "resolved_name" in select_sql, (
-            f"_select_task must include st.resolved_name in SELECT; got: {select_sql}"
-        )
+        assert "resolved_name" in select_sql, f"_select_task must include st.resolved_name in SELECT; got: {select_sql}"
 
     def test_select_includes_speaker_label(self, monkeypatch):
         """_select_task SQL must include st.speaker_label so classify_turn_type
@@ -227,7 +229,8 @@ class TestSelectTurns:
         (issue #282)."""
         mod = _fresh()
         cur = self._make_pg_mock(
-            monkeypatch, mod,
+            monkeypatch,
+            mod,
             turns_rows=[(1, 10, "vid1", 0.0, 100.0, None)],
             already_materialized_ids=[],
         )
@@ -237,9 +240,7 @@ class TestSelectTurns:
         mod._select_task(ti=ti, dag_run=MagicMock(conf={"chapter_id": 10}))
 
         select_sql = cur.execute.call_args_list[0].args[0].lower()
-        assert "speaker_label" in select_sql, (
-            f"_select_task must include st.speaker_label in SELECT; got: {select_sql}"
-        )
+        assert "speaker_label" in select_sql, f"_select_task must include st.speaker_label in SELECT; got: {select_sql}"
 
     def test_no_turns_when_all_already_materialized(self, monkeypatch):
         """chapter_id-scoped branch: post-hoc filter drops every already-materialized turn."""
@@ -272,7 +273,8 @@ class TestSelectTurns:
         """An explicitly present dag_run.conf['limit'] key must bind unchanged via %s."""
         mod = _fresh()
         cur = self._make_pg_mock(
-            monkeypatch, mod,
+            monkeypatch,
+            mod,
             turns_rows=[(61, 10, "vid1", 0.0, 100.0, None)],
         )
 
@@ -288,7 +290,8 @@ class TestSelectTurns:
         planner can see (never filter) procedural member turns."""
         mod = _fresh()
         cur = self._make_pg_mock(
-            monkeypatch, mod,
+            monkeypatch,
+            mod,
             turns_rows=[(1, 10, "vid1", 0.0, 100.0, None)],
             already_materialized_ids=[],
         )
@@ -298,18 +301,23 @@ class TestSelectTurns:
         mod._select_task(ti=ti, dag_run=MagicMock(conf={"chapter_id": 10}))
 
         select_sql = cur.execute.call_args_list[0].args[0].lower()
-        assert "is_procedural" in select_sql, (
-            f"_select_task must include st.is_procedural in SELECT; got: {select_sql}"
-        )
+        assert "is_procedural" in select_sql, f"_select_task must include st.is_procedural in SELECT; got: {select_sql}"
 
 
 def _row(turn_id, chapter_id=42, video_id="vid1", start=0.0, end=1.0, resolved_name=None):
-    return {"turn_id": turn_id, "chapter_id": chapter_id, "video_id": video_id,
-            "start_seconds": start, "end_seconds": end, "resolved_name": resolved_name}
+    return {
+        "turn_id": turn_id,
+        "chapter_id": chapter_id,
+        "video_id": video_id,
+        "start_seconds": start,
+        "end_seconds": end,
+        "resolved_name": resolved_name,
+    }
 
 
-def _wire_cursor(monkeypatch, mod, *, fetchone=None, fetchall=None,
-                  fetchall_side_effect=None, execute_side_effect=None):
+def _wire_cursor(
+    monkeypatch, mod, *, fetchone=None, fetchall=None, fetchall_side_effect=None, execute_side_effect=None
+):
     """Shared mock-cursor wiring for the new selection-precedence test classes below."""
     cur = MagicMock()
     cur.fetchone.return_value = fetchone
@@ -331,6 +339,7 @@ def _wire_cursor(monkeypatch, mod, *, fetchone=None, fetchall=None,
 # ---------------------------------------------------------------------------
 # Chapter-aligned automatic selection (issue #231)
 # ---------------------------------------------------------------------------
+
 
 class TestAutomaticChapterSelection:
     """Empty conf (no chapter_id/video_id/limit key) selects the oldest
@@ -359,7 +368,10 @@ class TestAutomaticChapterSelection:
     def test_chapter_choice_query_uses_min_over_pending_turns_only(self, monkeypatch):
         mod = _fresh()
         cur = _wire_cursor(
-            monkeypatch, mod, fetchone={"chapter_id": 7}, fetchall=[_row(61, chapter_id=7)],
+            monkeypatch,
+            mod,
+            fetchone={"chapter_id": 7},
+            fetchall=[_row(61, chapter_id=7)],
         )
 
         mod._select_task(ti=MagicMock(), dag_run=MagicMock(conf={}))
@@ -411,6 +423,7 @@ class TestAutomaticChapterSelection:
 # Explicit limit key preserves global backlog drainage (issue #231)
 # ---------------------------------------------------------------------------
 
+
 class TestExplicitLimitGlobalDrain:
     def test_positive_limit_spans_multiple_chapters_globally_ordered(self, monkeypatch):
         mod = _fresh()
@@ -427,10 +440,13 @@ class TestExplicitLimitGlobalDrain:
         assert cur.execute.call_args_list[0].args[1] == (5,)
         assert "chapter_id = %s" not in cur.execute.call_args_list[0].args[0].lower()
 
-    @pytest.mark.parametrize("limit_value,rows,expected_ids", [
-        (0, [], []),
-        (None, [_row(1)], [1]),
-    ])
+    @pytest.mark.parametrize(
+        "limit_value,rows,expected_ids",
+        [
+            (0, [], []),
+            (None, [_row(1)], [1]),
+        ],
+    )
     def test_limit_edge_values_bind_unchanged(self, monkeypatch, limit_value, rows, expected_ids):
         """0 returns no rows; None binds unchanged for an unbounded PostgreSQL LIMIT."""
         mod = _fresh()
@@ -457,6 +473,7 @@ class TestExplicitLimitGlobalDrain:
 # Scoped precedence: chapter_id > video_id > limit key (issue #231)
 # ---------------------------------------------------------------------------
 
+
 class TestScopedPrecedenceOverLimit:
     def test_chapter_id_takes_precedence_over_video_id_and_limit(self, monkeypatch):
         mod = _fresh()
@@ -471,10 +488,13 @@ class TestScopedPrecedenceOverLimit:
         assert "st.chapter_id = %s" in first_sql
         assert cur.execute.call_args_list[0].args[1] == (10,), "video_id and limit must be ignored"
 
-    @pytest.mark.parametrize("conf,expected_params", [
-        ({"chapter_id": 10, "limit": 1}, (10,)),
-        ({"video_id": "vid1", "limit": 1}, ("vid1",)),
-    ])
+    @pytest.mark.parametrize(
+        "conf,expected_params",
+        [
+            ({"chapter_id": 10, "limit": 1}, (10,)),
+            ({"video_id": "vid1", "limit": 1}, ("vid1",)),
+        ],
+    )
     def test_scoped_limit_is_ignored(self, monkeypatch, conf, expected_params):
         mod = _fresh()
         cur = _wire_cursor(monkeypatch, mod, fetchall_side_effect=[[_row(1, chapter_id=10)], []])
@@ -490,9 +510,11 @@ class TestScopedPrecedenceOverLimit:
 # 2.10 materialize_turns skips when source video is not found
 # ---------------------------------------------------------------------------
 
+
 class TestMaterializeTurns:
-    def _turn(self, turn_id=7, chapter_id=3, video_id="vid1",
-              start=600.0, end=700.0, resolved_name=None, is_procedural=False):
+    def _turn(
+        self, turn_id=7, chapter_id=3, video_id="vid1", start=600.0, end=700.0, resolved_name=None, is_procedural=False
+    ):
         return {
             "turn_id": turn_id,
             "chapter_id": chapter_id,
@@ -532,8 +554,7 @@ class TestMaterializeTurns:
         conn = MagicMock()
         cur = MagicMock()
         cur.fetchall.return_value = []
-        cur.description = [("turn_id",), ("start_seconds",), ("end_seconds",),
-                           ("is_approved",), ("is_voice_free",)]
+        cur.description = [("turn_id",), ("start_seconds",), ("end_seconds",), ("is_approved",), ("is_voice_free",)]
         conn.cursor.return_value.__enter__.return_value = cur
         pg.get_connection.return_value.__enter__.return_value = conn
         pg.get_qualified_table.side_effect = lambda n: f"test.{n}"
@@ -560,9 +581,7 @@ class TestMaterializeTurns:
         )
 
         # Assertion 2: no legacy /turns/ segment
-        assert "/turns/" not in output_path, (
-            f"output_path must not contain '/turns/'; got: {output_path}"
-        )
+        assert "/turns/" not in output_path, f"output_path must not contain '/turns/'; got: {output_path}"
 
         # Assertion 3: no date segment
         assert re.search(r"\d{4}-\d{2}-\d{2}", output_path) is None, (
@@ -616,6 +635,7 @@ class TestMaterializeTurns:
             lambda path, cache: "h264",
         )
         from pathlib import Path
+
         monkeypatch.setattr(mod, "get_orador_video_dir", lambda vid, chid, tid: Path(f"/out/{tid}"))
         monkeypatch.setattr(mod, "get_cached_codec", lambda *a, **k: "h264")
 
@@ -624,8 +644,7 @@ class TestMaterializeTurns:
         cur = MagicMock()
         # approved trims query returns empty (no trims)
         cur.fetchall.return_value = []
-        cur.description = [("turn_id",), ("start_seconds",), ("end_seconds",),
-                           ("is_approved",), ("is_voice_free",)]
+        cur.description = [("turn_id",), ("start_seconds",), ("end_seconds",), ("is_approved",), ("is_voice_free",)]
         conn.cursor.return_value.__enter__.return_value = cur
         pg.get_connection.return_value.__enter__.return_value = conn
         pg.get_qualified_table.side_effect = lambda n: f"test.{n}"
@@ -656,6 +675,7 @@ class TestMaterializeTurns:
         monkeypatch.setattr(mod, "plan_turn_materialization", lambda turns, trims: [plan_mock])
         monkeypatch.setattr(mod, "execute_plan", MagicMock(side_effect=RuntimeError("ffmpeg boom")))
         from pathlib import Path
+
         monkeypatch.setattr(mod, "get_orador_video_dir", lambda vid, chid, tid: Path(f"/out/{tid}"))
         monkeypatch.setattr(mod, "get_cached_codec", lambda *a, **k: "h264")
 
@@ -663,8 +683,7 @@ class TestMaterializeTurns:
         conn = MagicMock()
         cur = MagicMock()
         cur.fetchall.return_value = []
-        cur.description = [("turn_id",), ("start_seconds",), ("end_seconds",),
-                           ("is_approved",), ("is_voice_free",)]
+        cur.description = [("turn_id",), ("start_seconds",), ("end_seconds",), ("is_approved",), ("is_voice_free",)]
         conn.cursor.return_value.__enter__.return_value = cur
         pg.get_connection.return_value.__enter__.return_value = conn
         pg.get_qualified_table.side_effect = lambda n: f"test.{n}"
@@ -681,7 +700,6 @@ class TestMaterializeTurns:
         assert len(insert_calls) == 0, f"INSERT must not be called on ffmpeg failure; got: {insert_calls}"
         assert result["skipped"] >= 1
 
-
     def _make_materialize_mocks(self, monkeypatch, mod, plan_mock, turns):
         """Wire mocks for _materialize_task without touching ffmpeg or DB."""
         monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: "/data/src.mp4")
@@ -693,8 +711,11 @@ class TestMaterializeTurns:
         cur = MagicMock()
         cur.fetchall.return_value = []
         cur.description = [
-            ("turn_id",), ("start_seconds",), ("end_seconds",),
-            ("is_approved",), ("is_voice_free",),
+            ("turn_id",),
+            ("start_seconds",),
+            ("end_seconds",),
+            ("is_approved",),
+            ("is_voice_free",),
         ]
         conn.cursor.return_value.__enter__.return_value = cur
         pg.get_connection.return_value.__enter__.return_value = conn
@@ -726,20 +747,16 @@ class TestMaterializeTurns:
         # params tuple must be (turn_id, output_path, turn_type, keep_intervals)
         params = insert_calls[0].args[1]
         assert len(params) == 4, (
-            f"INSERT params must be a 4-tuple "
-            f"(turn_id, output_path, turn_type, keep_intervals); got: {params}"
+            f"INSERT params must be a 4-tuple (turn_id, output_path, turn_type, keep_intervals); got: {params}"
         )
         turn_id_param, output_path_param, turn_type_param, keep_intervals_param = params
         assert turn_id_param == 7
-        assert isinstance(turn_type_param, str), (
-            f"turn_type must be a string; got: {turn_type_param!r}"
-        )
+        assert isinstance(turn_type_param, str), f"turn_type must be a string; got: {turn_type_param!r}"
         assert turn_type_param in ("monologue", "qa"), (
             f"turn_type must be 'monologue' or 'qa'; got: {turn_type_param!r}"
         )
         assert json.loads(keep_intervals_param) == [[600.0, 700.0]], (
-            f"keep_intervals must serialize the plan's own executed cut boundaries; "
-            f"got: {keep_intervals_param!r}"
+            f"keep_intervals must serialize the plan's own executed cut boundaries; got: {keep_intervals_param!r}"
         )
 
     def test_single_resolved_name_yields_monologue_in_insert(self, monkeypatch):
@@ -759,9 +776,7 @@ class TestMaterializeTurns:
 
         insert_calls = [c for c in cur.execute.call_args_list if "INSERT" in str(c).upper()]
         params = insert_calls[0].args[1]
-        assert params[2] == "monologue", (
-            f"Single-turn plan with one real name → monologue; got: {params[2]!r}"
-        )
+        assert params[2] == "monologue", f"Single-turn plan with one real name → monologue; got: {params[2]!r}"
 
     def test_two_distinct_names_yields_qa_in_insert(self, monkeypatch):
         """Grouped plan with 2 distinct real resolved_names → INSERT must carry turn_type='qa'."""
@@ -785,9 +800,7 @@ class TestMaterializeTurns:
         assert insert_calls, "Expected at least one INSERT for the grouped plan"
         # All rows in the plan share the same turn_type
         for c in insert_calls:
-            assert c.args[1][2] == "qa", (
-                f"Two-name grouped plan → qa; got: {c.args[1][2]!r}"
-            )
+            assert c.args[1][2] == "qa", f"Two-name grouped plan → qa; got: {c.args[1][2]!r}"
 
     def test_grouped_plan_all_rows_share_same_turn_type(self, monkeypatch):
         """All rows in a grouped plan must receive the same turn_type value."""
@@ -809,13 +822,9 @@ class TestMaterializeTurns:
         mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
 
         insert_calls = [c for c in cur.execute.call_args_list if "INSERT" in str(c).upper()]
-        assert len(insert_calls) == 3, (
-            f"Expected 3 INSERTs for 3 turn_ids; got {len(insert_calls)}"
-        )
+        assert len(insert_calls) == 3, f"Expected 3 INSERTs for 3 turn_ids; got {len(insert_calls)}"
         turn_types = {c.args[1][2] for c in insert_calls}
-        assert len(turn_types) == 1, (
-            f"All grouped rows must share one turn_type; got distinct values: {turn_types}"
-        )
+        assert len(turn_types) == 1, f"All grouped rows must share one turn_type; got distinct values: {turn_types}"
 
     def test_classify_turn_type_called_with_row_map(self, monkeypatch):
         """classify_turn_type must receive 3 positional args including a
@@ -838,9 +847,7 @@ class TestMaterializeTurns:
 
         classify_mock.assert_called_once()
         call_args = classify_mock.call_args.args
-        assert len(call_args) == 3, (
-            f"classify_turn_type must receive 3 positional args; got: {call_args}"
-        )
+        assert len(call_args) == 3, f"classify_turn_type must receive 3 positional args; got: {call_args}"
         turn_ids_arg, resolved_by_id_arg, turn_rows_by_id_arg = call_args
         assert 7 in turn_rows_by_id_arg
         assert turn_rows_by_id_arg[7]["turn_id"] == 7
@@ -871,9 +878,7 @@ class TestMaterializeTurns:
         insert_calls = [c for c in cur.execute.call_args_list if "INSERT" in str(c).upper()]
         assert insert_calls, "Expected at least one INSERT"
         for c in insert_calls:
-            assert c.args[1][2] == "qa", (
-                f"2-label group with NULL names -> qa; got: {c.args[1][2]!r}"
-            )
+            assert c.args[1][2] == "qa", f"2-label group with NULL names -> qa; got: {c.args[1][2]!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -881,6 +886,7 @@ class TestMaterializeTurns:
 # (issue #143 D5) — otherwise a permanently pending turn would block
 # _select_automatic_chapter's MIN(turn_id) forever.
 # ---------------------------------------------------------------------------
+
 
 class TestDegenerateAllProceduralGroupDropped:
     def _turn(self, turn_id, chapter_id=3, video_id="vid1", start=0.0, end=5.0):
@@ -901,6 +907,7 @@ class TestDegenerateAllProceduralGroupDropped:
         monkeypatch.setattr(mod, "plan_turn_materialization", lambda t, tr: [])
         monkeypatch.setattr(mod, "execute_plan", execute_plan_mock)
         from pathlib import Path
+
         monkeypatch.setattr(mod, "get_orador_video_dir", lambda vid, chid, tid: Path(f"/out/{tid}"))
 
         pg = MagicMock()
@@ -964,6 +971,7 @@ class TestDegenerateAllProceduralGroupDropped:
 # ---------------------------------------------------------------------------
 # 2.12 collect_results aggregates the summary
 # ---------------------------------------------------------------------------
+
 
 class TestCollectResults:
     def test_aggregates_xcom_summary(self, monkeypatch):

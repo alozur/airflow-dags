@@ -62,9 +62,7 @@ class TestReapShortsUploaderDAGLoads:
 
 
 class TestTriggerYoutubeUploadTitleTruncation:
-    def _build_title(
-        self, raw_title: str, suffix: str = " #Shorts", max_len: int = 100
-    ) -> str:
+    def _build_title(self, raw_title: str, suffix: str = " #Shorts", max_len: int = 100) -> str:
         """Reproduce the exact truncation logic from _trigger_youtube_upload."""
         if len(raw_title) + len(suffix) > max_len:
             raw_title = raw_title[: max_len - len(suffix)]
@@ -132,16 +130,12 @@ class TestGetPendingShorts:
     def test_empty_result_logs_and_pushes_empty_list(self, mocker):
         from congress_videos.reap_shorts_uploader_dag import _get_pending_shorts
 
-        mock_db_cls = mocker.patch(
-            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
-        )
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
         mock_db.get_pending_shorts.return_value = []
 
         ti = _make_ti()
-        _get_pending_shorts(
-            ti, params={"max_shorts_per_run": 2, "min_virality_score": 0.0}
-        )
+        _get_pending_shorts(ti, params={"max_shorts_per_run": 2, "min_virality_score": 0.0})
 
         assert ti.xcom_store["pending_shorts"] == []
 
@@ -152,44 +146,32 @@ class TestGetPendingShorts:
             {"id": 1, "reap_clip_id": "c-001", "local_file_path": "/data/c1.mp4"},
             {"id": 2, "reap_clip_id": "c-002", "local_file_path": "/data/c2.mp4"},
         ]
-        mock_db_cls = mocker.patch(
-            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
-        )
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
         mock_db_cls.return_value.get_pending_shorts.return_value = shorts
 
         ti = _make_ti()
-        _get_pending_shorts(
-            ti, params={"max_shorts_per_run": 3, "min_virality_score": 0.5}
-        )
+        _get_pending_shorts(ti, params={"max_shorts_per_run": 3, "min_virality_score": 0.5})
 
         assert ti.xcom_store["pending_shorts"] == shorts
 
     def test_passes_limit_and_virality_to_db(self, mocker):
         from congress_videos.reap_shorts_uploader_dag import _get_pending_shorts
 
-        mock_db_cls = mocker.patch(
-            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
-        )
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
         mock_db.get_pending_shorts.return_value = []
 
         ti = _make_ti()
-        _get_pending_shorts(
-            ti, params={"max_shorts_per_run": 5, "min_virality_score": 0.7}
-        )
+        _get_pending_shorts(ti, params={"max_shorts_per_run": 5, "min_virality_score": 0.7})
 
-        mock_db.get_pending_shorts.assert_called_once_with(
-            limit=5, min_virality_score=0.7
-        )
+        mock_db.get_pending_shorts.assert_called_once_with(limit=5, min_virality_score=0.7)
 
 
 class TestMarkShortsUploaded:
     def test_successful_upload_calls_mark_short_uploaded(self, mocker):
         from congress_videos.reap_shorts_uploader_dag import _mark_shorts_uploaded
 
-        mock_db_cls = mocker.patch(
-            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
-        )
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
 
         upload_results = {
@@ -210,9 +192,7 @@ class TestMarkShortsUploaded:
     def test_failed_upload_does_not_call_mark_short_uploaded(self, mocker):
         from congress_videos.reap_shorts_uploader_dag import _mark_shorts_uploaded
 
-        mock_db_cls = mocker.patch(
-            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
-        )
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
 
         upload_results = {
@@ -234,9 +214,7 @@ class TestMarkShortsUploaded:
     def test_empty_upload_details_no_db_call(self, mocker):
         from congress_videos.reap_shorts_uploader_dag import _mark_shorts_uploaded
 
-        mock_db_cls = mocker.patch(
-            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
-        )
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
 
         ti = _make_ti({"upload_results": {"upload_details": []}})
@@ -255,9 +233,7 @@ class TestMarkShortsUploaded:
     def test_failed_upload_calls_record_short_upload_failure(self, mocker):
         from congress_videos.reap_shorts_uploader_dag import _mark_shorts_uploaded
 
-        mock_db_cls = mocker.patch(
-            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
-        )
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
 
         upload_results = {
@@ -274,17 +250,13 @@ class TestMarkShortsUploaded:
         ti = _make_ti({"upload_results": upload_results})
         _mark_shorts_uploaded(ti, params={})
 
-        mock_db.record_short_upload_failure.assert_called_once_with(
-            "c-fail", "Upload failed"
-        )
+        mock_db.record_short_upload_failure.assert_called_once_with("c-fail", "Upload failed")
         mock_db.mark_short_uploaded.assert_not_called()
 
     def test_failed_upload_missing_reap_clip_id_warns_and_skips(self, mocker, caplog):
         from congress_videos.reap_shorts_uploader_dag import _mark_shorts_uploaded
 
-        mock_db_cls = mocker.patch(
-            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
-        )
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
 
         upload_results = {
@@ -318,10 +290,12 @@ class TestResolveSpeakers:
         """key_speakers take priority; speakers adds non-duplicate real names to the pool."""
         from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
 
-        result = _resolve_speakers({
-            "key_speakers": ["Ana García", "Pedro López"],
-            "speakers": ["María Ruiz"],
-        })
+        result = _resolve_speakers(
+            {
+                "key_speakers": ["Ana García", "Pedro López"],
+                "speakers": ["María Ruiz"],
+            }
+        )
         # Pool: [Ana García, Pedro López, María Ruiz] — key_speakers first, then new speakers
         assert result == ("Ana García", "Pedro López, María Ruiz")
 
@@ -367,13 +341,13 @@ class TestResolveSpeakers:
         """
         from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
 
-        result = _resolve_speakers({
-            "key_speakers": ["Ana Martínez"],
-            "speakers": ["Desconocido", "Pedro López"],
-        })
-        assert result == ("Ana Martínez", "Pedro López"), (
-            f"Expected ('Ana Martínez', 'Pedro López'), got {result!r}"
+        result = _resolve_speakers(
+            {
+                "key_speakers": ["Ana Martínez"],
+                "speakers": ["Desconocido", "Pedro López"],
+            }
         )
+        assert result == ("Ana Martínez", "Pedro López"), f"Expected ('Ana Martínez', 'Pedro López'), got {result!r}"
 
     def test_placeholder_at_speakers_index_0_is_skipped(self):
         """Spec scenario 2: key_speakers empty; speakers[1] is real, speakers[0] is placeholder.
@@ -383,13 +357,13 @@ class TestResolveSpeakers:
         """
         from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
 
-        result = _resolve_speakers({
-            "key_speakers": [],
-            "speakers": ["Portavoz", "Pedro López"],
-        })
-        assert result == ("Pedro López", ""), (
-            f"Expected ('Pedro López', ''), got {result!r}"
+        result = _resolve_speakers(
+            {
+                "key_speakers": [],
+                "speakers": ["Portavoz", "Pedro López"],
+            }
         )
+        assert result == ("Pedro López", ""), f"Expected ('Pedro López', ''), got {result!r}"
 
     def test_all_placeholders_returns_empty_sentinel(self):
         """Spec scenario 3: All speakers are placeholders → ("", ""), no crash.
@@ -399,13 +373,13 @@ class TestResolveSpeakers:
         """
         from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
 
-        result = _resolve_speakers({
-            "key_speakers": ["Desconocido"],
-            "speakers": ["(No especificado)"],
-        })
-        assert result == ("", ""), (
-            f"Expected ('', ''), got {result!r}"
+        result = _resolve_speakers(
+            {
+                "key_speakers": ["Desconocido"],
+                "speakers": ["(No especificado)"],
+            }
         )
+        assert result == ("", ""), f"Expected ('', ''), got {result!r}"
 
     def test_both_arrays_empty_returns_empty_sentinel(self):
         """Spec scenario 4: Both arrays empty → ("", "").
@@ -426,13 +400,13 @@ class TestResolveSpeakers:
         """
         from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
 
-        result = _resolve_speakers({
-            "key_speakers": ["Laura Gómez"],
-            "speakers": [],
-        })
-        assert result == ("Laura Gómez", ""), (
-            f"Expected ('Laura Gómez', ''), got {result!r}"
+        result = _resolve_speakers(
+            {
+                "key_speakers": ["Laura Gómez"],
+                "speakers": [],
+            }
         )
+        assert result == ("Laura Gómez", ""), f"Expected ('Laura Gómez', ''), got {result!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -464,9 +438,7 @@ class TestGenerateMetadataPrompt:
     def test_generate_metadata_prompt_includes_primary_speaker(self, mocker):
         from congress_videos.reap_shorts_uploader_dag import _generate_metadata
 
-        mock_db_cls = mocker.patch(
-            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
-        )
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
         mock_db.get_chapter_metadata.return_value = {
             "key_speakers": ["Pedro Sánchez"],
@@ -501,9 +473,7 @@ class TestGenerateMetadataPrompt:
             side_effect=fake_generate_json_completion,
         )
 
-        pending_shorts = [
-            {"id": 1, "chapter_id": 42, "local_file_path": "/fake/clip.mp4"}
-        ]
+        pending_shorts = [{"id": 1, "chapter_id": 42, "local_file_path": "/fake/clip.mp4"}]
         ti = _make_ti({"pending_shorts": pending_shorts})
         _generate_metadata(ti)
 
@@ -512,9 +482,7 @@ class TestGenerateMetadataPrompt:
         assert "Pedro Sánchez" in user_prompt
         transcript_pos = user_prompt.find("TRANSCRIPCIÓN")
         speaker_pos = user_prompt.find("Pedro Sánchez")
-        assert speaker_pos < transcript_pos, (
-            "primary_speaker must appear before TRANSCRIPCIÓN block"
-        )
+        assert speaker_pos < transcript_pos, "primary_speaker must appear before TRANSCRIPCIÓN block"
 
 
 # ---------------------------------------------------------------------------
@@ -554,9 +522,7 @@ class TestFormatOwnChannelFooter:
 
         result = _format_own_channel_footer("abc123")
 
-        assert (
-            result == "\n\n📺 Vídeo completo:\nhttps://www.youtube.com/watch?v=abc123"
-        )
+        assert result == "\n\n📺 Vídeo completo:\nhttps://www.youtube.com/watch?v=abc123"
 
     def test_returns_empty_string_when_id_is_none(self):
         """Null guard: youtube_video_id=None → no footer (hard contract)."""
@@ -594,51 +560,35 @@ class TestGenerateMetadataFooter:
         """AC#4 — description ends with own-channel footer when youtube_video_id is set."""
         from congress_videos.reap_shorts_uploader_dag import _generate_metadata
 
-        mock_db_cls = mocker.patch(
-            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
-        )
-        mock_db_cls.return_value.get_chapter_metadata.return_value = (
-            _make_chapter_metadata(
-                youtube_video_id="yt-own-abc",
-            )
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.get_chapter_metadata.return_value = _make_chapter_metadata(
+            youtube_video_id="yt-own-abc",
         )
 
         mocker.patch("os.path.exists", return_value=False)
 
-        pending_shorts = [
-            {"id": 1, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}
-        ]
+        pending_shorts = [{"id": 1, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}]
         ti = _make_ti({"pending_shorts": pending_shorts})
         _generate_metadata(ti)
 
         metadata = ti.xcom_store["shorts_metadata"]
         description = metadata[0]["description"]
-        expected_suffix = (
-            "\n\n📺 Vídeo completo:\nhttps://www.youtube.com/watch?v=yt-own-abc"
-        )
-        assert description.endswith(expected_suffix), (
-            f"Description was: {description!r}"
-        )
+        expected_suffix = "\n\n📺 Vídeo completo:\nhttps://www.youtube.com/watch?v=yt-own-abc"
+        assert description.endswith(expected_suffix), f"Description was: {description!r}"
 
     def test_generate_metadata_no_footer_when_youtube_video_id_null(self, mocker):
         """AC#5 — description has NO footer and source URL does NOT appear when youtube_video_id is None."""
         from congress_videos.reap_shorts_uploader_dag import _generate_metadata
 
-        mock_db_cls = mocker.patch(
-            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
-        )
-        mock_db_cls.return_value.get_chapter_metadata.return_value = (
-            _make_chapter_metadata(
-                youtube_video_id=None,
-                source_video_url="https://youtube.com/watch?v=source-should-not-appear",
-            )
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.get_chapter_metadata.return_value = _make_chapter_metadata(
+            youtube_video_id=None,
+            source_video_url="https://youtube.com/watch?v=source-should-not-appear",
         )
 
         mocker.patch("os.path.exists", return_value=False)
 
-        pending_shorts = [
-            {"id": 2, "chapter_id": 20, "local_file_path": "/fake/clip.mp4"}
-        ]
+        pending_shorts = [{"id": 2, "chapter_id": 20, "local_file_path": "/fake/clip.mp4"}]
         ti = _make_ti({"pending_shorts": pending_shorts})
         _generate_metadata(ti)
 
@@ -651,15 +601,11 @@ class TestGenerateMetadataFooter:
         """AC#6 — source_video_title and source_video_url must NOT appear in the AI user prompt."""
         from congress_videos.reap_shorts_uploader_dag import _generate_metadata
 
-        mock_db_cls = mocker.patch(
-            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
-        )
-        mock_db_cls.return_value.get_chapter_metadata.return_value = (
-            _make_chapter_metadata(
-                youtube_video_id="yt-prompt-test",
-                source_video_title="Sesión con fuente",
-                source_video_url="https://youtube.com/watch?v=xyz789",
-            )
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.get_chapter_metadata.return_value = _make_chapter_metadata(
+            youtube_video_id="yt-prompt-test",
+            source_video_title="Sesión con fuente",
+            source_video_url="https://youtube.com/watch?v=xyz789",
         )
 
         mocker.patch("os.path.exists", return_value=True)
@@ -675,18 +621,14 @@ class TestGenerateMetadataFooter:
 
         def fake_generate_json_completion(system_prompt, user_prompt, **kwargs):
             captured["user_prompt"] = user_prompt
-            return {
-                "data": {"title": "Título generado", "description": "Descripción AI"}
-            }
+            return {"data": {"title": "Título generado", "description": "Descripción AI"}}
 
         mocker.patch(
             "congress_videos.reap_shorts_uploader_dag.generate_json_completion",
             side_effect=fake_generate_json_completion,
         )
 
-        pending_shorts = [
-            {"id": 3, "chapter_id": 30, "local_file_path": "/fake/clip.mp4"}
-        ]
+        pending_shorts = [{"id": 3, "chapter_id": 30, "local_file_path": "/fake/clip.mp4"}]
         ti = _make_ti({"pending_shorts": pending_shorts})
         _generate_metadata(ti)
 
@@ -762,9 +704,7 @@ class TestFormatSessionLine:
         ]
         for month_idx, month_name in enumerate(expected_months, start=1):
             result = _format_session_line(None, date(2024, month_idx, 1))
-            assert month_name in result, (
-                f"Month {month_idx} expected '{month_name}' in '{result}'"
-            )
+            assert month_name in result, f"Month {month_idx} expected '{month_name}' in '{result}'"
 
 
 # ---------------------------------------------------------------------------
@@ -779,14 +719,10 @@ class TestGenerateMetadataSessionLine:
 
         from congress_videos.reap_shorts_uploader_dag import _generate_metadata
 
-        mock_db_cls = mocker.patch(
-            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
-        )
-        mock_db_cls.return_value.get_chapter_metadata.return_value = (
-            _make_chapter_metadata(
-                session_number=80,
-                session_date=date(2024, 6, 10),
-            )
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.get_chapter_metadata.return_value = _make_chapter_metadata(
+            session_number=80,
+            session_date=date(2024, 6, 10),
         )
 
         mocker.patch("os.path.exists", return_value=True)
@@ -797,51 +733,37 @@ class TestGenerateMetadataSessionLine:
         )
         mocker.patch(
             "congress_videos.reap_shorts_uploader_dag.generate_json_completion",
-            return_value={
-                "data": {"title": "Titulo AI", "description": "Descripcion AI generada"}
-            },
+            return_value={"data": {"title": "Titulo AI", "description": "Descripcion AI generada"}},
         )
 
-        pending_shorts = [
-            {"id": 1, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}
-        ]
+        pending_shorts = [{"id": 1, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}]
         ti = _make_ti({"pending_shorts": pending_shorts})
         _generate_metadata(ti)
 
         metadata = ti.xcom_store["shorts_metadata"]
         description = metadata[0]["description"]
         expected_suffix = "\n\n🏛️ Sesión nº 80 del Congreso - 10 de junio de 2024"
-        assert description.endswith(expected_suffix), (
-            f"Description was: {description!r}"
-        )
+        assert description.endswith(expected_suffix), f"Description was: {description!r}"
 
     def test_description_unchanged_when_session_data_null(self, mocker):
         """Task 4.4 — session_number=None + session_date=None: no session suffix appended."""
         from congress_videos.reap_shorts_uploader_dag import _generate_metadata
 
-        mock_db_cls = mocker.patch(
-            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
-        )
-        mock_db_cls.return_value.get_chapter_metadata.return_value = (
-            _make_chapter_metadata(
-                session_number=None,
-                session_date=None,
-            )
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.get_chapter_metadata.return_value = _make_chapter_metadata(
+            session_number=None,
+            session_date=None,
         )
 
         mocker.patch("os.path.exists", return_value=False)
 
-        pending_shorts = [
-            {"id": 2, "chapter_id": 20, "local_file_path": "/fake/clip2.mp4"}
-        ]
+        pending_shorts = [{"id": 2, "chapter_id": 20, "local_file_path": "/fake/clip2.mp4"}]
         ti = _make_ti({"pending_shorts": pending_shorts})
         _generate_metadata(ti)
 
         metadata = ti.xcom_store["shorts_metadata"]
         description = metadata[0]["description"]
-        assert "🏛️ Sesión" not in description, (
-            f"Unexpected session suffix in: {description!r}"
-        )
+        assert "🏛️ Sesión" not in description, f"Unexpected session suffix in: {description!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -927,12 +849,8 @@ class TestGenerateMetadataAiOutcome:
         """AI metadata parses the expected JSON on success (issue #365 spec)."""
         from congress_videos.reap_shorts_uploader_dag import _generate_metadata
 
-        mock_db_cls = mocker.patch(
-            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
-        )
-        mock_db_cls.return_value.get_chapter_metadata.return_value = (
-            _make_chapter_metadata()
-        )
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.get_chapter_metadata.return_value = _make_chapter_metadata()
 
         mocker.patch("os.path.exists", return_value=True)
         mocker.patch("subprocess.run").return_value.returncode = 0
@@ -951,9 +869,7 @@ class TestGenerateMetadataAiOutcome:
             },
         )
 
-        pending_shorts = [
-            {"id": 1, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}
-        ]
+        pending_shorts = [{"id": 1, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}]
         ti = _make_ti({"pending_shorts": pending_shorts})
         _generate_metadata(ti)
 
@@ -968,14 +884,10 @@ class TestGenerateMetadataAiOutcome:
         """
         from congress_videos.reap_shorts_uploader_dag import _generate_metadata
 
-        mock_db_cls = mocker.patch(
-            "congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB"
-        )
-        mock_db_cls.return_value.get_chapter_metadata.return_value = (
-            _make_chapter_metadata(
-                title="Debate presupuestos",
-                key_speakers=["Ana García"],
-            )
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.get_chapter_metadata.return_value = _make_chapter_metadata(
+            title="Debate presupuestos",
+            key_speakers=["Ana García"],
         )
 
         mocker.patch("os.path.exists", return_value=True)
@@ -989,9 +901,7 @@ class TestGenerateMetadataAiOutcome:
             return_value={"data": None, "error": "boom"},
         )
 
-        pending_shorts = [
-            {"id": 7, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}
-        ]
+        pending_shorts = [{"id": 7, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}]
         ti = _make_ti({"pending_shorts": pending_shorts})
 
         with caplog.at_level(logging.WARNING):
@@ -999,8 +909,6 @@ class TestGenerateMetadataAiOutcome:
 
         metadata = ti.xcom_store["shorts_metadata"]
         assert metadata[0]["title"] == "Ana García: Debate presupuestos #Shorts"
-        assert metadata[0]["description"].startswith(
-            "🏛️ Debate en el Congreso de los Diputados."
-        )
+        assert metadata[0]["description"].startswith("🏛️ Debate en el Congreso de los Diputados.")
         warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         assert any("7" in w and "boom" in w for w in warnings)

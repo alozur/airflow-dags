@@ -7,6 +7,7 @@ separate migration role, without ever granting ALL PRIVILEGES broadly to
 the legacy `airflow` role or issuing a NOLOGIN/REVOKE (additive-first
 constraint — see design.md).
 """
+
 from __future__ import annotations
 
 import re
@@ -52,21 +53,15 @@ class TestGrantScriptsCommonInvariants:
 
     def test_no_all_privileges_grant(self, path: Path):
         sql = _sql_statements_only(path.read_text(encoding="utf-8"))
-        assert not _ALL_PRIVILEGES.search(sql), (
-            f"{path.name}: must not grant ALL PRIVILEGES — least-privilege only"
-        )
+        assert not _ALL_PRIVILEGES.search(sql), f"{path.name}: must not grant ALL PRIVILEGES — least-privilege only"
 
     def test_no_broad_grant_to_legacy_airflow(self, path: Path):
         sql = _sql_statements_only(path.read_text(encoding="utf-8"))
-        assert not _GRANT_TO_AIRFLOW.search(sql), (
-            f"{path.name}: must not target the legacy `airflow` role directly"
-        )
+        assert not _GRANT_TO_AIRFLOW.search(sql), f"{path.name}: must not target the legacy `airflow` role directly"
 
     def test_no_nologin(self, path: Path):
         sql = _sql_statements_only(path.read_text(encoding="utf-8"))
-        assert not _NOLOGIN.search(sql), (
-            f"{path.name}: must not touch the legacy `airflow` role's LOGIN status"
-        )
+        assert not _NOLOGIN.search(sql), f"{path.name}: must not touch the legacy `airflow` role's LOGIN status"
 
     def test_no_revoke(self, path: Path):
         sql = _sql_statements_only(path.read_text(encoding="utf-8"))
@@ -92,7 +87,6 @@ class TestGrantScriptsCommonInvariants:
 
 
 class TestDevScriptRoleNames:
-
     def test_contains_airflow_dev_role(self):
         sql = DEV_SCRIPT.read_text(encoding="utf-8")
         assert "airflow_dev" in sql
@@ -120,7 +114,6 @@ class TestDevScriptRoleNames:
 
 
 class TestProdScriptRoleNames:
-
     def test_contains_airflow_prod_role(self):
         sql = PROD_SCRIPT.read_text(encoding="utf-8")
         assert "airflow_prod" in sql
@@ -191,9 +184,9 @@ class TestRuntimeRoleHasNoDDL:
         sql = _sql_statements_only(path.read_text(encoding="utf-8"))
         # Find GRANT statements that target the runtime role directly.
         runtime_grants = [
-            stmt for stmt in sql.split(";")
-            if re.search(rf"\bTO\s+{runtime_role}\b", stmt, re.IGNORECASE)
-            and "GRANT" in stmt.upper()
+            stmt
+            for stmt in sql.split(";")
+            if re.search(rf"\bTO\s+{runtime_role}\b", stmt, re.IGNORECASE) and "GRANT" in stmt.upper()
         ]
         assert runtime_grants, f"No GRANT ... TO {runtime_role} statements found"
         for stmt in runtime_grants:

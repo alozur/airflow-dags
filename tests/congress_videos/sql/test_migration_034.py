@@ -3,31 +3,24 @@
 Reads the SQL file statically and asserts structural properties.
 No DB connection required (mirrors test_migration_032.py pattern).
 """
+
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
-import pytest
-
 MIGRATION_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "congress_videos"
-    / "sql"
-    / "migrations"
-    / "034_add_speaker_resolution.sql"
+    Path(__file__).resolve().parents[3] / "congress_videos" / "sql" / "migrations" / "034_add_speaker_resolution.sql"
 )
 
 
 class TestMigration034FileExists:
-
     def test_migration_file_exists(self):
         """Migration file must exist at the expected path."""
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
 
 class TestMigration034Columns:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -60,7 +53,6 @@ class TestMigration034Columns:
 
 
 class TestMigration034Constraint:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -91,7 +83,6 @@ class TestMigration034Constraint:
 
 
 class TestMigration034UploadableTurnsView:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -152,7 +143,6 @@ class TestMigration034UploadableTurnsView:
 
 
 class TestMigration034Hygiene:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -174,6 +164,4 @@ class TestMigration034Hygiene:
         add_col_count = sql.count("ADD COLUMN")
         add_col_safe_count = sql.count("ADD COLUMN IF NOT EXISTS")
         assert add_col_count > 0, "Must have at least one ADD COLUMN"
-        assert add_col_count == add_col_safe_count, (
-            "All ADD COLUMN statements must use IF NOT EXISTS for idempotency"
-        )
+        assert add_col_count == add_col_safe_count, "All ADD COLUMN statements must use IF NOT EXISTS for idempotency"

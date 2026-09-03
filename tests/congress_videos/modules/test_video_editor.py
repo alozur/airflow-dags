@@ -17,7 +17,7 @@ Test groups:
 from __future__ import annotations
 
 import logging
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -88,8 +88,18 @@ class TestVideoEditorConfig:
         result = get_domain_config("congreso")
         assert "extracto_sesion" in result["tipos"]
         style = result["tipos"]["extracto_sesion"]
-        for key in ("renderer", "fontfile", "fontfile_sub", "fontsize_title", "fontsize_sub",
-                    "bg_color", "accent_color", "title_color", "width_pct", "height"):
+        for key in (
+            "renderer",
+            "fontfile",
+            "fontfile_sub",
+            "fontsize_title",
+            "fontsize_sub",
+            "bg_color",
+            "accent_color",
+            "title_color",
+            "width_pct",
+            "height",
+        ):
             assert key in style, f"Missing required style key: {key}"
         assert style["renderer"] == "pillow"
 
@@ -586,9 +596,7 @@ class TestValidateEditorInput:
 
         mocker.patch("os.path.exists", return_value=True)
         conf = {k: v for k, v in _VALID_CONF.items() if k != "overlays"}
-        with pytest.raises(
-            ValueError, match=r"Missing required conf key: 'overlays'"
-        ):
+        with pytest.raises(ValueError, match=r"Missing required conf key: 'overlays'"):
             validate_editor_input(conf)
 
 
@@ -620,9 +628,7 @@ class TestApplyOverlays:
             return_value=300.0,
         )
 
-    def test_success_returns_output_dict(
-        self, mock_video_editor_subprocess, mock_get_source_duration
-    ) -> None:
+    def test_success_returns_output_dict(self, mock_video_editor_subprocess, mock_get_source_duration) -> None:
         """On returncode=0, apply_overlays must return {output_path, success: True}."""
         from congress_videos.modules.video_editor import apply_overlays
 
@@ -635,9 +641,7 @@ class TestApplyOverlays:
         assert result["success"] is True
         assert result["output_path"] == "/data/out.mp4"
 
-    def test_non_zero_exit_raises_runtime_error(
-        self, mock_video_editor_subprocess, mock_get_source_duration
-    ) -> None:
+    def test_non_zero_exit_raises_runtime_error(self, mock_video_editor_subprocess, mock_get_source_duration) -> None:
         """On returncode=1, apply_overlays must raise RuntimeError with stderr text."""
         mock_video_editor_subprocess.return_value.returncode = 1
         mock_video_editor_subprocess.return_value.stderr = "error msg from ffmpeg"
@@ -779,6 +783,7 @@ class TestVideoEditorConfigPilloTipos:
 
     def _cfg(self):
         from congress_videos.config.video_editor_config import get_domain_config
+
         return get_domain_config("congreso")
 
     @pytest.mark.parametrize("tipo", _PILLOW_TIPO_NAMES)
@@ -853,13 +858,17 @@ class TestRenderPillowOverlay:
         pixels = list(img.getdata())
         assert any(px[3] > 0 for px in pixels), "All pixels are transparent — nothing was drawn."
 
-    @pytest.mark.parametrize("overlay,tipo", [
-        ({**_PILLOW_OVERLAY_EXTRACTO, "descripcion": None}, "extracto_sesion"),
-        ({**_PILLOW_OVERLAY_SPEAKER,  "descripcion": None}, "speaker_id"),
-        ({**_PILLOW_OVERLAY_CITA,     "descripcion": None}, "cita_destacada"),
-        ({**_PILLOW_OVERLAY_URGENTE,  "descripcion": None}, "urgente"),
-        ({**_PILLOW_OVERLAY_DATO,     "descripcion": None}, "dato_contexto"),
-    ], ids=_PILLOW_TIPO_NAMES)
+    @pytest.mark.parametrize(
+        "overlay,tipo",
+        [
+            ({**_PILLOW_OVERLAY_EXTRACTO, "descripcion": None}, "extracto_sesion"),
+            ({**_PILLOW_OVERLAY_SPEAKER, "descripcion": None}, "speaker_id"),
+            ({**_PILLOW_OVERLAY_CITA, "descripcion": None}, "cita_destacada"),
+            ({**_PILLOW_OVERLAY_URGENTE, "descripcion": None}, "urgente"),
+            ({**_PILLOW_OVERLAY_DATO, "descripcion": None}, "dato_contexto"),
+        ],
+        ids=_PILLOW_TIPO_NAMES,
+    )
     def test_renders_without_descripcion(self, overlay: dict, tipo: str) -> None:
         """Each renderer must succeed when 'descripcion' is absent or None."""
         from congress_videos.config.video_editor_config import get_domain_config
@@ -914,7 +923,8 @@ class TestBuildFfmpegPillowCmd:
         from congress_videos.modules.video_editor import build_ffmpeg_pillow_cmd
 
         cmd = build_ffmpeg_pillow_cmd(
-            "/src.mp4", "/out.mp4",
+            "/src.mp4",
+            "/out.mp4",
             [("/a.png", 0.0, 5.0), ("/b.png", 6.0, 12.0)],
         )
         fc = cmd[cmd.index("-filter_complex") + 1]
@@ -1018,6 +1028,7 @@ class TestApplyOverlaysPillow:
     def mock_pillow_render(self, mocker):
         """Return a small blank RGBA Image instead of rendering real overlays."""
         from PIL import Image
+
         fake_img = Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
         return mocker.patch(
             "congress_videos.modules.video_editor.render_pillow_overlay",
@@ -1134,9 +1145,7 @@ class TestApplyOverlaysPillow:
                 domain_cfg=mixed_cfg,
             )
 
-    def test_fallback_dimensions_when_probe_fails(
-        self, mock_subprocess, mock_pillow_render, mocker
-    ) -> None:
+    def test_fallback_dimensions_when_probe_fails(self, mock_subprocess, mock_pillow_render, mocker) -> None:
         """When _get_source_dimensions returns None, must default to 1280×720."""
         from congress_videos.modules.video_editor import apply_overlays
 

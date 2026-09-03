@@ -105,9 +105,7 @@ def build_pikzels_prompt(art_brief: dict, layout: str) -> str:
         KeyError:   When any of the required keys is missing from ``art_brief``.
     """
     if layout not in _TEMPLATES:
-        raise ValueError(
-            f"Unknown layout {layout!r}. Valid values are: 'A', 'B', 'C'."
-        )
+        raise ValueError(f"Unknown layout {layout!r}. Valid values are: 'A', 'B', 'C'.")
 
     # Access required keys — raises KeyError naturally if missing.
     for key in _REQUIRED_KEYS:

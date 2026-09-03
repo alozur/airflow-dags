@@ -3,31 +3,24 @@
 Reads the SQL file statically and asserts structural properties.
 No DB connection required (mirrors test_migration_029.py pattern).
 """
+
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
-import pytest
-
 MIGRATION_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "congress_videos"
-    / "sql"
-    / "migrations"
-    / "030_add_prepared_at.sql"
+    Path(__file__).resolve().parents[3] / "congress_videos" / "sql" / "migrations" / "030_add_prepared_at.sql"
 )
 
 
 class TestMigration030FileExists:
-
     def test_migration_file_exists(self):
         """Migration file must exist at the expected path."""
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
 
 class TestMigration030ColumnAndView:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -55,10 +48,9 @@ class TestMigration030ColumnAndView:
     def test_view_contains_prepared_at_is_not_null_gate(self):
         """View WHERE clause must contain 'AND prepared_at IS NOT NULL'."""
         sql = self._sql().upper()
-        assert re.search(r"AND\s+STv?\.?PREPARED_AT\s+IS\s+NOT\s+NULL", sql) or \
-               re.search(r"AND\s+PREPARED_AT\s+IS\s+NOT\s+NULL", sql), (
-            "View must contain AND prepared_at IS NOT NULL in WHERE clause"
-        )
+        assert re.search(r"AND\s+STv?\.?PREPARED_AT\s+IS\s+NOT\s+NULL", sql) or re.search(
+            r"AND\s+PREPARED_AT\s+IS\s+NOT\s+NULL", sql
+        ), "View must contain AND prepared_at IS NOT NULL in WHERE clause"
 
     def test_view_retains_is_uploaded_gate(self):
         """View WHERE clause must retain is_uploaded_to_youtube = FALSE gate."""

@@ -44,6 +44,7 @@ def get_all_participants() -> list[dict]:
     """Fetch all participants from DB. Extracted for monkeypatching in tests."""
     return CongressParticipantsDB().get_all_participants()
 
+
 load_env_if_local()
 
 logger = logging.getLogger(__name__)
@@ -207,12 +208,8 @@ def _write_turn_sidecars(
             # clip spans multiple individual turns sharing one output_path).
             # Fall back to per-turn start/end for single-turn rows that do
             # not carry group_* keys.
-            window_start = float(
-                turn.get("group_start_seconds", turn.get("start_seconds", 0))
-            )
-            window_end = float(
-                turn.get("group_end_seconds", turn.get("end_seconds", 99 * 3600))
-            )
+            window_start = float(turn.get("group_start_seconds", turn.get("start_seconds", 0)))
+            window_end = float(turn.get("group_end_seconds", turn.get("end_seconds", 99 * 3600)))
             # Issue #175: narrow window by VAD trim offsets so SRT timestamps
             # align with the (possibly trimmed) MP4. Zero offsets → unchanged.
             window_start += trim_start_secs
@@ -303,8 +300,7 @@ def _prepare_turns_callable() -> None:
 
             already_resolved = (
                 turn.get("resolved_participant_slug")
-                and float(turn.get("speaker_resolution_confidence") or 0)
-                >= SPEAKER_RESOLUTION_MIN_CONFIDENCE
+                and float(turn.get("speaker_resolution_confidence") or 0) >= SPEAKER_RESOLUTION_MIN_CONFIDENCE
             )
             if not already_resolved:
                 narrow = resolve_speaker(turn, participants)
@@ -318,9 +314,7 @@ def _prepare_turns_callable() -> None:
                     # below only decides which slug is persisted, never
                     # whether promotion fires (preserves #282 rule 4 exactly).
                     promote_signal = _is_qa_promotion_signal(previous_name, narrow_name)
-                    mentions = chapter_roster_mentions(
-                        turn.get("key_speakers"), turn.get("speakers")
-                    )
+                    mentions = chapter_roster_mentions(turn.get("key_speakers"), turn.get("speakers"))
 
                     winner, winner_name, winner_verdict = narrow, narrow_name, None
                     wide_slug = None
@@ -454,9 +448,7 @@ def _prepare_turns_callable() -> None:
 
             # Step 3: Atomic readiness flip — called LAST.
             db.mark_turn_prepared(turn_id)
-            logger.info(
-                "_prepare_turns_callable: turn_id=%d prepared successfully", turn_id
-            )
+            logger.info("_prepare_turns_callable: turn_id=%d prepared successfully", turn_id)
 
         except Exception as exc:
             logger.warning(

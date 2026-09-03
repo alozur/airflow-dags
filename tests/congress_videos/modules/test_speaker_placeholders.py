@@ -59,21 +59,24 @@ class TestPlaceholderSpeakersSet:
 class TestIsPlaceholderExactMatch:
     """Scenario: Known placeholder exact match → is_placeholder returns True."""
 
-    @pytest.mark.parametrize("name", [
-        "Desconocido",
-        "desconocido",
-        "DESCONOCIDO",
-        "Unknown",
-        "unknown",
-        "UNKNOWN",
-        "Interviniente no especificado",
-        "INTERVINIENTE NO ESPECIFICADO",
-        "(No especificado)",
-        "(NO ESPECIFICADO)",
-        "No especificado",
-        "NO ESPECIFICADO",
-        "",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Desconocido",
+            "desconocido",
+            "DESCONOCIDO",
+            "Unknown",
+            "unknown",
+            "UNKNOWN",
+            "Interviniente no especificado",
+            "INTERVINIENTE NO ESPECIFICADO",
+            "(No especificado)",
+            "(NO ESPECIFICADO)",
+            "No especificado",
+            "NO ESPECIFICADO",
+            "",
+        ],
+    )
     def test_exact_placeholder_returns_true(self, name: str):
         from congress_videos.modules.speaker_placeholders import is_placeholder
 
@@ -83,22 +86,25 @@ class TestIsPlaceholderExactMatch:
 class TestIsPlaceholderSingleToken:
     """Scenario: Single-token string with no whitespace → is_placeholder returns True."""
 
-    @pytest.mark.parametrize("name", [
-        "Portavoz",
-        "PP",
-        "PSOE",
-        "Diputado",
-        "Diputada",
-        "Senador",
-        "Presidente",
-        "Presidenta",
-        "Ministro",
-        "Ministra",
-        "Secretario",
-        "Vocal",
-        "Interveniente",
-        "Interviniente",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Portavoz",
+            "PP",
+            "PSOE",
+            "Diputado",
+            "Diputada",
+            "Senador",
+            "Presidente",
+            "Presidenta",
+            "Ministro",
+            "Ministra",
+            "Secretario",
+            "Vocal",
+            "Interveniente",
+            "Interviniente",
+        ],
+    )
     def test_single_token_returns_true(self, name: str):
         from congress_videos.modules.speaker_placeholders import is_placeholder
 
@@ -108,12 +114,15 @@ class TestIsPlaceholderSingleToken:
 class TestIsPlaceholderRoleOnly:
     """Scenario: Role-keyword prefix without a proper name → returns True."""
 
-    @pytest.mark.parametrize("name", [
-        "Presidenta",
-        "Ministro",
-        "Portavoz del grupo",
-        "Diputado del PP",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Presidenta",
+            "Ministro",
+            "Portavoz del grupo",
+            "Diputado del PP",
+        ],
+    )
     def test_role_only_returns_true(self, name: str):
         from congress_videos.modules.speaker_placeholders import is_placeholder
 
@@ -123,12 +132,15 @@ class TestIsPlaceholderRoleOnly:
 class TestIsPlaceholderRoleWithProperName:
     """Scenario: Role prefix followed by a proper name → fail-open, returns False."""
 
-    @pytest.mark.parametrize("name", [
-        "Presidente Sánchez",
-        "Ministra González",
-        "Portavoz López",
-        "Diputado Martínez García",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Presidente Sánchez",
+            "Ministra González",
+            "Portavoz López",
+            "Diputado Martínez García",
+        ],
+    )
     def test_role_plus_propername_returns_false(self, name: str):
         from congress_videos.modules.speaker_placeholders import is_placeholder
 
@@ -138,16 +150,19 @@ class TestIsPlaceholderRoleWithProperName:
 class TestIsPlaceholderUnrecognisedFailOpen:
     """Scenario: Unrecognised shape → fail-open, returns False (real name, not filtered)."""
 
-    @pytest.mark.parametrize("name", [
-        "Ana Martínez",
-        "Pedro López",
-        "Laura Gómez",
-        "María José Rodríguez",
-        "José Antonio Fernández",
-        "Xi Jinping",
-        "Joe Biden",
-        "Cualquier Nombre Real",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Ana Martínez",
+            "Pedro López",
+            "Laura Gómez",
+            "María José Rodríguez",
+            "José Antonio Fernández",
+            "Xi Jinping",
+            "Joe Biden",
+            "Cualquier Nombre Real",
+        ],
+    )
     def test_real_name_returns_false(self, name: str):
         from congress_videos.modules.speaker_placeholders import is_placeholder
 

@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 # ---------------------------------------------------------------------------
 # upload_multiple_videos
 # ---------------------------------------------------------------------------
 
-class TestUploadMultipleVideos:
 
+class TestUploadMultipleVideos:
     def _make_service(self, mocker):
         """Return a mocked authenticated YouTube service."""
         fake_service = MagicMock()
@@ -252,8 +250,8 @@ class TestUploadMultipleVideos:
 # upload_from_conf
 # ---------------------------------------------------------------------------
 
-class TestUploadVideosFromConfig:
 
+class TestUploadVideosFromConfig:
     def test_successful_upload_returns_results(self, tmp_path, mocker):
         """All uploads successful returns results dict without raising."""
         mocker.patch(

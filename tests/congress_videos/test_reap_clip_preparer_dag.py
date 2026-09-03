@@ -12,6 +12,7 @@ from airflow.exceptions import AirflowException
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_ti() -> MagicMock:
     """Create a minimal Airflow TaskInstance double with in-memory XCom."""
     store: dict = {}
@@ -35,25 +36,29 @@ def _make_ti() -> MagicMock:
 # DAG load tests
 # ---------------------------------------------------------------------------
 
-class TestCongressReapClipPreparerDAGLoads:
 
+class TestCongressReapClipPreparerDAGLoads:
     def test_dag_loads(self):
         from congress_videos.reap_clip_preparer_dag import dag
+
         assert dag is not None
         assert dag.dag_id == "congress_reap_clip_preparer"
 
     def test_dag_has_correct_task_count(self):
         from congress_videos.reap_clip_preparer_dag import dag
+
         # Tasks: ensure_data_directory, query_chapters, extract_and_pretrim_clip,
         #        log_queue_summary
         assert len(dag.tasks) == 4
 
     def test_dag_has_correct_schedule(self):
         from congress_videos.reap_clip_preparer_dag import dag
-        assert dag.schedule_interval == '0 15 * * *'
+
+        assert dag.schedule_interval == "0 15 * * *"
 
     def test_dag_correct_task_ids(self):
         from congress_videos.reap_clip_preparer_dag import dag
+
         task_ids = {t.task_id for t in dag.tasks}
         assert "ensure_data_directory" in task_ids
         assert "query_chapters" in task_ids
@@ -64,6 +69,7 @@ class TestCongressReapClipPreparerDAGLoads:
 
     def test_dag_correct_dependency_chain(self):
         from congress_videos.reap_clip_preparer_dag import dag
+
         tasks_by_id = {t.task_id: t for t in dag.tasks}
         t0 = tasks_by_id["ensure_data_directory"]
         t1 = tasks_by_id["query_chapters"]
@@ -79,8 +85,8 @@ class TestCongressReapClipPreparerDAGLoads:
 # _ffmpeg_extract_window (#10 precise cut + #12 adaptive timeout wiring)
 # ---------------------------------------------------------------------------
 
-class TestFfmpegExtractWindow:
 
+class TestFfmpegExtractWindow:
     def test_uses_precise_input_seek_command_and_adaptive_timeout(self, mocker, tmp_path):
         """The window extractor must build a frame-accurate (-ss before -i)
         re-encode command with -err_detect ignore_err and pass an adaptive
@@ -94,14 +100,14 @@ class TestFfmpegExtractWindow:
         )
 
         dest = str(tmp_path / "out.mp4")
-        mod._ffmpeg_extract_window(
-            source_path="src.mp4", dest_path=dest, start_secs=10.0, end_secs=40.0
-        )
+        mod._ffmpeg_extract_window(source_path="src.mp4", dest_path=dest, start_secs=10.0, end_secs=40.0)
 
         run.assert_called_once()
         cmd = run.call_args[0][0]
         # Frame accuracy: -ss before -i (input seek + accurate_seek), full re-encode (no stream copy).
-        assert cmd.index("-ss") < cmd.index("-i"), "-ss before -i with accurate_seek gives frame accuracy without full-prefix decode"
+        assert cmd.index("-ss") < cmd.index("-i"), (
+            "-ss before -i with accurate_seek gives frame accuracy without full-prefix decode"
+        )
         assert "-err_detect" in cmd and cmd[cmd.index("-err_detect") + 1] == "ignore_err"
         assert "copy" not in cmd
         assert "libx264" in cmd
@@ -135,8 +141,10 @@ class TestFfmpegExtractWindow:
         )
 
         mod._ffmpeg_extract_window(
-            source_path="src.mp4", dest_path=str(tmp_path / "out.mp4"),
-            start_secs=10.0, end_secs=40.0,
+            source_path="src.mp4",
+            dest_path=str(tmp_path / "out.mp4"),
+            start_secs=10.0,
+            end_secs=40.0,
         )
 
         cmd = run.call_args[0][0]
@@ -153,8 +161,11 @@ class TestFfmpegExtractWindow:
         )
 
         mod._ffmpeg_extract_window(
-            source_path="src.mp4", dest_path=str(tmp_path / "out.mp4"),
-            start_secs=10.0, end_secs=40.0, reencode=False,
+            source_path="src.mp4",
+            dest_path=str(tmp_path / "out.mp4"),
+            start_secs=10.0,
+            end_secs=40.0,
+            reencode=False,
         )
 
         cmd = run.call_args[0][0]
@@ -166,8 +177,8 @@ class TestFfmpegExtractWindow:
 # TestQueryChapters
 # ---------------------------------------------------------------------------
 
-class TestQueryChapters:
 
+class TestQueryChapters:
     def test_empty_result_returns_false(self, mocker):
         from congress_videos.reap_clip_preparer_dag import _query_chapters
 
@@ -226,8 +237,8 @@ class TestQueryChapters:
 # TestExtractAndPretrimClip
 # ---------------------------------------------------------------------------
 
-class TestExtractAndPretrimClip:
 
+class TestExtractAndPretrimClip:
     def _params(self, **overrides):
         """Build the DAG params dict for the extract callable, with per-test overrides."""
         base = {
@@ -248,8 +259,7 @@ class TestExtractAndPretrimClip:
             "scoring_reasoning": "Good debate",
         }
 
-    def _setup_mocks(self, mocker, *, source_video="/data/video.mp4", duration_seconds=240,
-                      source_codec="h264"):
+    def _setup_mocks(self, mocker, *, source_video="/data/video.mp4", duration_seconds=240, source_codec="h264"):
         mocker.patch(
             "congress_videos.reap_clip_preparer_dag._find_source_video",
             return_value=source_video,
@@ -520,6 +530,7 @@ class TestExtractAndPretrimClip:
         mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
 
         call_count = {"n": 0}
+
         def fake_subprocess_run(cmd, *args, **kwargs):
             call_count["n"] += 1
             if call_count["n"] == 1:

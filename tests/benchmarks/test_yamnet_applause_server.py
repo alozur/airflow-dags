@@ -11,6 +11,7 @@ Covers:
 - Watchdog disabled when idle_timeout <= 0
 - Lifespan: watchdog task created (enabled) / absent (disabled); model NOT loaded at startup
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -23,6 +24,7 @@ from fastapi.testclient import TestClient
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_client(
     inference_callable=None,
@@ -40,6 +42,7 @@ def _make_client(
     times the model_loader itself is called.
     """
     if inference_callable is None:
+
         def inference_callable(wav_path: str) -> list[dict]:
             return []
 
@@ -51,6 +54,7 @@ def _make_client(
         return inference_callable
 
     import sys
+
     if "benchmarks.yamnet_applause.server" in sys.modules:
         del sys.modules["benchmarks.yamnet_applause.server"]
 
@@ -80,6 +84,7 @@ _WAV_STUB = b"RIFF\x00\x00\x00\x00WAVEfmt "
 # Existing tests (safety-net)
 # ---------------------------------------------------------------------------
 
+
 class TestHealthEndpoint:
     def test_health_returns_200(self):
         client = _make_client()
@@ -96,6 +101,7 @@ class TestDetectEndpoint:
     def _stub_inference(self, intervals: list[dict]):
         def inference(wav_path: str) -> list[dict]:
             return intervals
+
         return inference
 
     def test_missing_audio_file_returns_422(self):
@@ -183,6 +189,7 @@ class TestTempfileCleanup:
         monkeypatch.setattr(_tf, "NamedTemporaryFile", tracking_ntf)
 
         import sys
+
         if "benchmarks.yamnet_applause.server" in sys.modules:
             del sys.modules["benchmarks.yamnet_applause.server"]
         import benchmarks.yamnet_applause.server as srv
@@ -221,6 +228,7 @@ class TestTempfileCleanup:
             raise RuntimeError("inference boom")
 
         import sys
+
         if "benchmarks.yamnet_applause.server" in sys.modules:
             del sys.modules["benchmarks.yamnet_applause.server"]
         import benchmarks.yamnet_applause.server as srv
@@ -241,6 +249,7 @@ class TestTempfileCleanup:
 # ---------------------------------------------------------------------------
 # Phase 4 — NEW: Idle-exit / lazy-load tests (mirror of diarize tests)
 # ---------------------------------------------------------------------------
+
 
 class TestLazyLoad:
     """Model must NOT be loaded at startup; loaded on first inference only."""
@@ -300,15 +309,18 @@ class TestLazyLoad:
             return slow_inference
 
         import sys
+
         if "benchmarks.yamnet_applause.server" in sys.modules:
             del sys.modules["benchmarks.yamnet_applause.server"]
         import benchmarks.yamnet_applause.server as srv
+
         app = srv.create_app(model_loader=slow_loader, idle_timeout=0)
 
         results: list[int] = []
 
         # All threads share ONE entered client (one lifespan context).
         with TestClient(app) as client:
+
             def make_request():
                 resp = client.post(
                     "/detect",
@@ -340,11 +352,12 @@ class TestActivityStamping:
             return clock_val[0]
 
         import sys
+
         if "benchmarks.yamnet_applause.server" in sys.modules:
             del sys.modules["benchmarks.yamnet_applause.server"]
         import benchmarks.yamnet_applause.server as srv
 
-        app = srv.create_app(model_loader=lambda: (lambda p: []), idle_timeout=0, clock=fake_clock)
+        app = srv.create_app(model_loader=lambda: lambda p: [], idle_timeout=0, clock=fake_clock)
         with TestClient(app) as client:
             clock_val[0] = 42.0
             resp = client.post("/detect", data={"offset": "0.0"})
@@ -363,12 +376,13 @@ class TestActivityStamping:
             fired.append(True)
 
         import sys
+
         if "benchmarks.yamnet_applause.server" in sys.modules:
             del sys.modules["benchmarks.yamnet_applause.server"]
         import benchmarks.yamnet_applause.server as srv
 
         app = srv.create_app(
-            model_loader=lambda: (lambda p: []),
+            model_loader=lambda: lambda p: [],
             idle_timeout=900,
             clock=fake_clock,
             exit_signal=fake_exit,
@@ -387,12 +401,13 @@ class TestWatchdog:
 
     def _make_app_and_state(self, idle_timeout: int, clock, exit_fn):
         import sys
+
         if "benchmarks.yamnet_applause.server" in sys.modules:
             del sys.modules["benchmarks.yamnet_applause.server"]
         import benchmarks.yamnet_applause.server as srv
 
         app = srv.create_app(
-            model_loader=lambda: (lambda p: []),
+            model_loader=lambda: lambda p: [],
             idle_timeout=idle_timeout,
             clock=clock,
             exit_signal=exit_fn,
@@ -417,9 +432,7 @@ class TestWatchdog:
             state["inflight"] = 0
             clock_val[0] = 900.0
 
-            asyncio.get_event_loop().run_until_complete(
-                srv._watchdog_tick(state, 900, fake_clock, fake_exit)
-            )
+            asyncio.get_event_loop().run_until_complete(srv._watchdog_tick(state, 900, fake_clock, fake_exit))
             assert fired, "exit_signal must be called when idle >= threshold and inflight==0"
 
     def test_watchdog_blocked_by_inflight(self):
@@ -440,15 +453,11 @@ class TestWatchdog:
             state["inflight"] = 1
             clock_val[0] = 1000.0
 
-            asyncio.get_event_loop().run_until_complete(
-                srv._watchdog_tick(state, 900, fake_clock, fake_exit)
-            )
+            asyncio.get_event_loop().run_until_complete(srv._watchdog_tick(state, 900, fake_clock, fake_exit))
             assert not fired, "exit_signal must NOT be called while inflight > 0"
 
             state["inflight"] = 0
-            asyncio.get_event_loop().run_until_complete(
-                srv._watchdog_tick(state, 900, fake_clock, fake_exit)
-            )
+            asyncio.get_event_loop().run_until_complete(srv._watchdog_tick(state, 900, fake_clock, fake_exit))
             assert fired, "exit_signal must be called after inflight drops to 0 past threshold"
 
     def test_watchdog_activity_resets_timer(self):
@@ -469,9 +478,7 @@ class TestWatchdog:
             state["last_activity"] = 800.0
             clock_val[0] = 900.0  # only 100s elapsed since stamp
 
-            asyncio.get_event_loop().run_until_complete(
-                srv._watchdog_tick(state, 900, fake_clock, fake_exit)
-            )
+            asyncio.get_event_loop().run_until_complete(srv._watchdog_tick(state, 900, fake_clock, fake_exit))
             assert not fired, "watchdog must not exit when only 100s elapsed since last_activity"
 
     def test_watchdog_does_not_exit_just_below_threshold(self):
@@ -492,9 +499,7 @@ class TestWatchdog:
             state["inflight"] = 0
             clock_val[0] = 899.0
 
-            asyncio.get_event_loop().run_until_complete(
-                srv._watchdog_tick(state, 900, fake_clock, fake_exit)
-            )
+            asyncio.get_event_loop().run_until_complete(srv._watchdog_tick(state, 900, fake_clock, fake_exit))
             assert not fired, "watchdog must not exit when elapsed < threshold"
 
 
@@ -504,44 +509,46 @@ class TestWatchdogDisabled:
     def test_watchdog_disabled_idle_timeout_zero(self):
         """create_app(idle_timeout=0) → lifespan starts NO watchdog task."""
         import sys
+
         if "benchmarks.yamnet_applause.server" in sys.modules:
             del sys.modules["benchmarks.yamnet_applause.server"]
         import benchmarks.yamnet_applause.server as srv
 
-        app = srv.create_app(model_loader=lambda: (lambda p: []), idle_timeout=0)
+        app = srv.create_app(model_loader=lambda: lambda p: [], idle_timeout=0)
         with TestClient(app):
             state = app.extra["_state"]
-            assert state.get("watchdog_task") is None, \
-                "watchdog_task must be None when idle_timeout=0"
+            assert state.get("watchdog_task") is None, "watchdog_task must be None when idle_timeout=0"
 
     def test_watchdog_disabled_idle_timeout_negative(self):
         """create_app(idle_timeout=-1) → lifespan starts NO watchdog task."""
         import sys
+
         if "benchmarks.yamnet_applause.server" in sys.modules:
             del sys.modules["benchmarks.yamnet_applause.server"]
         import benchmarks.yamnet_applause.server as srv
 
-        app = srv.create_app(model_loader=lambda: (lambda p: []), idle_timeout=-1)
+        app = srv.create_app(model_loader=lambda: lambda p: [], idle_timeout=-1)
         with TestClient(app):
             state = app.extra["_state"]
-            assert state.get("watchdog_task") is None, \
-                "watchdog_task must be None when idle_timeout=-1"
+            assert state.get("watchdog_task") is None, "watchdog_task must be None when idle_timeout=-1"
 
     def test_watchdog_disabled_logs_sleep_mode_disabled(self, caplog):
         """When idle_timeout <= 0, log must contain 'sleep mode disabled'."""
         import logging
         import sys
+
         if "benchmarks.yamnet_applause.server" in sys.modules:
             del sys.modules["benchmarks.yamnet_applause.server"]
         import benchmarks.yamnet_applause.server as srv
 
         with caplog.at_level(logging.INFO):
-            app = srv.create_app(model_loader=lambda: (lambda p: []), idle_timeout=0)
+            app = srv.create_app(model_loader=lambda: lambda p: [], idle_timeout=0)
             with TestClient(app):
                 pass
 
-        assert any("sleep mode disabled" in r.message for r in caplog.records), \
+        assert any("sleep mode disabled" in r.message for r in caplog.records), (
             "Expected 'sleep mode disabled' log message when idle_timeout=0"
+        )
 
 
 class TestLifespanWatchdogEnabled:
@@ -551,6 +558,7 @@ class TestLifespanWatchdogEnabled:
         """Enter lifespan with idle_timeout=900: watchdog_task created, loader uncalled."""
         count: list[int] = []
         import sys
+
         if "benchmarks.yamnet_applause.server" in sys.modules:
             del sys.modules["benchmarks.yamnet_applause.server"]
         import benchmarks.yamnet_applause.server as srv
@@ -568,5 +576,4 @@ class TestLifespanWatchdogEnabled:
         with TestClient(app):
             state = app.extra["_state"]
             assert count == [], "model must NOT be loaded during lifespan startup"
-            assert state.get("watchdog_task") is not None, \
-                "watchdog_task must be created when idle_timeout > 0"
+            assert state.get("watchdog_task") is not None, "watchdog_task must be created when idle_timeout > 0"

@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone
 
-import pytest
-
 # ---------------------------------------------------------------------------
 # DAG load + structure
 # ---------------------------------------------------------------------------
@@ -145,25 +143,26 @@ class TestFetchAnalyticsUsesCollectedPairs:
             get_collected_calls.append(ids)
             return {("abc123", "24h")}  # pretend 24h already collected
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
-            side_effect=fake_get_collected,
-        ), patch(
-            "congress_videos.modules.video_analytics.pending_checkpoints",
-            return_value=[],
-        ) as mock_pending:
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+                side_effect=fake_get_collected,
+            ),
+            patch(
+                "congress_videos.modules.video_analytics.pending_checkpoints",
+                return_value=[],
+            ) as mock_pending,
+        ):
             _fetch_analytics(ti=mock_ti)
 
         # get_collected_analytics_pairs must have been called
         assert len(get_collected_calls) == 1
         assert "abc123" in get_collected_calls[0]
 
-    def test_fetch_analytics_passes_collected_set_to_pending_checkpoints(
-        self, monkeypatch
-    ):
+    def test_fetch_analytics_passes_collected_set_to_pending_checkpoints(self, monkeypatch):
         """The collected set from DB must be forwarded as the 'collected'
         argument to pending_checkpoints(), NOT an empty set."""
-        from unittest.mock import MagicMock, call, patch
+        from unittest.mock import MagicMock, patch
 
         from congress_videos.video_analytics_dag import _fetch_analytics
 
@@ -185,12 +184,15 @@ class TestFetchAnalyticsUsesCollectedPairs:
             captured_pending_calls.append(collected)
             return []
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
-            return_value=already_collected,
-        ), patch(
-            "congress_videos.modules.video_analytics.pending_checkpoints",
-            side_effect=fake_pending,
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+                return_value=already_collected,
+            ),
+            patch(
+                "congress_videos.modules.video_analytics.pending_checkpoints",
+                side_effect=fake_pending,
+            ),
         ):
             _fetch_analytics(ti=mock_ti)
 
@@ -254,12 +256,15 @@ class TestFetchAnalyticsHappyPath:
         response = _full_response({"views": 500, "likes": 40})
         fake_service = _make_fake_service(response)
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
-            return_value=set(),
-        ), patch(
-            "utils.youtube_helpers.get_youtube_analytics_service",
-            return_value=fake_service,
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+                return_value=set(),
+            ),
+            patch(
+                "utils.youtube_helpers.get_youtube_analytics_service",
+                return_value=fake_service,
+            ),
         ):
             result = _fetch_analytics(ti=mock_ti)
 
@@ -304,23 +309,22 @@ class TestFetchAnalyticsApiErrorPath:
         fake_service = MagicMock(name="analytics_service")
 
         def fake_execute():
-            filters = fake_service.reports.return_value.query.call_args.kwargs.get(
-                "filters", ""
-            )
+            filters = fake_service.reports.return_value.query.call_args.kwargs.get("filters", "")
             if "fails111" in filters:
                 raise RuntimeError("quotaExceeded")
             return good_response
 
-        fake_service.reports.return_value.query.return_value.execute.side_effect = (
-            fake_execute
-        )
+        fake_service.reports.return_value.query.return_value.execute.side_effect = fake_execute
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
-            return_value=set(),
-        ), patch(
-            "utils.youtube_helpers.get_youtube_analytics_service",
-            return_value=fake_service,
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+                return_value=set(),
+            ),
+            patch(
+                "utils.youtube_helpers.get_youtube_analytics_service",
+                return_value=fake_service,
+            ),
         ):
             result = _fetch_analytics(ti=mock_ti)
 
@@ -361,12 +365,15 @@ class TestFetchAnalyticsMissingVideoId:
         response = _full_response({"views": 25})
         fake_service = _make_fake_service(response)
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
-            return_value=set(),
-        ), patch(
-            "utils.youtube_helpers.get_youtube_analytics_service",
-            return_value=fake_service,
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+                return_value=set(),
+            ),
+            patch(
+                "utils.youtube_helpers.get_youtube_analytics_service",
+                return_value=fake_service,
+            ),
         ):
             result = _fetch_analytics(ti=mock_ti)
 
@@ -379,15 +386,13 @@ class TestFetchAnalyticsMissingVideoId:
 class TestFetchAnalyticsDagLevelIdempotency:
     """Spec: Analytics collector test coverage / DAG-level idempotency."""
 
-    def test_two_full_runs_do_not_duplicate_a_recorded_checkpoint(
-        self, mock_task_instance
-    ):
+    def test_two_full_runs_do_not_duplicate_a_recorded_checkpoint(self, mock_task_instance):
         """GIVEN a checkpoint already recorded in video_analytics_snapshots
         WHEN the DAG-callable path (_fetch_analytics -> _run_record_snapshots)
              runs twice for the same checkpoint
         THEN no duplicate row is written — ON CONFLICT DO NOTHING holds
              end-to-end, not just at the DB-method level."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         from congress_videos.video_analytics_dag import (
             _fetch_analytics,
@@ -417,15 +422,19 @@ class TestFetchAnalyticsDagLevelIdempotency:
 
         mock_task_instance.xcom_store["candidates"] = candidate_rows
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
-            side_effect=fake_get_collected,
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.record_analytics_snapshot",
-            side_effect=fake_record,
-        ), patch(
-            "utils.youtube_helpers.get_youtube_analytics_service",
-            return_value=fake_service,
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+                side_effect=fake_get_collected,
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.record_analytics_snapshot",
+                side_effect=fake_record,
+            ),
+            patch(
+                "utils.youtube_helpers.get_youtube_analytics_service",
+                return_value=fake_service,
+            ),
         ):
             # Run 1: nothing collected yet -> fetch + record one snapshot.
             _fetch_analytics(ti=mock_task_instance)
@@ -524,12 +533,15 @@ class TestFetchAnalyticsCollectedPairsFailure:
         response = _full_response({"views": 5})
         fake_service = _make_fake_service(response)
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
-            side_effect=RuntimeError("connection refused"),
-        ), patch(
-            "utils.youtube_helpers.get_youtube_analytics_service",
-            return_value=fake_service,
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+                side_effect=RuntimeError("connection refused"),
+            ),
+            patch(
+                "utils.youtube_helpers.get_youtube_analytics_service",
+                return_value=fake_service,
+            ),
         ):
             result = _fetch_analytics(ti=mock_ti)
 
@@ -559,12 +571,15 @@ class TestFetchAnalyticsServiceBuildFailure:
         mock_ti = MagicMock()
         mock_ti.xcom_pull.return_value = candidate_rows
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
-            return_value=set(),
-        ), patch(
-            "utils.youtube_helpers.get_youtube_analytics_service",
-            side_effect=RuntimeError("token missing"),
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+                return_value=set(),
+            ),
+            patch(
+                "utils.youtube_helpers.get_youtube_analytics_service",
+                side_effect=RuntimeError("token missing"),
+            ),
         ):
             result = _fetch_analytics(ti=mock_ti)
 
@@ -597,12 +612,15 @@ class TestFetchAnalyticsSkipAndRetry:
         all_zero_response = _full_response({})
         fake_service = _make_fake_service(all_zero_response)
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
-            return_value=set(),
-        ), patch(
-            "utils.youtube_helpers.get_youtube_analytics_service",
-            return_value=fake_service,
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_collected_analytics_pairs",
+                return_value=set(),
+            ),
+            patch(
+                "utils.youtube_helpers.get_youtube_analytics_service",
+                return_value=fake_service,
+            ),
         ):
             result = _fetch_analytics(ti=mock_ti)
 
@@ -636,7 +654,7 @@ class TestRunGetPendingCheckpoints:
         """Bug regression (issue #303): a non-UTC fixed-offset
         youtube_upload_date must survive Airflow's REAL XCom serializer
         round-trip. Before the fix this raises
-        ValueError: ZoneInfo keys must be normalized relative paths, got: """
+        ValueError: ZoneInfo keys must be normalized relative paths, got:"""
         import json
         from unittest.mock import MagicMock, patch
 

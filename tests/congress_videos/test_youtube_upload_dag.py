@@ -183,17 +183,13 @@ class TestUnpublishedThumbnailLabels:
         """No custom thumbnail was requested — not a failure (design D2)."""
         from congress_videos.youtube_upload_dag import _unpublished_thumbnail_labels
 
-        upload_details = [
-            {"youtube_video_id": "abc", "chapter_id": 1, "thumbnail_success": None}
-        ]
+        upload_details = [{"youtube_video_id": "abc", "chapter_id": 1, "thumbnail_success": None}]
         assert _unpublished_thumbnail_labels(upload_details) == []
 
     def test_true_thumbnail_success_is_not_a_failure(self):
         from congress_videos.youtube_upload_dag import _unpublished_thumbnail_labels
 
-        upload_details = [
-            {"youtube_video_id": "abc", "chapter_id": 1, "thumbnail_success": True}
-        ]
+        upload_details = [{"youtube_video_id": "abc", "chapter_id": 1, "thumbnail_success": True}]
         assert _unpublished_thumbnail_labels(upload_details) == []
 
     def test_missing_key_is_not_a_failure(self):
@@ -224,9 +220,7 @@ class TestTurnMarkingProblems:
         from congress_videos.youtube_upload_dag import _turn_marking_problems
 
         problems = _turn_marking_problems(None)
-        assert problems == [
-            "turn_upload_updates XCom missing after mark_turns_uploaded succeeded"
-        ]
+        assert problems == ["turn_upload_updates XCom missing after mark_turns_uploaded succeeded"]
 
     def test_clean_payload_without_recorded_failures_key_returns_empty_list(self):
         from congress_videos.youtube_upload_dag import _turn_marking_problems
@@ -308,9 +302,7 @@ class TestTurnMarkingProblems:
         turn_updates = {
             "updated_turns": 0,
             "failed_updates": 0,
-            "details": [
-                {"turn_id": 3, "status": "skipped", "reason": "upload_failed_or_missing_fields"}
-            ],
+            "details": [{"turn_id": 3, "status": "skipped", "reason": "upload_failed_or_missing_fields"}],
         }
         assert _turn_marking_problems(turn_updates) == []
 
@@ -372,18 +364,14 @@ class TestCheckUploadFailures:
     def test_raises_on_recorded_failures(self):
         from congress_videos.youtube_upload_dag import _check_upload_failures
 
-        ti = _make_ti(
-            {"chapter_upload_updates": {"recorded_failures": 1, "failed_updates": 0}}
-        )
+        ti = _make_ti({"chapter_upload_updates": {"recorded_failures": 1, "failed_updates": 0}})
         with pytest.raises(Exception, match="Chapter upload failures"):
             _check_upload_failures(ti)
 
     def test_raises_on_failed_updates(self):
         from congress_videos.youtube_upload_dag import _check_upload_failures
 
-        ti = _make_ti(
-            {"chapter_upload_updates": {"recorded_failures": 0, "failed_updates": 2}}
-        )
+        ti = _make_ti({"chapter_upload_updates": {"recorded_failures": 0, "failed_updates": 2}})
         with pytest.raises(Exception, match="Chapter upload failures"):
             _check_upload_failures(ti)
 
@@ -556,9 +544,7 @@ class TestCheckUploadFailures:
     def test_raises_on_missing_turn_xcom_with_clean_chapter(self):
         from congress_videos.youtube_upload_dag import _check_upload_failures
 
-        ti = _make_ti(
-            {"chapter_upload_updates": {"recorded_failures": 0, "failed_updates": 0}}
-        )
+        ti = _make_ti({"chapter_upload_updates": {"recorded_failures": 0, "failed_updates": 0}})
         with pytest.raises(Exception, match="turn_upload_updates XCom missing"):
             _check_upload_failures(ti)
 
@@ -641,9 +627,7 @@ class TestTriggerUploadWithConfig:
         mock_run.execution_date = "2026-07-28T00:00:00+00:00"
         mock_run.refresh_from_db = MagicMock()
 
-        mocker.patch(
-            "congress_videos.youtube_upload_dag.trigger_dag_api", return_value=mock_run
-        )
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=mock_run)
         mocker.patch("time.sleep")
         mock_xcom = mocker.patch("airflow.models.XCom")
         mock_xcom.get_many.return_value = []
@@ -680,11 +664,9 @@ class TestTriggerUploadWithConfig:
 # ---------------------------------------------------------------------------
 
 
-def _make_context_for_should_upload(
-    queue_size: int, hour: int, uploads_today: int = 0
-) -> dict:
+def _make_context_for_should_upload(queue_size: int, hour: int, uploads_today: int = 0) -> dict:
     """Build a minimal Airflow context for should_upload tests."""
-    from datetime import datetime, timezone
+    from datetime import datetime
     from unittest.mock import MagicMock
 
     logical_date = datetime(2026, 7, 31, hour, 0, 0, tzinfo=UTC)
@@ -765,7 +747,7 @@ class TestShouldUpload:
 
     def test_stale_run_returns_false(self):
         """data_interval_end ~2h in the past, queue above threshold → False (stale skip)."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         from congress_videos.youtube_upload_dag import should_upload
 
@@ -775,7 +757,7 @@ class TestShouldUpload:
 
     def test_fresh_run_proceeds_to_threshold(self):
         """data_interval_end ~1 min in the past, queue above threshold → True (threshold applies)."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         from congress_videos.youtube_upload_dag import should_upload
 
@@ -794,7 +776,7 @@ class TestShouldUpload:
 
     def test_staleness_boundary_strictly_greater(self):
         """data_interval_end exactly 30 min in the past → True (guard uses strict >, not >=)."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         from unittest.mock import patch
 
         from congress_videos.youtube_upload_dag import (
@@ -827,9 +809,7 @@ class TestDryRun:
         from congress_videos.youtube_upload_dag import trigger_upload_with_config
 
         ti = _make_ti({"upload_config": {"videos": [{"chapter_id": "c-1"}]}})
-        result = trigger_upload_with_config(
-            ti, params={"dry_run": True}, run_id="test_dry"
-        )
+        result = trigger_upload_with_config(ti, params={"dry_run": True}, run_id="test_dry")
 
         assert result is None
         assert ti.xcom_store.get("upload_results") == {"upload_details": []}
@@ -844,9 +824,7 @@ class TestDryRun:
         mock_run.execution_date = "2026-07-31T17:00:00+00:00"
         mock_run.refresh_from_db = MagicMock()
 
-        trigger_mock = mocker.patch(
-            "congress_videos.youtube_upload_dag.trigger_dag_api", return_value=mock_run
-        )
+        trigger_mock = mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=mock_run)
         mocker.patch("time.sleep")
         mock_xcom = mocker.patch("airflow.models.XCom")
         mock_xcom.get_many.return_value = []
@@ -878,9 +856,7 @@ def _make_chapter(
         "description": description,
         "session_number": session_number,
         "session_date": session_date,
-        "key_speakers": key_speakers
-        if key_speakers is not None
-        else [{"name": "Ana García"}],
+        "key_speakers": key_speakers if key_speakers is not None else [{"name": "Ana García"}],
         "speakers": speakers if speakers is not None else ["Ana García"],
         "resolved_participant_slug": resolved_participant_slug,
     }
@@ -1002,9 +978,7 @@ class TestPrepareThumbnailConfig:
 
         chapter = _make_chapter(key_speakers=[], speakers=[])
 
-        with patch(
-            "congress_videos.youtube_upload_dag.resolve_chapter_speakers"
-        ) as resolver:
+        with patch("congress_videos.youtube_upload_dag.resolve_chapter_speakers") as resolver:
             result = _prepare_thumbnail_config(chapter, MagicMock())
 
         assert result["slug"] is None
@@ -1016,9 +990,7 @@ class TestPrepareThumbnailConfig:
 
         chapter = _make_chapter(key_speakers=[{"name": "Desconocido"}], speakers=[])
 
-        with patch(
-            "congress_videos.youtube_upload_dag.resolve_chapter_speakers"
-        ) as resolver:
+        with patch("congress_videos.youtube_upload_dag.resolve_chapter_speakers") as resolver:
             result = _prepare_thumbnail_config(chapter, MagicMock())
 
         assert result["slug"] is None
@@ -1033,9 +1005,7 @@ class TestPrepareThumbnailConfig:
 
         with (
             patch.object(snc, "ENABLED", False),
-            patch(
-                "congress_videos.youtube_upload_dag.resolve_chapter_speakers"
-            ) as resolver,
+            patch("congress_videos.youtube_upload_dag.resolve_chapter_speakers") as resolver,
         ):
             result = _prepare_thumbnail_config(chapter, MagicMock())
 
@@ -1067,9 +1037,7 @@ class TestTriggerThumbnailGeneration:
         from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
 
         child_run = self._successful_child_run()
-        trigger = mocker.patch(
-            "congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run
-        )
+        trigger = mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run)
         mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
         mocker.patch(
             "congress_videos.youtube_upload_dag.XCom.get_one",
@@ -1081,9 +1049,7 @@ class TestTriggerThumbnailGeneration:
             },
         )
 
-        trigger_thumbnail_generation(
-            _make_ti({"thumbnail_config": self.THUMBNAIL_CONFIG}), run_id="test_run"
-        )
+        trigger_thumbnail_generation(_make_ti({"thumbnail_config": self.THUMBNAIL_CONFIG}), run_id="test_run")
 
         trigger.assert_called_once_with(
             dag_id="generic_thumbnail_generator",
@@ -1096,9 +1062,7 @@ class TestTriggerThumbnailGeneration:
         from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
 
         child_run = self._successful_child_run()
-        trigger = mocker.patch(
-            "congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run
-        )
+        trigger = mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run)
         mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
         mocker.patch(
             "congress_videos.youtube_upload_dag.XCom.get_one",
@@ -1111,9 +1075,7 @@ class TestTriggerThumbnailGeneration:
         )
         config_without_speaker = {**self.THUMBNAIL_CONFIG, "slug": None}
 
-        trigger_thumbnail_generation(
-            _make_ti({"thumbnail_config": config_without_speaker}), run_id="test_run"
-        )
+        trigger_thumbnail_generation(_make_ti({"thumbnail_config": config_without_speaker}), run_id="test_run")
 
         trigger.assert_called_once_with(
             dag_id="generic_thumbnail_generator",
@@ -1121,15 +1083,11 @@ class TestTriggerThumbnailGeneration:
             run_id="chapter_thumbnail_test_run",
         )
 
-    def test_retrieves_result_by_child_dag_and_exact_triggered_run_id(
-        self, mocker
-    ) -> None:
+    def test_retrieves_result_by_child_dag_and_exact_triggered_run_id(self, mocker) -> None:
         from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
 
         child_run = self._successful_child_run()
-        mocker.patch(
-            "congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run
-        )
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run)
         mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
         get_one = mocker.patch(
             "congress_videos.youtube_upload_dag.XCom.get_one",
@@ -1159,9 +1117,7 @@ class TestTriggerThumbnailGeneration:
 
         child_run = self._successful_child_run()
         child_run.state = "failed"
-        mocker.patch(
-            "congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run
-        )
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run)
         mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
         get_one = mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one")
         ti = _make_ti({"thumbnail_config": self.THUMBNAIL_CONFIG})
@@ -1180,13 +1136,9 @@ class TestTriggerThumbnailGeneration:
         from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
 
         child_run = self._successful_child_run()
-        mocker.patch(
-            "congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run
-        )
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run)
         mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
-        mocker.patch(
-            "congress_videos.youtube_upload_dag.XCom.get_one", return_value=None
-        )
+        mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=None)
         ti = _make_ti({"thumbnail_config": self.THUMBNAIL_CONFIG})
 
         trigger_thumbnail_generation(ti, run_id="test_run")
@@ -1217,18 +1169,14 @@ class TestBackfillThumbnailVideoId:
                     "output_path": "/tmp/x.png",
                     "title": "T",
                 },
-                "upload_results": {
-                    "upload_details": [{"chapter_id": 42, "youtube_video_id": "abc123"}]
-                },
+                "upload_results": {"upload_details": [{"chapter_id": 42, "youtube_video_id": "abc123"}]},
             }
         )
         mock_db = MagicMock()
 
         _backfill_thumbnail_video_id(ti, mock_db)
 
-        mock_db.update_thumbnail_youtube_video_id.assert_called_once_with(
-            chapter_id=42, youtube_video_id="abc123"
-        )
+        mock_db.update_thumbnail_youtube_video_id.assert_called_once_with(chapter_id=42, youtube_video_id="abc123")
 
     def test_skips_update_when_thumbnail_success_false(self):
         """When thumbnail_result.success=False, update is NOT called."""
@@ -1242,9 +1190,7 @@ class TestBackfillThumbnailVideoId:
                     "output_path": None,
                     "title": None,
                 },
-                "upload_results": {
-                    "upload_details": [{"chapter_id": 42, "youtube_video_id": "abc123"}]
-                },
+                "upload_results": {"upload_details": [{"chapter_id": 42, "youtube_video_id": "abc123"}]},
             }
         )
         mock_db = MagicMock()
@@ -1274,9 +1220,7 @@ class TestPrepareThumbnailConfigKeySpeakers:
             result = _prepare_thumbnail_config(chapter, MagicMock())
 
         assert "key_speakers" in result, "_prepare_thumbnail_config must include 'key_speakers' key"
-        assert result["key_speakers"] == [{"name": "Ana Pastor"}], (
-            "key_speakers must be propagated from chapter row"
-        )
+        assert result["key_speakers"] == [{"name": "Ana Pastor"}], "key_speakers must be propagated from chapter row"
 
     def test_key_speakers_absent_returns_empty_list(self):
         """Chapter without key_speakers key → returned dict has key_speakers=[]."""
@@ -1292,9 +1236,7 @@ class TestPrepareThumbnailConfigKeySpeakers:
         ):
             result = _prepare_thumbnail_config(chapter_without, MagicMock())
 
-        assert result.get("key_speakers") == [], (
-            "key_speakers must be [] when chapter row has no key_speakers key"
-        )
+        assert result.get("key_speakers") == [], "key_speakers must be [] when chapter row has no key_speakers key"
 
     def test_key_speakers_none_value_returns_empty_list(self):
         """Chapter with key_speakers value=None (explicit null) → returned dict has key_speakers=[]."""
@@ -1310,9 +1252,7 @@ class TestPrepareThumbnailConfigKeySpeakers:
         ):
             result = _prepare_thumbnail_config(chapter, MagicMock())
 
-        assert result.get("key_speakers") == [], (
-            "key_speakers must be [] when chapter.key_speakers is None"
-        )
+        assert result.get("key_speakers") == [], "key_speakers must be [] when chapter.key_speakers is None"
 
 
 # ---------------------------------------------------------------------------
@@ -1758,10 +1698,10 @@ class TestPrepareThumbnailConfigForTurn:
 
         turn = _make_turn_row(
             turn_id=1,
-            start_seconds=90.0,          # 00:01:30 — turn's own narrow span
-            end_seconds=120.0,           # 00:02:00
-            group_start_seconds=60.0,    # 00:01:00 — wider group span
-            group_end_seconds=180.0,     # 00:03:00
+            start_seconds=90.0,  # 00:01:30 — turn's own narrow span
+            end_seconds=120.0,  # 00:02:00
+            group_start_seconds=60.0,  # 00:01:00 — wider group span
+            group_end_seconds=180.0,  # 00:03:00
         )
         turn["video_id"] = "video123"
         turn["session_date"] = "2025-06-10"
@@ -1984,12 +1924,15 @@ class TestPrepareThumbnailConfigForTurnSlugFallback:
             resolved_participant_slug="lopez-pedro",
         )
 
-        with patch(
-            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
-            return_value={"slug": "garcia-ana"},
-        ) as lookup, patch(
-            "congress_videos.youtube_upload_dag.lookup_participant_by_slug",
-        ) as by_slug:
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+                return_value={"slug": "garcia-ana"},
+            ) as lookup,
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_by_slug",
+            ) as by_slug,
+        ):
             result = _prepare_thumbnail_config(turn, MagicMock())
 
         assert result["key_speakers"] == ["Ana García"]
@@ -2174,9 +2117,7 @@ class TestTurnQueueSelection:
         # match= is load-bearing: without it any ValueError would satisfy this
         # pin, including one raised for an unrelated reason. The point of the
         # test is that THIS specific tz defect is what breaks the round-trip.
-        with pytest.raises(
-            ValueError, match="ZoneInfo keys must be normalized relative paths"
-        ):
+        with pytest.raises(ValueError, match="ZoneInfo keys must be normalized relative paths"):
             _xcom_round_trip(fake_turn)
 
 
@@ -2224,9 +2165,7 @@ class TestDualQueueWiredIntoDag:
 
         task_ids = {t.task_id for t in dag.tasks}
         # The wired task must exist
-        assert "get_uploadable_item" in task_ids, (
-            "DAG must have a get_uploadable_item task (dual-queue wired)"
-        )
+        assert "get_uploadable_item" in task_ids, "DAG must have a get_uploadable_item task (dual-queue wired)"
 
     def test_get_uploadable_item_task_is_python_operator(self):
         """The get_uploadable_item task must be a PythonOperator."""
@@ -2237,9 +2176,7 @@ class TestDualQueueWiredIntoDag:
         tasks_by_id = {t.task_id: t for t in dag.tasks}
         task = tasks_by_id.get("get_uploadable_item")
         assert task is not None, "get_uploadable_item task must exist"
-        assert isinstance(task, PythonOperator), (
-            "get_uploadable_item must be a PythonOperator"
-        )
+        assert isinstance(task, PythonOperator), "get_uploadable_item must be a PythonOperator"
 
     def test_get_uploadable_item_is_downstream_of_skip_if_quota_reached(self):
         """get_uploadable_item must be downstream of skip_if_quota_reached."""
@@ -2250,9 +2187,7 @@ class TestDualQueueWiredIntoDag:
         item_task = tasks_by_id.get("get_uploadable_item")
         assert item_task is not None, "get_uploadable_item task must exist"
         downstream_ids = {t.task_id for t in skip_task.downstream_list}
-        assert item_task.task_id in downstream_ids, (
-            "get_uploadable_item must be downstream of skip_if_quota_reached"
-        )
+        assert item_task.task_id in downstream_ids, "get_uploadable_item must be downstream of skip_if_quota_reached"
 
     def test_generate_metadata_is_downstream_of_get_uploadable_item(self):
         """generate_youtube_metadata must be downstream of get_uploadable_item."""
@@ -2263,9 +2198,7 @@ class TestDualQueueWiredIntoDag:
         meta_task = tasks_by_id["generate_youtube_metadata"]
         assert item_task is not None, "get_uploadable_item task must exist"
         upstream_ids = {t.task_id for t in meta_task.upstream_list}
-        assert item_task.task_id in upstream_ids, (
-            "generate_youtube_metadata must be downstream of get_uploadable_item"
-        )
+        assert item_task.task_id in upstream_ids, "generate_youtube_metadata must be downstream of get_uploadable_item"
 
     def test_dag_task_count_updated_for_wired_dual_queue(self):
         """DAG must have 14 tasks after replacing t1_db with get_uploadable_item and adding mark_turns_uploaded."""
@@ -2281,9 +2214,7 @@ class TestDualQueueWiredIntoDag:
         from congress_videos.youtube_upload_dag import dag
 
         task_ids = {t.task_id for t in dag.tasks}
-        assert "mark_turns_uploaded" in task_ids, (
-            "DAG must have a mark_turns_uploaded task after upload"
-        )
+        assert "mark_turns_uploaded" in task_ids, "DAG must have a mark_turns_uploaded task after upload"
 
     def test_mark_turns_uploaded_is_downstream_of_trigger_youtube_upload(self):
         """mark_turns_uploaded must be downstream of trigger_youtube_upload."""
@@ -2294,9 +2225,7 @@ class TestDualQueueWiredIntoDag:
         mark_turns = tasks_by_id.get("mark_turns_uploaded")
         assert mark_turns is not None, "mark_turns_uploaded task must exist"
         downstream_ids = {t.task_id for t in upload_task.downstream_list}
-        assert mark_turns.task_id in downstream_ids, (
-            "mark_turns_uploaded must be downstream of trigger_youtube_upload"
-        )
+        assert mark_turns.task_id in downstream_ids, "mark_turns_uploaded must be downstream of trigger_youtube_upload"
 
 
 # ---------------------------------------------------------------------------
@@ -2577,6 +2506,7 @@ class TestTriggerThumbnailGenerationForwardsOutputPath:
 # SRT sidecar write (Slice 5 — srt-sidecar-canonical-path)
 # ---------------------------------------------------------------------------
 
+
 class TestPrepareThumbnailConfigSrtSidecar:
     """Upload path (issue #146 Fix C) no longer writes subtitles.srt for turns.
 
@@ -2633,9 +2563,7 @@ class TestPrepareThumbnailConfigSrtSidecar:
         config, out_dir = self._run_turn(tmp_path)
 
         srt_path = out_dir / "subtitles.srt"
-        assert not srt_path.exists(), (
-            "upload path must NOT write subtitles.srt for turns; PREPARE DAG owns it"
-        )
+        assert not srt_path.exists(), "upload path must NOT write subtitles.srt for turns; PREPARE DAG owns it"
         assert not any(out_dir.rglob("subtitles.srt"))
         # srt_fragment still computed for the lapidary thumbnail quote.
         assert "primera frase" in config.get("srt_fragment", "")
@@ -2732,9 +2660,7 @@ class TestPrepareThumbnailConfigSrtSidecar:
             config = _prepare_thumbnail_config(turn, MagicMock())
 
         assert "chapter_id" in config
-        assert not any(tmp_path.rglob("subtitles.srt")), (
-            "upload path must not write subtitles.srt for turns"
-        )
+        assert not any(tmp_path.rglob("subtitles.srt")), "upload path must not write subtitles.srt for turns"
 
 
 # ---------------------------------------------------------------------------
@@ -2881,7 +2807,9 @@ class TestUploadDagTurnPathRefactor:
         ti = _make_ti(store)
         context = {"params": {"isTesting": False, "dry_run": False}}
 
-        with patch("congress_videos.modules.youtube.youtube_ai.generate_youtube_metadata_for_selected_videos") as mock_ai:
+        with patch(
+            "congress_videos.modules.youtube.youtube_ai.generate_youtube_metadata_for_selected_videos"
+        ) as mock_ai:
             _prepare_upload_config(ti, **context)
 
         mock_ai.assert_not_called()
@@ -2992,9 +2920,7 @@ class TestPrepareUploadConfigTurnRequiresThumbnailTitle:
                 "item_type": "turn",
             },
             "chapter_extraction_results": extraction,
-            "youtube_metadata_results": {
-                "topic_metadata": [{"description": {"description": "Desc."}}]
-            },
+            "youtube_metadata_results": {"topic_metadata": [{"description": {"description": "Desc."}}]},
             "thumbnail_result": thumbnail_result,
         }
         ti = _make_ti(store)
@@ -3089,9 +3015,7 @@ class TestPrepareUploadConfigTurnOverwritesSidecarsFromXcom:
 
         # subtitles.srt must remain untouched by the sidecar overwrite step
         srt_content = (turn_dir / "subtitles.srt").read_text(encoding="utf-8")
-        assert srt_content == original_srt, (
-            "subtitles.srt must not be modified by the metadata overwrite step"
-        )
+        assert srt_content == original_srt, "subtitles.srt must not be modified by the metadata overwrite step"
 
 
 # ---------------------------------------------------------------------------
@@ -3232,9 +3156,7 @@ class TestTurnIdSurvivesUploadRoundTrip:
         _prepare_upload_config(prepare_ti, **context)
 
         upload_config = prepare_ti.xcom_store["upload_config"]
-        assert upload_config["videos"][0]["turn_id"] == 1, (
-            "prepare step must carry turn_id into the upload config"
-        )
+        assert upload_config["videos"][0]["turn_id"] == 1, "prepare step must carry turn_id into the upload config"
 
         # --- Step 2: upload via the generic uploader's upload_multiple_videos ---
         mocker.patch(
@@ -3252,9 +3174,7 @@ class TestTurnIdSurvivesUploadRoundTrip:
             },
         )
 
-        upload_results = upload_multiple_videos(
-            upload_config["token_file"], upload_config["videos"]
-        )
+        upload_results = upload_multiple_videos(upload_config["token_file"], upload_config["videos"])
 
         assert upload_results["upload_details"][0]["turn_id"] == 1, (
             "upload_multiple_videos must propagate turn_id into upload_detail"
@@ -3270,7 +3190,5 @@ class TestTurnIdSurvivesUploadRoundTrip:
         operator_ti = _make_ti({"upload_results": upload_results})
         _run_mark_turns_uploaded(operator_ti)
 
-        mock_db.mark_turns_uploaded.assert_called_once_with(
-            turn_id=1, youtube_video_id="yt-round-trip"
-        )
+        mock_db.mark_turns_uploaded.assert_called_once_with(turn_id=1, youtube_video_id="yt-round-trip")
         mock_db.mark_turns_uploaded_by_output_path.assert_not_called()

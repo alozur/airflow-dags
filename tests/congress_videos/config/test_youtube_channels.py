@@ -23,9 +23,7 @@ class TestRegistry:
 class TestGetTokenScopes:
     def test_analytics_scope_is_read_only_single(self):
         scopes = get_token_scopes("analytics")
-        assert scopes == (
-            "https://www.googleapis.com/auth/yt-analytics.readonly",
-        )
+        assert scopes == ("https://www.googleapis.com/auth/yt-analytics.readonly",)
 
     def test_upload_scopes_include_upload_and_force_ssl(self):
         scopes = get_token_scopes("upload")
@@ -67,9 +65,7 @@ class TestResolveTokenPath:
         new_path.parent.mkdir(parents=True)
         new_path.write_bytes(b"x")
 
-        resolved = resolve_token_path(
-            "congreso-es-tv", "upload", tokens_dir=str(tokens_dir)
-        )
+        resolved = resolve_token_path("congreso-es-tv", "upload", tokens_dir=str(tokens_dir))
         assert resolved == str(new_path)
 
     def test_no_legacy_fallback_when_new_missing(self, tmp_path):
@@ -77,9 +73,7 @@ class TestResolveTokenPath:
         # the per-channel JSON path is returned even when the file is absent.
         tokens_dir = tmp_path / "youtube_tokens"
 
-        resolved = resolve_token_path(
-            "congreso-es-tv", "upload", tokens_dir=str(tokens_dir)
-        )
+        resolved = resolve_token_path("congreso-es-tv", "upload", tokens_dir=str(tokens_dir))
         assert resolved == str(tokens_dir / "congreso-es-tv" / "upload.json")
 
     def test_legacy_path_kwarg_removed(self):
@@ -91,7 +85,5 @@ class TestResolveTokenPath:
     def test_analytics_resolves_to_json_path(self, tmp_path):
         tokens_dir = tmp_path / "youtube_tokens"
 
-        resolved = resolve_token_path(
-            "congreso-es-tv", "analytics", tokens_dir=str(tokens_dir)
-        )
+        resolved = resolve_token_path("congreso-es-tv", "analytics", tokens_dir=str(tokens_dir))
         assert resolved == str(tokens_dir / "congreso-es-tv" / "analytics.json")

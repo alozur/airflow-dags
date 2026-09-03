@@ -39,14 +39,14 @@ from __future__ import annotations
 import os
 import pathlib
 import shutil
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.models.taskinstance import TaskInstance
 from airflow.operators.python import BranchPythonOperator, PythonOperator
 
 from congress_videos.config.paths import get_thumbnail_dir
-from congress_videos.config.thumbnail_config import ConfigError, get_domain_config
+from congress_videos.config.thumbnail_config import get_domain_config
 from congress_videos.modules import pikzels_client as _pkz
 from congress_videos.modules.thumbnail_generation import (
     art_direct,
@@ -151,9 +151,7 @@ def _task_art_direction(ti: TaskInstance, **context: object) -> dict:
         previous_brief=conf.get("previous_brief"),
         sibling_briefs=history.get("briefs") or None,
         srt_fragment=conf.get("srt_fragment"),
-        resolved_speaker_name=resolved_photo_speaker_name(
-            photo_data, conf.get("key_speakers")
-        ),
+        resolved_speaker_name=resolved_photo_speaker_name(photo_data, conf.get("key_speakers")),
         forbidden_archetype=conf.get("previous_archetype"),
     )
 
@@ -383,9 +381,7 @@ def _task_art_direction_retry(ti: TaskInstance, **context: object) -> dict:
         domain_cfg,
         previous_brief=previous_brief,
         sibling_briefs=history.get("briefs") or None,
-        resolved_speaker_name=resolved_photo_speaker_name(
-            photo_data, conf.get("key_speakers")
-        ),
+        resolved_speaker_name=resolved_photo_speaker_name(photo_data, conf.get("key_speakers")),
     )
 
 
@@ -417,7 +413,6 @@ with DAG(
     tags=["thumbnail", "pikzels", "generic", "on-demand"],
     max_active_runs=3,
 ) as dag:
-
     t_validate = PythonOperator(
         task_id="validate_input",
         python_callable=_task_validate_input,

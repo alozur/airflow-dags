@@ -13,6 +13,7 @@ NOTE: imports from congress_videos.srt_helpers and utils.llm_cache are done at
 module level to enable clean patching in tests. Neither import pulls in task or
 scheduler constructs, so this module is safe to parse under the scheduler.
 """
+
 from __future__ import annotations
 
 import logging
@@ -92,6 +93,7 @@ QA_TRUNCATION_MARKER: str = "\n[... transcript truncated ...]\n"
 # ---------------------------------------------------------------------------
 # Evidence normalization / verification (issue #284)
 # ---------------------------------------------------------------------------
+
 
 def _normalize_for_evidence(text: str) -> str:
     """casefold -> NFD -> drop combining marks -> collapse whitespace."""
@@ -215,9 +217,7 @@ def _build_qa_chapter_text(blocks: list[dict]) -> str:
     # Tail: always keep the last block (nearest the turn).
     tail_lines = [rendered[-1]]
     tail_len = len(rendered[-1])
-    remaining_budget = max(
-        0, QA_CONTEXT_MAX_CHARS - len(head_text) - len(QA_TRUNCATION_MARKER) - tail_len
-    )
+    remaining_budget = max(0, QA_CONTEXT_MAX_CHARS - len(head_text) - len(QA_TRUNCATION_MARKER) - tail_len)
     for i in range(len(rendered) - 2, head_end_idx - 1, -1):
         line = rendered[i]
         added = len(line) + 1
@@ -233,6 +233,7 @@ def _build_qa_chapter_text(blocks: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def resolve_speaker(
     turn: dict,
@@ -278,6 +279,7 @@ def resolve_speaker(
 # Internal implementation
 # ---------------------------------------------------------------------------
 
+
 def _resolve_speaker_inner(
     turn: dict,
     participants: list[dict],
@@ -302,9 +304,7 @@ def _resolve_speaker_inner(
     # is None. chapter_id must be truthy (this site already coerces it to
     # 0 below) — a falsy chapter_id has no meaningful chapter directory.
     canonical_dir = (
-        str(get_video_chapter_dir(str(video_id), chapter_id))
-        if video_id is not None and chapter_id
-        else None
+        str(get_video_chapter_dir(str(video_id), chapter_id)) if video_id is not None and chapter_id else None
     )
 
     srt_path = find_srt_for_chapter(
@@ -338,17 +338,11 @@ def _resolve_speaker_inner(
 
     # Intro window: [intro_anchor - INTRO_WINDOW_SECS, intro_anchor)
     intro_start = max(0.0, intro_anchor - INTRO_WINDOW_SECS)
-    intro_blocks = [
-        b for b in all_blocks
-        if b["start_secs"] >= intro_start and b["end_secs"] <= intro_anchor
-    ]
+    intro_blocks = [b for b in all_blocks if b["start_secs"] >= intro_start and b["end_secs"] <= intro_anchor]
 
     # Turn context window: [start, start + TURN_CONTEXT_SECS)
     turn_end = start_secs + TURN_CONTEXT_SECS
-    turn_blocks = [
-        b for b in all_blocks
-        if b["start_secs"] >= start_secs and b["start_secs"] < turn_end
-    ]
+    turn_blocks = [b for b in all_blocks if b["start_secs"] >= start_secs and b["start_secs"] < turn_end]
 
     # Anchored evidence-gate region (issue #322): the ONLY place accepted
     # evidence may be located, uniform for every turn_type. Backward edge
@@ -362,10 +356,7 @@ def _resolve_speaker_inner(
     chapter_start_seconds = chapter_span[0] if chapter_span is not None else 0.0
     region_start = max(chapter_start_seconds, intro_anchor - QA_EVIDENCE_LOOKBACK_SECS)
     region_end = turn_end
-    region_blocks = [
-        b for b in all_blocks
-        if region_start <= b["start_secs"] < region_end
-    ]
+    region_blocks = [b for b in all_blocks if region_start <= b["start_secs"] < region_end]
 
     # Both windows may be empty at the start of a session — still attempt resolution
     # if we have at least some turn-window content.
@@ -406,17 +397,13 @@ def _resolve_speaker_inner(
     # otherwise — so the two can never disagree.
     if REQUIRE_ANNOUNCEMENT_PHRASE and not has_announcement_phrase(prompt_text_for_gate):
         logger.info(
-            "resolve_speaker: no announcement phrase in model-visible text for "
-            "turn_id=%s — skipping LLM call",
+            "resolve_speaker: no announcement phrase in model-visible text for turn_id=%s — skipping LLM call",
             turn.get("turn_id"),
         )
         return None
 
     # Serialize participant roster: slug | display_name | party
-    roster_lines = [
-        f"{p['slug']} | {p.get('display_name', '')} | {p.get('party', '')}"
-        for p in participants
-    ]
+    roster_lines = [f"{p['slug']} | {p.get('display_name', '')} | {p.get('party', '')}" for p in participants]
     participant_roster = "\n".join(roster_lines)
 
     if wide_context_active:
@@ -436,6 +423,7 @@ def _resolve_speaker_inner(
     # Call the LLM (or injected stub)
     if completion_fn is None:
         from utils.llm_cache import cached_json_completion
+
         completion_fn = cached_json_completion
 
     response = completion_fn(
@@ -493,8 +481,7 @@ def _resolve_speaker_inner(
     # line above stays byte-identical.
     if not _evidence_supported_in_blocks(evidence, region_blocks):
         logger.info(
-            "resolve_speaker: evidence not locatable in model-visible text "
-            "for turn_id=%s — returning None",
+            "resolve_speaker: evidence not locatable in model-visible text for turn_id=%s — returning None",
             turn.get("turn_id"),
         )
         return None

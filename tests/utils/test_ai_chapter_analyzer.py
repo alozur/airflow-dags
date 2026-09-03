@@ -8,8 +8,8 @@ import pytest
 # parse_timestamp_to_seconds
 # --------------------------------------------------------------------------- #
 
-class TestParseTimestampToSeconds:
 
+class TestParseTimestampToSeconds:
     @pytest.mark.parametrize(
         "timestamp, expected",
         [
@@ -46,8 +46,8 @@ class TestParseTimestampToSeconds:
 # format_seconds_to_timestamp
 # --------------------------------------------------------------------------- #
 
-class TestFormatSecondsToTimestamp:
 
+class TestFormatSecondsToTimestamp:
     @pytest.mark.parametrize(
         "seconds, expected",
         [
@@ -85,6 +85,7 @@ class TestFormatSecondsToTimestamp:
 # SRT helper
 # --------------------------------------------------------------------------- #
 
+
 def _make_srt(entries: list[tuple[str, str, str]]) -> str:
     """
     Build SRT content from (start, end, text) tuples.
@@ -103,8 +104,8 @@ def _make_srt(entries: list[tuple[str, str, str]]) -> str:
 # detect_silence_gaps
 # --------------------------------------------------------------------------- #
 
-class TestDetectSilenceGaps:
 
+class TestDetectSilenceGaps:
     def test_empty_srt_returns_empty_list(self):
         """Empty SRT string produces no gaps."""
         from utils.ai_chapter_analyzer import detect_silence_gaps
@@ -117,10 +118,12 @@ class TestDetectSilenceGaps:
         """Gap of 5s with threshold=15s is not reported."""
         from utils.ai_chapter_analyzer import detect_silence_gaps
 
-        srt = _make_srt([
-            ("00:00:00", "00:00:10", "First subtitle"),
-            ("00:00:15", "00:00:25", "Second subtitle"),  # 5s gap
-        ])
+        srt = _make_srt(
+            [
+                ("00:00:00", "00:00:10", "First subtitle"),
+                ("00:00:15", "00:00:25", "Second subtitle"),  # 5s gap
+            ]
+        )
         result = detect_silence_gaps(srt, min_silence_seconds=15)
 
         assert result == []
@@ -129,10 +132,12 @@ class TestDetectSilenceGaps:
         """Gap of 30s with threshold=15s is detected and reported."""
         from utils.ai_chapter_analyzer import detect_silence_gaps
 
-        srt = _make_srt([
-            ("00:00:00", "00:00:10", "Before gap"),
-            ("00:00:40", "00:00:50", "After gap"),  # 30s gap
-        ])
+        srt = _make_srt(
+            [
+                ("00:00:00", "00:00:10", "Before gap"),
+                ("00:00:40", "00:00:50", "After gap"),  # 30s gap
+            ]
+        )
         result = detect_silence_gaps(srt, min_silence_seconds=15)
 
         assert len(result) == 1
@@ -142,10 +147,12 @@ class TestDetectSilenceGaps:
         """Each gap dict has gap_start, gap_end, gap_duration_seconds fields."""
         from utils.ai_chapter_analyzer import detect_silence_gaps
 
-        srt = _make_srt([
-            ("00:01:00", "00:01:10", "A"),
-            ("00:02:00", "00:02:10", "B"),  # 50s gap
-        ])
+        srt = _make_srt(
+            [
+                ("00:01:00", "00:01:10", "A"),
+                ("00:02:00", "00:02:10", "B"),  # 50s gap
+            ]
+        )
         result = detect_silence_gaps(srt, min_silence_seconds=10)
 
         assert len(result) == 1
@@ -160,11 +167,13 @@ class TestDetectSilenceGaps:
         """Custom threshold=60s filters a 30s gap but not a 130s one."""
         from utils.ai_chapter_analyzer import detect_silence_gaps
 
-        srt = _make_srt([
-            ("00:00:00", "00:00:05", "A"),
-            ("00:00:35", "00:00:40", "B"),   # 30s gap — below 60s threshold
-            ("00:02:50", "00:02:55", "C"),   # 130s gap — above 60s threshold
-        ])
+        srt = _make_srt(
+            [
+                ("00:00:00", "00:00:05", "A"),
+                ("00:00:35", "00:00:40", "B"),  # 30s gap — below 60s threshold
+                ("00:02:50", "00:02:55", "C"),  # 130s gap — above 60s threshold
+            ]
+        )
         result = detect_silence_gaps(srt, min_silence_seconds=60)
 
         assert len(result) == 1
@@ -174,11 +183,13 @@ class TestDetectSilenceGaps:
         """Two gaps above threshold are both reported."""
         from utils.ai_chapter_analyzer import detect_silence_gaps
 
-        srt = _make_srt([
-            ("00:00:00", "00:00:05", "A"),
-            ("00:00:25", "00:00:30", "B"),   # 20s gap
-            ("00:01:00", "00:01:05", "C"),   # 30s gap
-        ])
+        srt = _make_srt(
+            [
+                ("00:00:00", "00:00:05", "A"),
+                ("00:00:25", "00:00:30", "B"),  # 20s gap
+                ("00:01:00", "00:01:05", "C"),  # 30s gap
+            ]
+        )
         result = detect_silence_gaps(srt, min_silence_seconds=15)
 
         assert len(result) == 2
@@ -188,8 +199,8 @@ class TestDetectSilenceGaps:
 # chunk_by_silence
 # --------------------------------------------------------------------------- #
 
-class TestChunkBySilence:
 
+class TestChunkBySilence:
     def test_empty_srt_returns_single_default_chunk(self):
         """Empty SRT returns exactly 1 chunk with default timestamps."""
         from utils.ai_chapter_analyzer import chunk_by_silence
@@ -203,11 +214,13 @@ class TestChunkBySilence:
         """SRT with no silence gaps returns 1 chunk covering all content."""
         from utils.ai_chapter_analyzer import chunk_by_silence
 
-        srt = _make_srt([
-            ("00:00:00", "00:00:05", "A"),
-            ("00:00:06", "00:00:11", "B"),
-            ("00:00:12", "00:00:17", "C"),
-        ])
+        srt = _make_srt(
+            [
+                ("00:00:00", "00:00:05", "A"),
+                ("00:00:06", "00:00:11", "B"),
+                ("00:00:12", "00:00:17", "C"),
+            ]
+        )
         result = chunk_by_silence(srt, min_silence_seconds=30)
 
         assert len(result) == 1
@@ -217,10 +230,12 @@ class TestChunkBySilence:
         """Each chunk contains chunk_number, start_time, end_time, duration_seconds."""
         from utils.ai_chapter_analyzer import chunk_by_silence
 
-        srt = _make_srt([
-            ("00:00:00", "00:05:00", "Beginning"),
-            ("00:35:00", "00:40:00", "After big gap"),
-        ])
+        srt = _make_srt(
+            [
+                ("00:00:00", "00:05:00", "Beginning"),
+                ("00:35:00", "00:40:00", "After big gap"),
+            ]
+        )
         result = chunk_by_silence(srt, min_silence_seconds=15, min_chunk_duration_minutes=0)
 
         for chunk in result:
@@ -239,11 +254,13 @@ class TestChunkBySilence:
         for block in range(3):
             start_min = block * 37
             end_min = start_min + 35
-            entries.append((
-                f"00:{start_min:02d}:00",
-                f"00:{end_min:02d}:00",
-                f"Block {block} content",
-            ))
+            entries.append(
+                (
+                    f"00:{start_min:02d}:00",
+                    f"00:{end_min:02d}:00",
+                    f"Block {block} content",
+                )
+            )
 
         srt = _make_srt(entries)
         result = chunk_by_silence(
@@ -260,10 +277,12 @@ class TestChunkBySilence:
         """Content without qualifying silence produces a single chunk."""
         from utils.ai_chapter_analyzer import chunk_by_silence
 
-        srt = _make_srt([
-            ("00:00:00", "00:10:00", "Part 1"),
-            ("00:10:01", "00:20:00", "Part 2"),  # 1s gap — well below 15s
-        ])
+        srt = _make_srt(
+            [
+                ("00:00:00", "00:10:00", "Part 1"),
+                ("00:10:01", "00:20:00", "Part 2"),  # 1s gap — well below 15s
+            ]
+        )
         result = chunk_by_silence(srt, min_silence_seconds=15)
 
         assert len(result) == 1
@@ -280,10 +299,12 @@ class TestChunkBySilence:
             wraps=ai_chapter_analyzer.detect_silence_gaps,
         )
 
-        srt = _make_srt([
-            ("00:00:00", "00:05:00", "A"),
-            ("00:35:00", "00:40:00", "B"),  # 30-min gap → always detected
-        ])
+        srt = _make_srt(
+            [
+                ("00:00:00", "00:05:00", "A"),
+                ("00:35:00", "00:40:00", "B"),  # 30-min gap → always detected
+            ]
+        )
         ai_chapter_analyzer.chunk_by_silence(
             srt,
             min_silence_seconds=15,
@@ -304,8 +325,8 @@ class TestChunkBySilence:
 # analyze_chapters_with_ai
 # --------------------------------------------------------------------------- #
 
-class TestAnalyzeChaptersWithAi:
 
+class TestAnalyzeChaptersWithAi:
     def test_analyze_chapters_success(self, mocker):
         """Mock generate_json_completion returning valid chapters → success result."""
         from utils.ai_chapter_analyzer import analyze_chapters_with_ai
@@ -340,10 +361,12 @@ class TestAnalyzeChaptersWithAi:
             },
         )
 
-        srt = _make_srt([
-            ("00:00:00", "00:29:59", "Texto vivienda"),
-            ("00:30:00", "00:59:59", "Texto sanidad"),
-        ])
+        srt = _make_srt(
+            [
+                ("00:00:00", "00:29:59", "Texto vivienda"),
+                ("00:30:00", "00:59:59", "Texto sanidad"),
+            ]
+        )
 
         result = analyze_chapters_with_ai(srt_content=srt, agenda_content="Agenda de la sesión")
 
@@ -401,6 +424,7 @@ class TestAnalyzeChaptersWithAi:
 # T2.3 — _adaptive_silence_threshold  (#13)
 # --------------------------------------------------------------------------- #
 
+
 class TestAdaptiveSilenceThreshold:
     """Tests for spec #13: percentile-based adaptive silence threshold."""
 
@@ -455,6 +479,7 @@ class TestAdaptiveSilenceThreshold:
 # T2.3 — detect_silence_gaps with use_adaptive=True  (#13)
 # --------------------------------------------------------------------------- #
 
+
 class TestDetectSilenceGapsAdaptive:
     """Integration tests for adaptive mode in detect_silence_gaps."""
 
@@ -462,11 +487,13 @@ class TestDetectSilenceGapsAdaptive:
         """Spec #13: default (use_adaptive=False) behaves identically to pre-Batch2."""
         from utils.ai_chapter_analyzer import detect_silence_gaps
 
-        srt = _make_srt([
-            ("00:00:00", "00:00:10", "A"),
-            ("00:00:40", "00:00:50", "B"),  # 30s gap
-            ("00:01:30", "00:01:40", "C"),  # 40s gap
-        ])
+        srt = _make_srt(
+            [
+                ("00:00:00", "00:00:10", "A"),
+                ("00:00:40", "00:00:50", "B"),  # 30s gap
+                ("00:01:30", "00:01:40", "C"),  # 40s gap
+            ]
+        )
 
         result_old = detect_silence_gaps(srt, min_silence_seconds=15)
         result_fixed = detect_silence_gaps(srt, min_silence_seconds=15, use_adaptive=False)
@@ -479,16 +506,18 @@ class TestDetectSilenceGapsAdaptive:
         from utils.ai_chapter_analyzer import detect_silence_gaps
 
         # Gaps: 2s (below), 5s, 10s, 12s, 15s, 20s, 30s (above p75≈17.5)
-        srt = _make_srt([
-            ("00:00:00", "00:00:05", "A"),
-            ("00:00:07", "00:00:08", "B"),  # gap ~2s
-            ("00:00:13", "00:00:15", "C"),  # gap ~5s
-            ("00:00:25", "00:00:27", "D"),  # gap ~10s
-            ("00:00:39", "00:00:41", "E"),  # gap ~12s
-            ("00:00:56", "00:00:58", "F"),  # gap ~15s
-            ("00:01:18", "00:01:20", "G"),  # gap ~20s
-            ("00:01:50", "00:01:52", "H"),  # gap ~30s
-        ])
+        srt = _make_srt(
+            [
+                ("00:00:00", "00:00:05", "A"),
+                ("00:00:07", "00:00:08", "B"),  # gap ~2s
+                ("00:00:13", "00:00:15", "C"),  # gap ~5s
+                ("00:00:25", "00:00:27", "D"),  # gap ~10s
+                ("00:00:39", "00:00:41", "E"),  # gap ~12s
+                ("00:00:56", "00:00:58", "F"),  # gap ~15s
+                ("00:01:18", "00:01:20", "G"),  # gap ~20s
+                ("00:01:50", "00:01:52", "H"),  # gap ~30s
+            ]
+        )
 
         result_adaptive = detect_silence_gaps(srt, min_silence_seconds=15, use_adaptive=True, adaptive_percentile=75)
         result_fixed = detect_silence_gaps(srt, min_silence_seconds=15, use_adaptive=False)
@@ -505,12 +534,14 @@ class TestDetectSilenceGapsAdaptive:
         # All gaps are tiny — p75 would be huge, but so are all gaps tiny.
         # Actually we need a case where the adaptive threshold exceeds all gaps.
         # Use p99 on a distribution where all gaps are 1-3s, but min_silence=0.5s
-        srt = _make_srt([
-            ("00:00:00", "00:00:05", "A"),
-            ("00:00:06", "00:00:11", "B"),   # 1s gap
-            ("00:00:12", "00:00:17", "C"),   # 1s gap
-            ("00:00:19", "00:00:24", "D"),   # 2s gap
-        ])
+        srt = _make_srt(
+            [
+                ("00:00:00", "00:00:05", "A"),
+                ("00:00:06", "00:00:11", "B"),  # 1s gap
+                ("00:00:12", "00:00:17", "C"),  # 1s gap
+                ("00:00:19", "00:00:24", "D"),  # 2s gap
+            ]
+        )
 
         with caplog.at_level(logging.WARNING, logger="utils.ai_chapter_analyzer"):
             # p99 of [1,1,2] = ~2s; min_silence=0.5s → all 3 gaps are above fixed threshold
@@ -531,10 +562,12 @@ class TestDetectSilenceGapsAdaptive:
         """Spec #13: single gap in audio → adaptive returns that gap."""
         from utils.ai_chapter_analyzer import detect_silence_gaps
 
-        srt = _make_srt([
-            ("00:00:00", "00:00:05", "A"),
-            ("00:05:00", "00:05:05", "B"),  # 295s gap — huge, definitely above p75
-        ])
+        srt = _make_srt(
+            [
+                ("00:00:00", "00:00:05", "A"),
+                ("00:05:00", "00:05:05", "B"),  # 295s gap — huge, definitely above p75
+            ]
+        )
 
         result = detect_silence_gaps(srt, min_silence_seconds=15, use_adaptive=True)
 
@@ -545,6 +578,7 @@ class TestDetectSilenceGapsAdaptive:
 # --------------------------------------------------------------------------- #
 # _flatten_speakers (PR3 — Task 3.1 RED)
 # --------------------------------------------------------------------------- #
+
 
 class TestFlattenSpeakers:
     """Tests for _flatten_speakers: object-form + plain-string tolerance.
@@ -624,6 +658,7 @@ class TestFlattenSpeakers:
 # --------------------------------------------------------------------------- #
 # CHAPTER_IDENTIFICATION prompt structure (PR3 — Task 3.4 RED)
 # --------------------------------------------------------------------------- #
+
 
 class TestChapterIdentificationPromptStructure:
     """Golden/structural assertions on the CHAPTER_IDENTIFICATION prompts.

@@ -16,17 +16,14 @@ from pathlib import Path
 import pytest
 
 MIGRATION_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "congress_videos"
-    / "sql"
-    / "migrations"
-    / "029_add_turn_interest_score.sql"
+    Path(__file__).resolve().parents[3] / "congress_videos" / "sql" / "migrations" / "029_add_turn_interest_score.sql"
 )
 
 
 # ---------------------------------------------------------------------------
 # 3.11–3.15 helpers: live-DB integration (skipped when Postgres absent)
 # ---------------------------------------------------------------------------
+
 
 def _skip_if_no_postgres():
     """Return pytest.skip marker string; we use this as a guard inside fixtures."""
@@ -181,9 +178,15 @@ def db(pg_conn):
         cur.execute("ROLLBACK TO SAVEPOINT test_sp")
 
 
-def _insert_minimal_turn(db, *, turn_id: int, interest_score=None,
-                          relevance_score: int = 3, session_date="2026-01-01",
-                          output_path: str | None = None):
+def _insert_minimal_turn(
+    db,
+    *,
+    turn_id: int,
+    interest_score=None,
+    relevance_score: int = 3,
+    session_date="2026-01-01",
+    output_path: str | None = None,
+):
     """Helper: insert a minimal video/chapter/turn/stv row set."""
     video_id = f"vid_{turn_id}"
     chapter_id_val = turn_id * 100
@@ -212,15 +215,14 @@ def _insert_minimal_turn(db, *, turn_id: int, interest_score=None,
 # Static file checks
 # ---------------------------------------------------------------------------
 
-class TestMigration029FileExists:
 
+class TestMigration029FileExists:
     def test_migration_file_exists(self):
         """Migration file must exist at the expected path."""
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
 
 class TestMigration029ColumnAndView:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -287,8 +289,8 @@ class TestMigration029ColumnAndView:
 # 3.11 SQL integration: low score excluded
 # ---------------------------------------------------------------------------
 
-class TestUploadableTurnsView:
 
+class TestUploadableTurnsView:
     def test_low_score_excluded(self, db):
         """Turn with interest_score=0 (threshold=1) must be absent from view."""
         _insert_minimal_turn(db, turn_id=311, interest_score=0)
@@ -319,25 +321,23 @@ class TestUploadableTurnsView:
 
     def test_null_scores_sort_last(self, db):
         """Turn X interest=3 must precede turn Y interest=NULL; Y still present."""
-        _insert_minimal_turn(db, turn_id=315, interest_score=3,
-                              output_path="/tmp/315.mp4")
-        _insert_minimal_turn(db, turn_id=316, interest_score=None,
-                              output_path="/tmp/316.mp4")
+        _insert_minimal_turn(db, turn_id=315, interest_score=3, output_path="/tmp/315.mp4")
+        _insert_minimal_turn(db, turn_id=316, interest_score=None, output_path="/tmp/316.mp4")
         with db.cursor() as cur:
             cur.execute("SELECT turn_id FROM uploadable_turns")
             rows = cur.fetchall()
         ids = [r["turn_id"] for r in rows]
         assert 316 in ids, "NULL-scored turn must still be present"
-        assert ids.index(315) < ids.index(316), (
-            f"interest=3 (315) must precede interest=NULL (316); got order {ids}"
-        )
+        assert ids.index(315) < ids.index(316), f"interest=3 (315) must precede interest=NULL (316); got order {ids}"
 
     def test_tie_break_by_relevance_then_date(self, db):
         """Two turns with interest=7; higher relevance appears first; date breaks ties."""
-        _insert_minimal_turn(db, turn_id=317, interest_score=7, relevance_score=4,
-                              session_date="2026-01-01", output_path="/tmp/317.mp4")
-        _insert_minimal_turn(db, turn_id=318, interest_score=7, relevance_score=2,
-                              session_date="2026-01-02", output_path="/tmp/318.mp4")
+        _insert_minimal_turn(
+            db, turn_id=317, interest_score=7, relevance_score=4, session_date="2026-01-01", output_path="/tmp/317.mp4"
+        )
+        _insert_minimal_turn(
+            db, turn_id=318, interest_score=7, relevance_score=2, session_date="2026-01-02", output_path="/tmp/318.mp4"
+        )
         with db.cursor() as cur:
             cur.execute("SELECT turn_id FROM uploadable_turns")
             rows = cur.fetchall()

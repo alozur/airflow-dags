@@ -6,9 +6,7 @@ ready for processing and uploading.
 """
 
 import logging
-import os
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import yt_dlp
 
@@ -43,7 +41,9 @@ def _warn_if_not_h264(file_path: str, *, context: str) -> str:
         logger.warning(
             "Downloaded file for %s has codec=%r but avc1/H264 was requested "
             "(yt-dlp/pytubefix fallback accepted a non-H264 stream): %s",
-            context, codec, file_path,
+            context,
+            codec,
+            file_path,
         )
     return codec
 
@@ -115,10 +115,7 @@ def download_with_pytubefix(
         from pytubefix import YouTube
         from pytubefix.cli import on_progress
     except ImportError:
-        return {
-            "success": False,
-            "error": "pytubefix not installed. Install with: pip install pytubefix"
-        }
+        return {"success": False, "error": "pytubefix not installed. Install with: pip install pytubefix"}
 
     result = {
         "success": False,
@@ -137,13 +134,15 @@ def download_with_pytubefix(
         yt = YouTube(youtube_url, on_progress_callback=on_progress)
 
         video_id = yt.video_id
-        safe_title = "".join(c for c in yt.title if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
+        safe_title = "".join(c for c in yt.title if c.isalnum() or c in (" ", "-", "_")).strip()[:50]
 
         # Debug: log all available streams
         all_streams = yt.streams.all()
         logger.info(f"[pytubefix] Available streams ({len(all_streams)} total):")
         for s in all_streams[:15]:  # Log first 15
-            logger.info(f"  - {s.resolution or 'audio'} | {s.mime_type} | adaptive={s.is_adaptive} | progressive={s.is_progressive}")
+            logger.info(
+                f"  - {s.resolution or 'audio'} | {s.mime_type} | adaptive={s.is_adaptive} | progressive={s.is_progressive}"
+            )
 
         # First try: H264 (mp4) adaptive video at min_resolution or higher (720p+).
         # Force subtype='mp4' → H264/avc1. webm adaptive streams are VP9/AV1, and
@@ -151,37 +150,38 @@ def download_with_pytubefix(
         # through and re-encode chokes on it, yielding an invalid MP4 that YouTube
         # rejects on upload ("procesamiento interrumpido"). H264 is robust and, at
         # 720p/1080p, visually identical for our purposes.
-        video_stream = yt.streams.filter(
-            adaptive=True,
-            only_video=True,
-            subtype='mp4'
-        ).filter(lambda s: s.resolution and int(s.resolution[:-1]) >= min_resolution).order_by('resolution').desc().first()
+        video_stream = (
+            yt.streams.filter(adaptive=True, only_video=True, subtype="mp4")
+            .filter(lambda s: s.resolution and int(s.resolution[:-1]) >= min_resolution)
+            .order_by("resolution")
+            .desc()
+            .first()
+        )
 
         # Fallback 1: any H264 (mp4) adaptive video, even below min_resolution
         if not video_stream:
             logger.info("[pytubefix] No 720p+ H264 found, trying any H264 (mp4) adaptive video...")
-            video_stream = yt.streams.filter(adaptive=True, only_video=True, subtype='mp4').order_by('resolution').desc().first()
+            video_stream = (
+                yt.streams.filter(adaptive=True, only_video=True, subtype="mp4").order_by("resolution").desc().first()
+            )
 
         # Fallback 2: any adaptive video (may be VP9/AV1) — last resort only
         if not video_stream:
             logger.info("[pytubefix] No H264 stream available, falling back to any adaptive video (may be AV1/VP9)...")
-            video_stream = yt.streams.filter(adaptive=True, only_video=True).order_by('resolution').desc().first()
+            video_stream = yt.streams.filter(adaptive=True, only_video=True).order_by("resolution").desc().first()
 
         if video_stream:
             logger.info(f"[pytubefix] Found adaptive video stream: {video_stream.resolution}")
 
             # Get best audio stream
-            audio_stream = yt.streams.filter(
-                adaptive=True,
-                only_audio=True
-            ).order_by('abr').desc().first()
+            audio_stream = yt.streams.filter(adaptive=True, only_audio=True).order_by("abr").desc().first()
 
             if audio_stream:
                 logger.info(f"[pytubefix] Found audio stream: {audio_stream.abr}")
 
                 # Download video and audio separately
-                video_ext = video_stream.subtype or 'mp4'
-                audio_ext = audio_stream.subtype or 'webm'
+                video_ext = video_stream.subtype or "mp4"
+                audio_ext = audio_stream.subtype or "webm"
                 video_file = f"{video_id}_video_temp.{video_ext}"
                 audio_file = f"{video_id}_audio_temp.{audio_ext}"
                 final_file = f"{video_id}_{safe_title}.mp4"
@@ -197,17 +197,26 @@ def download_with_pytubefix(
                 logger.info("[pytubefix] Merging video and audio with ffmpeg...")
 
                 import subprocess
+
                 merge_cmd = [
-                    "ffmpeg", "-y",
-                    "-i", video_path,
-                    "-i", audio_path,
-                    "-c:v", "copy",
-                    "-c:a", "aac",
-                    "-movflags", "+faststart",
-                    str(final_path)
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    video_path,
+                    "-i",
+                    audio_path,
+                    "-c:v",
+                    "copy",
+                    "-c:a",
+                    "aac",
+                    "-movflags",
+                    "+faststart",
+                    str(final_path),
                 ]
 
-                merge_result = subprocess.run(merge_cmd, capture_output=True, text=True, timeout=FFMPEG_MERGE_TIMEOUT_SECS)
+                merge_result = subprocess.run(
+                    merge_cmd, capture_output=True, text=True, timeout=FFMPEG_MERGE_TIMEOUT_SECS
+                )
 
                 if merge_result.returncode == 0 and final_path.exists():
                     # Clean up temp files
@@ -234,10 +243,7 @@ def download_with_pytubefix(
 
         # Fallback: progressive stream (video+audio combined, usually lower quality)
         logger.info(f"[pytubefix] No {min_resolution}p+ adaptive stream, trying progressive...")
-        stream = yt.streams.filter(
-            progressive=True,
-            file_extension='mp4'
-        ).order_by('resolution').desc().first()
+        stream = yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").desc().first()
 
         if stream:
             logger.info(f"[pytubefix] Using progressive stream: {stream.resolution}")
@@ -322,9 +328,7 @@ def download_youtube_video_for_upload(
     if guard_live_status:
         status = probe_live_status(youtube_url, cookies_file)
         if status is not None and status not in READY_LIVE_STATUSES:
-            logger.warning(
-                f"Skipping {youtube_url}: live_status={status!r} (not a ready VOD)"
-            )
+            logger.warning(f"Skipping {youtube_url}: live_status={status!r} (not a ready VOD)")
             return {
                 "success": False,
                 "skipped": True,
@@ -517,7 +521,7 @@ def download_audio_only(
                 logger.warning(f"Expected file not found: {output_file}")
                 logger.info("Searching for downloaded audio file...")
 
-                video_id = info.get('id')
+                video_id = info.get("id")
                 audio_files = list(Path(output_dir).glob(f"{video_id}*_audio.*"))
 
                 if audio_files:
@@ -601,9 +605,9 @@ def download_audio_in_chunks(
 
         with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
-            video_id = info.get('id')
-            video_title = info.get('title', 'unknown')
-            total_duration = info.get('duration', 0)
+            video_id = info.get("id")
+            video_title = info.get("title", "unknown")
+            total_duration = info.get("duration", 0)
 
             if not total_duration:
                 result["error"] = "Could not get video duration"
@@ -611,7 +615,7 @@ def download_audio_in_chunks(
                 return result
 
             result["total_duration"] = total_duration
-            logger.info(f"Video duration: {total_duration}s ({total_duration/60:.2f} minutes)")
+            logger.info(f"Video duration: {total_duration}s ({total_duration / 60:.2f} minutes)")
 
         # Calculate chunks
         chunk_duration_seconds = chunk_duration_minutes * 60
@@ -629,13 +633,13 @@ def download_audio_in_chunks(
             end_time = min((i + 1) * chunk_duration_seconds, total_duration)
 
             # Format: HH:MM:SS
-            start_str = f"{start_time//3600:02d}:{(start_time%3600)//60:02d}:{start_time%60:02d}"
-            end_str = f"{end_time//3600:02d}:{(end_time%3600)//60:02d}:{end_time%60:02d}"
+            start_str = f"{start_time // 3600:02d}:{(start_time % 3600) // 60:02d}:{start_time % 60:02d}"
+            end_str = f"{end_time // 3600:02d}:{(end_time % 3600) // 60:02d}:{end_time % 60:02d}"
 
             chunk_filename = f"{video_id}_chunk_{i:03d}.{audio_format}"
             chunk_path = chunks_dir / chunk_filename
 
-            logger.info(f"Downloading chunk {i+1}/{num_chunks}: {start_str} - {end_str}")
+            logger.info(f"Downloading chunk {i + 1}/{num_chunks}: {start_str} - {end_str}")
 
             ydl_opts_chunk = {
                 "format": "bestaudio[ext=webm]/bestaudio",
@@ -662,12 +666,12 @@ def download_audio_in_chunks(
                     }
 
                     result["chunks"].append(chunk_info)
-                    logger.info(f"✅ Chunk {i+1} downloaded: {chunk_filename} ({file_size_mb:.2f} MB)")
+                    logger.info(f"✅ Chunk {i + 1} downloaded: {chunk_filename} ({file_size_mb:.2f} MB)")
                 else:
-                    logger.warning(f"Chunk {i+1} file not found: {chunk_path}")
+                    logger.warning(f"Chunk {i + 1} file not found: {chunk_path}")
 
             except Exception as e:
-                logger.error(f"Error downloading chunk {i+1}: {e}")
+                logger.error(f"Error downloading chunk {i + 1}: {e}")
                 # Continue with next chunk
 
         result["total_chunks"] = len(result["chunks"])
@@ -817,11 +821,8 @@ def merge_video_audio_moviepy(
 
     return result
 
-def download_youtube_subtitles(
-    youtube_url: str,
-    output_dir: str,
-    languages: list[str] = None
-) -> dict:
+
+def download_youtube_subtitles(youtube_url: str, output_dir: str, languages: list[str] = None) -> dict:
     """
     Download SRT subtitles directly from YouTube if available.
 
@@ -844,42 +845,34 @@ def download_youtube_subtitles(
         }
     """
     if languages is None:
-        languages = ['es', 'es-ES', 'en', 'auto']
+        languages = ["es", "es-ES", "en", "auto"]
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    result = {
-        "success": False,
-        "has_subtitles": False,
-        "subtitle_files": [],
-        "merged_srt_path": None,
-        "error": None
-    }
+    result = {"success": False, "has_subtitles": False, "subtitle_files": [], "merged_srt_path": None, "error": None}
 
     try:
         logger.info(f"Checking for available subtitles: {youtube_url}")
 
         # First, get video info to check available subtitles
-        ydl_opts_info = {
-            'quiet': True,
-            'no_warnings': True,
-            'skip_download': True
-        }
+        ydl_opts_info = {"quiet": True, "no_warnings": True, "skip_download": True}
 
         with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
-            video_id = info.get('id')
-            available_subtitles = info.get('subtitles', {})
-            automatic_captions = info.get('automatic_captions', {})
+            video_id = info.get("id")
+            available_subtitles = info.get("subtitles", {})
+            automatic_captions = info.get("automatic_captions", {})
 
             # Check if any subtitles are available
             if not available_subtitles and not automatic_captions:
                 logger.info("No subtitles available for this video")
-                result['error'] = "No subtitles available"
+                result["error"] = "No subtitles available"
                 return result
 
-            result['has_subtitles'] = True
-            logger.info(f"Found subtitles! Manual: {list(available_subtitles.keys())}, Auto: {list(automatic_captions.keys())}")
+            result["has_subtitles"] = True
+            logger.info(
+                f"Found subtitles! Manual: {list(available_subtitles.keys())}, Auto: {list(automatic_captions.keys())}"
+            )
 
         # Try to download subtitles in order of preference
         downloaded_files = []
@@ -893,35 +886,37 @@ def download_youtube_subtitles(
                 srt_dir.mkdir(parents=True, exist_ok=True)
 
                 ydl_opts = {
-                    'skip_download': True,  # Don't download the video
-                    'writesubtitles': True,  # Download subtitles
-                    'writeautomaticsub': True,  # Include auto-generated subtitles
-                    'subtitleslangs': [lang],  # Language to download
-                    'subtitlesformat': 'srt',  # SRT format
-                    'outtmpl': str(srt_dir / f'{video_id}_%(lang)s'),
-                    'quiet': False,
-                    'no_warnings': False,
+                    "skip_download": True,  # Don't download the video
+                    "writesubtitles": True,  # Download subtitles
+                    "writeautomaticsub": True,  # Include auto-generated subtitles
+                    "subtitleslangs": [lang],  # Language to download
+                    "subtitlesformat": "srt",  # SRT format
+                    "outtmpl": str(srt_dir / f"{video_id}_%(lang)s"),
+                    "quiet": False,
+                    "no_warnings": False,
                 }
 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([youtube_url])
 
                 # Check if file was downloaded
-                possible_files = list(srt_dir.glob(f'{video_id}*.srt'))
+                possible_files = list(srt_dir.glob(f"{video_id}*.srt"))
 
                 if possible_files:
                     for srt_file in possible_files:
                         file_size_mb = srt_file.stat().st_size / (1024 * 1024)
 
                         # Determine if it's auto-generated
-                        is_auto = 'auto' in srt_file.name.lower() or lang == 'auto'
+                        is_auto = "auto" in srt_file.name.lower() or lang == "auto"
 
-                        downloaded_files.append({
-                            'language': lang,
-                            'file_path': str(srt_file),
-                            'file_size_mb': round(file_size_mb, 2),
-                            'is_auto_generated': is_auto
-                        })
+                        downloaded_files.append(
+                            {
+                                "language": lang,
+                                "file_path": str(srt_file),
+                                "file_size_mb": round(file_size_mb, 2),
+                                "is_auto_generated": is_auto,
+                            }
+                        )
 
                         logger.info(f"✅ Downloaded {lang} subtitles: {srt_file.name} ({file_size_mb:.2f} MB)")
 
@@ -933,16 +928,16 @@ def download_youtube_subtitles(
                 continue
 
         if not downloaded_files:
-            result['error'] = "Failed to download subtitles in any language"
-            logger.warning(result['error'])
+            result["error"] = "Failed to download subtitles in any language"
+            logger.warning(result["error"])
             return result
 
         # If we downloaded subtitles, create a merged/simplified version
-        result['subtitle_files'] = downloaded_files
-        result['success'] = True
+        result["subtitle_files"] = downloaded_files
+        result["success"] = True
 
         # Use the first downloaded file as the main subtitle file
-        main_subtitle = downloaded_files[0]['file_path']
+        main_subtitle = downloaded_files[0]["file_path"]
 
         # Copy subtitle content to merged file (ensure merged file has content)
         try:
@@ -953,31 +948,31 @@ def download_youtube_subtitles(
             # Simply copy the content from the downloaded subtitle to merged file
             logger.info(f"Creating merged subtitle file from: {main_subtitle}")
 
-            with open(main_subtitle, encoding='utf-8') as src:
+            with open(main_subtitle, encoding="utf-8") as src:
                 subtitle_content = src.read()
 
-            with open(merged_path, 'w', encoding='utf-8') as dst:
+            with open(merged_path, "w", encoding="utf-8") as dst:
                 dst.write(subtitle_content)
 
             # Verify the file was written correctly
             if merged_path.exists() and merged_path.stat().st_size > 0:
-                result['merged_srt_path'] = str(merged_path)
+                result["merged_srt_path"] = str(merged_path)
                 logger.info(f"✅ Created merged subtitle file: {merged_path} ({merged_path.stat().st_size} bytes)")
             else:
                 # If copy fails, use the original
-                result['merged_srt_path'] = main_subtitle
+                result["merged_srt_path"] = main_subtitle
                 logger.warning(f"Merged file is empty, using original: {main_subtitle}")
 
         except Exception as e:
             logger.warning(f"Could not copy subtitles to merged file: {e}")
-            result['merged_srt_path'] = main_subtitle
+            result["merged_srt_path"] = main_subtitle
 
         logger.info("✅ Successfully downloaded subtitles from YouTube!")
         logger.info(f"   Languages: {[f['language'] for f in downloaded_files]}")
         logger.info(f"   Main subtitle: {result['merged_srt_path']}")
 
     except Exception as e:
-        result['error'] = f"Error: {str(e)}"
-        logger.error(result['error'], exc_info=True)
+        result["error"] = f"Error: {str(e)}"
+        logger.error(result["error"], exc_info=True)
 
     return result

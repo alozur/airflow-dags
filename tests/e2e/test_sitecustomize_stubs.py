@@ -65,8 +65,7 @@ def _affected_module_names() -> list[str]:
     return [
         name
         for name in list(sys.modules)
-        if name == "google"
-        or any(name == stub or name.startswith(stub + ".") for stub in _STUB_MODULE_NAMES)
+        if name == "google" or any(name == stub or name.startswith(stub + ".") for stub in _STUB_MODULE_NAMES)
     ]
 
 

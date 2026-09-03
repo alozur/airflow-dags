@@ -8,8 +8,7 @@ all injected/faked.
 from __future__ import annotations
 
 import dataclasses
-from typing import get_type_hints
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -17,19 +16,22 @@ import pytest
 # Phase 2 — Turn dataclass and module constants
 # ---------------------------------------------------------------------------
 
-class TestTurnDataclass:
 
+class TestTurnDataclass:
     def test_turn_is_importable(self):
         from congress_videos.modules.speaker_turns import Turn
+
         assert Turn is not None
 
     def test_turn_is_frozen_dataclass(self):
         from congress_videos.modules.speaker_turns import Turn
+
         assert dataclasses.is_dataclass(Turn)
         assert Turn.__dataclass_params__.frozen is True
 
     def test_turn_fields(self):
         from congress_videos.modules.speaker_turns import Turn
+
         fields = {f.name: f for f in dataclasses.fields(Turn)}
         assert "start_seconds" in fields
         assert "end_seconds" in fields
@@ -45,6 +47,7 @@ class TestTurnDataclass:
         every pre-existing Turn(...) call site (with 6 positional/keyword
         args) keeps constructing without change."""
         from congress_videos.modules.speaker_turns import Turn
+
         t = Turn(
             start_seconds=0.0,
             end_seconds=10.0,
@@ -58,6 +61,7 @@ class TestTurnDataclass:
 
     def test_turn_is_immutable(self):
         from congress_videos.modules.speaker_turns import Turn
+
         t = Turn(
             start_seconds=0.0,
             end_seconds=10.0,
@@ -71,17 +75,19 @@ class TestTurnDataclass:
 
 
 class TestModuleConstants:
-
     def test_gap_merge_seconds(self):
         from congress_videos.modules.speaker_turns import GAP_MERGE_SECONDS
+
         assert GAP_MERGE_SECONDS == 1.0
 
     def test_min_segment_duration_seconds(self):
         from congress_videos.modules.speaker_turns import MIN_SEGMENT_DURATION_SECONDS
+
         assert MIN_SEGMENT_DURATION_SECONDS == 1.0
 
     def test_foreign_interruption_max_seconds(self):
         from congress_videos.modules.speaker_turns import FOREIGN_INTERRUPTION_MAX_SECONDS
+
         assert FOREIGN_INTERRUPTION_MAX_SECONDS == 10.0
 
 
@@ -89,12 +95,10 @@ class TestModuleConstants:
 # Fixtures shared across phases
 # ---------------------------------------------------------------------------
 
+
 def _make_srt_blocks(*entries):
     """Build a list of SRT-block dicts from (start_secs, end_secs, text) tuples."""
-    return [
-        {"start_secs": s, "end_secs": e, "text": t}
-        for s, e, t in entries
-    ]
+    return [{"start_secs": s, "end_secs": e, "text": t} for s, e, t in entries]
 
 
 def _identity_resolver(name: str):
@@ -113,11 +117,12 @@ def _null_resolver(name: str):
 # Phase 3 — extract_announcement
 # ---------------------------------------------------------------------------
 
-class TestExtractAnnouncement:
 
+class TestExtractAnnouncement:
     def test_announces_senor_returns_name_and_true(self):
         """'Tiene la palabra el señor García' → ('García', True)"""
         from congress_videos.modules.speaker_turns import extract_announcement
+
         t = 100.0
         blocks = _make_srt_blocks(
             (75.0, 85.0, "Tiene la palabra el señor García"),
@@ -130,6 +135,7 @@ class TestExtractAnnouncement:
     def test_announces_senora_returns_name_and_true(self):
         """'Tiene la palabra la señora Martínez' → ('Martínez', True)"""
         from congress_videos.modules.speaker_turns import extract_announcement
+
         t = 100.0
         blocks = _make_srt_blocks(
             (78.0, 88.0, "Tiene la palabra la señora Martínez"),
@@ -142,6 +148,7 @@ class TestExtractAnnouncement:
     def test_su_senoria_no_name_returns_none_true(self):
         """'Tiene la palabra su señoría' → (None, True)"""
         from congress_videos.modules.speaker_turns import extract_announcement
+
         t = 100.0
         blocks = _make_srt_blocks(
             (80.0, 90.0, "Tiene la palabra su señoría"),
@@ -153,6 +160,7 @@ class TestExtractAnnouncement:
     def test_gracias_senoria_returns_none_true(self):
         """'Gracias, señoría' → (None, True)"""
         from congress_videos.modules.speaker_turns import extract_announcement
+
         t = 100.0
         blocks = _make_srt_blocks(
             (80.0, 90.0, "Gracias, señoría"),
@@ -164,6 +172,7 @@ class TestExtractAnnouncement:
     def test_no_matching_block_returns_none_false(self):
         """No relevant phrase anywhere → (None, False)"""
         from congress_videos.modules.speaker_turns import extract_announcement
+
         t = 100.0
         blocks = _make_srt_blocks(
             (80.0, 90.0, "El debate sobre el presupuesto continúa"),
@@ -177,6 +186,7 @@ class TestExtractAnnouncement:
         backward-only default window (issue #131: 30s symmetric -> 120s
         backward-only, mirroring speaker_resolution.INTRO_WINDOW_SECS)."""
         from congress_videos.modules.speaker_turns import extract_announcement
+
         t = 200.0
         # 200 - 120 = 80 → block ending at 78 is 121s before t, outside [80, 200)
         blocks = _make_srt_blocks(
@@ -192,6 +202,7 @@ class TestExtractAnnouncement:
         speaker's own words, a mis-attribution source under the old
         symmetric +/-30s window."""
         from congress_videos.modules.speaker_turns import extract_announcement
+
         t = 100.0
         blocks = _make_srt_blocks(
             (105.0, 110.0, "Tiene la palabra el señor Adelante"),
@@ -203,6 +214,7 @@ class TestExtractAnnouncement:
     def test_accent_tolerant_match(self):
         """'señor' written without accents (senor) still matches (accent-tolerant)."""
         from congress_videos.modules.speaker_turns import extract_announcement
+
         t = 100.0
         blocks = _make_srt_blocks(
             (80.0, 90.0, "Tiene la palabra el senor Lopez"),
@@ -214,6 +226,7 @@ class TestExtractAnnouncement:
     def test_closest_preceding_block_preferred(self):
         """When multiple blocks match, the closest preceding block within 15–30 s is preferred."""
         from congress_videos.modules.speaker_turns import extract_announcement
+
         t = 100.0
         # Two matching blocks before t; the one at 82s is closest
         blocks = _make_srt_blocks(
@@ -230,6 +243,7 @@ class TestExtractAnnouncement:
 # ---------------------------------------------------------------------------
 # Phase 4 — Postprocessing helpers
 # ---------------------------------------------------------------------------
+
 
 def _seg(start, end, label, resolved_name=None):
     """Build a minimal segment dict for postprocessing tests."""
@@ -253,9 +267,9 @@ def _chapter_263_segments():
     0.5s blip absorbed into turn 208 without disturbing turn 210.
     """
     return [
-        _seg(8707.14, 8800.00, "SPEAKER_01"),    # 200
-        _seg(8800.00, 8870.00, "SPEAKER_01"),    # 201
-        _seg(8870.00, 8934.683, "SPEAKER_01"),   # 202
+        _seg(8707.14, 8800.00, "SPEAKER_01"),  # 200
+        _seg(8800.00, 8870.00, "SPEAKER_01"),  # 201
+        _seg(8870.00, 8934.683, "SPEAKER_01"),  # 202
         _seg(8934.683, 8934.763, "SPEAKER_03"),  # 203 (0.08s blip)
         _seg(8934.763, 8934.913, "SPEAKER_01"),  # 204 (0.15s blip)
         _seg(8934.913, 8934.930, "SPEAKER_03"),  # 205 (0.017s blip)
@@ -268,10 +282,10 @@ def _chapter_263_segments():
 
 
 class TestMergeGaps:
-
     def test_gap_under_threshold_merged(self):
         """Two same-label segments with 0.7 s gap → merged into one."""
         from congress_videos.modules.speaker_turns import _merge_gaps
+
         segs = [
             _seg(0.0, 10.0, "SPEAKER_01"),
             _seg(10.7, 20.0, "SPEAKER_01"),
@@ -284,6 +298,7 @@ class TestMergeGaps:
     def test_gap_over_threshold_not_merged(self):
         """Two same-label segments with 1.1 s gap → not merged."""
         from congress_videos.modules.speaker_turns import _merge_gaps
+
         segs = [
             _seg(0.0, 10.0, "SPEAKER_01"),
             _seg(11.1, 20.0, "SPEAKER_01"),
@@ -294,6 +309,7 @@ class TestMergeGaps:
     def test_different_labels_not_merged(self):
         """Different labels even with small gap → not merged."""
         from congress_videos.modules.speaker_turns import _merge_gaps
+
         segs = [
             _seg(0.0, 10.0, "SPEAKER_01"),
             _seg(10.5, 20.0, "SPEAKER_02"),
@@ -304,16 +320,17 @@ class TestMergeGaps:
     def test_empty_input(self):
         """Empty list → empty list."""
         from congress_videos.modules.speaker_turns import _merge_gaps
+
         assert _merge_gaps([]) == []
 
 
 class TestDropMicroSegments:
-
     def test_leading_blip_dropped_outright(self):
         """First segment duration < 1.0s with no predecessor -> dropped outright."""
         from congress_videos.modules.speaker_turns import _drop_micro_segments
+
         segs = [
-            _seg(0.0, 0.5, "SPEAKER_00"),   # 0.5 s blip, no predecessor
+            _seg(0.0, 0.5, "SPEAKER_00"),  # 0.5 s blip, no predecessor
             _seg(0.5, 60.0, "SPEAKER_01"),
         ]
         result = _drop_micro_segments(segs)
@@ -326,6 +343,7 @@ class TestDropMicroSegments:
         """A mid-stream blip is dropped and the predecessor's end_seconds
         extends to cover the blip's span."""
         from congress_videos.modules.speaker_turns import _drop_micro_segments
+
         segs = [
             _seg(0.0, 60.0, "SPEAKER_01"),
             _seg(60.0, 60.5, "SPEAKER_02"),  # 0.5 s blip
@@ -343,6 +361,7 @@ class TestDropMicroSegments:
     def test_trailing_blip_absorbed_leaves_no_time_hole(self):
         """Last segment is a blip with a predecessor -> absorbed, no time hole."""
         from congress_videos.modules.speaker_turns import _drop_micro_segments
+
         segs = [
             _seg(0.0, 60.0, "SPEAKER_01"),
             _seg(60.0, 60.3, "SPEAKER_02"),  # trailing 0.3 s blip
@@ -354,6 +373,7 @@ class TestDropMicroSegments:
     def test_exactly_one_second_segment_kept(self):
         """Duration exactly 1.0s (strict <) -> kept, untouched."""
         from congress_videos.modules.speaker_turns import _drop_micro_segments
+
         segs = [_seg(0.0, 1.0, "SPEAKER_00")]
         result = _drop_micro_segments(segs)
         assert len(result) == 1
@@ -364,6 +384,7 @@ class TestDropMicroSegments:
         """Multiple consecutive sub-second blips all absorb into the same
         predecessor, chaining forward."""
         from congress_videos.modules.speaker_turns import _drop_micro_segments
+
         segs = [
             _seg(0.0, 60.0, "SPEAKER_01"),
             _seg(60.0, 60.2, "SPEAKER_02"),
@@ -380,6 +401,7 @@ class TestDropMicroSegments:
     def test_all_blips_returns_empty(self):
         """Every segment sub-second with no predecessor ever established -> []."""
         from congress_videos.modules.speaker_turns import _drop_micro_segments
+
         segs = [
             _seg(0.0, 0.3, "SPEAKER_00"),
             _seg(0.3, 0.6, "SPEAKER_01"),
@@ -390,11 +412,13 @@ class TestDropMicroSegments:
     def test_empty_input(self):
         """Empty list -> empty list."""
         from congress_videos.modules.speaker_turns import _drop_micro_segments
+
         assert _drop_micro_segments([]) == []
 
     def test_single_non_blip_unchanged(self):
         """Single segment >= 1.0s -> returned unchanged."""
         from congress_videos.modules.speaker_turns import _drop_micro_segments
+
         segs = [_seg(10.0, 70.0, "SPEAKER_00")]
         result = _drop_micro_segments(segs)
         assert len(result) == 1
@@ -404,6 +428,7 @@ class TestDropMicroSegments:
     def test_input_dicts_not_mutated(self):
         """Original segment dicts passed in must not be mutated."""
         from congress_videos.modules.speaker_turns import _drop_micro_segments
+
         original = _seg(0.0, 60.0, "SPEAKER_01")
         blip = _seg(60.0, 60.5, "SPEAKER_02")
         segs = [original, blip]
@@ -413,13 +438,13 @@ class TestDropMicroSegments:
 
 
 class TestCollapseForeignRuns:
-
     def test_single_short_foreign_segment_collapsed(self):
         """A(60s)→B(4s)→A(90s), aggregate span 4s < 10.0 → single A."""
         from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+
         segs = [
             _seg(0.0, 60.0, "A"),
-            _seg(60.0, 64.0, "B"),    # span 4 s < 10.0
+            _seg(60.0, 64.0, "B"),  # span 4 s < 10.0
             _seg(64.0, 154.0, "A"),
         ]
         result = _collapse_foreign_runs(segs)
@@ -432,9 +457,10 @@ class TestCollapseForeignRuns:
         """A(60s)→B(6s)→A: under the retired 5s per-segment cap this survived;
         under the new 10s aggregate-span rule it now collapses (Sc.8)."""
         from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+
         segs = [
             _seg(0.0, 60.0, "A"),
-            _seg(60.0, 66.0, "B"),    # span 6 s < 10.0
+            _seg(60.0, 66.0, "B"),  # span 6 s < 10.0
             _seg(66.0, 156.0, "A"),
         ]
         result = _collapse_foreign_runs(segs)
@@ -445,9 +471,10 @@ class TestCollapseForeignRuns:
     def test_foreign_span_over_max_not_collapsed(self):
         """A(60s)→B(10.5s)→A: aggregate span >= 10.0 → not collapsed."""
         from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+
         segs = [
             _seg(0.0, 60.0, "A"),
-            _seg(60.0, 70.5, "B"),    # span 10.5 s >= 10.0
+            _seg(60.0, 70.5, "B"),  # span 10.5 s >= 10.0
             _seg(70.5, 160.0, "A"),
         ]
         result = _collapse_foreign_runs(segs)
@@ -456,9 +483,10 @@ class TestCollapseForeignRuns:
     def test_exactly_ten_seconds_span_survives(self):
         """Aggregate span exactly 10.0s (strict <) → not collapsed."""
         from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+
         segs = [
             _seg(0.0, 60.0, "A"),
-            _seg(60.0, 70.0, "B"),    # span exactly 10.0 s
+            _seg(60.0, 70.0, "B"),  # span exactly 10.0 s
             _seg(70.0, 160.0, "A"),
         ]
         result = _collapse_foreign_runs(segs)
@@ -467,11 +495,13 @@ class TestCollapseForeignRuns:
     def test_empty_input(self):
         """Empty list → empty list."""
         from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+
         assert _collapse_foreign_runs([]) == []
 
     def test_single_segment_unchanged(self):
         """Single segment → returned unchanged."""
         from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+
         segs = [_seg(0.0, 60.0, "A")]
         result = _collapse_foreign_runs(segs)
         assert len(result) == 1
@@ -482,11 +512,12 @@ class TestCollapseForeignRuns:
         the old algorithm skipped past the first collapsed triple and never
         re-tested it against what followed)."""
         from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+
         segs = [
             _seg(0.0, 60.0, "A"),
-            _seg(60.0, 60.5, "B"),     # 0.5 s foreign
-            _seg(60.5, 120.0, "A"),    # brief return
-            _seg(120.0, 120.3, "B"),   # 0.3 s foreign
+            _seg(60.0, 60.5, "B"),  # 0.5 s foreign
+            _seg(60.5, 120.0, "A"),  # brief return
+            _seg(120.0, 120.3, "B"),  # 0.3 s foreign
             _seg(120.3, 180.0, "A"),
         ]
         result = _collapse_foreign_runs(segs)
@@ -499,11 +530,12 @@ class TestCollapseForeignRuns:
         """A→B→C→A: the foreign run need not share one label, only the
         aggregate span from the run's first to last segment matters."""
         from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+
         segs = [
             _seg(0.0, 60.0, "A"),
             _seg(60.0, 63.0, "B"),
             _seg(63.0, 66.0, "C"),
-            _seg(66.0, 150.0, "A"),   # aggregate span 66.0 - 60.0 = 6.0s < 10.0
+            _seg(66.0, 150.0, "A"),  # aggregate span 66.0 - 60.0 = 6.0s < 10.0
         ]
         result = _collapse_foreign_runs(segs)
         assert len(result) == 1
@@ -514,6 +546,7 @@ class TestCollapseForeignRuns:
         """A→B→C with no return to A's label → not collapsed (no anchor
         return found before the list ends)."""
         from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+
         segs = [
             _seg(0.0, 60.0, "A"),
             _seg(60.0, 63.0, "B"),
@@ -526,6 +559,7 @@ class TestCollapseForeignRuns:
         """A foreign run at the tail with nothing to return to → survives
         as-is."""
         from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+
         segs = [
             _seg(0.0, 60.0, "A"),
             _seg(60.0, 63.0, "B"),
@@ -537,6 +571,7 @@ class TestCollapseForeignRuns:
         """First segment establishes the initial anchor — nothing precedes
         it to collapse against, so no run is ever attempted around it."""
         from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+
         segs = [
             _seg(0.0, 3.0, "B"),
             _seg(3.0, 60.0, "A"),
@@ -550,13 +585,14 @@ class TestCollapseForeignRuns:
         each individually spanning < 10s, plus one run >= 10s interleaved —
         only the qualifying runs collapse; the long one survives (Sc.7)."""
         from congress_videos.modules.speaker_turns import _collapse_foreign_runs
+
         segs = [
             _seg(0.0, 100.0, "X"),
-            _seg(100.0, 103.0, "Y"),     # run 1: span 3s < 10 -> collapses
+            _seg(100.0, 103.0, "Y"),  # run 1: span 3s < 10 -> collapses
             _seg(103.0, 200.0, "X"),
-            _seg(200.0, 215.0, "Y"),     # run 2: span 15s >= 10 -> survives
+            _seg(200.0, 215.0, "Y"),  # run 2: span 15s >= 10 -> survives
             _seg(215.0, 300.0, "X"),
-            _seg(300.0, 305.0, "Y"),     # run 3: span 5s < 10 -> collapses
+            _seg(300.0, 305.0, "Y"),  # run 3: span 5s < 10 -> collapses
             _seg(305.0, 400.0, "X"),
         ]
         result = _collapse_foreign_runs(segs)
@@ -613,10 +649,10 @@ class TestChapter263Regression:
 
 
 class TestMergeSameName:
-
     def test_adjacent_same_resolved_name_merged(self):
         """Two adjacent turns with different labels but same non-null resolved_name → merged."""
         from congress_videos.modules.speaker_turns import Turn, _merge_same_name
+
         turns = [
             Turn(0.0, 60.0, "SPEAKER_00", "María Luisa García", 0.95, "text_named"),
             Turn(60.0, 120.0, "SPEAKER_02", "María Luisa García", 0.80, "text_confirmed"),
@@ -630,6 +666,7 @@ class TestMergeSameName:
     def test_none_resolved_name_not_merged(self):
         """Two adjacent turns with resolved_name=None → not merged on name."""
         from congress_videos.modules.speaker_turns import Turn, _merge_same_name
+
         turns = [
             Turn(0.0, 60.0, "SPEAKER_00", None, 0.50, "acoustic"),
             Turn(60.0, 120.0, "SPEAKER_02", None, 0.50, "acoustic"),
@@ -640,11 +677,13 @@ class TestMergeSameName:
     def test_empty_input(self):
         """Empty list → empty list."""
         from congress_videos.modules.speaker_turns import _merge_same_name
+
         assert _merge_same_name([]) == []
 
     def test_different_resolved_names_not_merged(self):
         """Different resolved names → not merged."""
         from congress_videos.modules.speaker_turns import Turn, _merge_same_name
+
         turns = [
             Turn(0.0, 60.0, "SPEAKER_00", "Ana García", 0.95, "text_named"),
             Turn(60.0, 120.0, "SPEAKER_01", "Pedro López", 0.95, "text_named"),
@@ -657,11 +696,12 @@ class TestMergeSameName:
 # Phase 5 — Text gate (_apply_text_gate)
 # ---------------------------------------------------------------------------
 
-class TestApplyTextGate:
 
+class TestApplyTextGate:
     def test_phrase_with_name_resolves_to_text_named(self):
         """Phrase + resolvable name → text_named, confidence=0.95, resolved_name set."""
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         t = 100.0
         segments = [
             {
@@ -689,6 +729,7 @@ class TestApplyTextGate:
     def test_phrase_without_resolvable_name_gives_text_confirmed(self):
         """Phrase found but name not resolvable → text_confirmed, confidence=0.80."""
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         t = 100.0
         segments = [
             {
@@ -716,6 +757,7 @@ class TestApplyTextGate:
         return a name, but ``name_resolver`` returns None (unknown participant).
         """
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         t = 100.0
         segments = [
             {
@@ -739,6 +781,7 @@ class TestApplyTextGate:
     def test_no_phrase_same_speaker_noise_rejected(self):
         """No phrase + same from/to speaker label → segment dropped (noise rejection)."""
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         t = 100.0
         segments = [
             {
@@ -759,6 +802,7 @@ class TestApplyTextGate:
     def test_no_phrase_different_speakers_gives_acoustic(self):
         """No phrase + different speakers → acoustic, confidence=0.50."""
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         t = 100.0
         segments = [
             {
@@ -781,6 +825,7 @@ class TestApplyTextGate:
     def test_confirmed_block_duration_not_used_as_threshold(self):
         """confirmed_block_duration_seconds present but has NO effect on outcome."""
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         t = 100.0
         # Two segments identical except for confirmed_block_duration_seconds
         seg_short = {
@@ -819,6 +864,7 @@ class TestApplyTextGate:
 # precedence and never invoke completion_fn.
 # ---------------------------------------------------------------------------
 
+
 def _no_phrase_segment(t=100.0, from_speaker="SPEAKER_00", to_speaker="SPEAKER_01"):
     return {
         "start_seconds": t,
@@ -847,10 +893,10 @@ def _llm_response(speaker_name, confidence=0.9, error=None):
 
 
 class TestApplyTextGateLlmFallback:
-
     def test_happy_path_gives_llm_resolved(self):
         """Roster-validated LLM name -> llm_resolved, confidence=0.85."""
         from congress_videos.modules.speaker_turns import LLM_RESOLVED_CONFIDENCE, _apply_text_gate
+
         t = 100.0
         segments = [_no_phrase_segment(t)]
         srt_blocks = _intro_blocks(t)
@@ -870,6 +916,7 @@ class TestApplyTextGateLlmFallback:
     def test_resolver_miss_gives_acoustic(self):
         """LLM name has no roster match -> stays acoustic (anti-hallucination)."""
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         t = 100.0
         segments = [_no_phrase_segment(t)]
         srt_blocks = _intro_blocks(t)
@@ -886,6 +933,7 @@ class TestApplyTextGateLlmFallback:
     def test_confidence_below_threshold_gives_acoustic(self):
         """Model confidence 0.79 (< TURN_LLM_MIN_CONFIDENCE=0.80) -> acoustic."""
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         t = 100.0
         segments = [_no_phrase_segment(t)]
         srt_blocks = _intro_blocks(t)
@@ -899,6 +947,7 @@ class TestApplyTextGateLlmFallback:
     def test_confidence_at_threshold_gives_resolved(self):
         """Model confidence exactly 0.80 -> resolved (boundary inclusive)."""
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         t = 100.0
         segments = [_no_phrase_segment(t)]
         srt_blocks = _intro_blocks(t)
@@ -912,6 +961,7 @@ class TestApplyTextGateLlmFallback:
     def test_completion_fn_raises_gives_acoustic(self):
         """Never-raise contract: an exception from completion_fn -> acoustic."""
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         t = 100.0
         segments = [_no_phrase_segment(t)]
         srt_blocks = _intro_blocks(t)
@@ -925,6 +975,7 @@ class TestApplyTextGateLlmFallback:
     def test_error_field_gives_acoustic(self):
         """completion_fn returns an error field -> acoustic."""
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         t = 100.0
         segments = [_no_phrase_segment(t)]
         srt_blocks = _intro_blocks(t)
@@ -938,6 +989,7 @@ class TestApplyTextGateLlmFallback:
     def test_completion_fn_none_never_called(self):
         """completion_fn=None (default) -> fallback disabled, no attempt made."""
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         t = 100.0
         segments = [_no_phrase_segment(t)]
         srt_blocks = _intro_blocks(t)
@@ -948,6 +1000,7 @@ class TestApplyTextGateLlmFallback:
     def test_empty_intro_window_never_calls_completion_fn(self):
         """No SRT blocks in the intro window -> completion_fn is never invoked (D9)."""
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         t = 100.0
         segments = [_no_phrase_segment(t)]
         calls = []
@@ -963,6 +1016,7 @@ class TestApplyTextGateLlmFallback:
     def test_cap_of_two_calls_exactly_twice(self):
         """max_llm_calls=2 with 3 eligible segments -> completion_fn called exactly twice."""
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         segments = [
             _no_phrase_segment(t=100.0, from_speaker="SPEAKER_00", to_speaker="SPEAKER_01"),
             _no_phrase_segment(t=200.0, from_speaker="SPEAKER_01", to_speaker="SPEAKER_02"),
@@ -976,8 +1030,11 @@ class TestApplyTextGateLlmFallback:
             return _llm_response(None, 0.0)
 
         turns = _apply_text_gate(
-            segments, srt_blocks, _null_resolver,
-            completion_fn=completion_fn, max_llm_calls=2,
+            segments,
+            srt_blocks,
+            _null_resolver,
+            completion_fn=completion_fn,
+            max_llm_calls=2,
         )
         assert len(calls) == 2
         assert len(turns) == 3  # all three still produce a turn (acoustic fallback)
@@ -985,6 +1042,7 @@ class TestApplyTextGateLlmFallback:
     def test_cap_zero_never_calls(self):
         """max_llm_calls=0 -> fallback fully disabled, completion_fn never invoked."""
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         t = 100.0
         segments = [_no_phrase_segment(t)]
         srt_blocks = _intro_blocks(t)
@@ -995,8 +1053,11 @@ class TestApplyTextGateLlmFallback:
             return _llm_response("Ana García", 0.90)
 
         turns = _apply_text_gate(
-            segments, srt_blocks, _identity_resolver,
-            completion_fn=completion_fn, max_llm_calls=0,
+            segments,
+            srt_blocks,
+            _identity_resolver,
+            completion_fn=completion_fn,
+            max_llm_calls=0,
         )
         assert len(calls) == 0
         assert turns[0].source == "acoustic"
@@ -1005,6 +1066,7 @@ class TestApplyTextGateLlmFallback:
         """A phrase-matched segment resolves via regex/fuzzy — LLM must never
         override an existing tier (never-override, design D-ordering)."""
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         t = 100.0
         segments = [
             {
@@ -1042,6 +1104,7 @@ class TestChapterBoundaryNonRegression:
 
     def test_preceding_block_without_phrase_never_invents_a_name(self):
         from congress_videos.modules.speaker_turns import _apply_text_gate
+
         t = 50.0  # near the start of the chapter — closest preceding block
         segments = [_no_phrase_segment(t)]
         # Ordinary speech from the PREVIOUS chapter, reachable via the
@@ -1059,6 +1122,7 @@ class TestChapterBoundaryNonRegression:
 # Phase 6 — detect_turns orchestrator
 # ---------------------------------------------------------------------------
 
+
 def _make_chapter(chapter_id: int = 1, video_id: str = "abc123", session_date: str = "2024-01-01"):
     return {
         "chapter_id": chapter_id,
@@ -1071,8 +1135,10 @@ def _make_chapter(chapter_id: int = 1, video_id: str = "abc123", session_date: s
 
 def _stub_diarize_fn_with_changes(changes):
     """Return a stub diarize_fn that returns the given changes."""
+
     def _fn(wav_path, offset):
         return changes
+
     return _fn
 
 
@@ -1081,10 +1147,10 @@ def _empty_diarize_fn(wav_path, offset):
 
 
 class TestDetectTurns:
-
     def test_stub_diarize_returns_turns_no_docker(self):
         """Stub diarize_fn returns fixed changes; pipeline completes without Docker."""
         from congress_videos.modules.speaker_turns import detect_turns
+
         chapter = _make_chapter()
         changes = [
             {
@@ -1103,6 +1169,7 @@ class TestDetectTurns:
     def test_empty_diarize_output_returns_empty(self):
         """Empty diarize_fn output → []."""
         from congress_videos.modules.speaker_turns import detect_turns
+
         chapter = _make_chapter()
         result = detect_turns(chapter, [], _empty_diarize_fn, _null_resolver)
         assert result == []
@@ -1110,6 +1177,7 @@ class TestDetectTurns:
     def test_missing_srt_acoustic_only(self):
         """srt_blocks=[] → turns with source='acoustic' and confidence<=0.50."""
         from congress_videos.modules.speaker_turns import detect_turns
+
         chapter = _make_chapter()
         changes = [
             {
@@ -1128,7 +1196,8 @@ class TestDetectTurns:
 
     def test_gap_merge_applied(self):
         """Two same-speaker changes with tiny gap → gap merge applied."""
-        from congress_videos.modules.speaker_turns import Turn, detect_turns
+        from congress_videos.modules.speaker_turns import detect_turns
+
         chapter = _make_chapter()
         # Two consecutive changes to SPEAKER_01 with 0.5s gap between them
         changes = [
@@ -1153,6 +1222,7 @@ class TestDetectTurns:
     def test_end_to_end_pipeline_runs(self):
         """End-to-end: all postprocessing steps applied with srt_blocks."""
         from congress_videos.modules.speaker_turns import detect_turns
+
         chapter = _make_chapter()
         t = 50.0
         changes = [
@@ -1181,6 +1251,7 @@ class TestDetectTurns:
 # Phase: _flag_procedural wiring (issue #143) — runs AFTER _merge_same_name
 # inside detect_turns, so durations/spans are final before flagging.
 # ---------------------------------------------------------------------------
+
 
 class TestFlagProceduralUnit:
     """_flag_procedural(turns, srt_blocks) is a pure post-processing step."""
@@ -1219,9 +1290,7 @@ class TestFlagProceduralUnit:
                 source="text_named",
             ),
         ]
-        srt_blocks = _make_srt_blocks(
-            (0.0, 400.0, "Tiene la palabra el señor Pérez " + "sustancia " * 50)
-        )
+        srt_blocks = _make_srt_blocks((0.0, 400.0, "Tiene la palabra el señor Pérez " + "sustancia " * 50))
 
         result = _flag_procedural(turns, srt_blocks)
 
@@ -1333,10 +1402,11 @@ class TestFlagProceduralRunsAfterMergeSameName:
 # Phase 7 — _upsert_turns (persistence)
 # ---------------------------------------------------------------------------
 
-class TestUpsertTurns:
 
+class TestUpsertTurns:
     def _make_turns(self, n: int = 2):
         from congress_videos.modules.speaker_turns import Turn
+
         return [
             Turn(
                 start_seconds=float(i * 10),
@@ -1352,6 +1422,7 @@ class TestUpsertTurns:
     def test_upsert_calls_execute_for_each_turn(self):
         """_upsert_turns calls cursor.execute once per Turn."""
         from congress_videos.modules.speaker_turns import _upsert_turns
+
         cursor = MagicMock()
         turns = self._make_turns(3)
         _upsert_turns(cursor, chapter_id=42, turns=turns)
@@ -1360,6 +1431,7 @@ class TestUpsertTurns:
     def test_upsert_sql_contains_on_conflict(self):
         """SQL passed to cursor.execute must contain ON CONFLICT (chapter_id, start_seconds) DO UPDATE."""
         from congress_videos.modules.speaker_turns import _upsert_turns
+
         cursor = MagicMock()
         turns = self._make_turns(1)
         _upsert_turns(cursor, chapter_id=42, turns=turns)
@@ -1372,6 +1444,7 @@ class TestUpsertTurns:
     def test_upsert_sql_contains_updated_at(self):
         """SQL update clause must set updated_at."""
         from congress_videos.modules.speaker_turns import _upsert_turns
+
         cursor = MagicMock()
         turns = self._make_turns(1)
         _upsert_turns(cursor, chapter_id=42, turns=turns)
@@ -1381,6 +1454,7 @@ class TestUpsertTurns:
     def test_upsert_never_calls_commit(self):
         """_upsert_turns must NOT call cursor.commit (DAG controls transactions)."""
         from congress_videos.modules.speaker_turns import _upsert_turns
+
         cursor = MagicMock()
         turns = self._make_turns(2)
         _upsert_turns(cursor, chapter_id=42, turns=turns)
@@ -1389,6 +1463,7 @@ class TestUpsertTurns:
     def test_upsert_empty_turns_no_execute(self):
         """Empty turns list → cursor.execute never called."""
         from congress_videos.modules.speaker_turns import _upsert_turns
+
         cursor = MagicMock()
         _upsert_turns(cursor, chapter_id=42, turns=[])
         cursor.execute.assert_not_called()
@@ -1401,9 +1476,12 @@ class TestUpsertTurns:
         in prod with 'relation "speaker_turns" does not exist').
         """
         from congress_videos.modules.speaker_turns import _upsert_turns
+
         cursor = MagicMock()
         _upsert_turns(
-            cursor, chapter_id=42, turns=self._make_turns(1),
+            cursor,
+            chapter_id=42,
+            turns=self._make_turns(1),
             table="production.speaker_turns",
         )
         sql_arg = cursor.execute.call_args[0][0]
@@ -1412,6 +1490,7 @@ class TestUpsertTurns:
     def test_upsert_defaults_to_bare_table_name(self):
         """Default keeps the bare name so pure unit tests need no connection."""
         from congress_videos.modules.speaker_turns import _upsert_turns
+
         cursor = MagicMock()
         _upsert_turns(cursor, chapter_id=42, turns=self._make_turns(1))
         sql_arg = cursor.execute.call_args[0][0]
@@ -1420,6 +1499,7 @@ class TestUpsertTurns:
     def test_upsert_sql_inserts_is_procedural_column(self):
         """issue #143: INSERT column list must include is_procedural."""
         from congress_videos.modules.speaker_turns import _upsert_turns
+
         cursor = MagicMock()
         _upsert_turns(cursor, chapter_id=42, turns=self._make_turns(1))
         sql_arg = cursor.execute.call_args[0][0]
@@ -1428,6 +1508,7 @@ class TestUpsertTurns:
     def test_upsert_sql_inserts_procedural_reason_column(self):
         """issue #143: INSERT column list must include procedural_reason."""
         from congress_videos.modules.speaker_turns import _upsert_turns
+
         cursor = MagicMock()
         _upsert_turns(cursor, chapter_id=42, turns=self._make_turns(1))
         sql_arg = cursor.execute.call_args[0][0]
@@ -1437,6 +1518,7 @@ class TestUpsertTurns:
         """The DO UPDATE SET clause must refresh both procedural columns too
         (a flag correction must be able to flow through a re-run)."""
         from congress_videos.modules.speaker_turns import _upsert_turns
+
         cursor = MagicMock()
         _upsert_turns(cursor, chapter_id=42, turns=self._make_turns(1))
         sql_arg = cursor.execute.call_args[0][0]
@@ -1448,6 +1530,7 @@ class TestUpsertTurns:
         """issue #143: the execute() params tuple must carry the Turn's own
         is_procedural/procedural_reason values through to the DB."""
         from congress_videos.modules.speaker_turns import Turn, _upsert_turns
+
         cursor = MagicMock()
         turn = Turn(
             start_seconds=0.0,
@@ -1468,6 +1551,7 @@ class TestUpsertTurns:
 # ---------------------------------------------------------------------------
 # Phase: detect_turns exception propagation (issue #156)
 # ---------------------------------------------------------------------------
+
 
 class TestDetectTurnsPropagation:
     """Verify detect_turns does NOT swallow SidecarApiError or other exceptions.
@@ -1520,8 +1604,8 @@ class TestDetectTurnsPropagation:
 # instead of duplicating the #283 noise filters.
 # ---------------------------------------------------------------------------
 
-class TestPublicFilterAliases:
 
+class TestPublicFilterAliases:
     def test_drop_micro_segments_alias_is_same_object(self):
         from congress_videos.modules.speaker_turns import (
             _drop_micro_segments,

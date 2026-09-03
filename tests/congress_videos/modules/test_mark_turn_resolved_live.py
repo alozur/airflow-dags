@@ -26,6 +26,7 @@ covered separately by its own mocked unit test — collapsing that composition
 into one live path would require a production extraction, which is out of
 scope for this change (test-only, zero production edits).
 """
+
 from __future__ import annotations
 
 import os
@@ -160,8 +161,7 @@ def clean_tables(pg_conn):
     invisible to them.
     """
     truncate = (
-        "TRUNCATE speaker_turn_videos, speaker_turns, video_chapters, "
-        "youtube_source_videos RESTART IDENTITY CASCADE"
+        "TRUNCATE speaker_turn_videos, speaker_turns, video_chapters, youtube_source_videos RESTART IDENTITY CASCADE"
     )
     with pg_conn.cursor() as cur:
         cur.execute(truncate)
@@ -203,8 +203,7 @@ def _already_resolved(row: dict) -> bool:
     consumes — zero drift risk."""
     return bool(
         row.get("resolved_participant_slug")
-        and float(row.get("speaker_resolution_confidence") or 0)
-        >= SPEAKER_RESOLUTION_MIN_CONFIDENCE
+        and float(row.get("speaker_resolution_confidence") or 0) >= SPEAKER_RESOLUTION_MIN_CONFIDENCE
     )
 
 
@@ -223,18 +222,15 @@ def _seed_turn(
     never collide on the (chapter_id, start_seconds) UNIQUE constraint."""
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO youtube_source_videos (video_id) VALUES (%s) "
-            "ON CONFLICT (video_id) DO NOTHING",
+            "INSERT INTO youtube_source_videos (video_id) VALUES (%s) ON CONFLICT (video_id) DO NOTHING",
             (video_id,),
         )
         cur.execute(
-            "INSERT INTO video_chapters (chapter_id, video_id) VALUES (%s, %s) "
-            "ON CONFLICT (chapter_id) DO NOTHING",
+            "INSERT INTO video_chapters (chapter_id, video_id) VALUES (%s, %s) ON CONFLICT (chapter_id) DO NOTHING",
             (chapter_id, video_id),
         )
         cur.execute(
-            "INSERT INTO speaker_turns (turn_id, chapter_id, speaker_label, start_seconds) "
-            "VALUES (%s, %s, %s, %s)",
+            "INSERT INTO speaker_turns (turn_id, chapter_id, speaker_label, start_seconds) VALUES (%s, %s, %s, %s)",
             (turn_id, chapter_id, speaker_label, turn_id),
         )
         cur.execute(
@@ -248,9 +244,7 @@ class TestMarkTurnResolvedLive:
     """Authoritative row-level tests against real mark_turn_resolved /
     select_unprepared_turns SQL."""
 
-    def test_mark_turn_resolved_propagates_to_same_label_siblings_only(
-        self, clean_tables, db_env
-    ):
+    def test_mark_turn_resolved_propagates_to_same_label_siblings_only(self, clean_tables, db_env):
         """Spec: 'Same-label siblings propagate, mismatched sibling withheld'.
 
         Group /data/g1.mp4: turns 101 (representative) and 102 share
@@ -258,22 +252,32 @@ class TestMarkTurnResolvedLive:
         receive the resolved slug — 103 must stay untouched."""
         output_path = "/data/g1.mp4"
         _seed_turn(
-            clean_tables, turn_id=101, chapter_id=1, video_id="vid_g1",
-            speaker_label="SPEAKER_00", output_path=output_path,
+            clean_tables,
+            turn_id=101,
+            chapter_id=1,
+            video_id="vid_g1",
+            speaker_label="SPEAKER_00",
+            output_path=output_path,
         )
         _seed_turn(
-            clean_tables, turn_id=102, chapter_id=1, video_id="vid_g1",
-            speaker_label="SPEAKER_00", output_path=output_path,
+            clean_tables,
+            turn_id=102,
+            chapter_id=1,
+            video_id="vid_g1",
+            speaker_label="SPEAKER_00",
+            output_path=output_path,
         )
         _seed_turn(
-            clean_tables, turn_id=103, chapter_id=1, video_id="vid_g1",
-            speaker_label="SPEAKER_01", output_path=output_path,
+            clean_tables,
+            turn_id=103,
+            chapter_id=1,
+            video_id="vid_g1",
+            speaker_label="SPEAKER_01",
+            output_path=output_path,
         )
 
         db = CongressionalVideoDB()
-        db.mark_turn_resolved(
-            output_path, "pedro-sanchez", 0.95, "ai_srt_context", 101
-        )
+        db.mark_turn_resolved(output_path, "pedro-sanchez", 0.95, "ai_srt_context", 101)
 
         with clean_tables.cursor() as cur:
             cur.execute(
@@ -292,9 +296,7 @@ class TestMarkTurnResolvedLive:
         assert rows[103]["speaker_resolution_confidence"] is None
         assert rows[103]["speaker_resolution_method"] is None
 
-    def test_select_unprepared_turns_distinguishes_retry_and_skip_eligible_rows(
-        self, clean_tables, db_env
-    ):
+    def test_select_unprepared_turns_distinguishes_retry_and_skip_eligible_rows(self, clean_tables, db_env):
         """Spec: 'Withheld groups resurface via the production selector' +
         'Skip-eligible turn is distinguished from retry-eligible turns'.
 
@@ -308,29 +310,41 @@ class TestMarkTurnResolvedLive:
         skip-eligible.
         """
         _seed_turn(
-            clean_tables, turn_id=201, chapter_id=2, video_id="vid_g2",
-            speaker_label="SPEAKER_01", output_path="/data/g2.mp4",
+            clean_tables,
+            turn_id=201,
+            chapter_id=2,
+            video_id="vid_g2",
+            speaker_label="SPEAKER_01",
+            output_path="/data/g2.mp4",
         )
         _seed_turn(
-            clean_tables, turn_id=202, chapter_id=2, video_id="vid_g2",
-            speaker_label="SPEAKER_00", output_path="/data/g2.mp4",
+            clean_tables,
+            turn_id=202,
+            chapter_id=2,
+            video_id="vid_g2",
+            speaker_label="SPEAKER_00",
+            output_path="/data/g2.mp4",
         )
         _seed_turn(
-            clean_tables, turn_id=301, chapter_id=3, video_id="vid_g3",
-            speaker_label="SPEAKER_00", output_path="/data/g3.mp4",
+            clean_tables,
+            turn_id=301,
+            chapter_id=3,
+            video_id="vid_g3",
+            speaker_label="SPEAKER_00",
+            output_path="/data/g3.mp4",
         )
         _seed_turn(
-            clean_tables, turn_id=401, chapter_id=4, video_id="vid_g4",
-            speaker_label="SPEAKER_00", output_path="/data/g4.mp4",
+            clean_tables,
+            turn_id=401,
+            chapter_id=4,
+            video_id="vid_g4",
+            speaker_label="SPEAKER_00",
+            output_path="/data/g4.mp4",
         )
 
         db = CongressionalVideoDB()
-        db.mark_turn_resolved(
-            "/data/g2.mp4", "someone-else", 0.90, "ai_srt_context", 202
-        )
-        db.mark_turn_resolved(
-            "/data/g4.mp4", "pedro-sanchez", 0.95, "ai_srt_context", 401
-        )
+        db.mark_turn_resolved("/data/g2.mp4", "someone-else", 0.90, "ai_srt_context", 202)
+        db.mark_turn_resolved("/data/g4.mp4", "pedro-sanchez", 0.95, "ai_srt_context", 401)
 
         rows = db.select_unprepared_turns(limit=10)
 

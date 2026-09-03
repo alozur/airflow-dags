@@ -18,6 +18,7 @@ NOTE: imports from congress_videos.config.ai_prompts and utils.llm_cache are
 done at module level (ai_prompts) or lazily (llm_cache) to enable clean
 patching in tests, mirroring congress_videos.modules.speaker_resolution.
 """
+
 from __future__ import annotations
 
 import logging
@@ -46,6 +47,7 @@ MAX_MENTIONS_PER_CALL: int = 8
 # ---------------------------------------------------------------------------
 # Public data types
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class SpeakerMatch:
@@ -77,6 +79,7 @@ class ChapterSpeakerResolution:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def resolve_chapter_speakers(
     mentions: list[str],
@@ -119,6 +122,7 @@ def resolve_chapter_speakers(
 # Internal implementation
 # ---------------------------------------------------------------------------
 
+
 def _resolve_inner(
     mentions: list[str],
     participants: list[dict],
@@ -126,19 +130,14 @@ def _resolve_inner(
 ) -> ChapterSpeakerResolution:
     """Internal resolver (may raise; wrapped by resolve_chapter_speakers)."""
     if not mentions or not participants:
-        logger.debug(
-            "resolve_chapter_speakers: empty mentions or empty roster — skipping call"
-        )
+        logger.debug("resolve_chapter_speakers: empty mentions or empty roster — skipping call")
         return ChapterSpeakerResolution()
 
     capped_mentions = mentions[:MAX_MENTIONS_PER_CALL]
     roster_by_slug: dict[str, dict] = {p["slug"]: p for p in participants}
 
     mention_block = "\n".join(capped_mentions)
-    roster_lines = [
-        f"{p['slug']} | {p.get('display_name', '')} | {p.get('party', '')}"
-        for p in participants
-    ]
+    roster_lines = [f"{p['slug']} | {p.get('display_name', '')} | {p.get('party', '')}" for p in participants]
     participant_roster = "\n".join(roster_lines)
 
     user_prompt = CHAPTER_SPEAKER_RESOLUTION_USER_TEMPLATE.format(
@@ -148,6 +147,7 @@ def _resolve_inner(
 
     if completion_fn is None:
         from utils.llm_cache import cached_json_completion
+
         completion_fn = cached_json_completion
 
     response = completion_fn(
@@ -157,9 +157,7 @@ def _resolve_inner(
     )
 
     if response.get("error") or not response.get("data"):
-        logger.debug(
-            "resolve_chapter_speakers: completion error: %s", response.get("error")
-        )
+        logger.debug("resolve_chapter_speakers: completion error: %s", response.get("error"))
         return ChapterSpeakerResolution()
 
     raw_matches = response["data"].get("matches") or []
@@ -183,7 +181,8 @@ def _resolve_inner(
         if not slug or slug not in roster_by_slug:
             logger.debug(
                 "resolve_chapter_speakers: rejecting mention %r — slug %r not in roster",
-                mention, slug,
+                mention,
+                slug,
             )
             continue
 
@@ -192,14 +191,17 @@ def _resolve_inner(
         except (TypeError, ValueError):
             logger.debug(
                 "resolve_chapter_speakers: rejecting mention %r — invalid confidence %r",
-                mention, entry.get("confidence"),
+                mention,
+                entry.get("confidence"),
             )
             continue
 
         if confidence < CHAPTER_SPEAKER_MIN_CONFIDENCE:
             logger.debug(
                 "resolve_chapter_speakers: rejecting mention %r — confidence %.2f < %.2f",
-                mention, confidence, CHAPTER_SPEAKER_MIN_CONFIDENCE,
+                mention,
+                confidence,
+                CHAPTER_SPEAKER_MIN_CONFIDENCE,
             )
             continue
 
@@ -216,7 +218,8 @@ def _resolve_inner(
     if matches:
         logger.info(
             "resolve_chapter_speakers: resolved %d/%d mention(s)",
-            len(matches), len(capped_mentions),
+            len(matches),
+            len(capped_mentions),
         )
 
     return ChapterSpeakerResolution(matches=tuple(matches), by_mention=by_mention)

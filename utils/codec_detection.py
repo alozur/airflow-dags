@@ -36,10 +36,15 @@ def detect_video_codec(source_path: str, *, timeout: int = FFPROBE_TIMEOUT_SECS)
         ``"h264"``, ``"av1"``, or ``"unknown"``.
     """
     cmd = [
-        "ffprobe", "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=codec_name",
-        "-of", "csv=p=0",
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=codec_name",
+        "-of",
+        "csv=p=0",
         source_path,
     ]
     try:
@@ -57,7 +62,9 @@ def detect_video_codec(source_path: str, *, timeout: int = FFPROBE_TIMEOUT_SECS)
     if proc.returncode != 0:
         logger.warning(
             "ffprobe exit %s for %s: %s; codec unknown",
-            proc.returncode, source_path, (proc.stderr or "").strip(),
+            proc.returncode,
+            source_path,
+            (proc.stderr or "").strip(),
         )
         return "unknown"
 
@@ -68,7 +75,8 @@ def detect_video_codec(source_path: str, *, timeout: int = FFPROBE_TIMEOUT_SECS)
         return "av1"
     logger.warning(
         "ffprobe reported unrecognized codec %r for %s; treating as unknown",
-        name, source_path,
+        name,
+        source_path,
     )
     return "unknown"
 

@@ -19,7 +19,7 @@ DAG, video_analytics_actions, which uses the separate upload-purpose token.
 
 import logging
 import os
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
@@ -31,9 +31,7 @@ from utils.env_loader import load_env_if_local
 
 load_env_if_local()
 
-STALE_RUN_TOLERANCE_MINUTES = int(
-    os.getenv("ANALYTICS_STALE_RUN_TOLERANCE_MINUTES", "30")
-)
+STALE_RUN_TOLERANCE_MINUTES = int(os.getenv("ANALYTICS_STALE_RUN_TOLERANCE_MINUTES", "30"))
 
 # Read-only analytics token for the default channel. An explicit
 # YOUTUBE_TOKEN_FILE env var still overrides for ad-hoc/testing use.
@@ -55,8 +53,7 @@ def _staleness_guard(**context) -> bool:
         staleness = now - data_interval_end
         if staleness > timedelta(minutes=STALE_RUN_TOLERANCE_MINUTES):
             logging.info(
-                "video_analytics: skipping stale run: data_interval_end=%s is %s "
-                "behind now=%s (tolerance=%dm)",
+                "video_analytics: skipping stale run: data_interval_end=%s is %s behind now=%s (tolerance=%dm)",
                 data_interval_end,
                 staleness,
                 now,
@@ -95,9 +92,7 @@ def _fetch_analytics(ti, **context) -> list:
     # re-fetching data we already have, saving Analytics API daily quota.
     from congress_videos.modules.database import CongressionalVideoDB
 
-    youtube_video_ids = list(
-        {row["youtube_video_id"] for row in candidate_rows if row.get("youtube_video_id")}
-    )
+    youtube_video_ids = list({row["youtube_video_id"] for row in candidate_rows if row.get("youtube_video_id")})
     already_collected: set[tuple[str, str]] = set()
     try:
         db = CongressionalVideoDB()
@@ -146,9 +141,7 @@ def _fetch_analytics(ti, **context) -> list:
             upload_date = upload_date.replace(tzinfo=UTC)
 
         start_date = upload_date.strftime("%Y-%m-%d")
-        end_date = (upload_date + timedelta(hours=threshold_hours + 48)).strftime(
-            "%Y-%m-%d"
-        )
+        end_date = (upload_date + timedelta(hours=threshold_hours + 48)).strftime("%Y-%m-%d")
 
         try:
             resp = (
@@ -175,8 +168,7 @@ def _fetch_analytics(ti, **context) -> list:
 
         if not should_persist(metrics):
             logging.info(
-                "video_analytics: skip-and-retry for yt_id=%s checkpoint=%s "
-                "(all-None or all-zero metrics)",
+                "video_analytics: skip-and-retry for yt_id=%s checkpoint=%s (all-None or all-zero metrics)",
                 yt_id,
                 checkpoint,
             )
@@ -198,9 +190,7 @@ def _fetch_analytics(ti, **context) -> list:
         )
 
     ti.xcom_push(key="collected", value=collected)
-    logging.info(
-        "video_analytics: %d snapshots will be persisted", len(collected)
-    )
+    logging.info("video_analytics: %d snapshots will be persisted", len(collected))
     return collected
 
 
@@ -245,7 +235,9 @@ def _run_record_snapshots(ti):
         )
         logging.info(
             "video_analytics: recorded snapshot chapter_id=%s yt_id=%s checkpoint=%s",
-            item["chapter_id"], item["youtube_video_id"], item["checkpoint"],
+            item["chapter_id"],
+            item["youtube_video_id"],
+            item["checkpoint"],
         )
 
     return {"recorded_snapshots": len(collected)}
@@ -273,7 +265,6 @@ with DAG(
     catchup=False,
     tags=["congress", "youtube", "analytics"],
 ) as dag:
-
     # t0: Skip stale data_interval_end replays
     t0_staleness = ShortCircuitOperator(
         task_id="staleness_guard",

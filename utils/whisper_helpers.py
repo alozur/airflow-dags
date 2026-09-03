@@ -10,15 +10,14 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import requests
 
 # Whisper API configuration
 # From docker network: whisper-api:9000
 # From host: localhost:9000
-WHISPER_API_HOST = os.getenv('WHISPER_API_HOST', 'whisper-api')
-WHISPER_API_PORT = os.getenv('WHISPER_API_PORT', '9000')
+WHISPER_API_HOST = os.getenv("WHISPER_API_HOST", "whisper-api")
+WHISPER_API_PORT = os.getenv("WHISPER_API_PORT", "9000")
 WHISPER_API_URL = f"http://{WHISPER_API_HOST}:{WHISPER_API_PORT}"
 
 # Process-lifetime cache of loaded Whisper models, keyed by model_size
@@ -36,6 +35,7 @@ def _get_cached_model(model_size: str):
     """
     if model_size not in _MODEL_CACHE:
         import whisper
+
         _MODEL_CACHE[model_size] = whisper.load_model(model_size)
     return _MODEL_CACHE[model_size]
 
@@ -68,9 +68,9 @@ def create_srt_from_segments(segments: list) -> str:
     srt_content = []
 
     for i, segment in enumerate(segments, 1):
-        start_time = format_timestamp_srt(segment['start'])
-        end_time = format_timestamp_srt(segment['end'])
-        text = segment['text'].strip()
+        start_time = format_timestamp_srt(segment["start"])
+        end_time = format_timestamp_srt(segment["end"])
+        text = segment["text"].strip()
 
         srt_content.append(f"{i}")
         srt_content.append(f"{start_time} --> {end_time}")
@@ -106,11 +106,11 @@ def save_srt_file(srt_content: str, audio_file_path: str) -> str:
         srt_dir.mkdir(parents=True, exist_ok=True)
 
         # Get SRT filename (same as audio but .srt extension)
-        srt_filename = audio_path.stem + '.srt'
+        srt_filename = audio_path.stem + ".srt"
         srt_path = srt_dir / srt_filename
 
         # Save SRT file
-        srt_path.write_text(srt_content, encoding='utf-8')
+        srt_path.write_text(srt_content, encoding="utf-8")
         logging.info(f"SRT file saved: {srt_path}")
 
         return str(srt_path)
@@ -119,8 +119,8 @@ def save_srt_file(srt_content: str, audio_file_path: str) -> str:
         logging.error(f"Error saving SRT file: {e}")
         # Fallback: save next to audio file
         audio_path = Path(audio_file_path)
-        srt_path = audio_path.with_suffix('.srt')
-        srt_path.write_text(srt_content, encoding='utf-8')
+        srt_path = audio_path.with_suffix(".srt")
+        srt_path.write_text(srt_content, encoding="utf-8")
         logging.warning(f"SRT saved to fallback location: {srt_path}")
         return str(srt_path)
 
@@ -154,11 +154,7 @@ def transcribe_audio_file_with_local_whisper(
     """
     if not os.path.exists(audio_file_path):
         logging.error(f"Audio file not found: {audio_file_path}")
-        return {
-            'success': False,
-            'file_path': audio_file_path,
-            'error': 'Audio file not found'
-        }
+        return {"success": False, "file_path": audio_file_path, "error": "Audio file not found"}
 
     logging.info(f"Transcribing with local Whisper ({model_size}): {audio_file_path}")
     start_time = time.time()
@@ -168,48 +164,36 @@ def transcribe_audio_file_with_local_whisper(
         model = _get_cached_model(model_size)
 
         # Transcribe with segment timestamps
-        result = model.transcribe(
-            audio_file_path,
-            language=language,
-            verbose=False
-        )
+        result = model.transcribe(audio_file_path, language=language, verbose=False)
 
         duration = time.time() - start_time
 
         srt_path = None
-        if save_srt and result.get('segments'):
-            srt_content = create_srt_from_segments(result['segments'])
+        if save_srt and result.get("segments"):
+            srt_content = create_srt_from_segments(result["segments"])
             srt_path = save_srt_file(srt_content, audio_file_path)
-        elif not result.get('segments'):
+        elif not result.get("segments"):
             logging.warning("No segments found in transcription result")
 
         logging.info(f"Transcription completed in {duration:.2f}s")
         logging.info(f"Segments: {len(result.get('segments', []))}")
 
         return {
-            'success': True,
-            'file_path': audio_file_path,
-            'text': result['text'],
-            'srt_path': srt_path,
-            'segments': result.get('segments', []),
-            'duration': duration,
-            'language': language
+            "success": True,
+            "file_path": audio_file_path,
+            "text": result["text"],
+            "srt_path": srt_path,
+            "segments": result.get("segments", []),
+            "duration": duration,
+            "language": language,
         }
 
     except ImportError:
         logging.error("OpenAI Whisper library not installed")
-        return {
-            'success': False,
-            'file_path': audio_file_path,
-            'error': 'OpenAI Whisper not installed'
-        }
+        return {"success": False, "file_path": audio_file_path, "error": "OpenAI Whisper not installed"}
     except Exception as e:
         logging.error(f"Error during transcription: {e}")
-        return {
-            'success': False,
-            'file_path': audio_file_path,
-            'error': str(e)
-        }
+        return {"success": False, "file_path": audio_file_path, "error": str(e)}
 
 
 def transcribe_audio_file(
@@ -253,7 +237,7 @@ def transcribe_audio_file(
             save_srt=save_srt,
         )
 
-        if result['success']:
+        if result["success"]:
             return result
 
         # If local whisper failed, log and fall back to API
@@ -262,35 +246,20 @@ def transcribe_audio_file(
     # Fall back to Docker API (text only, no SRT)
     if not os.path.exists(audio_file_path):
         logging.error(f"Audio file not found: {audio_file_path}")
-        return {
-            'success': False,
-            'file_path': audio_file_path,
-            'error': 'Audio file not found'
-        }
+        return {"success": False, "file_path": audio_file_path, "error": "Audio file not found"}
 
     logging.info(f"Transcribing with Docker API: {audio_file_path}")
     start_time = time.time()
 
     try:
         # Open audio file in binary mode
-        with open(audio_file_path, 'rb') as audio_file:
+        with open(audio_file_path, "rb") as audio_file:
             # Prepare multipart form data
-            files = {
-                'audio_file': (os.path.basename(audio_file_path), audio_file, 'audio/webm')
-            }
-            data = {
-                'task': 'transcribe',
-                'language': language,
-                'output': 'txt'
-            }
+            files = {"audio_file": (os.path.basename(audio_file_path), audio_file, "audio/webm")}
+            data = {"task": "transcribe", "language": language, "output": "txt"}
 
             # Send POST request to Whisper API
-            response = requests.post(
-                f"{WHISPER_API_URL}/asr",
-                files=files,
-                data=data,
-                timeout=timeout
-            )
+            response = requests.post(f"{WHISPER_API_URL}/asr", files=files, data=data, timeout=timeout)
 
             # Check response status
             response.raise_for_status()
@@ -304,41 +273,25 @@ def transcribe_audio_file(
             logging.warning("Docker API used - no SRT file generated (only text)")
 
             return {
-                'success': True,
-                'file_path': audio_file_path,
-                'text': transcription_text,
-                'duration': duration,
-                'language': language
+                "success": True,
+                "file_path": audio_file_path,
+                "text": transcription_text,
+                "duration": duration,
+                "language": language,
             }
 
     except requests.exceptions.Timeout:
         logging.error(f"Transcription timeout after {timeout}s: {audio_file_path}")
-        return {
-            'success': False,
-            'file_path': audio_file_path,
-            'error': f'Timeout after {timeout}s'
-        }
+        return {"success": False, "file_path": audio_file_path, "error": f"Timeout after {timeout}s"}
     except requests.exceptions.RequestException as e:
         logging.error(f"Whisper API request error: {e}")
-        return {
-            'success': False,
-            'file_path': audio_file_path,
-            'error': f'API request error: {str(e)}'
-        }
+        return {"success": False, "file_path": audio_file_path, "error": f"API request error: {str(e)}"}
     except Exception as e:
         logging.error(f"Unexpected error during transcription: {e}")
-        return {
-            'success': False,
-            'file_path': audio_file_path,
-            'error': f'Unexpected error: {str(e)}'
-        }
+        return {"success": False, "file_path": audio_file_path, "error": f"Unexpected error: {str(e)}"}
 
 
-def transcribe_audio_chunks(
-    audio_chunks: list[dict],
-    language: str = "es",
-    timeout: int = 3600
-) -> dict:
+def transcribe_audio_chunks(audio_chunks: list[dict], language: str = "es", timeout: int = 3600) -> dict:
     """
     Transcribe multiple audio chunks using the Whisper API.
 
@@ -355,54 +308,42 @@ def transcribe_audio_chunks(
     """
     if not audio_chunks:
         logging.warning("No audio chunks to transcribe")
-        return {
-            'total_chunks': 0,
-            'successful_transcriptions': 0,
-            'chunks': []
-        }
+        return {"total_chunks": 0, "successful_transcriptions": 0, "chunks": []}
 
     logging.info(f"Starting transcription of {len(audio_chunks)} audio chunks")
 
     transcription_results = []
 
     for i, chunk in enumerate(audio_chunks, 1):
-        chunk_file_path = chunk.get('file_path')
-        chunk_number = chunk.get('chunk_number', i)
+        chunk_file_path = chunk.get("file_path")
+        chunk_number = chunk.get("chunk_number", i)
 
         if not chunk_file_path:
             logging.warning(f"Chunk {chunk_number} missing file_path")
-            transcription_results.append({
-                'success': False,
-                'chunk_number': chunk_number,
-                'error': 'Missing file_path'
-            })
+            transcription_results.append({"success": False, "chunk_number": chunk_number, "error": "Missing file_path"})
             continue
 
         logging.info(f"Transcribing chunk {chunk_number}/{len(audio_chunks)}")
 
         # Transcribe chunk
-        result = transcribe_audio_file(
-            audio_file_path=chunk_file_path,
-            language=language,
-            timeout=timeout
-        )
+        result = transcribe_audio_file(audio_file_path=chunk_file_path, language=language, timeout=timeout)
 
         # Add chunk metadata to result
-        result['chunk_number'] = chunk_number
-        result['start_time'] = chunk.get('start_time')
-        result['end_time'] = chunk.get('end_time')
-        result['chunk_duration'] = chunk.get('duration')
+        result["chunk_number"] = chunk_number
+        result["start_time"] = chunk.get("start_time")
+        result["end_time"] = chunk.get("end_time")
+        result["chunk_duration"] = chunk.get("duration")
 
         transcription_results.append(result)
 
-    successful_count = len([r for r in transcription_results if r.get('success')])
+    successful_count = len([r for r in transcription_results if r.get("success")])
 
     logging.info(f"Transcription complete: {successful_count}/{len(audio_chunks)} successful")
 
     return {
-        'total_chunks': len(audio_chunks),
-        'successful_transcriptions': successful_count,
-        'chunks': transcription_results
+        "total_chunks": len(audio_chunks),
+        "successful_transcriptions": successful_count,
+        "chunks": transcription_results,
     }
 
 
@@ -423,16 +364,11 @@ def merge_srt_files(srt_files: list[str], output_path: str) -> dict:
         - total_entries: Number of subtitle entries
         - error: Error message if failed
     """
-    result = {
-        'success': False,
-        'output_path': None,
-        'total_entries': 0,
-        'error': None
-    }
+    result = {"success": False, "output_path": None, "total_entries": 0, "error": None}
 
     if not srt_files:
-        result['error'] = 'No SRT files provided'
-        logging.error(result['error'])
+        result["error"] = "No SRT files provided"
+        logging.error(result["error"])
         return result
 
     try:
@@ -444,18 +380,18 @@ def merge_srt_files(srt_files: list[str], output_path: str) -> dict:
                 logging.warning(f"SRT file not found: {srt_file}")
                 continue
 
-            with open(srt_file, encoding='utf-8') as f:
+            with open(srt_file, encoding="utf-8") as f:
                 content = f.read()
 
             # Parse SRT entries
             # SRT format: number\ntimestamp\ntext\n\n
-            entries = content.strip().split('\n\n')
+            entries = content.strip().split("\n\n")
 
             for entry in entries:
                 if not entry.strip():
                     continue
 
-                lines = entry.strip().split('\n')
+                lines = entry.strip().split("\n")
                 if len(lines) < 3:
                     continue
 
@@ -463,17 +399,17 @@ def merge_srt_files(srt_files: list[str], output_path: str) -> dict:
                 # Get timestamp (line 1)
                 timestamp = lines[1]
                 # Get text (line 2 onwards)
-                text = '\n'.join(lines[2:])
+                text = "\n".join(lines[2:])
 
                 # Simplify timestamp: remove milliseconds
                 # From: 00:09:30,440 --> 00:09:38,120
                 # To:   00:09:30 --> 00:09:38
-                timestamp_simplified = timestamp.replace(',000', '').replace(',', '').split(',')[0]
-                if ' --> ' in timestamp:
-                    start, end = timestamp.split(' --> ')
+                timestamp_simplified = timestamp.replace(",000", "").replace(",", "").split(",")[0]
+                if " --> " in timestamp:
+                    start, end = timestamp.split(" --> ")
                     # Remove milliseconds (everything after comma)
-                    start_clean = start.split(',')[0]
-                    end_clean = end.split(',')[0]
+                    start_clean = start.split(",")[0]
+                    end_clean = end.split(",")[0]
                     timestamp_simplified = f"{start_clean} --> {end_clean}"
 
                 # Add to merged content (without entry numbers)
@@ -481,23 +417,23 @@ def merge_srt_files(srt_files: list[str], output_path: str) -> dict:
                 entry_count += 1
 
         # Join all entries with double newline
-        final_content = '\n\n'.join(merged_content)
+        final_content = "\n\n".join(merged_content)
 
         # Save merged file
         output_path_obj = Path(output_path)
         output_path_obj.parent.mkdir(parents=True, exist_ok=True)
-        output_path_obj.write_text(final_content, encoding='utf-8')
+        output_path_obj.write_text(final_content, encoding="utf-8")
 
-        result['success'] = True
-        result['output_path'] = output_path
-        result['total_entries'] = entry_count
+        result["success"] = True
+        result["output_path"] = output_path
+        result["total_entries"] = entry_count
 
         logging.info(f"✅ Merged {len(srt_files)} SRT files into {output_path}")
         logging.info(f"   Total subtitle entries: {entry_count}")
 
     except Exception as e:
-        result['error'] = f"Error merging SRT files: {str(e)}"
-        logging.error(result['error'], exc_info=True)
+        result["error"] = f"Error merging SRT files: {str(e)}"
+        logging.error(result["error"], exc_info=True)
 
     return result
 

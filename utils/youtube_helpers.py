@@ -12,7 +12,6 @@ different token files.
 import json
 import logging
 import os
-from typing import Dict, List, Optional
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -142,8 +141,7 @@ def _load_credentials(token_file: str) -> Credentials:
 
     if not os.path.exists(token_file):
         raise FileNotFoundError(
-            f"Token file not found: {token_file}. "
-            "Please authenticate first using generate_youtube_token.py."
+            f"Token file not found: {token_file}. Please authenticate first using generate_youtube_token.py."
         )
 
     logging.info(f"Loading YouTube credentials from {token_file}")
@@ -176,7 +174,7 @@ def get_authenticated_youtube_service(token_file: str):
         Exception: If authentication fails
     """
     credentials = _load_credentials(token_file)
-    youtube = build('youtube', 'v3', credentials=credentials)
+    youtube = build("youtube", "v3", credentials=credentials)
     logging.info("YouTube service authenticated successfully")
     return youtube
 
@@ -202,7 +200,7 @@ def get_youtube_analytics_service(token_file: str):
         Exception: If authentication or service construction fails.
     """
     credentials = _load_credentials(token_file)
-    service = build('youtubeAnalytics', 'v2', credentials=credentials)
+    service = build("youtubeAnalytics", "v2", credentials=credentials)
     logging.info("YouTube Analytics service authenticated successfully")
     return service
 
@@ -212,8 +210,8 @@ def upload_video_to_youtube(
     video_file: str,
     title: str,
     description: str,
-    category_id: str = '22',
-    privacy_status: str = 'private',
+    category_id: str = "22",
+    privacy_status: str = "private",
     tags: list[str] | None = None,
     made_for_kids: bool = False,
     thumbnail_file: str | None = None,
@@ -280,15 +278,15 @@ def upload_video_to_youtube(
     try:
         # Prepare video metadata
         body = {
-            'snippet': {
-                'title': title[:100],  # Max 100 characters
-                'description': description[:5000],  # Max 5000 characters
-                'tags': tags,
-                'categoryId': category_id,
+            "snippet": {
+                "title": title[:100],  # Max 100 characters
+                "description": description[:5000],  # Max 5000 characters
+                "tags": tags,
+                "categoryId": category_id,
             },
-            'status': {
-                'privacyStatus': privacy_status,
-                'selfDeclaredMadeForKids': made_for_kids,
+            "status": {
+                "privacyStatus": privacy_status,
+                "selfDeclaredMadeForKids": made_for_kids,
             },
         }
 
@@ -301,7 +299,7 @@ def upload_video_to_youtube(
 
         # Execute upload request
         request = youtube.videos().insert(
-            part=','.join(body.keys()),
+            part=",".join(body.keys()),
             body=body,
             media_body=media,
         )
@@ -313,7 +311,7 @@ def upload_video_to_youtube(
                 progress = int(status.progress() * 100)
                 logging.info(f"Upload progress: {progress}%")
 
-        video_id = response['id']
+        video_id = response["id"]
         video_url = f"https://www.youtube.com/watch?v={video_id}"
 
         logging.info(f"Upload successful! Video ID: {video_id}")
@@ -383,8 +381,7 @@ def set_thumbnail_for_video(youtube, video_id: str, thumbnail_file: str) -> dict
 
         # Upload thumbnail
         request = youtube.thumbnails().set(
-            videoId=video_id,
-            media_body=MediaFileUpload(thumbnail_file, chunksize=-1, resumable=True)
+            videoId=video_id, media_body=MediaFileUpload(thumbnail_file, chunksize=-1, resumable=True)
         )
         response = request.execute()
 
@@ -440,10 +437,7 @@ def update_video_title(youtube, video_id: str, title: str | None) -> dict:
             any future caller that means to catch it by type.
     """
     if not (title or "").strip():
-        raise ValueError(
-            f"update_video_title: refusing to publish a blank title to video "
-            f"{video_id} (got {title!r})"
-        )
+        raise ValueError(f"update_video_title: refusing to publish a blank title to video {video_id} (got {title!r})")
 
     try:
         list_response = youtube.videos().list(part="snippet", id=video_id).execute()
@@ -514,18 +508,20 @@ def upload_multiple_videos(
 
         # Upload each video
         for video_info in videos:
-            video_file = video_info.get('video_file')
-            title = video_info.get('title')
-            description = video_info.get('description', '')
+            video_file = video_info.get("video_file")
+            title = video_info.get("title")
+            description = video_info.get("description", "")
 
             if not video_file or not title:
                 logging.error("Missing required fields: video_file or title")
-                results['failed_uploads'] += 1
-                results['upload_details'].append({
-                    "video_file": video_file,
-                    "success": False,
-                    "error": "Missing required fields",
-                })
+                results["failed_uploads"] += 1
+                results["upload_details"].append(
+                    {
+                        "video_file": video_file,
+                        "success": False,
+                        "error": "Missing required fields",
+                    }
+                )
                 continue
 
             # Upload video (with optional custom thumbnail)
@@ -534,42 +530,40 @@ def upload_multiple_videos(
                 video_file=video_file,
                 title=title,
                 description=description,
-                category_id=video_info.get('category_id', '22'),
-                privacy_status=video_info.get('privacy_status', 'private'),
-                tags=video_info.get('tags', []),
-                made_for_kids=video_info.get('made_for_kids', False),
-                thumbnail_file=video_info.get('thumbnail_file'),
+                category_id=video_info.get("category_id", "22"),
+                privacy_status=video_info.get("privacy_status", "private"),
+                tags=video_info.get("tags", []),
+                made_for_kids=video_info.get("made_for_kids", False),
+                thumbnail_file=video_info.get("thumbnail_file"),
             )
 
             # Track results
-            if upload_result['success']:
-                results['successful_uploads'] += 1
+            if upload_result["success"]:
+                results["successful_uploads"] += 1
             else:
-                results['failed_uploads'] += 1
+                results["failed_uploads"] += 1
 
             # Build upload detail with all tracking fields from input config
             upload_detail = {
                 "video_file": video_file,
-                "entry_id": video_info.get('entry_id'),  # Include entry_id for database updates
-                "chapter_id": video_info.get('chapter_id'),  # Include chapter_id for chapter uploads
-                "turn_id": video_info.get('turn_id'),  # Include turn_id for speaker turn uploads
-                "video_id": video_info.get('video_id'),  # Include source video_id for reference
-                "success": upload_result.get('success', False),
-                "youtube_video_id": upload_result.get('video_id'),  # Rename to youtube_video_id for clarity
-                "video_url": upload_result.get('video_url'),
-                "thumbnail_success": upload_result.get('thumbnail_success'),
-                "error": upload_result.get('error'),
+                "entry_id": video_info.get("entry_id"),  # Include entry_id for database updates
+                "chapter_id": video_info.get("chapter_id"),  # Include chapter_id for chapter uploads
+                "turn_id": video_info.get("turn_id"),  # Include turn_id for speaker turn uploads
+                "video_id": video_info.get("video_id"),  # Include source video_id for reference
+                "success": upload_result.get("success", False),
+                "youtube_video_id": upload_result.get("video_id"),  # Rename to youtube_video_id for clarity
+                "video_url": upload_result.get("video_url"),
+                "thumbnail_success": upload_result.get("thumbnail_success"),
+                "error": upload_result.get("error"),
             }
 
-            results['upload_details'].append(upload_detail)
+            results["upload_details"].append(upload_detail)
 
-        logging.info(
-            f"Batch upload complete: {results['successful_uploads']}/{results['total_videos']} successful"
-        )
+        logging.info(f"Batch upload complete: {results['successful_uploads']}/{results['total_videos']} successful")
 
     except Exception as e:
         logging.error(f"Batch upload failed: {e}")
-        results['failed_uploads'] = results['total_videos'] - results['successful_uploads']
+        results["failed_uploads"] = results["total_videos"] - results["successful_uploads"]
 
     return results
 
@@ -602,20 +596,20 @@ def validate_upload_config(conf):
     if not conf:
         raise ValueError("No configuration provided. dag_run.conf is empty.")
 
-    if 'token_file' not in conf:
+    if "token_file" not in conf:
         raise ValueError("Missing required field: 'token_file' in dag_run.conf")
 
-    if 'videos' not in conf or not isinstance(conf['videos'], list):
+    if "videos" not in conf or not isinstance(conf["videos"], list):
         raise ValueError("Missing or invalid field: 'videos' must be a list in dag_run.conf")
 
-    if len(conf['videos']) == 0:
+    if len(conf["videos"]) == 0:
         raise ValueError("No videos provided for upload")
 
     # Validate each video configuration
-    for idx, video in enumerate(conf['videos']):
-        if 'video_file' not in video:
+    for idx, video in enumerate(conf["videos"]):
+        if "video_file" not in video:
             raise ValueError(f"Video {idx}: missing required field 'video_file'")
-        if 'title' not in video:
+        if "title" not in video:
             raise ValueError(f"Video {idx}: missing required field 'title'")
 
     logging.info("Configuration validated successfully")
@@ -647,8 +641,8 @@ def upload_videos_from_config(conf):
         uploads fail. Callers are responsible for inspecting `failed_uploads` and
         handling failures as needed.
     """
-    token_file = conf['token_file']
-    videos = conf['videos']
+    token_file = conf["token_file"]
+    videos = conf["videos"]
 
     logging.info("=" * 70)
     logging.info("Starting YouTube Upload")
@@ -670,11 +664,8 @@ def upload_videos_from_config(conf):
     logging.info(f"Failed: {results['failed_uploads']}")
 
     # Log any failed uploads for visibility; return results unconditionally
-    if results['failed_uploads'] > 0:
-        error_details = [
-            detail for detail in results['upload_details']
-            if not detail.get('success', False)
-        ]
+    if results["failed_uploads"] > 0:
+        error_details = [detail for detail in results["upload_details"] if not detail.get("success", False)]
         logging.error(f"Failed uploads: {error_details}")
 
     return results

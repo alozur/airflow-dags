@@ -28,7 +28,7 @@ USAGE from another DAG:
     )
 """
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -40,41 +40,36 @@ from utils.youtube_helpers import (
 
 # Default arguments
 default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 2,
-    'retry_delay': timedelta(minutes=5),
+    "owner": "airflow",
+    "depends_on_past": False,
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 2,
+    "retry_delay": timedelta(minutes=5),
 }
 
 
 # DAG definition
 with DAG(
-    dag_id='generic_youtube_uploader',
+    dag_id="generic_youtube_uploader",
     default_args=default_args,
-    description='Generic YouTube uploader - triggered by other DAGs with video upload config',
+    description="Generic YouTube uploader - triggered by other DAGs with video upload config",
     schedule=None,  # Triggered only, never scheduled
     start_date=datetime(2025, 1, 1, tzinfo=UTC),
     catchup=False,
-    tags=['youtube', 'upload', 'generic', 'utils'],
+    tags=["youtube", "upload", "generic", "utils"],
     max_active_runs=3,  # Allow multiple uploads in parallel
 ) as dag:
-
     # Task 1: Validate configuration
     validate_config = PythonOperator(
-        task_id='validate_config',
-        python_callable=lambda **context: validate_upload_config(
-            context['dag_run'].conf or {}
-        ),
+        task_id="validate_config",
+        python_callable=lambda **context: validate_upload_config(context["dag_run"].conf or {}),
     )
 
     # Task 2: Upload videos
     upload_videos = PythonOperator(
-        task_id='upload_videos',
-        python_callable=lambda ti: upload_videos_from_config(
-            ti.xcom_pull(task_ids='validate_config')
-        ),
+        task_id="upload_videos",
+        python_callable=lambda ti: upload_videos_from_config(ti.xcom_pull(task_ids="validate_config")),
     )
 
     # Task dependencies

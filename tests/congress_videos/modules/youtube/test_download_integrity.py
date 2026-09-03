@@ -11,13 +11,12 @@ Covers all 5 rows from the design threat matrix:
 from __future__ import annotations
 
 import subprocess
-from unittest.mock import MagicMock, call, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
 
 def _downloaded(file_path: str = "/tmp/video.mp4", video_id: str = "vid001") -> dict:
     """Build a minimal downloaded_videos dict for testing."""
@@ -38,8 +37,8 @@ def _downloaded(file_path: str = "/tmp/video.mp4", video_id: str = "vid001") -> 
 # Row 1: Clean source
 # ---------------------------------------------------------------------------
 
-class TestRow1CleanSource:
 
+class TestRow1CleanSource:
     def test_clean_probe_returns_integrity_ok_true(self):
         """rc=0, empty stderr → integrity_ok=True for the video entry."""
         clean_result = MagicMock()
@@ -48,6 +47,7 @@ class TestRow1CleanSource:
 
         with patch("subprocess.run", return_value=clean_result) as mock_run:
             from congress_videos.modules.youtube.download import check_source_video_integrity
+
             result = check_source_video_integrity(_downloaded())
 
         assert result["videos"][0]["integrity_ok"] is True
@@ -59,6 +59,7 @@ class TestRow1CleanSource:
 
         with patch("subprocess.run", return_value=clean_result):
             from congress_videos.modules.youtube.download import check_source_video_integrity
+
             result = check_source_video_integrity(_downloaded(video_id="clean_vid"))
 
         assert "clean_vid" not in result["failed_video_ids"]
@@ -68,14 +69,15 @@ class TestRow1CleanSource:
 # Row 2: Corrupt source
 # ---------------------------------------------------------------------------
 
-class TestRow2CorruptSource:
 
+class TestRow2CorruptSource:
     def test_nonzero_returncode_returns_integrity_ok_false(self):
         """rc=1, non-empty stderr → integrity_ok=False."""
         corrupt_result = MagicMock(returncode=1, stderr="moov atom not found")
 
         with patch("subprocess.run", return_value=corrupt_result):
             from congress_videos.modules.youtube.download import check_source_video_integrity
+
             result = check_source_video_integrity(_downloaded(video_id="corrupt_rc1"))
 
         assert result["videos"][0]["integrity_ok"] is False
@@ -87,6 +89,7 @@ class TestRow2CorruptSource:
 
         with patch("subprocess.run", return_value=stderr_only_result):
             from congress_videos.modules.youtube.download import check_source_video_integrity
+
             result = check_source_video_integrity(_downloaded(video_id="corrupt_stderr"))
 
         assert result["videos"][0]["integrity_ok"] is False
@@ -97,12 +100,13 @@ class TestRow2CorruptSource:
 # Row 3: Binary missing
 # ---------------------------------------------------------------------------
 
-class TestRow3BinaryMissing:
 
+class TestRow3BinaryMissing:
     def test_file_not_found_returns_integrity_ok_false(self):
         """FileNotFoundError (ffprobe absent) → integrity_ok=False (fail-safe)."""
         with patch("subprocess.run", side_effect=FileNotFoundError("ffprobe not found")):
             from congress_videos.modules.youtube.download import check_source_video_integrity
+
             result = check_source_video_integrity(_downloaded(video_id="no_ffprobe"))
 
         assert result["videos"][0]["integrity_ok"] is False
@@ -113,8 +117,8 @@ class TestRow3BinaryMissing:
 # Row 4: Timeout / hung probe
 # ---------------------------------------------------------------------------
 
-class TestRow4Timeout:
 
+class TestRow4Timeout:
     def test_timeout_expired_returns_integrity_ok_false(self):
         """TimeoutExpired → integrity_ok=False (fail-safe, defer 12h)."""
         with patch(
@@ -122,6 +126,7 @@ class TestRow4Timeout:
             side_effect=subprocess.TimeoutExpired(cmd="ffprobe", timeout=60),
         ):
             from congress_videos.modules.youtube.download import check_source_video_integrity
+
             result = check_source_video_integrity(_downloaded(video_id="timeout_vid"))
 
         assert result["videos"][0]["integrity_ok"] is False
@@ -132,8 +137,8 @@ class TestRow4Timeout:
 # Row 5: Command injection via file_path (no shell=True)
 # ---------------------------------------------------------------------------
 
-class TestRow5NoShellInjection:
 
+class TestRow5NoShellInjection:
     def test_file_path_with_special_chars_passed_as_single_list_element(self):
         """file_path containing spaces and special chars must reach subprocess.run
         as a single list element (not a shell string). shell kwarg must be absent
@@ -145,19 +150,16 @@ class TestRow5NoShellInjection:
 
         with patch("subprocess.run", return_value=clean_result) as mock_run:
             from congress_videos.modules.youtube.download import _run_ffprobe
+
             _run_ffprobe(dangerous_path)
 
         call_args, call_kwargs = mock_run.call_args
         cmd_list = call_args[0]
 
         # The file path must appear as a single element in the argv list
-        assert dangerous_path in cmd_list, (
-            f"dangerous_path must appear as a single argv element, got: {cmd_list}"
-        )
+        assert dangerous_path in cmd_list, f"dangerous_path must appear as a single argv element, got: {cmd_list}"
         # shell=True must NOT be passed
-        assert call_kwargs.get("shell", False) is False, (
-            "subprocess.run must NOT use shell=True (injection risk)"
-        )
+        assert call_kwargs.get("shell", False) is False, "subprocess.run must NOT use shell=True (injection risk)"
 
     def test_subprocess_command_structure_is_list_not_string(self):
         """subprocess.run must receive a list, not a string."""
@@ -165,21 +167,20 @@ class TestRow5NoShellInjection:
 
         with patch("subprocess.run", return_value=clean_result) as mock_run:
             from congress_videos.modules.youtube.download import _run_ffprobe
+
             _run_ffprobe("/tmp/safe_video.mp4")
 
         call_args, _ = mock_run.call_args
         cmd = call_args[0]
-        assert isinstance(cmd, list), (
-            f"subprocess.run must receive a list command, got {type(cmd).__name__}"
-        )
+        assert isinstance(cmd, list), f"subprocess.run must receive a list command, got {type(cmd).__name__}"
 
 
 # ---------------------------------------------------------------------------
 # Integration: check_source_video_integrity return shape
 # ---------------------------------------------------------------------------
 
-class TestCheckSourceVideoIntegrityShape:
 
+class TestCheckSourceVideoIntegrityShape:
     def test_returns_same_structure_with_integrity_ok_and_failed_video_ids(self):
         """The return dict must pass through all original keys plus add
         integrity_ok per video and a top-level failed_video_ids list."""
@@ -187,6 +188,7 @@ class TestCheckSourceVideoIntegrityShape:
 
         with patch("subprocess.run", return_value=clean_result):
             from congress_videos.modules.youtube.download import check_source_video_integrity
+
             downloaded = _downloaded(file_path="/tmp/v.mp4", video_id="v1")
             result = check_source_video_integrity(downloaded)
 
@@ -207,6 +209,7 @@ class TestCheckSourceVideoIntegrityShape:
         }
 
         from congress_videos.modules.youtube.download import check_source_video_integrity
+
         result = check_source_video_integrity(downloaded)
 
         assert result["videos"][0]["integrity_ok"] is False
@@ -214,6 +217,7 @@ class TestCheckSourceVideoIntegrityShape:
 
     def test_multiple_videos_mixed_results(self):
         """clean video → integrity_ok=True; corrupt video → integrity_ok=False."""
+
         def mock_run(cmd, **kwargs):
             path = cmd[-1]
             if "good" in path:
@@ -230,6 +234,7 @@ class TestCheckSourceVideoIntegrityShape:
 
         with patch("subprocess.run", side_effect=mock_run):
             from congress_videos.modules.youtube.download import check_source_video_integrity
+
             result = check_source_video_integrity(downloaded)
 
         by_id = {v["video_id"]: v for v in result["videos"]}

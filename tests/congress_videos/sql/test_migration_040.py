@@ -3,6 +3,7 @@
 Reads the SQL file statically and asserts structural properties.
 No DB connection required (mirrors test_migration_035.py pattern).
 """
+
 from __future__ import annotations
 
 import re
@@ -48,20 +49,16 @@ NEW_PROCEDURAL_SELECT_EXPRESSIONS = [
     "GS.PROCEDURAL_SECONDS",
 ]
 
-ALL_SELECT_EXPRESSIONS = (
-    INHERITED_035_SELECT_EXPRESSIONS + NEW_PROCEDURAL_SELECT_EXPRESSIONS
-)
+ALL_SELECT_EXPRESSIONS = INHERITED_035_SELECT_EXPRESSIONS + NEW_PROCEDURAL_SELECT_EXPRESSIONS
 
 
 class TestMigration040FileExists:
-
     def test_migration_file_exists(self):
         """Migration file must exist at the expected path."""
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
 
 class TestMigration040Columns:
-
     @staticmethod
     def _up_section() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8").split("-- DOWN")[0]
@@ -77,16 +74,16 @@ class TestMigration040Columns:
     def test_adds_procedural_reason_column(self):
         """speaker_turns.procedural_reason TEXT (nullable)."""
         sql = self._up_section().upper()
-        assert re.search(
-            r"ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+PROCEDURAL_REASON\s+TEXT", sql
-        ), "Must add speaker_turns.procedural_reason TEXT"
+        assert re.search(r"ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+PROCEDURAL_REASON\s+TEXT", sql), (
+            "Must add speaker_turns.procedural_reason TEXT"
+        )
 
     def test_adds_keep_intervals_column(self):
         """speaker_turn_videos.keep_intervals JSONB (nullable = legacy)."""
         sql = self._up_section().upper()
-        assert re.search(
-            r"ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+KEEP_INTERVALS\s+JSONB", sql
-        ), "Must add speaker_turn_videos.keep_intervals JSONB"
+        assert re.search(r"ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+KEEP_INTERVALS\s+JSONB", sql), (
+            "Must add speaker_turn_videos.keep_intervals JSONB"
+        )
 
     def test_alters_speaker_turns_table(self):
         sql = self._up_section().upper()
@@ -98,7 +95,6 @@ class TestMigration040Columns:
 
 
 class TestMigration040ProceduralGate:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -114,9 +110,9 @@ class TestMigration040ProceduralGate:
     def test_inner_where_excludes_procedural_turns(self):
         """Inner dedup WHERE must exclude is_procedural rows via NOT COALESCE."""
         sql = self._sql().upper()
-        assert re.search(
-            r"NOT\s+COALESCE\s*\(\s*ST\.IS_PROCEDURAL\s*,\s*FALSE\s*\)", sql
-        ), "Inner WHERE must gate on NOT COALESCE(st.is_procedural, FALSE)"
+        assert re.search(r"NOT\s+COALESCE\s*\(\s*ST\.IS_PROCEDURAL\s*,\s*FALSE\s*\)", sql), (
+            "Inner WHERE must gate on NOT COALESCE(st.is_procedural, FALSE)"
+        )
 
     def test_cte_computes_procedural_seconds(self):
         """group_spans CTE must sum procedural durations per output_path."""
@@ -159,12 +155,8 @@ class TestMigration040PreservesPriorGates:
 
     def test_cte_computes_min_start_and_max_end(self):
         sql = self._sql().upper()
-        assert re.search(
-            r"MIN\s*\(\s*ST\.START_SECONDS\s*\)\s+AS\s+GROUP_START_SECONDS", sql
-        )
-        assert re.search(
-            r"MAX\s*\(\s*ST\.END_SECONDS\s*\)\s+AS\s+GROUP_END_SECONDS", sql
-        )
+        assert re.search(r"MIN\s*\(\s*ST\.START_SECONDS\s*\)\s+AS\s+GROUP_START_SECONDS", sql)
+        assert re.search(r"MAX\s*\(\s*ST\.END_SECONDS\s*\)\s+AS\s+GROUP_END_SECONDS", sql)
 
     def test_cte_groups_by_output_path(self):
         sql = self._sql().upper()
@@ -172,9 +164,7 @@ class TestMigration040PreservesPriorGates:
 
     def test_joins_group_spans_back_on_output_path(self):
         sql = self._sql().upper()
-        assert re.search(
-            r"JOIN\s+GROUP_SPANS\s+GS\s+ON\s+GS\.OUTPUT_PATH\s*=\s*STV\.OUTPUT_PATH", sql
-        )
+        assert re.search(r"JOIN\s+GROUP_SPANS\s+GS\s+ON\s+GS\.OUTPUT_PATH\s*=\s*STV\.OUTPUT_PATH", sql)
 
     def test_view_retains_distinct_on_output_path(self):
         sql = self._sql().upper()
@@ -202,15 +192,11 @@ class TestMigration040PreservesPriorGates:
 
     def test_view_retains_interest_score_gate(self):
         sql = self._sql().upper()
-        assert re.search(
-            r"COALESCE\s*\(\s*ST\.INTEREST_SCORE\s*,\s*1\s*\)\s*>=\s*1", sql
-        )
+        assert re.search(r"COALESCE\s*\(\s*ST\.INTEREST_SCORE\s*,\s*1\s*\)\s*>=\s*1", sql)
 
     def test_view_retains_outer_ordering(self):
         sql = self._sql().upper()
-        assert re.search(
-            r"COALESCE\s*\(\s*DEDUP\.INTEREST_SCORE\s*,\s*1\s*\)\s+DESC", sql
-        )
+        assert re.search(r"COALESCE\s*\(\s*DEDUP\.INTEREST_SCORE\s*,\s*1\s*\)\s+DESC", sql)
         assert "DEDUP.RELEVANCE_SCORE DESC" in sql
         assert "DEDUP.SESSION_DATE DESC" in sql
 
@@ -219,9 +205,7 @@ class TestMigration040PreservesPriorGates:
         assert "JOIN SPEAKER_TURNS ST ON STV.TURN_ID = ST.TURN_ID" in sql
         assert "JOIN VIDEO_CHAPTERS VC ON ST.CHAPTER_ID = VC.CHAPTER_ID" in sql
         assert "JOIN YOUTUBE_SOURCE_VIDEOS YSV ON VC.VIDEO_ID = YSV.VIDEO_ID" in sql
-        assert re.search(
-            r"JOIN\s+GROUP_SPANS\s+GS\s+ON\s+GS\.OUTPUT_PATH\s*=\s*STV\.OUTPUT_PATH", sql
-        )
+        assert re.search(r"JOIN\s+GROUP_SPANS\s+GS\s+ON\s+GS\.OUTPUT_PATH\s*=\s*STV\.OUTPUT_PATH", sql)
 
     @pytest.mark.parametrize("expression", ALL_SELECT_EXPRESSIONS)
     def test_select_expression_present_in_up_section(self, expression):
@@ -230,7 +214,6 @@ class TestMigration040PreservesPriorGates:
 
 
 class TestMigration040Hygiene:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -252,9 +235,7 @@ class TestMigration040Hygiene:
         down_section = sql.split("-- DOWN")[1]
         down_upper = down_section.upper()
         assert "CREATE VIEW UPLOADABLE_TURNS" in down_upper
-        view_block = down_upper.split("CREATE VIEW UPLOADABLE_TURNS")[1].split(
-            "ALTER TABLE"
-        )[0]
+        view_block = down_upper.split("CREATE VIEW UPLOADABLE_TURNS")[1].split("ALTER TABLE")[0]
         assert "IS_PROCEDURAL" not in view_block
         assert "PROCEDURAL_SECONDS" not in view_block
 

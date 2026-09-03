@@ -5,8 +5,6 @@ This module provides helper functions for formatting speaker information
 specific to the congressional video processing workflow.
 """
 
-from typing import Dict, List
-
 from congress_videos.modules.speaker_placeholders import is_placeholder
 
 

@@ -118,9 +118,7 @@ class TestFormatTimestamp:
             (3600.0, False, "01:00:00"),
         ],
     )
-    def test_format_various_values(
-        self, seconds: float, with_ms: bool, expected: str
-    ) -> None:
+    def test_format_various_values(self, seconds: float, with_ms: bool, expected: str) -> None:
         """format_timestamp produces correct strings for various inputs."""
         assert format_timestamp(seconds, with_ms=with_ms) == expected
 
@@ -138,7 +136,6 @@ class TestFormatTimestamp:
 
 
 class TestFormatYoutubeTimestamp:
-
     @pytest.mark.parametrize(
         "seconds, expected",
         [

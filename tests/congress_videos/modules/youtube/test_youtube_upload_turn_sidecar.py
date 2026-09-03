@@ -4,6 +4,7 @@ RED tests (4.1–4.2):
 - prepare_orador_upload_config reads pre-written sidecars (no AI/ffmpeg calls)
 - Missing sidecar raises explicit error naming the missing file
 """
+
 from __future__ import annotations
 
 import pytest
@@ -11,6 +12,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # 4.1 Turn upload reads pre-prepared sidecars; no thumbnail trigger
 # ---------------------------------------------------------------------------
+
 
 class TestPrepareOradorUploadConfig:
     """prepare_orador_upload_config reads sidecars + presence-verifies; zero AI calls."""
@@ -90,7 +92,6 @@ class TestPrepareOradorUploadConfig:
 
     def test_no_ai_or_ffmpeg_service_calls(self, tmp_path):
         """prepare_orador_upload_config must not call any AI service (no subprocess for ffmpeg)."""
-        import subprocess
         from unittest.mock import patch
 
         from congress_videos.modules.youtube.youtube_upload import prepare_orador_upload_config
@@ -141,9 +142,7 @@ class TestPrepareOradorUploadConfig:
         (turn_dir / "thumbnail.png").write_bytes(b"\x89PNG")
         (turn_dir / "subtitles.srt").write_text("", encoding="utf-8")
 
-        config = prepare_orador_upload_config(
-            output_path=str(turn_dir / "video.mp4"), is_testing=True
-        )
+        config = prepare_orador_upload_config(output_path=str(turn_dir / "video.mp4"), is_testing=True)
         assert config["privacy_status"] == "private"
 
 
@@ -151,14 +150,17 @@ class TestPrepareOradorUploadConfig:
 # 4.2 Missing sidecar presence-verify raises with explicit error
 # ---------------------------------------------------------------------------
 
-class TestPrepareOradorUploadConfigMissingSidecar:
 
-    @pytest.mark.parametrize("missing_file", [
-        "title.txt",
-        "description.txt",
-        "thumbnail.png",
-        "subtitles.srt",
-    ])
+class TestPrepareOradorUploadConfigMissingSidecar:
+    @pytest.mark.parametrize(
+        "missing_file",
+        [
+            "title.txt",
+            "description.txt",
+            "thumbnail.png",
+            "subtitles.srt",
+        ],
+    )
     def test_missing_sidecar_raises_file_not_found(self, tmp_path, missing_file):
         """When a required sidecar is absent, must raise naming the missing file."""
         from congress_videos.modules.youtube.youtube_upload import prepare_orador_upload_config
@@ -175,9 +177,7 @@ class TestPrepareOradorUploadConfigMissingSidecar:
         (turn_dir / missing_file).unlink()
 
         with pytest.raises((FileNotFoundError, ValueError, RuntimeError)) as exc_info:
-            prepare_orador_upload_config(
-                output_path=str(turn_dir / "video.mp4"), is_testing=False
-            )
+            prepare_orador_upload_config(output_path=str(turn_dir / "video.mp4"), is_testing=False)
 
         # Error message must name the missing file (or at least indicate what is missing)
         assert missing_file in str(exc_info.value) or "sidecar" in str(exc_info.value).lower()

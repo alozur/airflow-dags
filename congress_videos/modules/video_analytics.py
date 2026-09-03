@@ -12,7 +12,7 @@ Functions:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from congress_videos.config.analytics_config import (
@@ -75,11 +75,13 @@ def pending_checkpoints(
                 continue
             if (yt_id, label) in collected:
                 continue
-            result.append({
-                "chapter_id": row["chapter_id"],
-                "youtube_video_id": yt_id,
-                "checkpoint": label,
-            })
+            result.append(
+                {
+                    "chapter_id": row["chapter_id"],
+                    "youtube_video_id": yt_id,
+                    "checkpoint": label,
+                }
+            )
 
     return result
 

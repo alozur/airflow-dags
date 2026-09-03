@@ -35,8 +35,8 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 
 # Make the project importable when run as a standalone script.
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent            # congress_videos/
-REPO_ROOT = PROJECT_ROOT.parent             # repository root
+PROJECT_ROOT = SCRIPT_DIR.parent  # congress_videos/
+REPO_ROOT = PROJECT_ROOT.parent  # repository root
 sys.path.insert(0, str(REPO_ROOT))
 
 from congress_videos.config.youtube_channels import (  # noqa: E402  (path setup above)
@@ -120,9 +120,7 @@ def generate_token(channel: str, purpose: str):
 
 
 def parse_args(argv=None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Generate a YouTube OAuth token per channel and purpose."
-    )
+    parser = argparse.ArgumentParser(description="Generate a YouTube OAuth token per channel and purpose.")
     parser.add_argument(
         "--channel",
         default=DEFAULT_CHANNEL,

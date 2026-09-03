@@ -3,10 +3,10 @@
 All HTTP calls are intercepted via the injected ``poster`` (or by patching
 ``requests.post``).  No real network connection is ever made.
 """
+
 from __future__ import annotations
 
-import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 import requests
@@ -182,7 +182,11 @@ class TestApiDiarizeFnErrorHandling:
         with pytest.raises(SidecarApiError) as exc_info:
             api_diarize_fn(str(wav), chapter_offset=0.0, poster=poster)
 
-        assert "json" in str(exc_info.value).lower() or "parse" in str(exc_info.value).lower() or "malformed" in str(exc_info.value).lower()
+        assert (
+            "json" in str(exc_info.value).lower()
+            or "parse" in str(exc_info.value).lower()
+            or "malformed" in str(exc_info.value).lower()
+        )
 
 
 class TestUrlFromEnvVars:
@@ -191,6 +195,7 @@ class TestUrlFromEnvVars:
         monkeypatch.setenv("DIARIZE_API_PORT", "9999")
 
         import sys
+
         for key in list(sys.modules.keys()):
             if "speaker_turns_api" in key:
                 del sys.modules[key]
@@ -205,6 +210,7 @@ class TestUrlFromEnvVars:
         monkeypatch.delenv("DIARIZE_API_PORT", raising=False)
 
         import sys
+
         for key in list(sys.modules.keys()):
             if "speaker_turns_api" in key:
                 del sys.modules[key]
@@ -219,6 +225,7 @@ class TestNoSubprocessImport:
     def test_no_subprocess_in_speaker_turns_api(self):
         """speaker_turns_api must not import subprocess — it uses HTTP, not Docker."""
         import sys
+
         for key in list(sys.modules.keys()):
             if "speaker_turns_api" in key:
                 del sys.modules[key]
@@ -235,6 +242,7 @@ class TestNoSubprocessImport:
 # ---------------------------------------------------------------------------
 # Phase: check_diarize_api_health (issue #156)
 # ---------------------------------------------------------------------------
+
 
 class TestCheckDiarizeApiHealth:
     """Health probe that raises SidecarApiError on any failure condition.

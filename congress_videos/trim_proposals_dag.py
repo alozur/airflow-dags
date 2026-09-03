@@ -24,12 +24,13 @@ Pipeline::
                                        yamnet_fn=api_yamnet_fn)
               → _upsert_proposals (idempotent, ON CONFLICT DO UPDATE)
 """
+
 from __future__ import annotations
 
 import logging
 import os
 import tempfile
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -78,6 +79,7 @@ def _find_source_video_any_date(video_id: str) -> str | None:
 # VAD backend — default webrtc segments injected as VadFn
 # ---------------------------------------------------------------------------
 
+
 def _webrtc_vad_fn(wav_path: str, offset: float) -> list[tuple[float, float]]:
     """Production VAD backend: webrtcvad-based voiced-segment detector.
 
@@ -89,6 +91,7 @@ def _webrtc_vad_fn(wav_path: str, offset: float) -> list[tuple[float, float]]:
     """
     try:
         from congress_videos.modules.vad_helpers import detect_speech_bounds
+
         # detect_speech_bounds returns (start_secs, end_secs) for the turn window;
         # for per-turn proposal generation we need ALL voiced intervals, not just
         # the outer boundary. Use webrtcvad raw blocks when available.
@@ -100,7 +103,9 @@ def _webrtc_vad_fn(wav_path: str, offset: float) -> list[tuple[float, float]]:
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "vad_fn failed for wav_path=%s offset=%s error=%s",
-            wav_path, offset, exc,
+            wav_path,
+            offset,
+            exc,
         )
         return []
 
@@ -124,24 +129,20 @@ def select_turns(
     chapters_table = pg.get_qualified_table("video_chapters")
     # video_id lives on video_chapters, not speaker_turns; join to resolve it.
     cols = "st.turn_id, st.chapter_id, vc.video_id, st.start_seconds, st.end_seconds"
-    base = (
-        f"SELECT {cols} FROM {table} st "
-        f"JOIN {chapters_table} vc ON vc.chapter_id = st.chapter_id"
-    )
-    with pg.get_connection() as conn:
-        with conn.cursor() as cur:
-            if turn_ids:
-                cur.execute(
-                    f"{base} WHERE st.turn_id = ANY(%s) ORDER BY st.turn_id",
-                    (list(turn_ids),),
-                )
-            else:
-                cur.execute(
-                    f"{base} ORDER BY st.turn_id LIMIT %s",
-                    (limit,),
-                )
-            # PostgresConnection uses RealDictCursor: rows are dict-like.
-            return [dict(row) for row in cur.fetchall()]
+    base = f"SELECT {cols} FROM {table} st JOIN {chapters_table} vc ON vc.chapter_id = st.chapter_id"
+    with pg.get_connection() as conn, conn.cursor() as cur:
+        if turn_ids:
+            cur.execute(
+                f"{base} WHERE st.turn_id = ANY(%s) ORDER BY st.turn_id",
+                (list(turn_ids),),
+            )
+        else:
+            cur.execute(
+                f"{base} ORDER BY st.turn_id LIMIT %s",
+                (limit,),
+            )
+        # PostgresConnection uses RealDictCursor: rows are dict-like.
+        return [dict(row) for row in cur.fetchall()]
 
 
 def run_turn_proposals(
@@ -178,27 +179,23 @@ def run_turn_proposals(
     if not video_path:
         logger.warning(
             "turn %s: no source video for video_id=%s — skipping",
-            turn_id, video_id,
+            turn_id,
+            video_id,
         )
         return {"status": "skipped_no_video", "turn_id": turn_id, "proposals": 0}
 
-    wav_path = os.path.join(
-        tempfile.gettempdir(), f"trim_proposals_{video_id}_{turn_id}.wav"
-    )
+    wav_path = os.path.join(tempfile.gettempdir(), f"trim_proposals_{video_id}_{turn_id}.wav")
     try:
         extract_audio_wav(
-            video_path, wav_path,
+            video_path,
+            wav_path,
             start_secs=start_secs,
             duration_secs=duration,
         )
 
-        proposals = generate_trim_proposals(
-            turn, wav_path, vad_fn, yamnet_fn
-        )
+        proposals = generate_trim_proposals(turn, wav_path, vad_fn, yamnet_fn)
         count = _upsert_proposals(cursor, proposals, table=proposals_table)
-        logger.info(
-            "turn %s: %d proposal(s) upserted", turn_id, count
-        )
+        logger.info("turn %s: %d proposal(s) upserted", turn_id, count)
         return {"status": "ok", "turn_id": turn_id, "proposals": count}
     finally:
         if os.path.exists(wav_path):
@@ -232,9 +229,7 @@ def _process_task(**context) -> dict:
         with conn.cursor() as cur:
             for turn in turns:
                 try:
-                    result = run_turn_proposals(
-                        turn, cur, proposals_table=proposals_table
-                    )
+                    result = run_turn_proposals(turn, cur, proposals_table=proposals_table)
                 except SidecarApiError:  # noqa: BLE001 mid-run drop → fail loud
                     logger.exception(
                         "turn %s: yamnet-api outage — failing task",
@@ -242,9 +237,7 @@ def _process_task(**context) -> dict:
                     )
                     raise
                 except Exception:  # noqa: BLE001 — one bad turn must not sink the run
-                    logger.exception(
-                        "turn %s failed — skipping", turn.get("turn_id")
-                    )
+                    logger.exception("turn %s failed — skipping", turn.get("turn_id"))
                     summary["skipped"] += 1
                     continue
                 if result["status"] == "ok":

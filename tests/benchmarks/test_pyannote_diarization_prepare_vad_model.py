@@ -18,9 +18,7 @@ PREPARER = Path("benchmarks/pyannote_diarization/prepare_vad_model.sh")
         ("/absolute/model-cache", "", "HF_TOKEN must be set in the environment"),
     ],
 )
-def test_preparer_rejects_invalid_input_before_docker(
-    tmp_path: Path, cache_path: str, token: str, expected_error: str
-):
+def test_preparer_rejects_invalid_input_before_docker(tmp_path: Path, cache_path: str, token: str, expected_error: str):
     docker = tmp_path / "docker"
     docker_called = tmp_path / "docker-called"
     docker.write_text(
@@ -52,7 +50,7 @@ def test_preparer_defaults_to_the_reviewed_segmentation_model(tmp_path: Path):
     prepared_model = tmp_path / "prepared-model"
     cache = tmp_path / "model-cache"
     docker.write_text(
-        "#!/bin/sh\nprintf '%s\\n' \"$VAD_SEGMENTATION_MODEL_ID\" > \"$PREPARED_MODEL\"\n",
+        '#!/bin/sh\nprintf \'%s\\n\' "$VAD_SEGMENTATION_MODEL_ID" > "$PREPARED_MODEL"\n',
         encoding="utf-8",
     )
     docker.chmod(0o755)
@@ -81,7 +79,7 @@ def test_preparer_loads_the_selected_model_in_a_hardened_staging_container(tmp_p
     cache = tmp_path / "model-cache"
     token = "test-token-that-must-not-be-printed"
     docker.write_text(
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DOCKER_ARGS\"\n",
+        '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$DOCKER_ARGS"\n',
         encoding="utf-8",
     )
     docker.chmod(0o755)
@@ -129,10 +127,7 @@ def test_preparer_uses_only_powerset_supported_parameters(tmp_path: Path):
     (package_root / "pyannote" / "audio").mkdir(parents=True)
     (package_root / "pyannote" / "__init__.py").write_text("", encoding="utf-8")
     (package_root / "pyannote" / "audio" / "__init__.py").write_text(
-        "class Model:\n"
-        "    @classmethod\n"
-        "    def from_pretrained(cls, model_id, token):\n"
-        "        return object()\n",
+        "class Model:\n    @classmethod\n    def from_pretrained(cls, model_id, token):\n        return object()\n",
         encoding="utf-8",
     )
     (package_root / "pyannote" / "audio" / "pipelines.py").write_text(
@@ -147,8 +142,8 @@ def test_preparer_uses_only_powerset_supported_parameters(tmp_path: Path):
     )
     docker.write_text(
         "#!/bin/sh\n"
-        "while [ \"$#\" -gt 0 ]; do\n"
-        "  if [ \"$1\" = \"-c\" ]; then shift; exec python3 -c \"$1\"; fi\n"
+        'while [ "$#" -gt 0 ]; do\n'
+        '  if [ "$1" = "-c" ]; then shift; exec python3 -c "$1"; fi\n'
         "  shift\n"
         "done\n"
         "exit 99\n",
@@ -194,8 +189,8 @@ def test_preparer_reports_sanitized_model_preparation_failure(tmp_path: Path):
     )
     docker.write_text(
         "#!/bin/sh\n"
-        "while [ \"$#\" -gt 0 ]; do\n"
-        "  if [ \"$1\" = \"-c\" ]; then shift; exec python3 -c \"$1\"; fi\n"
+        'while [ "$#" -gt 0 ]; do\n'
+        '  if [ "$1" = "-c" ]; then shift; exec python3 -c "$1"; fi\n'
         "  shift\n"
         "done\n"
         "exit 99\n",
@@ -217,9 +212,6 @@ def test_preparer_reports_sanitized_model_preparation_failure(tmp_path: Path):
     )
 
     assert result.returncode == 1
-    assert (
-        "RuntimeError: upstream rejected [REDACTED]; session [REDACTED]"
-        in result.stderr
-    )
+    assert "RuntimeError: upstream rejected [REDACTED]; session [REDACTED]" in result.stderr
     assert token not in result.stderr
     assert "hf_" not in result.stderr

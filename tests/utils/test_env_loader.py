@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 
 class TestLoadEnvIfLocal:
-
     def test_does_not_call_load_dotenv_in_docker_env(self, monkeypatch, mocker):
         """When AIRFLOW__CORE__DAGS_FOLDER is set (Docker), dotenv is not loaded."""
         monkeypatch.setenv("AIRFLOW__CORE__DAGS_FOLDER", "/opt/airflow/dags")
@@ -32,6 +29,7 @@ class TestLoadEnvIfLocal:
     def test_silently_ignores_missing_dotenv_package(self, monkeypatch):
         """ImportError on dotenv import is silently ignored."""
         import sys
+
         monkeypatch.delenv("AIRFLOW__CORE__DAGS_FOLDER", raising=False)
         # Make dotenv unavailable
         monkeypatch.setitem(sys.modules, "dotenv", None)

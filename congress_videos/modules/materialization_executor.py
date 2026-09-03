@@ -39,7 +39,6 @@ import logging
 import os
 import subprocess
 import tempfile
-from pathlib import Path
 
 from congress_videos.modules.materialization import MaterializationPlan
 from congress_videos.modules.video_splitter import (
@@ -152,7 +151,7 @@ def _execute_single_interval(
     - h264, no trims → ``reencode=False`` → stream-copy (fast, keyframe-snapped).
     - anything else  → ``reencode=True``  → libx264/aac (safe, frame-accurate).
     """
-    force_reencode = (codec != "h264")
+    force_reencode = codec != "h264"
 
     duration = interval.end - interval.start
     cmd = build_ffmpeg_cut_cmd(
@@ -165,13 +164,16 @@ def _execute_single_interval(
     timeout = compute_ffmpeg_timeout(duration)
     log.info(
         "executor.single_interval src=%s out=%s start=%.2f duration=%.2f codec=%s reencode=%s",
-        source_path, output_path, interval.start, duration, codec, force_reencode,
+        source_path,
+        output_path,
+        interval.start,
+        duration,
+        codec,
+        force_reencode,
     )
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
-        raise RuntimeError(
-            f"ffmpeg single-interval cut failed (exit {result.returncode}): {result.stderr}"
-        )
+        raise RuntimeError(f"ffmpeg single-interval cut failed (exit {result.returncode}): {result.stderr}")
 
 
 def _execute_multi_interval(
@@ -206,37 +208,40 @@ def _execute_multi_interval(
             )
             log.info(
                 "executor.segment idx=%d start=%.2f duration=%.2f -> %s",
-                idx, ki.start, duration, seg_path,
+                idx,
+                ki.start,
+                duration,
+                seg_path,
             )
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=seg_timeout)
             if result.returncode != 0:
-                raise RuntimeError(
-                    f"ffmpeg segment cut {idx} failed (exit {result.returncode}): {result.stderr}"
-                )
+                raise RuntimeError(f"ffmpeg segment cut {idx} failed (exit {result.returncode}): {result.stderr}")
 
         # Write concat list and join
         list_path = _write_concat_list(segment_paths, tmpdir)
         concat_cmd = [
             "ffmpeg",
             "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", list_path,
-            "-c", "copy",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            list_path,
+            "-c",
+            "copy",
             output_path,
         ]
         concat_timeout = compute_ffmpeg_timeout(total_kept)
         log.info(
             "executor.concat n_segments=%d output=%s timeout=%ds",
-            len(segment_paths), output_path, concat_timeout,
+            len(segment_paths),
+            output_path,
+            concat_timeout,
         )
-        concat_result = subprocess.run(
-            concat_cmd, capture_output=True, text=True, timeout=concat_timeout
-        )
+        concat_result = subprocess.run(concat_cmd, capture_output=True, text=True, timeout=concat_timeout)
         if concat_result.returncode != 0:
-            raise RuntimeError(
-                f"ffmpeg concat failed (exit {concat_result.returncode}): {concat_result.stderr}"
-            )
+            raise RuntimeError(f"ffmpeg concat failed (exit {concat_result.returncode}): {concat_result.stderr}")
 
     finally:
         # Clean up all temp segment files and the list file

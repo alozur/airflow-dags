@@ -6,7 +6,7 @@ These tests parse `pyproject.toml` with stdlib `tomllib` and never invoke the
 `target-version`, disables a rule, or widens `extend-exclude` fails loudly.
 
 `tests/test_gen_ruff_baseline.py` covers the generator script itself (T7);
-this file is deliberately scoped to config-invariants only (T1-T6).
+this file is deliberately scoped to config-invariants only (T1-T6, T8).
 """
 
 from __future__ import annotations
@@ -75,11 +75,7 @@ class TestPerFileIgnoresPaths:
 
     def test_every_non_glob_key_resolves_to_an_existing_file(self):
         per_file_ignores = _load_pyproject()["tool"]["ruff"]["lint"]["per-file-ignores"]
-        missing = [
-            key
-            for key in per_file_ignores
-            if key != "__init__.py" and not (REPO_ROOT / key).is_file()
-        ]
+        missing = [key for key in per_file_ignores if key != "__init__.py" and not (REPO_ROOT / key).is_file()]
         assert missing == [], f"stale per-file-ignores entries (file no longer exists): {missing}"
 
 
@@ -101,11 +97,9 @@ class TestC901BaselineCoverage:
 
     Measured directly against the change tip (post-autofix) with
     `uv run ruff check . --output-format json --select C90` grouped by file:
-    29 distinct files carry at least one C901 diagnostic (38 total C901
-    diagnostics across those 29 files — some files have more than one
-    over-threshold function, so file-count and diagnostic-count differ).
-    The proposal's "38 offenders across 32 files" figure was measured before
-    later, unrelated `dev` commits landed; this test locks the value actually
+    26 distinct files carry at least one C901 diagnostic. The proposal's
+    "38 offenders across 32 files" figure was measured before later,
+    unrelated `dev` commits landed; this test locks the value actually
     observed at this change's tip, not the stale proposal-time snapshot.
     """
 
@@ -138,3 +132,24 @@ class TestExtendExclude:
         ruff_config = _load_pyproject()["tool"]["ruff"]
         excluded = set(ruff_config["extend-exclude"])
         assert excluded.isdisjoint(_FIRST_PARTY_DIRS)
+
+
+class TestRuffFormatConfig:
+    """T8: `[tool.ruff.format]` is declared AND gated (issue #391).
+
+    The block is intentionally minimal: only `quote-style` and
+    `indent-style` are set. CI blocks drift via the "Ruff format (blocking)"
+    step in `.github/workflows/lint.yml`.
+    """
+
+    def test_quote_style_is_double(self):
+        format_config = _load_pyproject()["tool"]["ruff"]["format"]
+        assert format_config["quote-style"] == "double"
+
+    def test_indent_style_is_space(self):
+        format_config = _load_pyproject()["tool"]["ruff"]["format"]
+        assert format_config["indent-style"] == "space"
+
+    def test_format_block_declares_only_the_two_gated_keys(self):
+        format_config = _load_pyproject()["tool"]["ruff"]["format"]
+        assert set(format_config.keys()) == {"quote-style", "indent-style"}

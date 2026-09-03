@@ -8,8 +8,7 @@ specifically for monitoring the Congress YouTube channel for plenary sessions.
 import logging
 import os
 import re
-from datetime import UTC, datetime, timedelta, timezone
-from urllib.parse import urlparse
+from datetime import UTC, datetime, timedelta
 
 import requests
 from bs4 import BeautifulSoup
@@ -121,8 +120,7 @@ def filter_plenary_session_videos(
     target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
     range_start = target_date_obj - timedelta(days=lookback_days)
     logging.info(
-        f"Filtering for videos with title containing '{target_title}' "
-        f"published in [{range_start} .. {target_date_obj}]"
+        f"Filtering for videos with title containing '{target_title}' published in [{range_start} .. {target_date_obj}]"
     )
 
     matching_videos = []
@@ -130,9 +128,7 @@ def filter_plenary_session_videos(
         # Check if title contains target string (case-insensitive)
         if target_title.lower() in video["title"].lower():
             # Parse published date
-            published_at = datetime.fromisoformat(
-                video["published_at"].replace("Z", "+00:00")
-            )
+            published_at = datetime.fromisoformat(video["published_at"].replace("Z", "+00:00"))
             published_date = published_at.date()
 
             # Check if date falls within the inclusive lookback range
@@ -230,9 +226,7 @@ def filter_finished_streams(
         return plenary_videos or {"total_matches": 0, "videos": []}
 
     if not guard_enabled:
-        logging.info(
-            "Finished-stream guard disabled (guard_enabled=False); passthrough"
-        )
+        logging.info("Finished-stream guard disabled (guard_enabled=False); passthrough")
         return plenary_videos
 
     youtube_api_key = os.getenv("YOUTUBE_API_KEY")
@@ -248,11 +242,7 @@ def filter_finished_streams(
 
     # Single batched Data API call for all candidate ids (no per-candidate call).
     ids = [v["video_id"] for v in videos if v.get("video_id")]
-    resp = (
-        youtube.videos()
-        .list(part="snippet,contentDetails,liveStreamingDetails", id=",".join(ids))
-        .execute()
-    )
+    resp = youtube.videos().list(part="snippet,contentDetails,liveStreamingDetails", id=",".join(ids)).execute()
     by_id = {it["id"]: it for it in resp.get("items", [])}
 
     kept = []
@@ -281,16 +271,12 @@ def filter_finished_streams(
                 continue
 
             if live_details.get("concurrentViewers") is not None:
-                logging.info(
-                    f"Dropping {video_id}: concurrentViewers present (broadcasting)"
-                )
+                logging.info(f"Dropping {video_id}: concurrentViewers present (broadcasting)")
                 continue
 
             actual_end_time = live_details.get("actualEndTime")
             if actual_end_time is None:
-                logging.info(
-                    f"Dropping {video_id}: no actualEndTime (still live or no data)"
-                )
+                logging.info(f"Dropping {video_id}: no actualEndTime (still live or no data)")
                 continue
 
             end_dt = datetime.fromisoformat(actual_end_time.replace("Z", "+00:00"))
@@ -299,8 +285,7 @@ def filter_finished_streams(
             # (c) cheap pre-probe skip: obviously too fresh
             if elapsed < timedelta(minutes=guard_floor_minutes):
                 logging.info(
-                    f"Dropping {video_id}: ended {elapsed} ago, under the "
-                    f"{guard_floor_minutes}min floor (skip probe)"
+                    f"Dropping {video_id}: ended {elapsed} ago, under the {guard_floor_minutes}min floor (skip probe)"
                 )
                 continue
 
@@ -309,9 +294,7 @@ def filter_finished_streams(
             if status in READY_LIVE_STATUSES:
                 kept.append(video)
             else:
-                logging.info(
-                    f"Dropping {video_id}: live_status={status!r} (not a ready VOD)"
-                )
+                logging.info(f"Dropping {video_id}: live_status={status!r} (not a ready VOD)")
 
         except Exception as e:
             # FR5: fail-closed — drop only this candidate, never crash the task.
@@ -375,9 +358,7 @@ def get_video_details(plenary_videos, min_hours_since_end: int = 12):
 
             # Get detailed video information
             video_response = (
-                youtube.videos()
-                .list(part="snippet,contentDetails,liveStreamingDetails", id=video_id)
-                .execute()
+                youtube.videos().list(part="snippet,contentDetails,liveStreamingDetails", id=video_id).execute()
             )
 
             if not video_response.get("items"):
@@ -391,17 +372,14 @@ def get_video_details(plenary_videos, min_hours_since_end: int = 12):
             # still be processing on YouTube.
             actual_end_time = live_details.get("actualEndTime")
             if actual_end_time is None:
-                logging.info(
-                    f"Skipping {video_id}: no actualEndTime (still live or no data)"
-                )
+                logging.info(f"Skipping {video_id}: no actualEndTime (still live or no data)")
                 continue
 
             end_dt = datetime.fromisoformat(actual_end_time.replace("Z", "+00:00"))
             elapsed = datetime.now(UTC) - end_dt
             if elapsed < timedelta(hours=min_hours_since_end):
                 logging.info(
-                    f"Skipping {video_id}: ended {elapsed} ago, "
-                    f"under the {min_hours_since_end}h freshness margin"
+                    f"Skipping {video_id}: ended {elapsed} ago, under the {min_hours_since_end}h freshness margin"
                 )
                 continue
 
@@ -409,9 +387,7 @@ def get_video_details(plenary_videos, min_hours_since_end: int = 12):
             duration_iso = video_details["contentDetails"]["duration"]
 
             # Parse ISO 8601 duration (PT2H30M15S -> 2:30:15)
-            duration_match = re.match(
-                r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration_iso
-            )
+            duration_match = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration_iso)
             if duration_match:
                 hours = int(duration_match.group(1) or 0)
                 minutes = int(duration_match.group(2) or 0)
@@ -437,9 +413,7 @@ def get_video_details(plenary_videos, min_hours_since_end: int = 12):
             if published_at:
                 enriched_video["published_at"] = published_at
 
-            logging.info(
-                f"Video details: {video['title']} - Duration: {enriched_video['duration_formatted']}"
-            )
+            logging.info(f"Video details: {video['title']} - Duration: {enriched_video['duration_formatted']}")
             enriched_videos.append(enriched_video)
 
         logging.info(f"Total videos enriched: {len(enriched_videos)}")
@@ -490,9 +464,7 @@ def get_video_descriptions(plenary_videos):
             video_id = video["video_id"]
 
             # Get full video description
-            video_response = (
-                youtube.videos().list(part="snippet", id=video_id).execute()
-            )
+            video_response = youtube.videos().list(part="snippet", id=video_id).execute()
 
             if not video_response.get("items"):
                 logging.warning(f"Video not found: {video_id}")
@@ -508,9 +480,7 @@ def get_video_descriptions(plenary_videos):
                 "description_length": len(full_description),
             }
 
-            logging.info(
-                f"Description fetched: {video['title']} ({len(full_description)} chars)"
-            )
+            logging.info(f"Description fetched: {video['title']} ({len(full_description)} chars)")
             video_descriptions.append(video_desc_data)
 
         logging.info(f"Total descriptions fetched: {len(video_descriptions)}")
@@ -567,9 +537,7 @@ def parse_description_links(video_descriptions):
             "agenda_link": agenda_link,
         }
 
-        logging.info(
-            f"Links parsed for {video['title']}: Press={bool(press_link)}, Agenda={bool(agenda_link)}"
-        )
+        logging.info(f"Links parsed for {video['title']}: Press={bool(press_link)}, Agenda={bool(agenda_link)}")
         parsed_videos.append(parsed_data)
 
     logging.info(f"Total videos parsed: {len(parsed_videos)}")
@@ -649,13 +617,7 @@ def scrape_press_release(parsed_links):
             if not content:
                 # Fallback: get all paragraph text
                 paragraphs = soup.find_all("p")
-                content = "\n".join(
-                    [
-                        p.get_text(strip=True)
-                        for p in paragraphs
-                        if p.get_text(strip=True)
-                    ]
-                )
+                content = "\n".join([p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)])
 
             # Extract title
             title_tag = soup.find("h1") or soup.find("title")
@@ -670,9 +632,7 @@ def scrape_press_release(parsed_links):
                 "content_length": len(content) if content else 0,
             }
 
-            logging.info(
-                f"Press release scraped: {page_title} ({len(content) if content else 0} chars)"
-            )
+            logging.info(f"Press release scraped: {page_title} ({len(content) if content else 0} chars)")
             scraped_releases.append(scraped_data)
 
         except Exception as e:
@@ -778,9 +738,7 @@ def download_and_read_agenda(parsed_links, target_date: str):
                     "text_length": len(text_content),
                 }
 
-                logging.info(
-                    f"PDF read: {len(reader.pages)} pages, {len(text_content)} chars"
-                )
+                logging.info(f"PDF read: {len(reader.pages)} pages, {len(text_content)} chars")
                 downloaded_agendas.append(agenda_data)
 
             except Exception as pdf_error:
@@ -927,9 +885,7 @@ def extract_session_date(agendas, target_date: str):
                     }
                 )
             except ValueError as e:
-                logging.warning(
-                    f"Invalid date in agenda: {day_num}/{month_num}/{year} - {e}"
-                )
+                logging.warning(f"Invalid date in agenda: {day_num}/{month_num}/{year} - {e}")
                 continue
 
         if not parsed_dates:
@@ -954,9 +910,7 @@ def extract_session_date(agendas, target_date: str):
         # Log all dates found
         logging.info(f"Found {len(sorted_dates)} dates in agenda:")
         for i, date_info in enumerate(sorted_dates):
-            logging.info(
-                f"  Position {i}: {date_info['day_name'].upper()}, {date_info['date']}"
-            )
+            logging.info(f"  Position {i}: {date_info['day_name'].upper()}, {date_info['date']}")
 
         # Step 3: Find target date position in sorted list
         date_offset = None
@@ -968,9 +922,7 @@ def extract_session_date(agendas, target_date: str):
                 date_offset = i  # 0 for first date, 1 for second date, etc.
                 target_date_info = date_info
                 found_target = True
-                logging.info(
-                    f"Target date {target_date} found at position {i} (offset = {date_offset})"
-                )
+                logging.info(f"Target date {target_date} found at position {i} (offset = {date_offset})")
                 break
 
         # Step 4: Build result
@@ -1010,12 +962,8 @@ def extract_session_date(agendas, target_date: str):
         }
 
         session_results.append(result)
-        logging.info(
-            f"✓ Session {calculated_session_number} (base {base_session_number} + offset {date_offset})"
-        )
-        logging.info(
-            f"  Target date {target_date} is at position {date_offset} of {len(all_dates_list)} dates"
-        )
+        logging.info(f"✓ Session {calculated_session_number} (base {base_session_number} + offset {date_offset})")
+        logging.info(f"  Target date {target_date} is at position {date_offset} of {len(all_dates_list)} dates")
 
     logging.info(f"Total session dates processed: {len(session_results)}")
     return {"total_processed": len(session_results), "videos": session_results}
@@ -1046,9 +994,7 @@ def extract_agenda_section(agendas, session_date_info):
         return {"total_extracted": 0, "videos": []}
 
     # Parse target date
-    target_date_obj = datetime.strptime(
-        session_date_info["videos"][0]["target_date"], "%Y-%m-%d"
-    )
+    target_date_obj = datetime.strptime(session_date_info["videos"][0]["target_date"], "%Y-%m-%d")
 
     # Spanish month names (lowercase)
     spanish_months = {
@@ -1151,21 +1097,14 @@ def extract_agenda_section(agendas, session_date_info):
                     next_match = None
                     for other_match in date_matches:
                         if other_match.start() > start_pos:
-                            if (
-                                next_match is None
-                                or other_match.start() < next_match.start()
-                            ):
+                            if next_match is None or other_match.start() < next_match.start():
                                 next_match = other_match
 
                     end_pos = next_match.start() if next_match else len(agenda_text)
                     target_section = agenda_text[start_pos:end_pos].strip()
 
-                    logging.info(
-                        f"Extracted agenda section for {day_name.upper()}, {day_num} de {month_name}"
-                    )
-                    logging.info(
-                        f"  Section: {len(target_section)} chars (lines {start_pos} to {end_pos})"
-                    )
+                    logging.info(f"Extracted agenda section for {day_name.upper()}, {day_num} de {month_name}")
+                    logging.info(f"  Section: {len(target_section)} chars (lines {start_pos} to {end_pos})")
                     break
 
             except ValueError as e:
@@ -1184,9 +1123,7 @@ def extract_agenda_section(agendas, session_date_info):
                     "full_agenda_file_path": agenda_item.get("agenda_file_path"),
                 }
             )
-            logging.info(
-                f"✓ Extracted agenda for session {session_info.get('session_number')}, date {target_date}"
-            )
+            logging.info(f"✓ Extracted agenda for session {session_info.get('session_number')}, date {target_date}")
         else:
             logging.warning(f"Could not find section for target date {target_date}")
             extracted_sections.append(

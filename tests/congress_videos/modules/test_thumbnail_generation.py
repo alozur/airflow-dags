@@ -196,9 +196,7 @@ class TestSlugResolution:
 
         cfg = _make_cfg(lookup_raises=True)  # lookup raises if called
 
-        with caplog.at_level(
-            logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
-        ):
+        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
             result = resolve_participant_photo(None, cfg)
 
         assert result == EMPTY_RESULT
@@ -215,9 +213,7 @@ class TestSlugResolution:
 
         cfg = _make_cfg(lookup_raises=True)
 
-        with caplog.at_level(
-            logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
-        ):
+        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
             result = resolve_participant_photo("", cfg)
 
         assert result == EMPTY_RESULT
@@ -234,17 +230,13 @@ class TestSlugResolution:
 
         cfg = _make_cfg(lookup_raises=True)
 
-        with caplog.at_level(
-            logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
-        ):
+        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
             result = resolve_participant_photo("   ", cfg)
 
         assert result == EMPTY_RESULT
         assert any(r.levelno >= logging.WARNING for r in caplog.records)
 
-    def test_unknown_slug_lookup_returns_none_gives_empty_result_with_warning(
-        self, caplog
-    ):
+    def test_unknown_slug_lookup_returns_none_gives_empty_result_with_warning(self, caplog):
         """Unknown slug (lookup returns None) → EMPTY_RESULT + WARNING, no raise."""
         import logging
 
@@ -255,17 +247,13 @@ class TestSlugResolution:
 
         cfg = _make_cfg(lookup_return=None)
 
-        with caplog.at_level(
-            logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
-        ):
+        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
             result = resolve_participant_photo("nonexistent-slug-xyz", cfg)
 
         assert result == EMPTY_RESULT
         assert any(r.levelno >= logging.WARNING for r in caplog.records)
 
-    def test_photo_url_none_party_logo_map_none_returns_empty_result_no_http(
-        self, caplog
-    ):
+    def test_photo_url_none_party_logo_map_none_returns_empty_result_no_http(self, caplog):
         """photo_url=None + party_logo_map=None → EMPTY_RESULT + WARNING, no HTTP call."""
         import logging
 
@@ -279,9 +267,7 @@ class TestSlugResolution:
 
         with (
             patch("requests.get") as mock_get,
-            caplog.at_level(
-                logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
-            ),
+            caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"),
         ):
             result = resolve_participant_photo("garcia-ana", cfg)
 
@@ -309,9 +295,7 @@ class TestSlugResolution:
 
         with (
             patch("requests.get", return_value=mock_resp),
-            caplog.at_level(
-                logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
-            ),
+            caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"),
         ):
             result = resolve_participant_photo("garcia-ana", cfg)
 
@@ -337,9 +321,7 @@ class TestSlugResolution:
 
         with (
             patch("requests.get", side_effect=req.RequestException("timeout")),
-            caplog.at_level(
-                logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
-            ),
+            caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"),
         ):
             result = resolve_participant_photo("garcia-ana", cfg)
 
@@ -553,10 +535,7 @@ class TestGenerateTitle:
         assert isinstance(result, str)
         assert len(result) <= 90
         assert "\U0001f525" not in result
-        assert any(
-            "WARNING" in r.levelname or r.levelno >= logging.WARNING
-            for r in caplog.records
-        )
+        assert any("WARNING" in r.levelname or r.levelno >= logging.WARNING for r in caplog.records)
 
     def test_both_attempts_sanitise_to_blank_raises(self, mocker):
         """Issue #317 (A-2, D1 amendment): a candidate that is non-empty but
@@ -700,9 +679,7 @@ class TestPersistResults:
         assert title in chosen_params
         assert True in chosen_params
 
-    def test_non_chosen_option_has_null_title_and_is_chosen_false(
-        self, mock_psycopg2_connection
-    ):
+    def test_non_chosen_option_has_null_title_and_is_chosen_false(self, mock_psycopg2_connection):
         """Non-chosen row has openai_title=None and is_chosen=False."""
         from congress_videos.modules.thumbnail_generation import persist_results
 
@@ -729,9 +706,7 @@ class TestPersistResults:
         options = self._make_options()
         persist_results(7, "vid123", "Título", options, "option_a")
 
-        all_calls_flat = [
-            c[0][1] if len(c[0]) > 1 else () for c in mock_cursor.execute.call_args_list
-        ]
+        all_calls_flat = [c[0][1] if len(c[0]) > 1 else () for c in mock_cursor.execute.call_args_list]
         all_params = [item for row in all_calls_flat for item in row]
         assert "/opt/airflow/data/thumbnails/vid/option_a.png" in all_params
         assert "/opt/airflow/data/thumbnails/vid/option_b.png" in all_params
@@ -749,9 +724,7 @@ class TestPersistResults:
                 return sql, params
         raise AssertionError(f"No execute call found for label={label!r}")
 
-    def test_blank_title_none_keeps_chosen_param_none_with_conditional_sql(
-        self, mock_psycopg2_connection
-    ):
+    def test_blank_title_none_keeps_chosen_param_none_with_conditional_sql(self, mock_psycopg2_connection):
         """Issue #317 (B-1): title=None -> chosen row's openai_title param is
         None AND the SQL is the conditional CASE WHEN EXCLUDED.is_chosen
         upsert, not a bare unconditional overwrite."""
@@ -869,9 +842,7 @@ class TestTriangulateEdgeCases:
         }
         cfg = _make_cfg(lookup_return=participant, party_logo_map=str(logo_file))
 
-        with patch(
-            "requests.get", side_effect=req.RequestException("connection refused")
-        ):
+        with patch("requests.get", side_effect=req.RequestException("connection refused")):
             result = resolve_participant_photo("garcia_maria", cfg)
 
         assert result["source"] == "party_logo"
@@ -1062,9 +1033,7 @@ class TestArtDirect:
         cfg = self._make_cfg()
         art_direct("summary", cfg)
 
-        assert "http" in captured.get("system_prompt", ""), (
-            "System prompt must reference 'http' as a prohibition"
-        )
+        assert "http" in captured.get("system_prompt", ""), "System prompt must reference 'http' as a prohibition"
 
     def test_uses_art_direction_system_prompt(self, mocker) -> None:
         """art_direct must use ART_DIRECTION_SYSTEM_PROMPT as the system prompt."""
@@ -1098,9 +1067,7 @@ class TestArtDirect:
         )
         cfg = self._make_cfg()
 
-        with caplog.at_level(
-            logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
-        ):
+        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
             art_direct("summary", cfg)
 
         assert any(r.levelno >= logging.WARNING for r in caplog.records)
@@ -1143,9 +1110,7 @@ class TestArtDirectionAudiencePolicy:
         art_direct(debate_summary, self._make_cfg())
         return completion.call_args.kwargs["system_prompt"]
 
-    def test_default_policy_uses_youtube_analytics_audience_distribution(
-        self, mocker
-    ) -> None:
+    def test_default_policy_uses_youtube_analytics_audience_distribution(self, mocker) -> None:
         """The provider sees the 80% male and 63% 65+ audience distribution."""
         system_prompt = self._system_prompt_for(mocker, "Debate presupuestario general")
 
@@ -1155,9 +1120,7 @@ class TestArtDirectionAudiencePolicy:
         assert "persona relatable" in system_prompt.lower()
         assert "nunca el ponente ni la foto de un participante" in system_prompt.lower()
 
-    def test_policy_source_is_youtube_analytics_and_manually_maintained(
-        self, mocker
-    ) -> None:
+    def test_policy_source_is_youtube_analytics_and_manually_maintained(self, mocker) -> None:
         """Audience figures are an explicit manually maintained YouTube Analytics configuration."""
         system_prompt = self._system_prompt_for(mocker, "Debate general")
 
@@ -1177,9 +1140,7 @@ class TestArtDirectionAudiencePolicy:
 
     def test_maternity_topics_override_the_generic_fallback(self, mocker) -> None:
         """Maternity, pregnancy, and conciliation select a woman of child-bearing age."""
-        system_prompt = self._system_prompt_for(
-            mocker, "Propuesta de conciliación y embarazo"
-        )
+        system_prompt = self._system_prompt_for(mocker, "Propuesta de conciliación y embarazo")
 
         prompt_lower = system_prompt.lower()
         assert "maternidad, embarazo o conciliación" in prompt_lower
@@ -1188,22 +1149,16 @@ class TestArtDirectionAudiencePolicy:
 
     def test_pensions_topics_override_the_generic_fallback(self, mocker) -> None:
         """Pensions, dependency, and geriatric healthcare select an older person."""
-        system_prompt = self._system_prompt_for(
-            mocker, "Debate sobre pensiones y dependencia"
-        )
+        system_prompt = self._system_prompt_for(mocker, "Debate sobre pensiones y dependencia")
 
         prompt_lower = system_prompt.lower()
         assert "pensiones, dependencia o atención sanitaria geriátrica" in prompt_lower
         assert "persona mayor" in prompt_lower
         assert "prevalece sobre la regla general" in prompt_lower
 
-    def test_general_or_ambiguous_topics_use_the_probabilistic_fallback(
-        self, mocker
-    ) -> None:
+    def test_general_or_ambiguous_topics_use_the_probabilistic_fallback(self, mocker) -> None:
         """General summaries favor older men while retaining women and younger adults."""
-        system_prompt = self._system_prompt_for(
-            mocker, "Debate general sin tema dominante"
-        )
+        system_prompt = self._system_prompt_for(mocker, "Debate general sin tema dominante")
 
         prompt_lower = system_prompt.lower()
         assert "resúmenes generales o ambiguos" in prompt_lower
@@ -1258,9 +1213,7 @@ class TestArtDirectRetry:
         art_direct("Debate sobre pensiones", self._make_cfg(), previous_brief=None)
 
         assert captured_prompts, "generate_json_completion must be called at least once"
-        assert "REINTENTO" not in captured_prompts[0], (
-            "Retry instruction must NOT be present when previous_brief=None"
-        )
+        assert "REINTENTO" not in captured_prompts[0], "Retry instruction must NOT be present when previous_brief=None"
 
     def test_previous_brief_dict_injects_retry_instruction(self, mocker) -> None:
         """When previous_brief is a dict, the retry instruction is injected into the prompt."""
@@ -1282,9 +1235,7 @@ class TestArtDirectRetry:
             "congress_videos.modules.thumbnail_generation.generate_json_completion",
             side_effect=_capture,
         )
-        art_direct(
-            "Debate sobre pensiones", self._make_cfg(), previous_brief=previous_brief
-        )
+        art_direct("Debate sobre pensiones", self._make_cfg(), previous_brief=previous_brief)
 
         assert captured_prompts, "generate_json_completion must be called"
         assert "REINTENTO" in captured_prompts[0], (
@@ -1313,9 +1264,7 @@ class TestArtDirectRetry:
         )
         art_direct("Debate", self._make_cfg(), previous_brief=previous_brief)
 
-        assert "CRISIS ANTERIOR" in captured_prompts[0], (
-            "Previous brief text must appear in the retry prompt"
-        )
+        assert "CRISIS ANTERIOR" in captured_prompts[0], "Previous brief text must appear in the retry prompt"
 
     def test_backward_compat_no_previous_brief_arg(self, mocker) -> None:
         """art_direct called with 2 positional args (old call site) still works."""
@@ -1343,9 +1292,7 @@ class TestScoreRetryThreshold:
         from congress_videos.config.thumbnail_config import get_domain_config
 
         cfg = get_domain_config("congreso")
-        assert "score_retry_threshold" in cfg, (
-            "congreso config must have 'score_retry_threshold' key"
-        )
+        assert "score_retry_threshold" in cfg, "congreso config must have 'score_retry_threshold' key"
         assert cfg["score_retry_threshold"] == 60, (
             f"score_retry_threshold must be 60, got {cfg['score_retry_threshold']}"
         )
@@ -1394,15 +1341,11 @@ class TestArtDirectionPromptDiversity:
 
         prompt_lower = ART_DIRECTION_SYSTEM_PROMPT.lower()
         background_idx = prompt_lower.find("background:")
-        assert background_idx != -1, (
-            "ART_DIRECTION_SYSTEM_PROMPT must contain 'background:' field"
-        )
+        assert background_idx != -1, "ART_DIRECTION_SYSTEM_PROMPT must contain 'background:' field"
         after_background = ART_DIRECTION_SYSTEM_PROMPT[background_idx:]
         paren_start = after_background.find("(")
         paren_end = after_background.find(")")
-        assert paren_start != -1, (
-            "background field must have a parenthetical example list"
-        )
+        assert paren_start != -1, "background field must have a parenthetical example list"
         bg_list_text = after_background[paren_start + 1 : paren_end]
         first_bg = bg_list_text.split(",")[0].strip().lower()
         assert "protesta callejera" not in first_bg, (
@@ -1429,9 +1372,7 @@ class TestArtDirectionPromptDiversity:
             or "distinto" in prompt_lower
             or "registr" in prompt_lower
         )
-        assert has_variety, (
-            "THUMBNAIL_TITLE_SYSTEM_PROMPT must contain a variety note about emotional register"
-        )
+        assert has_variety, "THUMBNAIL_TITLE_SYSTEM_PROMPT must contain a variety note about emotional register"
 
     def test_art_direction_prompt_http_prohibition_intact(self) -> None:
         """The http prohibition MUST still be present after the rewrite."""
@@ -1484,9 +1425,7 @@ class TestSummariseSiblingBrief:
 
         long_prompt = "x" * 500
         result = _summarise_sibling_brief(long_prompt)
-        assert len(result) <= 200, (
-            f"Fallback must truncate to 200 chars, got {len(result)}"
-        )
+        assert len(result) <= 200, f"Fallback must truncate to 200 chars, got {len(result)}"
         assert result == long_prompt[:200]
 
     def test_summarise_sibling_brief_extracts_from_real_pikzels_format(self) -> None:
@@ -1580,9 +1519,7 @@ class TestArtDirectSiblingInjection:
         )
 
         assert captured_prompts, "generate_json_completion must be called"
-        assert "NO REPITAS" in captured_prompts[0], (
-            "sibling_briefs block must appear in user_prompt"
-        )
+        assert "NO REPITAS" in captured_prompts[0], "sibling_briefs block must appear in user_prompt"
         assert "brief A sobre plaza pública" in captured_prompts[0]
         assert "brief B con fábrica cerrada" in captured_prompts[0]
 
@@ -1603,9 +1540,7 @@ class TestArtDirectSiblingInjection:
         art_direct("debate summary", self._make_cfg())
 
         assert captured_prompts, "generate_json_completion must be called"
-        assert "NO REPITAS" not in captured_prompts[0], (
-            "sibling_briefs block must NOT appear when sibling_briefs=None"
-        )
+        assert "NO REPITAS" not in captured_prompts[0], "sibling_briefs block must NOT appear when sibling_briefs=None"
 
     def test_art_direct_no_injection_when_sibling_briefs_empty(self, mocker) -> None:
         """When sibling_briefs=[], 'NO REPITAS' must NOT appear in user_prompt."""
@@ -1624,9 +1559,7 @@ class TestArtDirectSiblingInjection:
         art_direct("debate summary", self._make_cfg(), sibling_briefs=[])
 
         assert captured_prompts, "generate_json_completion must be called"
-        assert "NO REPITAS" not in captured_prompts[0], (
-            "sibling_briefs block must NOT appear when sibling_briefs=[]"
-        )
+        assert "NO REPITAS" not in captured_prompts[0], "sibling_briefs block must NOT appear when sibling_briefs=[]"
 
 
 class TestGenerateTitleSiblingInjection:
@@ -1660,9 +1593,7 @@ class TestGenerateTitleSiblingInjection:
         )
 
         assert captured_prompts, "generate_json_completion must be called"
-        assert "NO REPITAS" in captured_prompts[0], (
-            "sibling_titles block must appear in user_prompt"
-        )
+        assert "NO REPITAS" in captured_prompts[0], "sibling_titles block must appear in user_prompt"
         assert "Title A: La crisis sanitaria" in captured_prompts[0]
         assert "Title B: El colapso del sistema" in captured_prompts[0]
 
@@ -1684,13 +1615,9 @@ class TestGenerateTitleSiblingInjection:
         generate_title("debate summary", best)
 
         assert captured_prompts, "generate_json_completion must be called"
-        assert "NO REPITAS" not in captured_prompts[0], (
-            "sibling_titles block must NOT appear when sibling_titles=None"
-        )
+        assert "NO REPITAS" not in captured_prompts[0], "sibling_titles block must NOT appear when sibling_titles=None"
 
-    def test_generate_title_no_injection_when_sibling_titles_empty(
-        self, mocker
-    ) -> None:
+    def test_generate_title_no_injection_when_sibling_titles_empty(self, mocker) -> None:
         """When sibling_titles=[], no sibling block in user_prompt."""
         from congress_videos.modules.thumbnail_generation import generate_title
 
@@ -1708,9 +1635,7 @@ class TestGenerateTitleSiblingInjection:
         generate_title("debate summary", best, sibling_titles=[])
 
         assert captured_prompts, "generate_json_completion must be called"
-        assert "NO REPITAS" not in captured_prompts[0], (
-            "sibling_titles block must NOT appear when sibling_titles=[]"
-        )
+        assert "NO REPITAS" not in captured_prompts[0], "sibling_titles block must NOT appear when sibling_titles=[]"
 
 
 # ---------------------------------------------------------------------------
@@ -1778,9 +1703,7 @@ class TestFetchRecentThumbnailHistory:
         for b in briefs:
             assert len(b) <= 200, f"Brief must be ≤ 200 chars, got {len(b)}"
 
-    def test_fetch_recent_thumbnail_history_empty_returns_empty_lists(
-        self, mocker
-    ) -> None:
+    def test_fetch_recent_thumbnail_history_empty_returns_empty_lists(self, mocker) -> None:
         """When cursor returns no rows, return ([], [])."""
         from congress_videos.modules.thumbnail_generation import (
             fetch_recent_thumbnail_history,
@@ -1802,9 +1725,7 @@ class TestFetchRecentThumbnailHistory:
         assert briefs == []
         assert titles == []
 
-    def test_fetch_recent_thumbnail_history_db_error_never_raises(
-        self, mocker, caplog
-    ) -> None:
+    def test_fetch_recent_thumbnail_history_db_error_never_raises(self, mocker, caplog) -> None:
         """When PostgresConnection raises, return ([], []) and log WARNING."""
         import logging
 
@@ -1817,16 +1738,12 @@ class TestFetchRecentThumbnailHistory:
             side_effect=Exception("DB connection failed"),
         )
 
-        with caplog.at_level(
-            logging.WARNING, logger="congress_videos.modules.thumbnail_generation"
-        ):
+        with caplog.at_level(logging.WARNING, logger="congress_videos.modules.thumbnail_generation"):
             briefs, titles = fetch_recent_thumbnail_history()
 
         assert briefs == []
         assert titles == []
-        assert any(r.levelno >= logging.WARNING for r in caplog.records), (
-            "A WARNING must be logged when DB raises"
-        )
+        assert any(r.levelno >= logging.WARNING for r in caplog.records), "A WARNING must be logged when DB raises"
 
 
 # ---------------------------------------------------------------------------
@@ -1851,9 +1768,7 @@ class TestNewsFormatConstants:
         from congress_videos.config.ai_prompts import TITLE_WORDS_TO_AVOID
 
         assert TITLE_WORDS_TO_AVOID, "TITLE_WORDS_TO_AVOID must be non-empty"
-        assert all(isinstance(w, str) for w in TITLE_WORDS_TO_AVOID), (
-            "All TITLE_WORDS_TO_AVOID entries must be strings"
-        )
+        assert all(isinstance(w, str) for w in TITLE_WORDS_TO_AVOID), "All TITLE_WORDS_TO_AVOID entries must be strings"
 
     def test_speakers_instruction_contains_speaker_list_placeholder(self) -> None:
         """THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION must contain '{speaker_list}'."""
@@ -1877,12 +1792,8 @@ class TestNewsFormatSystemPrompt:
         from congress_videos.config.ai_prompts import THUMBNAIL_TITLE_SYSTEM_PROMPT
 
         prompt_lower = THUMBNAIL_TITLE_SYSTEM_PROMPT.lower()
-        has_formula = (
-            "nombre" in prompt_lower and "verbo" in prompt_lower
-        ) or "nombre + verbo" in prompt_lower
-        assert has_formula, (
-            "THUMBNAIL_TITLE_SYSTEM_PROMPT must contain the [Nombre] + verbo formula"
-        )
+        has_formula = ("nombre" in prompt_lower and "verbo" in prompt_lower) or "nombre + verbo" in prompt_lower
+        assert has_formula, "THUMBNAIL_TITLE_SYSTEM_PROMPT must contain the [Nombre] + verbo formula"
 
     def test_system_prompt_contains_question_ban(self) -> None:
         """System prompt must explicitly ban question-format titles."""
@@ -1896,9 +1807,7 @@ class TestNewsFormatSystemPrompt:
             or "nunca termines" in prompt_lower
             or "sin signos de interrogación" in prompt_lower
         )
-        assert has_ban, (
-            "THUMBNAIL_TITLE_SYSTEM_PROMPT must explicitly ban question-format titles"
-        )
+        assert has_ban, "THUMBNAIL_TITLE_SYSTEM_PROMPT must explicitly ban question-format titles"
 
     def test_priority_keyword_appears_in_prompt_text(self) -> None:
         """At least one TITLE_PRIORITY_KEYWORDS term must appear in the combined prompt text."""
@@ -1937,9 +1846,7 @@ class TestNewsFormatSystemPrompt:
             or "evita" in template_lower
             or "palabras clave" in template_lower
         )
-        assert has_ref, (
-            "THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE must reference keyword/interrogation guidance"
-        )
+        assert has_ref, "THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE must reference keyword/interrogation guidance"
 
 
 # ---------------------------------------------------------------------------
@@ -1988,9 +1895,7 @@ class TestQuestionMarkRejection:
 
     def test_valid_declarative_title_passes_without_reprompt(self, mocker) -> None:
         """A declarative title with no ? or ¿ must pass _is_valid on first attempt."""
-        result, call_count = self._generate_title_with_mock(
-            mocker, "Sánchez anuncia recortes en vivienda"
-        )
+        result, call_count = self._generate_title_with_mock(mocker, "Sánchez anuncia recortes en vivienda")
         assert call_count["n"] == 1, "Valid declarative title must NOT trigger a second LLM call"
         assert result == "Sánchez anuncia recortes en vivienda"
 
@@ -2063,9 +1968,7 @@ class TestQuestionMarkReprompt:
         best = {"style": "A", "prompt": "debate"}
         result = generate_title("Debate summary", best)
 
-        assert call_count["n"] == 1, (
-            "ESCÁNDALO: Sánchez admite el engaño must NOT trigger a reprompt"
-        )
+        assert call_count["n"] == 1, "ESCÁNDALO: Sánchez admite el engaño must NOT trigger a reprompt"
         assert result == "ESCÁNDALO: Sánchez admite el engaño"
 
 
@@ -2250,9 +2153,7 @@ class TestArtDirectionSystemPrompt:
         cfg = _make_cfg()
         art_direct("La representante defendió la moción", cfg)
 
-        assert mock_completion.call_args is not None, (
-            "generate_json_completion must be called by art_direct"
-        )
+        assert mock_completion.call_args is not None, "generate_json_completion must be called by art_direct"
         passed_prompt = mock_completion.call_args.kwargs["system_prompt"]
         assert passed_prompt == ART_DIRECTION_SYSTEM_PROMPT, (
             "art_direct must pass ART_DIRECTION_SYSTEM_PROMPT as system_prompt kwarg"
@@ -2287,9 +2188,7 @@ class TestArtDirectionSystemPrompt:
         assert "pensiones" in ART_DIRECTION_SYSTEM_PROMPT, (
             "pensiones override must still be present in ART_DIRECTION_SYSTEM_PROMPT"
         )
-        assert "persona mayor" in ART_DIRECTION_SYSTEM_PROMPT, (
-            "'persona mayor' phrase must still be present"
-        )
+        assert "persona mayor" in ART_DIRECTION_SYSTEM_PROMPT, "'persona mayor' phrase must still be present"
 
     # ------------------------------------------------------------------
     # Task 1.6 — Regression guard: desempleo juvenil override intact (GREEN from start)
@@ -2302,9 +2201,7 @@ class TestArtDirectionSystemPrompt:
         assert "desempleo juvenil" in ART_DIRECTION_SYSTEM_PROMPT, (
             "desempleo juvenil override must still be present in ART_DIRECTION_SYSTEM_PROMPT"
         )
-        assert "persona joven" in ART_DIRECTION_SYSTEM_PROMPT, (
-            "'persona joven' phrase must still be present"
-        )
+        assert "persona joven" in ART_DIRECTION_SYSTEM_PROMPT, "'persona joven' phrase must still be present"
 
     # ------------------------------------------------------------------
     # Task 1.7 — Regression guard: audience ~80% fallback line intact (GREEN from start)
@@ -2723,9 +2620,7 @@ class TestArchetypePrompt:
         # Must describe two citizens with opposite/contrasting emotions
         assert "careo" in ART_DIRECTION_SYSTEM_PROMPT
         # Unique substring for careo: two citizens, opposite emotions
-        assert "dos ciudadanos" in ART_DIRECTION_SYSTEM_PROMPT, (
-            "careo composition must mention 'dos ciudadanos'"
-        )
+        assert "dos ciudadanos" in ART_DIRECTION_SYSTEM_PROMPT, "careo composition must mention 'dos ciudadanos'"
         assert "emociones opuestas" in ART_DIRECTION_SYSTEM_PROMPT, (
             "careo composition must mention 'emociones opuestas'"
         )
@@ -2735,27 +2630,25 @@ class TestArchetypePrompt:
         from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
 
         assert "denuncia" in ART_DIRECTION_SYSTEM_PROMPT
-        assert "objeto" in ART_DIRECTION_SYSTEM_PROMPT, (
-            "denuncia composition must mention an evidence-object"
-        )
+        assert "objeto" in ART_DIRECTION_SYSTEM_PROMPT, "denuncia composition must mention an evidence-object"
 
     def test_monologo_composition_in_prompt(self) -> None:
         """monologo archetype must have citizen + strong action gesture wording."""
         from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
 
         assert "monologo" in ART_DIRECTION_SYSTEM_PROMPT
-        assert "gesto" in ART_DIRECTION_SYSTEM_PROMPT, (
-            "monologo composition must mention a 'gesto' (action gesture)"
-        )
+        assert "gesto" in ART_DIRECTION_SYSTEM_PROMPT, "monologo composition must mention a 'gesto' (action gesture)"
 
     def test_anuncio_composition_in_prompt(self) -> None:
         """anuncio archetype must have citizen in heroic/relief/hope key wording."""
         from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
 
         assert "anuncio" in ART_DIRECTION_SYSTEM_PROMPT
-        assert "heroic" in ART_DIRECTION_SYSTEM_PROMPT or "heroica" in ART_DIRECTION_SYSTEM_PROMPT or "esperanza" in ART_DIRECTION_SYSTEM_PROMPT, (
-            "anuncio composition must mention heroic key, relief, or hope (esperanza)"
-        )
+        assert (
+            "heroic" in ART_DIRECTION_SYSTEM_PROMPT
+            or "heroica" in ART_DIRECTION_SYSTEM_PROMPT
+            or "esperanza" in ART_DIRECTION_SYSTEM_PROMPT
+        ), "anuncio composition must mention heroic key, relief, or hope (esperanza)"
 
     def test_generico_composition_in_prompt(self) -> None:
         """generico archetype must reference general mold / older citizen / worried wording."""
@@ -2773,9 +2666,7 @@ class TestArchetypePrompt:
         from congress_videos.config.ai_prompts import ART_DIRECTION_SYSTEM_PROMPT
         from congress_videos.modules.thumbnail_generation import _ARCHETYPES
 
-        assert len(_ARCHETYPES) == 5, (
-            f"_ARCHETYPES must have exactly 5 members, got {len(_ARCHETYPES)}"
-        )
+        assert len(_ARCHETYPES) == 5, f"_ARCHETYPES must have exactly 5 members, got {len(_ARCHETYPES)}"
         for token in _ARCHETYPES:
             assert token in ART_DIRECTION_SYSTEM_PROMPT, (
                 f"_ARCHETYPES token '{token}' must appear in ART_DIRECTION_SYSTEM_PROMPT"
@@ -2815,9 +2706,7 @@ class TestCoerceArchetype:
         )
 
         for token in _ARCHETYPES:
-            assert _coerce_archetype(token) == token, (
-                f"_coerce_archetype('{token}') must return '{token}'"
-            )
+            assert _coerce_archetype(token) == token, f"_coerce_archetype('{token}') must return '{token}'"
 
     def test_case_and_whitespace_normalized(self) -> None:
         """_coerce_archetype must strip whitespace and lowercase before matching."""
@@ -2866,12 +2755,8 @@ class TestDefaultArtBriefArchetype:
         """_DEFAULT_ART_BRIEF must include archetype='generico'."""
         from congress_videos.modules.thumbnail_generation import _DEFAULT_ART_BRIEF
 
-        assert "archetype" in _DEFAULT_ART_BRIEF, (
-            "_DEFAULT_ART_BRIEF must contain an 'archetype' key"
-        )
-        assert _DEFAULT_ART_BRIEF["archetype"] == "generico", (
-            "_DEFAULT_ART_BRIEF['archetype'] must be 'generico'"
-        )
+        assert "archetype" in _DEFAULT_ART_BRIEF, "_DEFAULT_ART_BRIEF must contain an 'archetype' key"
+        assert _DEFAULT_ART_BRIEF["archetype"] == "generico", "_DEFAULT_ART_BRIEF['archetype'] must be 'generico'"
 
 
 # ---------------------------------------------------------------------------
@@ -2936,9 +2821,7 @@ class TestArtDirectArchetypeWiring:
         )
         result = art_direct("resumen del debate", _make_art_direct_cfg())
 
-        assert result["archetype"] == "denuncia", (
-            "The http-strip filter must not alter a valid archetype value"
-        )
+        assert result["archetype"] == "denuncia", "The http-strip filter must not alter a valid archetype value"
 
     # T-12
     def test_missing_archetype_key_coerces_to_generico(self, mocker) -> None:
@@ -2952,12 +2835,8 @@ class TestArtDirectArchetypeWiring:
         )
         result = art_direct("resumen del debate", _make_art_direct_cfg())
 
-        assert "archetype" in result, (
-            "art_direct must always return a brief with an 'archetype' key"
-        )
-        assert result["archetype"] == "generico", (
-            "Missing 'archetype' key must coerce to 'generico'"
-        )
+        assert "archetype" in result, "art_direct must always return a brief with an 'archetype' key"
+        assert result["archetype"] == "generico", "Missing 'archetype' key must coerce to 'generico'"
 
     # T-13
     def test_invalid_archetype_string_coerces_to_generico(self, mocker) -> None:
@@ -2971,9 +2850,7 @@ class TestArtDirectArchetypeWiring:
         )
         result = art_direct("resumen del debate", _make_art_direct_cfg())
 
-        assert result["archetype"] == "generico", (
-            "Unrecognised archetype string must coerce to 'generico'"
-        )
+        assert result["archetype"] == "generico", "Unrecognised archetype string must coerce to 'generico'"
 
     # T-14
     def test_fallback_brief_carries_archetype_generico(self, mocker) -> None:
@@ -2987,12 +2864,8 @@ class TestArtDirectArchetypeWiring:
         )
         result = art_direct("resumen del debate", _make_art_direct_cfg())
 
-        assert "archetype" in result, (
-            "Fallback brief must always contain an 'archetype' key"
-        )
-        assert result["archetype"] == "generico", (
-            "Fallback brief archetype must be 'generico'"
-        )
+        assert "archetype" in result, "Fallback brief must always contain an 'archetype' key"
+        assert result["archetype"] == "generico", "Fallback brief archetype must be 'generico'"
 
 
 # ---------------------------------------------------------------------------
@@ -3007,18 +2880,10 @@ class TestKeywordTupleContainsNoPoliticianNames:
         """TITLE_PRIORITY_KEYWORDS must not include Sánchez, Feijóo, or Yolanda Díaz."""
         from congress_videos.config.ai_prompts import TITLE_PRIORITY_KEYWORDS
 
-        assert "Sánchez" not in TITLE_PRIORITY_KEYWORDS, (
-            "TITLE_PRIORITY_KEYWORDS must not contain 'Sánchez'"
-        )
-        assert "Feijóo" not in TITLE_PRIORITY_KEYWORDS, (
-            "TITLE_PRIORITY_KEYWORDS must not contain 'Feijóo'"
-        )
-        assert "Yolanda Díaz" not in TITLE_PRIORITY_KEYWORDS, (
-            "TITLE_PRIORITY_KEYWORDS must not contain 'Yolanda Díaz'"
-        )
-        assert "corrupción" in TITLE_PRIORITY_KEYWORDS, (
-            "TITLE_PRIORITY_KEYWORDS must still contain 'corrupción'"
-        )
+        assert "Sánchez" not in TITLE_PRIORITY_KEYWORDS, "TITLE_PRIORITY_KEYWORDS must not contain 'Sánchez'"
+        assert "Feijóo" not in TITLE_PRIORITY_KEYWORDS, "TITLE_PRIORITY_KEYWORDS must not contain 'Feijóo'"
+        assert "Yolanda Díaz" not in TITLE_PRIORITY_KEYWORDS, "TITLE_PRIORITY_KEYWORDS must not contain 'Yolanda Díaz'"
+        assert "corrupción" in TITLE_PRIORITY_KEYWORDS, "TITLE_PRIORITY_KEYWORDS must still contain 'corrupción'"
 
 
 class TestSystemPromptPrizacausaClauseNoPoliticians:
@@ -3031,16 +2896,11 @@ class TestSystemPromptPrizacausaClauseNoPoliticians:
         assert "Sánchez" not in THUMBNAIL_TITLE_SYSTEM_PROMPT, (
             "THUMBNAIL_TITLE_SYSTEM_PROMPT must not contain 'Sánchez'"
         )
-        assert "Feijóo" not in THUMBNAIL_TITLE_SYSTEM_PROMPT, (
-            "THUMBNAIL_TITLE_SYSTEM_PROMPT must not contain 'Feijóo'"
-        )
+        assert "Feijóo" not in THUMBNAIL_TITLE_SYSTEM_PROMPT, "THUMBNAIL_TITLE_SYSTEM_PROMPT must not contain 'Feijóo'"
         assert "Yolanda Díaz" not in THUMBNAIL_TITLE_SYSTEM_PROMPT, (
             "THUMBNAIL_TITLE_SYSTEM_PROMPT must not contain 'Yolanda Díaz'"
         )
-        assert any(
-            kw in THUMBNAIL_TITLE_SYSTEM_PROMPT
-            for kw in ("corrupción", "PRIORIZA", "prioriza")
-        ), (
+        assert any(kw in THUMBNAIL_TITLE_SYSTEM_PROMPT for kw in ("corrupción", "PRIORIZA", "prioriza")), (
             "THUMBNAIL_TITLE_SYSTEM_PROMPT must still contain a retained topic word"
         )
 
@@ -3054,8 +2914,7 @@ class TestSpeakersInstructionIsProhibition:
 
         prohibition_phrases = ("SOLO puedes nombrar", "SOLO puedes", "solo puedes nombrar")
         assert any(p in THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION for p in prohibition_phrases), (
-            "THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION must contain hard prohibition "
-            f"(one of {prohibition_phrases})"
+            f"THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION must contain hard prohibition (one of {prohibition_phrases})"
         )
         soft_phrases = ("Si es natural", "menciona a alguno")
         assert not any(p in THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION for p in soft_phrases), (
@@ -3184,25 +3043,19 @@ class TestGenerateTitlePromptInjection:
         assert "no hay ponentes identificados" in prompt.lower(), (
             "Nameless instruction must appear when all speakers are placeholders"
         )
-        assert "Interviniente no identificado" not in prompt or (
-            "SOLO puedes nombrar" not in prompt
-        ), (
+        assert "Interviniente no identificado" not in prompt or ("SOLO puedes nombrar" not in prompt), (
             "Placeholder name must not be listed in a speaker prohibition block"
         )
 
     def test_mixed_list_uses_real_name_prohibition(self, mocker) -> None:
         """key_speakers=['Interviniente no identificado', 'Cervera Pinar'] → prohibition with real name only."""
-        prompt = self._capture_prompt(
-            mocker, ["Interviniente no identificado", "Cervera Pinar"]
-        )
+        prompt = self._capture_prompt(mocker, ["Interviniente no identificado", "Cervera Pinar"])
 
         assert "Cervera Pinar" in prompt, "Real name must appear in prohibition"
         assert "no hay ponentes identificados" not in prompt.lower(), (
             "Nameless instruction must NOT appear when real speaker exists"
         )
-        assert "Interviniente no identificado" not in prompt or (
-            "SOLO puedes nombrar" in prompt
-        ), (
+        assert "Interviniente no identificado" not in prompt or ("SOLO puedes nombrar" in prompt), (
             "Placeholder must not appear in the speaker list sent to the model"
         )
 
@@ -3254,9 +3107,7 @@ class TestLapidaryIndexZeroSentinelGuard:
         fragment = "esto es una prueba seria. vamos a votar ya"
         result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
 
-        assert result is not None, (
-            "idx=0 must not be treated as falsy and silently dropped"
-        )
+        assert result is not None, "idx=0 must not be treated as falsy and silently dropped"
         assert result == "esto es una prueba seria"
 
     def test_llm_index_one_among_multiple_candidates_returns_first(self):
@@ -3266,11 +3117,7 @@ class TestLapidaryIndexZeroSentinelGuard:
         def fake_fn(**_kw):
             return {"content": "1", "error": None}
 
-        fragment = (
-            "vamos a votar ya. "
-            "esto es una prueba seria. "
-            "nunca vamos a ceder aqui"
-        )
+        fragment = "vamos a votar ya. esto es una prueba seria. nunca vamos a ceder aqui"
         result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
 
         assert result == "vamos a votar ya"
@@ -3295,9 +3142,7 @@ class TestLapidaryCandidateFilteringSentinel:
         result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
 
         assert result is None
-        assert called == [], (
-            "completion_fn must not be invoked when the candidate list is empty"
-        )
+        assert called == [], "completion_fn must not be invoked when the candidate list is empty"
 
 
 class TestReorderingGuardReprompt:
@@ -3402,9 +3247,7 @@ class TestReorderingGuardReprompt:
         result = generate_title("Debate summary", best)
 
         assert call_count["n"] == 2
-        assert "demasiado largo" in captured_prompts[1].lower(), (
-            "Too-long branch must win over the all-caps branch"
-        )
+        assert "demasiado largo" in captured_prompts[1].lower(), "Too-long branch must win over the all-caps branch"
         assert "está todo en mayúsculas" not in captured_prompts[1].lower(), (
             "All-caps instruction must NOT fire when the title is also too long"
         )
@@ -3430,9 +3273,7 @@ class TestResolvedPhotoInstructionConstant:
         assert "Viviane Ogou i Corbi" in ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION.format(
             speaker_name="Viviane Ogou i Corbi"
         )
-        assert "Cervera Pinar" in ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION.format(
-            speaker_name="Cervera Pinar"
-        )
+        assert "Cervera Pinar" in ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION.format(speaker_name="Cervera Pinar")
 
     def test_system_prompt_unchanged_by_new_constant(self) -> None:
         """Adding the new constant must not alter ART_DIRECTION_SYSTEM_PROMPT."""
@@ -3456,14 +3297,8 @@ class TestResolvedPhotoSpeakerName:
             resolved_photo_speaker_name,
         )
 
-        assert (
-            resolved_photo_speaker_name({"source": "photo"}, ["Viviane Ogou i Corbi"])
-            == "Viviane Ogou i Corbi"
-        )
-        assert (
-            resolved_photo_speaker_name({"source": "photo"}, [{"name": "Cervera Pinar"}])
-            == "Cervera Pinar"
-        )
+        assert resolved_photo_speaker_name({"source": "photo"}, ["Viviane Ogou i Corbi"]) == "Viviane Ogou i Corbi"
+        assert resolved_photo_speaker_name({"source": "photo"}, [{"name": "Cervera Pinar"}]) == "Cervera Pinar"
 
     def test_multiple_real_names_returns_first(self) -> None:
         """source='photo' with multiple real names → returns the first one."""
@@ -3491,12 +3326,7 @@ class TestResolvedPhotoSpeakerName:
         assert resolved_photo_speaker_name({"source": "none"}, real_speaker) is None
         assert resolved_photo_speaker_name({}, real_speaker) is None
         assert resolved_photo_speaker_name(None, real_speaker) is None
-        assert (
-            resolved_photo_speaker_name(
-                {"source": "photo"}, ["Interviniente no identificado"]
-            )
-            is None
-        )
+        assert resolved_photo_speaker_name({"source": "photo"}, ["Interviniente no identificado"]) is None
         assert resolved_photo_speaker_name({"source": "photo"}, None) is None
 
 
@@ -3535,17 +3365,13 @@ class TestArtDirectResolvedPhotoInstruction:
         from congress_videos.modules.thumbnail_generation import art_direct
 
         captured_prompts = self._capture(mocker)
-        art_direct(
-            "Debate sobre presupuesto", _make_cfg(), resolved_speaker_name="Cervera Pinar"
-        )
+        art_direct("Debate sobre presupuesto", _make_cfg(), resolved_speaker_name="Cervera Pinar")
 
         assert captured_prompts, "generate_json_completion must be called"
         assert "EXCEPCIÓN DE IDENTIDAD" in captured_prompts[0]
         assert "Cervera Pinar" in captured_prompts[0]
 
-    def test_none_or_empty_resolved_speaker_name_is_byte_identical_to_baseline(
-        self, mocker
-    ) -> None:
+    def test_none_or_empty_resolved_speaker_name_is_byte_identical_to_baseline(self, mocker) -> None:
         """resolved_speaker_name unset, None, or '' → prompt matches the
         pre-change baseline exactly, with no identity-exception language."""
         from congress_videos.modules.thumbnail_generation import art_direct
@@ -3558,9 +3384,7 @@ class TestArtDirectResolvedPhotoInstruction:
 
         for value in (None, ""):
             variant_prompts = self._capture(mocker)
-            art_direct(
-                "Debate sobre presupuesto", _make_cfg(), resolved_speaker_name=value
-            )
+            art_direct("Debate sobre presupuesto", _make_cfg(), resolved_speaker_name=value)
             assert variant_prompts[0] == baseline
 
     def test_photo_block_ordered_after_retry_and_sibling_blocks(self, mocker) -> None:
@@ -3897,32 +3721,22 @@ class TestPersistResultsArtDirectionBrief:
                 return params
         return None
 
-    def test_sql_includes_art_direction_brief_column_and_jsonb_cast(
-        self, mock_psycopg2_connection
-    ):
+    def test_sql_includes_art_direction_brief_column_and_jsonb_cast(self, mock_psycopg2_connection):
         from congress_videos.modules.thumbnail_generation import persist_results
 
         mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
-        options = self._make_options_with_briefs(
-            brief_a={"text": "foo"}, brief_b={"text": "bar"}
-        )
+        options = self._make_options_with_briefs(brief_a={"text": "foo"}, brief_b={"text": "bar"})
         persist_results(7, "vid123", "Un título", options, "option_b")
 
         sql_calls = [c.args[0] for c in mock_cursor.execute.call_args_list if c.args]
-        assert any(
-            "art_direction_brief" in s and "::jsonb" in s for s in sql_calls
-        )
+        assert any("art_direction_brief" in s and "::jsonb" in s for s in sql_calls)
 
-    def test_chosen_option_brief_round_trips_through_json(
-        self, mock_psycopg2_connection
-    ):
+    def test_chosen_option_brief_round_trips_through_json(self, mock_psycopg2_connection):
         from congress_videos.modules.thumbnail_generation import persist_results
 
         mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
         brief_b = {"text": "chosen brief", "framing": "close-up"}
-        options = self._make_options_with_briefs(
-            brief_a={"text": "not chosen"}, brief_b=brief_b
-        )
+        options = self._make_options_with_briefs(brief_a={"text": "not chosen"}, brief_b=brief_b)
         persist_results(7, "vid123", "Un título", options, "option_b")
 
         chosen_params = self._params_containing(mock_cursor, "option_b")
@@ -3931,9 +3745,7 @@ class TestPersistResultsArtDirectionBrief:
         decoded = [json.loads(s) for s in json_strs if _is_json(s)]
         assert brief_b in decoded
 
-    def test_brief_with_non_ascii_text_preserves_literal_characters(
-        self, mock_psycopg2_connection
-    ):
+    def test_brief_with_non_ascii_text_preserves_literal_characters(self, mock_psycopg2_connection):
         from congress_videos.modules.thumbnail_generation import persist_results
 
         mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
@@ -3943,9 +3755,7 @@ class TestPersistResultsArtDirectionBrief:
 
         chosen_params = self._params_containing(mock_cursor, "option_a")
         assert chosen_params is not None
-        assert any(
-            isinstance(p, str) and "PENSIÓN" in p for p in chosen_params
-        )
+        assert any(isinstance(p, str) and "PENSIÓN" in p for p in chosen_params)
 
     def test_option_without_brief_key_binds_none(self, mock_psycopg2_connection):
         from congress_videos.modules.thumbnail_generation import persist_results
@@ -3981,9 +3791,7 @@ class TestPersistResultsArtDirectionBrief:
         from congress_videos.modules.thumbnail_generation import persist_results
 
         mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
-        options = self._make_options_with_briefs(
-            brief_a="a string", brief_b={"text": "b"}
-        )
+        options = self._make_options_with_briefs(brief_a="a string", brief_b={"text": "b"})
         persist_results(7, "vid123", "Un título", options, "option_b")
 
         sql_calls = [c.args[0] for c in mock_cursor.execute.call_args_list if c.args]
@@ -3993,9 +3801,7 @@ class TestPersistResultsArtDirectionBrief:
         assert option_a_params is not None
         assert None in option_a_params
 
-    def test_two_options_produce_distinct_bound_json_strings(
-        self, mock_psycopg2_connection
-    ):
+    def test_two_options_produce_distinct_bound_json_strings(self, mock_psycopg2_connection):
         from congress_videos.modules.thumbnail_generation import persist_results
 
         mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
@@ -4009,12 +3815,8 @@ class TestPersistResultsArtDirectionBrief:
         assert params_a is not None
         assert params_b is not None
 
-        json_a = next(
-            p for p in params_a if isinstance(p, str) and _is_json(p) and json.loads(p) == brief_a
-        )
-        json_b = next(
-            p for p in params_b if isinstance(p, str) and _is_json(p) and json.loads(p) == brief_b
-        )
+        json_a = next(p for p in params_a if isinstance(p, str) and _is_json(p) and json.loads(p) == brief_a)
+        json_b = next(p for p in params_b if isinstance(p, str) and _is_json(p) and json.loads(p) == brief_b)
         assert json_a != json_b
 
 

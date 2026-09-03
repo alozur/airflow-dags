@@ -8,7 +8,7 @@ cap per video.
 from __future__ import annotations
 
 from contextlib import ExitStack
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,7 +19,6 @@ import pytest
 
 
 class TestVideoAnalyticsActionsDagLoads:
-
     def test_dag_is_importable(self):
         from airflow.models import DagBag
 
@@ -127,7 +126,6 @@ def _thumbnail_dag_run(state="success"):
 
 
 class TestSelectCandidates:
-
     def test_pushes_db_result_to_candidates_xcom(self, mock_task_instance):
         from congress_videos.video_analytics_actions_dag import _run_select_candidates
 
@@ -143,7 +141,6 @@ class TestSelectCandidates:
 
 
 class TestEvaluateCandidates:
-
     def test_no_candidates_pushes_empty_decisions(self, mock_task_instance):
         from congress_videos.video_analytics_actions_dag import _run_evaluate_candidates
 
@@ -163,12 +160,15 @@ class TestEvaluateCandidates:
         del candidate["sample_size"]
         mock_task_instance.xcom_store["candidates"] = [candidate]
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_checkpoint_view_medians",
-            return_value={"48h": {"median_views": 1000, "sample_size": 15}},
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_video_action_history",
-            return_value={"vid123": {"thumbnail": 0, "title": 0}},
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_checkpoint_view_medians",
+                return_value={"48h": {"median_views": 1000, "sample_size": 15}},
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_video_action_history",
+                return_value={"vid123": {"thumbnail": 0, "title": 0}},
+            ),
         ):
             result = _run_evaluate_candidates(ti=mock_task_instance)
 
@@ -177,7 +177,6 @@ class TestEvaluateCandidates:
 
 
 class TestRecordNoOps:
-
     def test_no_op_decisions_call_mark_action_taken(self, mock_task_instance):
         from congress_videos.video_analytics_actions_dag import _run_record_no_ops
 
@@ -188,9 +187,7 @@ class TestRecordNoOps:
             _decision_row(snapshot_id=4, decision="thumbnail_regenerated"),
         ]
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"
-        ) as mock_mark:
+        with patch("congress_videos.modules.database.CongressionalVideoDB.mark_action_taken") as mock_mark:
             _run_record_no_ops(ti=mock_task_instance)
 
         marked_ids = {c.kwargs.get("snapshot_id", c.args[0] if c.args else None) for c in mock_mark.call_args_list}
@@ -207,11 +204,10 @@ class TestRecordNoOps:
             _decision_row(snapshot_id=1, decision="ok"),
         ]
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"
-        ), patch(
-            "utils.youtube_helpers.get_authenticated_youtube_service"
-        ) as mock_youtube_svc:
+        with (
+            patch("congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"),
+            patch("utils.youtube_helpers.get_authenticated_youtube_service") as mock_youtube_svc,
+        ):
             _run_record_no_ops(ti=mock_task_instance)
 
         mock_youtube_svc.assert_not_called()
@@ -241,34 +237,41 @@ class TestApplyActionsClaimBeforeAct:
             call_order.append("trigger")
             return _thumbnail_dag_run()
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
-            side_effect=fake_claim,
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
-            return_value=None,
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.trigger_dag_api",
-            side_effect=fake_trigger,
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.time.sleep",
-            return_value=None,
-        ), patch(
-            "airflow.models.XCom.get_one",
-            return_value={
-                "success": True,
-                "chapter_id": 5,
-                "output_path": "/tmp/thumb.png",
-                "title": "Nuevo título",
-            },
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"
-        ), patch(
-            "utils.youtube_helpers.get_authenticated_youtube_service",
-            return_value=MagicMock(),
-        ), patch(
-            "utils.youtube_helpers.set_thumbnail_for_video",
-            return_value={"success": True, "error": None},
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
+                side_effect=fake_claim,
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
+                return_value=None,
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.trigger_dag_api",
+                side_effect=fake_trigger,
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.time.sleep",
+                return_value=None,
+            ),
+            patch(
+                "airflow.models.XCom.get_one",
+                return_value={
+                    "success": True,
+                    "chapter_id": 5,
+                    "output_path": "/tmp/thumb.png",
+                    "title": "Nuevo título",
+                },
+            ),
+            patch("congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"),
+            patch(
+                "utils.youtube_helpers.get_authenticated_youtube_service",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "utils.youtube_helpers.set_thumbnail_for_video",
+                return_value={"success": True, "error": None},
+            ),
         ):
             _run_apply_actions(ti=mock_task_instance)
 
@@ -284,12 +287,13 @@ class TestApplyActionsClaimBeforeAct:
         mock_task_instance.xcom_store["decisions"] = [_decision_row()]
         mock_task_instance.run_id = "manual_run_1"
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
-            return_value=False,
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.trigger_dag_api"
-        ) as mock_trigger:
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
+                return_value=False,
+            ),
+            patch("congress_videos.video_analytics_actions_dag.trigger_dag_api") as mock_trigger,
+        ):
             _run_apply_actions(ti=mock_task_instance)
 
         mock_trigger.assert_not_called()
@@ -315,35 +319,44 @@ class TestApplyActionsPriorSnapshotBeforeTrigger:
         def fake_mark(snapshot_id, action, detail):
             captured_detail.update(detail)
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
-            return_value=True,
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
-            return_value=chosen_row,
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.trigger_dag_api",
-            return_value=_thumbnail_dag_run(),
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.time.sleep",
-            return_value=None,
-        ), patch(
-            "airflow.models.XCom.get_one",
-            return_value={
-                "success": True,
-                "chapter_id": 5,
-                "output_path": "/tmp/thumb.png",
-                "title": "Nuevo título",
-            },
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
-            side_effect=fake_mark,
-        ), patch(
-            "utils.youtube_helpers.get_authenticated_youtube_service",
-            return_value=MagicMock(),
-        ), patch(
-            "utils.youtube_helpers.set_thumbnail_for_video",
-            return_value={"success": True, "error": None},
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
+                return_value=True,
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
+                return_value=chosen_row,
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.trigger_dag_api",
+                return_value=_thumbnail_dag_run(),
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.time.sleep",
+                return_value=None,
+            ),
+            patch(
+                "airflow.models.XCom.get_one",
+                return_value={
+                    "success": True,
+                    "chapter_id": 5,
+                    "output_path": "/tmp/thumb.png",
+                    "title": "Nuevo título",
+                },
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
+                side_effect=fake_mark,
+            ),
+            patch(
+                "utils.youtube_helpers.get_authenticated_youtube_service",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "utils.youtube_helpers.set_thumbnail_for_video",
+                return_value={"success": True, "error": None},
+            ),
         ):
             _run_apply_actions(ti=mock_task_instance)
 
@@ -360,33 +373,40 @@ class TestApplyActionsTokenIsolation:
         mock_task_instance.xcom_store["decisions"] = [_decision_row()]
         mock_task_instance.run_id = "manual_run_1"
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
-            return_value=True,
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
-            return_value=None,
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.trigger_dag_api",
-            return_value=_thumbnail_dag_run(),
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.time.sleep",
-            return_value=None,
-        ), patch(
-            "airflow.models.XCom.get_one",
-            return_value={
-                "success": True,
-                "chapter_id": 5,
-                "output_path": "/tmp/thumb.png",
-                "title": "Nuevo título",
-            },
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"
-        ), patch(
-            "utils.youtube_helpers.get_authenticated_youtube_service",
-        ) as mock_get_service, patch(
-            "utils.youtube_helpers.set_thumbnail_for_video",
-            return_value={"success": True, "error": None},
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
+                return_value=True,
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
+                return_value=None,
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.trigger_dag_api",
+                return_value=_thumbnail_dag_run(),
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.time.sleep",
+                return_value=None,
+            ),
+            patch(
+                "airflow.models.XCom.get_one",
+                return_value={
+                    "success": True,
+                    "chapter_id": 5,
+                    "output_path": "/tmp/thumb.png",
+                    "title": "Nuevo título",
+                },
+            ),
+            patch("congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"),
+            patch(
+                "utils.youtube_helpers.get_authenticated_youtube_service",
+            ) as mock_get_service,
+            patch(
+                "utils.youtube_helpers.set_thumbnail_for_video",
+                return_value={"success": True, "error": None},
+            ),
         ):
             _run_apply_actions(ti=mock_task_instance)
 
@@ -408,11 +428,10 @@ class TestApplyActionsNoOpNeverCallsYoutube:
             _decision_row(snapshot_id=3, decision="cold_start"),
         ]
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action"
-        ) as mock_claim, patch(
-            "utils.youtube_helpers.get_authenticated_youtube_service"
-        ) as mock_svc:
+        with (
+            patch("congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action") as mock_claim,
+            patch("utils.youtube_helpers.get_authenticated_youtube_service") as mock_svc,
+        ):
             _run_apply_actions(ti=mock_task_instance)
 
         mock_claim.assert_not_called()
@@ -437,22 +456,29 @@ class TestApplyActionsFailurePath:
             captured["action"] = action
             captured["detail"] = detail
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
-            return_value=True,
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
-            return_value=None,
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.trigger_dag_api",
-            return_value=_thumbnail_dag_run(state="failed"),
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.time.sleep",
-            return_value=None,
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
-            side_effect=fake_mark,
-        ), pytest.raises(Exception, match="failed"):
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
+                return_value=True,
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
+                return_value=None,
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.trigger_dag_api",
+                return_value=_thumbnail_dag_run(state="failed"),
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.time.sleep",
+                return_value=None,
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
+                side_effect=fake_mark,
+            ),
+            pytest.raises(Exception, match="failed"),
+        ):
             _run_apply_actions(ti=mock_task_instance)
 
         assert captured["action"] == "failed"
@@ -470,36 +496,46 @@ class TestApplyActionsFailurePath:
             captured["action"] = action
             captured["detail"] = detail
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
-            return_value=True,
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
-            return_value=None,
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.trigger_dag_api",
-            return_value=_thumbnail_dag_run(),
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.time.sleep",
-            return_value=None,
-        ), patch(
-            "airflow.models.XCom.get_one",
-            return_value={
-                "success": True,
-                "chapter_id": 5,
-                "output_path": "/tmp/thumb.png",
-                "title": "Nuevo título",
-            },
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
-            side_effect=fake_mark,
-        ), patch(
-            "utils.youtube_helpers.get_authenticated_youtube_service",
-            return_value=MagicMock(),
-        ), patch(
-            "utils.youtube_helpers.set_thumbnail_for_video",
-            return_value={"success": False, "error": "thumbnail size exceeded"},
-        ), pytest.raises(Exception, match="failed"):
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
+                return_value=True,
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
+                return_value=None,
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.trigger_dag_api",
+                return_value=_thumbnail_dag_run(),
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.time.sleep",
+                return_value=None,
+            ),
+            patch(
+                "airflow.models.XCom.get_one",
+                return_value={
+                    "success": True,
+                    "chapter_id": 5,
+                    "output_path": "/tmp/thumb.png",
+                    "title": "Nuevo título",
+                },
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
+                side_effect=fake_mark,
+            ),
+            patch(
+                "utils.youtube_helpers.get_authenticated_youtube_service",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "utils.youtube_helpers.set_thumbnail_for_video",
+                return_value={"success": False, "error": "thumbnail size exceeded"},
+            ),
+            pytest.raises(Exception, match="failed"),
+        ):
             _run_apply_actions(ti=mock_task_instance)
 
         assert captured["action"] == "failed"
@@ -515,38 +551,46 @@ class TestApplyActionsFailurePath:
         ]
         mock_task_instance.run_id = "manual_run_1"
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
-            return_value=True,
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
-            return_value=None,
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.trigger_dag_api",
-            return_value=_thumbnail_dag_run(),
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.time.sleep",
-            return_value=None,
-        ), patch(
-            "airflow.models.XCom.get_one",
-            return_value={
-                "success": True,
-                "chapter_id": 5,
-                "output_path": "/tmp/thumb.png",
-                "title": "Nuevo título",
-            },
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"
-        ), patch(
-            "utils.youtube_helpers.get_authenticated_youtube_service",
-            return_value=MagicMock(),
-        ), patch(
-            "utils.youtube_helpers.set_thumbnail_for_video",
-            return_value={"success": True, "error": None},
-        ), patch(
-            "utils.youtube_helpers.update_video_title",
-            return_value={"success": True, "error": None},
-        ) as mock_update_title:
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
+                return_value=True,
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
+                return_value=None,
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.trigger_dag_api",
+                return_value=_thumbnail_dag_run(),
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.time.sleep",
+                return_value=None,
+            ),
+            patch(
+                "airflow.models.XCom.get_one",
+                return_value={
+                    "success": True,
+                    "chapter_id": 5,
+                    "output_path": "/tmp/thumb.png",
+                    "title": "Nuevo título",
+                },
+            ),
+            patch("congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"),
+            patch(
+                "utils.youtube_helpers.get_authenticated_youtube_service",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "utils.youtube_helpers.set_thumbnail_for_video",
+                return_value={"success": True, "error": None},
+            ),
+            patch(
+                "utils.youtube_helpers.update_video_title",
+                return_value={"success": True, "error": None},
+            ) as mock_update_title,
+        ):
             _run_apply_actions(ti=mock_task_instance)
 
         mock_update_title.assert_called_once()
@@ -554,42 +598,48 @@ class TestApplyActionsFailurePath:
     def test_non_title_checkpoint_does_not_call_update_video_title(self, mock_task_instance):
         from congress_videos.video_analytics_actions_dag import _run_apply_actions
 
-        mock_task_instance.xcom_store["decisions"] = [
-            _decision_row(checkpoint="48h", decision="thumbnail_regenerated")
-        ]
+        mock_task_instance.xcom_store["decisions"] = [_decision_row(checkpoint="48h", decision="thumbnail_regenerated")]
         mock_task_instance.run_id = "manual_run_1"
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
-            return_value=True,
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
-            return_value=None,
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.trigger_dag_api",
-            return_value=_thumbnail_dag_run(),
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.time.sleep",
-            return_value=None,
-        ), patch(
-            "airflow.models.XCom.get_one",
-            return_value={
-                "success": True,
-                "chapter_id": 5,
-                "output_path": "/tmp/thumb.png",
-                "title": "Nuevo título",
-            },
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"
-        ), patch(
-            "utils.youtube_helpers.get_authenticated_youtube_service",
-            return_value=MagicMock(),
-        ), patch(
-            "utils.youtube_helpers.set_thumbnail_for_video",
-            return_value={"success": True, "error": None},
-        ), patch(
-            "utils.youtube_helpers.update_video_title",
-        ) as mock_update_title:
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
+                return_value=True,
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
+                return_value=None,
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.trigger_dag_api",
+                return_value=_thumbnail_dag_run(),
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.time.sleep",
+                return_value=None,
+            ),
+            patch(
+                "airflow.models.XCom.get_one",
+                return_value={
+                    "success": True,
+                    "chapter_id": 5,
+                    "output_path": "/tmp/thumb.png",
+                    "title": "Nuevo título",
+                },
+            ),
+            patch("congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"),
+            patch(
+                "utils.youtube_helpers.get_authenticated_youtube_service",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "utils.youtube_helpers.set_thumbnail_for_video",
+                return_value={"success": True, "error": None},
+            ),
+            patch(
+                "utils.youtube_helpers.update_video_title",
+            ) as mock_update_title,
+        ):
             _run_apply_actions(ti=mock_task_instance)
 
         mock_update_title.assert_not_called()
@@ -605,49 +655,57 @@ def _patched_apply(
     """ExitStack of the standard apply_actions success-path patch set, with
     the thumbnail/title publish results overridable per test (D-1..D-3)."""
     stack = ExitStack()
-    stack.enter_context(patch(
-        "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
-        return_value=True,
-    ))
-    stack.enter_context(patch(
-        "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
-        return_value=None,
-    ))
-    stack.enter_context(patch(
-        "congress_videos.video_analytics_actions_dag.trigger_dag_api",
-        return_value=_thumbnail_dag_run(),
-    ))
-    stack.enter_context(patch(
-        "congress_videos.video_analytics_actions_dag.time.sleep", return_value=None
-    ))
-    stack.enter_context(patch(
-        "airflow.models.XCom.get_one",
-        return_value={
-            "success": True, "chapter_id": 5,
-            "output_path": "/tmp/thumb.png", "title": "Nuevo título",
-        },
-    ))
-    stack.enter_context(patch(
-        "utils.youtube_helpers.get_authenticated_youtube_service", return_value=MagicMock()
-    ))
+    stack.enter_context(
+        patch(
+            "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
+            return_value=True,
+        )
+    )
+    stack.enter_context(
+        patch(
+            "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
+            return_value=None,
+        )
+    )
+    stack.enter_context(
+        patch(
+            "congress_videos.video_analytics_actions_dag.trigger_dag_api",
+            return_value=_thumbnail_dag_run(),
+        )
+    )
+    stack.enter_context(patch("congress_videos.video_analytics_actions_dag.time.sleep", return_value=None))
+    stack.enter_context(
+        patch(
+            "airflow.models.XCom.get_one",
+            return_value={
+                "success": True,
+                "chapter_id": 5,
+                "output_path": "/tmp/thumb.png",
+                "title": "Nuevo título",
+            },
+        )
+    )
+    stack.enter_context(patch("utils.youtube_helpers.get_authenticated_youtube_service", return_value=MagicMock()))
     if set_thumbnail_side_effect is not None:
-        stack.enter_context(patch(
-            "utils.youtube_helpers.set_thumbnail_for_video", side_effect=set_thumbnail_side_effect
-        ))
+        stack.enter_context(
+            patch("utils.youtube_helpers.set_thumbnail_for_video", side_effect=set_thumbnail_side_effect)
+        )
     else:
-        stack.enter_context(patch(
-            "utils.youtube_helpers.set_thumbnail_for_video",
-            return_value=set_thumbnail_result or {"success": True, "error": None},
-        ))
+        stack.enter_context(
+            patch(
+                "utils.youtube_helpers.set_thumbnail_for_video",
+                return_value=set_thumbnail_result or {"success": True, "error": None},
+            )
+        )
     if update_title_side_effect is not None:
-        stack.enter_context(patch(
-            "utils.youtube_helpers.update_video_title", side_effect=update_title_side_effect
-        ))
+        stack.enter_context(patch("utils.youtube_helpers.update_video_title", side_effect=update_title_side_effect))
     else:
-        stack.enter_context(patch(
-            "utils.youtube_helpers.update_video_title",
-            return_value=update_title_result or {"success": True, "error": None},
-        ))
+        stack.enter_context(
+            patch(
+                "utils.youtube_helpers.update_video_title",
+                return_value=update_title_result or {"success": True, "error": None},
+            )
+        )
     return stack
 
 
@@ -671,12 +729,14 @@ class TestApplyActionsAppliedField:
             captured["action"] = action
             captured["detail"] = detail
 
-        with _patched_apply(
-            update_title_result={"success": False, "error": "quotaExceeded"}
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
-            side_effect=fake_mark,
-        ), pytest.raises(Exception, match="failed"):
+        with (
+            _patched_apply(update_title_result={"success": False, "error": "quotaExceeded"}),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
+                side_effect=fake_mark,
+            ),
+            pytest.raises(Exception, match="failed"),
+        ):
             _run_apply_actions(ti=mock_task_instance)
 
         assert captured["action"] == "failed"
@@ -700,12 +760,16 @@ class TestApplyActionsAppliedField:
             captured["action"] = action
             captured["detail"] = detail
 
-        with _patched_apply(
-            update_title_side_effect=ValueError("update_video_title: refusing to publish a blank title")
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
-            side_effect=fake_mark,
-        ), pytest.raises(Exception, match="failed"):
+        with (
+            _patched_apply(
+                update_title_side_effect=ValueError("update_video_title: refusing to publish a blank title")
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
+                side_effect=fake_mark,
+            ),
+            pytest.raises(Exception, match="failed"),
+        ):
             _run_apply_actions(ti=mock_task_instance)
 
         assert captured["action"] == "failed"
@@ -737,10 +801,14 @@ class TestApplyActionsAppliedField:
                 raise ValueError("blank title")
             return {"success": True, "error": None}
 
-        with _patched_apply(update_title_side_effect=_title_side_effect), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
-            side_effect=fake_mark,
-        ), pytest.raises(Exception, match="snapshot_id=1"):
+        with (
+            _patched_apply(update_title_side_effect=_title_side_effect),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
+                side_effect=fake_mark,
+            ),
+            pytest.raises(Exception, match="snapshot_id=1"),
+        ):
             _run_apply_actions(ti=mock_task_instance)
 
         # Pins D1: both rows were claimed and mark_action_taken-recorded
@@ -761,19 +829,25 @@ class TestApplyActionsAppliedField:
         def fake_mark(snapshot_id, action, detail):
             captured["detail"] = detail
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
-            return_value=True,
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
-            return_value=None,
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.trigger_dag_api",
-            side_effect=RuntimeError("dag not found"),
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
-            side_effect=fake_mark,
-        ), pytest.raises(Exception, match="failed"):
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
+                return_value=True,
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
+                return_value=None,
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.trigger_dag_api",
+                side_effect=RuntimeError("dag not found"),
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
+                side_effect=fake_mark,
+            ),
+            pytest.raises(Exception, match="failed"),
+        ):
             _run_apply_actions(ti=mock_task_instance)
 
         assert captured["detail"]["applied"] == {"thumbnail": None, "title": None}
@@ -817,9 +891,11 @@ class TestApplyActionsFailLoudGate:
                 return {"success": True, "error": None}
             return _permanent_thumbnail_failure(video_id)
 
-        with _patched_apply(set_thumbnail_side_effect=fake_set_thumbnail), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"
-        ) as mock_mark, pytest.raises(Exception) as exc_info:
+        with (
+            _patched_apply(set_thumbnail_side_effect=fake_set_thumbnail),
+            patch("congress_videos.modules.database.CongressionalVideoDB.mark_action_taken") as mock_mark,
+            pytest.raises(Exception) as exc_info,
+        ):
             _run_apply_actions(ti=mock_task_instance)
 
         message = str(exc_info.value)
@@ -847,12 +923,11 @@ class TestActionFailureProblems:
         from congress_videos.video_analytics_actions_dag import _action_failure_problems
 
         assert _action_failure_problems([]) == []
-        assert _action_failure_problems(
-            [self._success_row(1), self._success_row(2, "thumbnail_and_title_regenerated")]
-        ) == []
-        assert _action_failure_problems(
-            [{"snapshot_id": 1, "action": "skipped_already_claimed"}]
-        ) == []
+        assert (
+            _action_failure_problems([self._success_row(1), self._success_row(2, "thumbnail_and_title_regenerated")])
+            == []
+        )
+        assert _action_failure_problems([{"snapshot_id": 1, "action": "skipped_already_claimed"}]) == []
 
     def test_permanent_failure_sentence_excludes_transient_word(self):
         from congress_videos.video_analytics_actions_dag import _action_failure_problems
@@ -923,19 +998,25 @@ class TestApplyActionsAdditionalFailureBranches:
             captured["action"] = action
             captured["detail"] = detail
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
-            return_value=True,
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
-            return_value=None,
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.trigger_dag_api",
-            side_effect=RuntimeError("dag not found"),
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
-            side_effect=fake_mark,
-        ), pytest.raises(Exception, match="failed"):
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
+                return_value=True,
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
+                return_value=None,
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.trigger_dag_api",
+                side_effect=RuntimeError("dag not found"),
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
+                side_effect=fake_mark,
+            ),
+            pytest.raises(Exception, match="failed"),
+        ):
             _run_apply_actions(ti=mock_task_instance)
 
         assert captured["action"] == "failed"
@@ -954,25 +1035,33 @@ class TestApplyActionsAdditionalFailureBranches:
             captured["action"] = action
             captured["detail"] = detail
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
-            return_value=True,
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
-            return_value=None,
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.trigger_dag_api",
-            return_value=_thumbnail_dag_run(),
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.time.sleep",
-            return_value=None,
-        ), patch(
-            "airflow.models.XCom.get_one",
-            return_value={"success": True, "chapter_id": 5, "output_path": "", "title": ""},
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
-            side_effect=fake_mark,
-        ), pytest.raises(Exception, match="failed"):
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
+                return_value=True,
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
+                return_value=None,
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.trigger_dag_api",
+                return_value=_thumbnail_dag_run(),
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.time.sleep",
+                return_value=None,
+            ),
+            patch(
+                "airflow.models.XCom.get_one",
+                return_value={"success": True, "chapter_id": 5, "output_path": "", "title": ""},
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken",
+                side_effect=fake_mark,
+            ),
+            pytest.raises(Exception, match="failed"),
+        ):
             _run_apply_actions(ti=mock_task_instance)
 
         assert captured["action"] == "failed"
@@ -994,34 +1083,41 @@ class TestApplyActionsAdditionalFailureBranches:
 
         dag_run.refresh_from_db.side_effect = fake_refresh
 
-        with patch(
-            "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
-            return_value=True,
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
-            return_value=None,
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.trigger_dag_api",
-            return_value=dag_run,
-        ), patch(
-            "congress_videos.video_analytics_actions_dag.time.sleep",
-            return_value=None,
-        ), patch(
-            "airflow.models.XCom.get_one",
-            return_value={
-                "success": True,
-                "chapter_id": 5,
-                "output_path": "/tmp/thumb.png",
-                "title": "Nuevo título",
-            },
-        ), patch(
-            "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"
-        ) as mock_mark, patch(
-            "utils.youtube_helpers.get_authenticated_youtube_service",
-            return_value=MagicMock(),
-        ), patch(
-            "utils.youtube_helpers.set_thumbnail_for_video",
-            return_value={"success": True, "error": None},
+        with (
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.claim_snapshot_action",
+                return_value=True,
+            ),
+            patch(
+                "congress_videos.modules.database.CongressionalVideoDB.get_chosen_thumbnail",
+                return_value=None,
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.trigger_dag_api",
+                return_value=dag_run,
+            ),
+            patch(
+                "congress_videos.video_analytics_actions_dag.time.sleep",
+                return_value=None,
+            ),
+            patch(
+                "airflow.models.XCom.get_one",
+                return_value={
+                    "success": True,
+                    "chapter_id": 5,
+                    "output_path": "/tmp/thumb.png",
+                    "title": "Nuevo título",
+                },
+            ),
+            patch("congress_videos.modules.database.CongressionalVideoDB.mark_action_taken") as mock_mark,
+            patch(
+                "utils.youtube_helpers.get_authenticated_youtube_service",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "utils.youtube_helpers.set_thumbnail_for_video",
+                return_value={"success": True, "error": None},
+            ),
         ):
             _run_apply_actions(ti=mock_task_instance)
 
@@ -1046,14 +1142,20 @@ class TestPollThumbnailDagRunProgress:
 
         dag_run = _thumbnail_dag_run(state="success")
 
-        with caplog.at_level("INFO"), patch(
-            "congress_videos.video_analytics_actions_dag.time.sleep", return_value=None
-        ), patch("airflow.models.XCom.get_one", return_value={
-            "success": True, "chapter_id": 5, "output_path": "/tmp/t.png", "title": "x",
-        }):
-            _poll_thumbnail_dag_run(
-                dag_run, snapshot_id=42, checkpoint="7d", snapshot_age_days=13
-            )
+        with (
+            caplog.at_level("INFO"),
+            patch("congress_videos.video_analytics_actions_dag.time.sleep", return_value=None),
+            patch(
+                "airflow.models.XCom.get_one",
+                return_value={
+                    "success": True,
+                    "chapter_id": 5,
+                    "output_path": "/tmp/t.png",
+                    "title": "x",
+                },
+            ),
+        ):
+            _poll_thumbnail_dag_run(dag_run, snapshot_id=42, checkpoint="7d", snapshot_age_days=13)
 
         entry = [r.message for r in caplog.records if "polling thumbnail DAG run" in r.message]
         assert len(entry) == 1
@@ -1074,15 +1176,21 @@ class TestPollThumbnailDagRunProgress:
         dag_run = _thumbnail_dag_run(state="running")
         # Stay pending for two full progress cycles, then settle.
         states = iter(["running"] * (_POLL_PROGRESS_EVERY * 2) + ["success"])
-        dag_run.refresh_from_db.side_effect = lambda: setattr(
-            dag_run, "state", next(states)
-        )
+        dag_run.refresh_from_db.side_effect = lambda: setattr(dag_run, "state", next(states))
 
-        with caplog.at_level("INFO"), patch(
-            "congress_videos.video_analytics_actions_dag.time.sleep", return_value=None
-        ), patch("airflow.models.XCom.get_one", return_value={
-            "success": True, "chapter_id": 5, "output_path": "/tmp/t.png", "title": "x",
-        }):
+        with (
+            caplog.at_level("INFO"),
+            patch("congress_videos.video_analytics_actions_dag.time.sleep", return_value=None),
+            patch(
+                "airflow.models.XCom.get_one",
+                return_value={
+                    "success": True,
+                    "chapter_id": 5,
+                    "output_path": "/tmp/t.png",
+                    "title": "x",
+                },
+            ),
+        ):
             _poll_thumbnail_dag_run(dag_run, snapshot_id=42)
 
         progress = [r.message for r in caplog.records if "still waiting" in r.message]
@@ -1099,11 +1207,19 @@ class TestPollThumbnailDagRunProgress:
 
         dag_run = _thumbnail_dag_run(state="success")
 
-        with caplog.at_level("INFO"), patch(
-            "congress_videos.video_analytics_actions_dag.time.sleep", return_value=None
-        ), patch("airflow.models.XCom.get_one", return_value={
-            "success": True, "chapter_id": 5, "output_path": "/tmp/t.png", "title": "x",
-        }):
+        with (
+            caplog.at_level("INFO"),
+            patch("congress_videos.video_analytics_actions_dag.time.sleep", return_value=None),
+            patch(
+                "airflow.models.XCom.get_one",
+                return_value={
+                    "success": True,
+                    "chapter_id": 5,
+                    "output_path": "/tmp/t.png",
+                    "title": "x",
+                },
+            ),
+        ):
             _poll_thumbnail_dag_run(dag_run, snapshot_id=42)
 
         assert not [r for r in caplog.records if "still waiting" in r.message]
@@ -1182,11 +1298,7 @@ class TestApplyActionsPreviousBriefForwarded:
                     },
                 )
             )
-            stack.enter_context(
-                patch(
-                    "congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"
-                )
-            )
+            stack.enter_context(patch("congress_videos.modules.database.CongressionalVideoDB.mark_action_taken"))
             stack.enter_context(
                 patch(
                     "utils.youtube_helpers.get_authenticated_youtube_service",

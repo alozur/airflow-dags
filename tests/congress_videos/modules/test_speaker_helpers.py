@@ -10,8 +10,8 @@ from congress_videos.modules.speaker_helpers import format_speaker_context, form
 # format_speaker_list
 # ---------------------------------------------------------------------------
 
-class TestFormatSpeakerList:
 
+class TestFormatSpeakerList:
     def test_empty_list_returns_no_participants_message(self):
         result = format_speaker_list([])
         assert result == "No hay participantes especificados"
@@ -88,11 +88,14 @@ class TestFormatSpeakerList:
         result = format_speaker_list(speakers)
         assert "y 2 participantes más" in result
 
-    @pytest.mark.parametrize("remaining,expected_word", [
-        (1, "participante"),
-        (2, "participantes"),
-        (10, "participantes"),
-    ])
+    @pytest.mark.parametrize(
+        "remaining,expected_word",
+        [
+            (1, "participante"),
+            (2, "participantes"),
+            (10, "participantes"),
+        ],
+    )
     def test_overflow_singular_plural_parametrized(self, remaining: int, expected_word: str):
         speakers = [{"speaker_name": f"Orador Numero{i}", "role": "R"} for i in range(3 + remaining)]
         result = format_speaker_list(speakers, max_speakers=3)
@@ -103,8 +106,8 @@ class TestFormatSpeakerList:
 # format_speaker_context
 # ---------------------------------------------------------------------------
 
-class TestFormatSpeakerContext:
 
+class TestFormatSpeakerContext:
     def test_empty_list_returns_empty_string(self):
         result = format_speaker_context([])
         assert result == ""

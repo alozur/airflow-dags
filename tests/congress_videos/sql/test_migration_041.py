@@ -8,17 +8,14 @@ since migration 026). Mirrors 039's DROP CONSTRAINT IF EXISTS + ADD
 CONSTRAINT idempotent shape even though no prior constraint exists on this
 column, per the design-amendments binding shape.
 """
+
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
 MIGRATION_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "congress_videos"
-    / "sql"
-    / "migrations"
-    / "041_analytics_actions.sql"
+    Path(__file__).resolve().parents[3] / "congress_videos" / "sql" / "migrations" / "041_analytics_actions.sql"
 )
 
 
@@ -32,43 +29,31 @@ def _executable_sql() -> str:
 
 
 class TestMigration040FileExists:
-
     def test_migration_file_exists(self):
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
     def test_filename_sorts_after_039(self):
         names = sorted(p.name for p in MIGRATION_PATH.parent.glob("*.sql"))
-        assert names.index(MIGRATION_PATH.name) > names.index(
-            "039_extend_speaker_turns_source.sql"
-        )
+        assert names.index(MIGRATION_PATH.name) > names.index("039_extend_speaker_turns_source.sql")
 
 
 class TestMigration040ArchetypeColumn:
-
     def test_adds_archetype_column_to_video_thumbnails(self):
         sql = _executable_sql()
         assert "ALTER TABLE video_thumbnails ADD COLUMN IF NOT EXISTS archetype TEXT" in sql
 
 
 class TestMigration040ActionDetailColumn:
-
     def test_adds_action_detail_jsonb_column(self):
         sql = _executable_sql()
-        assert (
-            "ALTER TABLE video_analytics_snapshots ADD COLUMN IF NOT EXISTS action_detail JSONB"
-            in sql
-        )
+        assert "ALTER TABLE video_analytics_snapshots ADD COLUMN IF NOT EXISTS action_detail JSONB" in sql
 
 
 class TestMigration040ActionTakenCheckConstraint:
-
     def test_drops_the_named_constraint_first(self):
         """Mirrors 039's shape: DROP CONSTRAINT IF EXISTS + ADD CONSTRAINT."""
         sql = _executable_sql().upper()
-        assert (
-            "DROP CONSTRAINT IF EXISTS VIDEO_ANALYTICS_SNAPSHOTS_ACTION_TAKEN_CHECK"
-            in sql
-        )
+        assert "DROP CONSTRAINT IF EXISTS VIDEO_ANALYTICS_SNAPSHOTS_ACTION_TAKEN_CHECK" in sql
 
     def test_adds_constraint_with_same_name(self):
         sql = _executable_sql().upper()
@@ -108,7 +93,6 @@ class TestMigration040ActionTakenCheckConstraint:
 
 
 class TestMigration040DownBlock:
-
     def test_down_block_present(self):
         sql = _sql().upper()
         assert "-- DOWN" in sql

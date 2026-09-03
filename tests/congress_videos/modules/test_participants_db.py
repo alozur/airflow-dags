@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-from unittest.mock import MagicMock, call, patch
-
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -12,6 +9,7 @@ import pytest
 # clarity we import the DB class inside each test to avoid module-level
 # ImportError before the production file exists.
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def set_pg_env(monkeypatch):
@@ -29,6 +27,7 @@ def db_fixture(mock_psycopg2_connection):
     """Return (CongressParticipantsDB, mock_conn, mock_cursor) with DB fully mocked."""
     mock_connect, mock_conn, mock_cursor = mock_psycopg2_connection
     from congress_videos.modules.participants_db import CongressParticipantsDB
+
     instance = CongressParticipantsDB()
     return instance, mock_conn, mock_cursor
 
@@ -58,7 +57,6 @@ def _make_record(**overrides):
 
 
 class TestUpsertBatch:
-
     def test_fresh_insert_executes_for_each_record(self, db_fixture):
         """Fresh insert: each record causes exactly one execute call."""
         instance, mock_conn, mock_cursor = db_fixture
@@ -127,9 +125,17 @@ class TestUpsertBatch:
 
         sql = mock_cursor.execute.call_args[0][0]
         for col in (
-            "normalized_name", "slug", "display_name", "party", "parliamentary_group",
-            "constituency", "biography", "full_membership_date", "start_date",
-            "group_entry_date", "photo_url",
+            "normalized_name",
+            "slug",
+            "display_name",
+            "party",
+            "parliamentary_group",
+            "constituency",
+            "biography",
+            "full_membership_date",
+            "start_date",
+            "group_entry_date",
+            "photo_url",
         ):
             assert col in sql, f"Column {col!r} missing from INSERT SQL"
 
@@ -185,17 +191,23 @@ class TestUpsertBatch:
 
 
 class TestLookupParticipant:
-
     def test_exact_match_returns_dict(self, monkeypatch):
         """Exact match found → returns dict with correct normalized_name."""
         rows = [
-            {"normalized_name": "garcia ana", "display_name": "García, Ana", "party": "PartyA",
-             "photo_url": "https://example.com/garcia.jpg", "biography": "Bio."},
+            {
+                "normalized_name": "garcia ana",
+                "display_name": "García, Ana",
+                "party": "PartyA",
+                "photo_url": "https://example.com/garcia.jpg",
+                "biography": "Bio.",
+            },
         ]
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
 
         from congress_videos.modules.participants_db import lookup_participant
+
         result = lookup_participant("garcia ana")
 
         assert result is not None
@@ -203,39 +215,57 @@ class TestLookupParticipant:
 
     def test_exact_miss_returns_none(self, monkeypatch):
         """No exact match → None (lookup_participant does not try fuzzy)."""
-        rows = [{"normalized_name": "garcia ana", "display_name": "García, Ana",
-                  "party": "P", "photo_url": None, "biography": "Bio."}]
+        rows = [
+            {
+                "normalized_name": "garcia ana",
+                "display_name": "García, Ana",
+                "party": "P",
+                "photo_url": None,
+                "biography": "Bio.",
+            }
+        ]
 
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
 
         from congress_videos.modules.participants_db import lookup_participant
+
         result = lookup_participant("UNKNOWN PERSON NOBODY")
 
         assert result is None
 
     def test_no_match_at_all_returns_none(self, monkeypatch):
         """lookup_participant with completely unrelated name → None."""
-        rows = [{"normalized_name": "garcia ana", "display_name": "García, Ana",
-                  "party": "P", "photo_url": None, "biography": "Bio."}]
+        rows = [
+            {
+                "normalized_name": "garcia ana",
+                "display_name": "García, Ana",
+                "party": "P",
+                "photo_url": None,
+                "biography": "Bio.",
+            }
+        ]
 
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
 
         from congress_videos.modules.participants_db import lookup_participant
+
         result = lookup_participant("zzzunknownzzz")
 
         assert result is None
 
 
 class TestLookupParticipantBySlug:
-
     def test_exact_slug_match_returns_participant_without_fuzzy_matching(self, monkeypatch):
         """Slug lookup is deterministic and does not delegate to fuzzy matching."""
         rows = [
             {"slug": "garcia-ana", "normalized_name": "garcia ana", "display_name": "García, Ana"},
         ]
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
         monkeypatch.setattr(
             _mod,
@@ -250,6 +280,7 @@ class TestLookupParticipantBySlug:
     def test_non_exact_slug_returns_none(self, monkeypatch):
         """A similar but different slug is not treated as a fuzzy match."""
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(
             _mod,
             "_get_participants_for_lookup",
@@ -272,6 +303,7 @@ class TestGetParticipantsRoster:
             {"slug": "pedro-sanchez", "display_name": "Pedro Sánchez", "party": "PSOE"},
         ]
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
 
         result = _mod.get_participants_roster()
@@ -280,6 +312,7 @@ class TestGetParticipantsRoster:
 
     def test_empty_roster_returns_empty_list(self, monkeypatch):
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: [])
 
         assert _mod.get_participants_roster() == []
@@ -329,16 +362,23 @@ class TestLookupParticipantFuzzy:
     def test_above_threshold_returns_dict(self, monkeypatch):
         """Fuzzy match at or above 0.90 → returns best matching dict."""
         rows = [
-            {"normalized_name": "garcia ana", "display_name": "García, Ana",
-             "party": "P", "photo_url": None, "biography": "Bio."},
+            {
+                "normalized_name": "garcia ana",
+                "display_name": "García, Ana",
+                "party": "P",
+                "photo_url": None,
+                "biography": "Bio.",
+            },
         ]
 
         self._stub_rapidfuzz(monkeypatch, score=0.95)
 
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
 
         from congress_videos.modules.participants_db import lookup_participant_fuzzy
+
         result = lookup_participant_fuzzy("garcia ana", threshold=0.90)
 
         assert result is not None
@@ -347,16 +387,23 @@ class TestLookupParticipantFuzzy:
     def test_below_threshold_returns_none(self, monkeypatch):
         """Fuzzy match below threshold → None."""
         rows = [
-            {"normalized_name": "garcia ana", "display_name": "García, Ana",
-             "party": "P", "photo_url": None, "biography": "Bio."},
+            {
+                "normalized_name": "garcia ana",
+                "display_name": "García, Ana",
+                "party": "P",
+                "photo_url": None,
+                "biography": "Bio.",
+            },
         ]
 
         self._stub_rapidfuzz(monkeypatch, score=0.50)
 
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
 
         from congress_videos.modules.participants_db import lookup_participant_fuzzy
+
         result = lookup_participant_fuzzy("zzzunknownzzz", threshold=0.90)
 
         assert result is None
@@ -377,7 +424,7 @@ class TestLookupParticipantFuzzy:
         rows = [
             {
                 "normalized_name": "sanchez pedro jose luis",  # full official name — low similarity
-                "display_name": "Sánchez, Pedro",             # short display name — high similarity
+                "display_name": "Sánchez, Pedro",  # short display name — high similarity
                 "party": "PSOE",
                 "photo_url": None,
                 "biography": "Bio.",
@@ -392,19 +439,19 @@ class TestLookupParticipantFuzzy:
         # display_name score: HIGH (above threshold)
         score_map = {
             (key, "sanchez pedro jose luis"): 0.60,  # below 0.90
-            (key, display_key): 0.95,                # above 0.90
+            (key, display_key): 0.95,  # above 0.90
         }
         self._stub_rapidfuzz_per_pair(monkeypatch, score_map)
 
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
 
         from congress_videos.modules.participants_db import lookup_participant_fuzzy
+
         result = lookup_participant_fuzzy("Pedro Sanchez", threshold=0.90)
 
-        assert result is not None, (
-            "Expected a match via display_name scoring, got None"
-        )
+        assert result is not None, "Expected a match via display_name scoring, got None"
         assert result["normalized_name"] == "sanchez pedro jose luis"
 
     def test_match_via_display_name_includes_display_name_in_result(self, monkeypatch):
@@ -430,9 +477,11 @@ class TestLookupParticipantFuzzy:
         self._stub_rapidfuzz_per_pair(monkeypatch, score_map)
 
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
 
         from congress_videos.modules.participants_db import lookup_participant_fuzzy
+
         result = lookup_participant_fuzzy("Pedro Sanchez", threshold=0.90)
 
         assert result is not None
@@ -460,9 +509,11 @@ class TestLookupParticipantFuzzy:
         self._stub_rapidfuzz_per_pair(monkeypatch, score_map)
 
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
 
         from congress_videos.modules.participants_db import lookup_participant_fuzzy
+
         result = lookup_participant_fuzzy("zzzunknownzzz", threshold=0.90)
 
         assert result is None, "Expected None when both scoring fields are below threshold"
@@ -483,9 +534,11 @@ class TestLookupParticipantFuzzy:
         self._stub_rapidfuzz(monkeypatch, score=0.95)
 
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
 
         from congress_videos.modules.participants_db import lookup_participant_fuzzy
+
         result = lookup_participant_fuzzy("garcia ana", threshold=0.90)
 
         assert result is not None
@@ -498,7 +551,6 @@ class TestLookupParticipantFuzzy:
 
 
 class TestUpdatePhotoUrl:
-
     def test_sql_contains_where_photo_url_is_null(self, db_fixture):
         """SQL must guard with WHERE photo_url IS NULL."""
         instance, _conn, mock_cursor = db_fixture
@@ -549,13 +601,19 @@ class TestLookupParticipantBySlug:
     def test_slug_hit_returns_row_dict(self, monkeypatch):
         """Exact slug match → returns the row dict."""
         rows = [
-            {"normalized_name": "garcia ana", "slug": "garcia-ana", "display_name": "García, Ana",
-             "photo_url": "https://example.com/garcia.jpg"},
+            {
+                "normalized_name": "garcia ana",
+                "slug": "garcia-ana",
+                "display_name": "García, Ana",
+                "photo_url": "https://example.com/garcia.jpg",
+            },
         ]
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
 
         from congress_videos.modules.participants_db import lookup_participant_by_slug
+
         result = lookup_participant_by_slug("garcia-ana")
 
         assert result is not None
@@ -564,13 +622,14 @@ class TestLookupParticipantBySlug:
     def test_slug_miss_returns_none(self, monkeypatch):
         """Unknown slug → None."""
         rows = [
-            {"normalized_name": "garcia ana", "slug": "garcia-ana", "display_name": "García, Ana",
-             "photo_url": None},
+            {"normalized_name": "garcia ana", "slug": "garcia-ana", "display_name": "García, Ana", "photo_url": None},
         ]
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
 
         from congress_videos.modules.participants_db import lookup_participant_by_slug
+
         result = lookup_participant_by_slug("unknown-slug-xyz")
 
         assert result is None
@@ -578,13 +637,14 @@ class TestLookupParticipantBySlug:
     def test_exact_case_sensitive_mismatch_returns_none(self, monkeypatch):
         """Case mismatch: row has 'Garcia-Ana', calling 'garcia-ana' → None."""
         rows = [
-            {"normalized_name": "garcia ana", "slug": "Garcia-Ana", "display_name": "García, Ana",
-             "photo_url": None},
+            {"normalized_name": "garcia ana", "slug": "Garcia-Ana", "display_name": "García, Ana", "photo_url": None},
         ]
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
 
         from congress_videos.modules.participants_db import lookup_participant_by_slug
+
         result = lookup_participant_by_slug("garcia-ana")
 
         assert result is None
@@ -592,13 +652,14 @@ class TestLookupParticipantBySlug:
     def test_exact_case_sensitive_match_works(self, monkeypatch):
         """Exact case match: row and call both use 'Garcia-Ana' → returns row."""
         rows = [
-            {"normalized_name": "garcia ana", "slug": "Garcia-Ana", "display_name": "García, Ana",
-             "photo_url": None},
+            {"normalized_name": "garcia ana", "slug": "Garcia-Ana", "display_name": "García, Ana", "photo_url": None},
         ]
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
 
         from congress_videos.modules.participants_db import lookup_participant_by_slug
+
         result = lookup_participant_by_slug("Garcia-Ana")
 
         assert result is not None
@@ -607,10 +668,10 @@ class TestLookupParticipantBySlug:
     def test_never_calls_normalize_member_name(self, monkeypatch):
         """normalize_member_name must never be invoked by lookup_participant_by_slug."""
         rows = [
-            {"normalized_name": "garcia ana", "slug": "garcia-ana", "display_name": "García, Ana",
-             "photo_url": None},
+            {"normalized_name": "garcia ana", "slug": "garcia-ana", "display_name": "García, Ana", "photo_url": None},
         ]
         from congress_videos.modules import participants_db as _mod
+
         monkeypatch.setattr(_mod, "_get_participants_for_lookup", lambda: rows)
 
         def _raise(*args, **kwargs):
@@ -619,6 +680,7 @@ class TestLookupParticipantBySlug:
         monkeypatch.setattr(_mod, "normalize_member_name", _raise)
 
         from congress_videos.modules.participants_db import lookup_participant_by_slug
+
         # Must not call normalize_member_name — no AssertionError should propagate
         result = lookup_participant_by_slug("garcia-ana")
         assert result is not None
@@ -630,45 +692,48 @@ class TestLookupParticipantBySlug:
 
 
 class TestMigration016:
-
     from pathlib import Path as _Path
-    _MIGRATION_PATH = str(
-        _Path(__file__).resolve().parents[3]
-        / "congress_videos/sql/migrations/016_add_nickname.sql"
-    )
+
+    _MIGRATION_PATH = str(_Path(__file__).resolve().parents[3] / "congress_videos/sql/migrations/016_add_nickname.sql")
 
     def test_migration_file_exists(self):
         """Migration file must exist at the expected path."""
         from pathlib import Path
+
         assert Path(self._MIGRATION_PATH).exists(), "016_add_nickname.sql not found"
 
     def test_sql_contains_add_column_if_not_exists_nickname_text(self):
         """SQL contains ADD COLUMN IF NOT EXISTS nickname TEXT."""
         from pathlib import Path
+
         content = Path(self._MIGRATION_PATH).read_text(encoding="utf-8")
         assert "ADD COLUMN IF NOT EXISTS nickname TEXT" in content
 
     def test_sql_does_not_contain_not_null(self):
         """Migration must NOT add NOT NULL constraint (nullable column)."""
         from pathlib import Path
+
         content = Path(self._MIGRATION_PATH).read_text(encoding="utf-8")
         # We should not find NOT NULL after nickname TEXT
-        import re
+
         # Check that nickname column definition has no NOT NULL
         assert "nickname TEXT NOT NULL" not in content
 
     def test_sql_does_not_contain_default_clause_for_nickname(self):
         """Migration must NOT add DEFAULT value for nickname."""
         from pathlib import Path
+
         content = Path(self._MIGRATION_PATH).read_text(encoding="utf-8")
         assert "nickname TEXT DEFAULT" not in content
 
     def test_table_name_is_unqualified(self):
         """ALTER TABLE uses unqualified table name (search_path convention)."""
         from pathlib import Path
+
         content = Path(self._MIGRATION_PATH).read_text(encoding="utf-8")
         # Should contain 'congress_participants' without a schema prefix
         assert "ALTER TABLE congress_participants" in content
         # Must NOT contain a dotted schema prefix like 'public.congress_participants'
         import re
+
         assert not re.search(r"ALTER TABLE \w+\.congress_participants", content)

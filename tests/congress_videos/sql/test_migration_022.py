@@ -13,23 +13,17 @@ import re
 from pathlib import Path
 
 MIGRATION_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "congress_videos"
-    / "sql"
-    / "migrations"
-    / "022_create_speaker_turns.sql"
+    Path(__file__).resolve().parents[3] / "congress_videos" / "sql" / "migrations" / "022_create_speaker_turns.sql"
 )
 
 
 class TestMigration022FileExists:
-
     def test_migration_file_exists(self):
         """Migration file must exist at the expected path."""
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
 
 class TestMigration022TableDefinition:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -71,9 +65,7 @@ class TestMigration022TableDefinition:
         assert "'acoustic'" in sql
         assert "'text_confirmed'" in sql
         assert "'text_named'" in sql
-        assert re.search(r"source\s+IN\s*\(", sql) or re.search(
-            r"CHECK\s*\(.*source.*IN\s*\(", sql, re.DOTALL
-        )
+        assert re.search(r"source\s+IN\s*\(", sql) or re.search(r"CHECK\s*\(.*source.*IN\s*\(", sql, re.DOTALL)
 
     def test_index_speaker_turns_chapter(self):
         """idx_speaker_turns_chapter index must be created."""

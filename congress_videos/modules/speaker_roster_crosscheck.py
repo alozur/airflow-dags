@@ -11,6 +11,7 @@ Design constraints (issue #321):
   ``"no_opinion"`` (fail-open when there is nothing to compare against).
 - Neither function raises on malformed input.
 """
+
 from __future__ import annotations
 
 import unicodedata
@@ -22,9 +23,21 @@ from congress_videos.modules.speaker_placeholders import is_placeholder
 ROSTER_MATCH_MIN_RATIO: int = 85
 """Minimum rapidfuzz token_set_ratio (on significant tokens) to accept a match."""
 
-COURTESY_TOKENS: frozenset[str] = frozenset({
-    "senor", "senora", "don", "dona", "de", "del", "la", "el", "los", "las", "y",
-})
+COURTESY_TOKENS: frozenset[str] = frozenset(
+    {
+        "senor",
+        "senora",
+        "don",
+        "dona",
+        "de",
+        "del",
+        "la",
+        "el",
+        "los",
+        "las",
+        "y",
+    }
+)
 """Normalized (casefold, accent-stripped) Spanish courtesy/particle tokens that
 must never, on their own, satisfy a roster match."""
 
@@ -41,11 +54,7 @@ def _normalize(text: str) -> str:
 
 def _significant_tokens(normalized_text: str) -> set[str]:
     """Tokens of length >= _MIN_TOKEN_LEN that are not courtesy tokens."""
-    return {
-        token
-        for token in normalized_text.split()
-        if len(token) >= _MIN_TOKEN_LEN and token not in COURTESY_TOKENS
-    }
+    return {token for token in normalized_text.split() if len(token) >= _MIN_TOKEN_LEN and token not in COURTESY_TOKENS}
 
 
 def chapter_roster_mentions(key_speakers, speakers) -> list[str]:

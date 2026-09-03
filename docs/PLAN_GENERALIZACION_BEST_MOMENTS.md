@@ -115,9 +115,9 @@ usa con `identify_fn`.
 ```python
 class LLMClient(Protocol):
     """Interface for LLM calls — swap for mocks in tests."""
+
     def json_completion(
-        self, system_prompt: str, user_prompt: str,
-        *, model: str, temperature: float, max_tokens: int
+        self, system_prompt: str, user_prompt: str, *, model: str, temperature: float, max_tokens: int
     ) -> dict: ...
 ```
 
@@ -129,9 +129,10 @@ En tests se inyecta un mock que devuelve respuestas predefinidas.
 ```python
 # utils/best_moments/pipeline.py
 
+
 def pipeline(
     video_path: str,
-    domain_config_path: str,        # path a YAML/JSON
+    domain_config_path: str,  # path a YAML/JSON
     *,
     save_callback: Callable[[PipelineResult], None] | None = None,
     srt_path: str | None = None,
@@ -273,16 +274,16 @@ prompts:
 class Chapter:
     title: str
     description: str
-    start_time: str           # "HH:MM:SS,mmm"
-    end_time: str             # "HH:MM:SS,mmm"
+    start_time: str  # "HH:MM:SS,mmm"
+    end_time: str  # "HH:MM:SS,mmm"
     duration_minutes: float
     speakers: list[str]
     topics: list[str]
-    timeline: list[dict]      # [{time, speaker, content}, ...]
-    relevance_score: int      # 0-5
-    speaker_relevance_points: int   # 0-2
-    topic_relevance_points: int     # 0-2
-    public_interest_points: int     # 0-1
+    timeline: list[dict]  # [{time, speaker, content}, ...]
+    relevance_score: int  # 0-5
+    speaker_relevance_points: int  # 0-2
+    topic_relevance_points: int  # 0-2
+    public_interest_points: int  # 0-1
     scoring_reasoning: str
     key_speakers: list[str]
     is_current_topic: bool
@@ -307,14 +308,15 @@ class Chapter:
             "is_current_topic": self.is_current_topic,
         }
 
+
 @dataclass
 class PipelineResult:
     video_id: str
     video_title: str
     total_chapters: int
     chapters: list[Chapter]
-    errors: list[str]         # non-fatal errors (best-effort)
-    srt_path: str | None      # path al SRT usado/generado
+    errors: list[str]  # non-fatal errors (best-effort)
+    srt_path: str | None  # path al SRT usado/generado
 
     def to_scored_chapters_dict(self) -> dict:
         """
@@ -329,12 +331,14 @@ class PipelineResult:
             "total_chapters_scored": self.total_chapters,
             "successful_scores": self.total_chapters,
             "failed_scores": 0,
-            "videos": [{
-                "video_id": self.video_id,
-                "video_title": self.video_title,
-                "total_chapters": self.total_chapters,
-                "scored_chapters": [c.to_dict() for c in self.chapters],
-            }],
+            "videos": [
+                {
+                    "video_id": self.video_id,
+                    "video_title": self.video_title,
+                    "total_chapters": self.total_chapters,
+                    "scored_chapters": [c.to_dict() for c in self.chapters],
+                }
+            ],
         }
 ```
 

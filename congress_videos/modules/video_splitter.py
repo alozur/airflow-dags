@@ -64,29 +64,43 @@ def build_ffmpeg_cut_cmd(
         # window only, not the full source prefix.  -err_detect ignore_err bounds
         # in-window AV1 corruption to a visual glitch instead of a fatal exit.
         return [
-            'ffmpeg',
-            '-y',
-            '-err_detect', 'ignore_err',
-            '-ss', str(start),
-            '-i', src,
-            '-t', str(duration),
-            '-c:v', 'libx264',
-            '-preset', 'veryfast',
-            '-crf', '20',
-            '-c:a', 'aac',
-            '-avoid_negative_ts', 'make_zero',
+            "ffmpeg",
+            "-y",
+            "-err_detect",
+            "ignore_err",
+            "-ss",
+            str(start),
+            "-i",
+            src,
+            "-t",
+            str(duration),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "20",
+            "-c:a",
+            "aac",
+            "-avoid_negative_ts",
+            "make_zero",
             out,
         ]
 
     # Stream-copy (-ss before -i, -c copy) → no decode, keyframe-snapped.
     return [
-        'ffmpeg',
-        '-y',
-        '-ss', str(start),
-        '-i', src,
-        '-t', str(duration),
-        '-c', 'copy',
-        '-avoid_negative_ts', 'make_zero',
+        "ffmpeg",
+        "-y",
+        "-ss",
+        str(start),
+        "-i",
+        src,
+        "-t",
+        str(duration),
+        "-c",
+        "copy",
+        "-avoid_negative_ts",
+        "make_zero",
         out,
     ]
 
@@ -203,12 +217,7 @@ def split_video_chapter(source_video_path, output_path, start_time, end_time, co
         logging.info(f"Command: {' '.join(ffmpeg_command)} (timeout={timeout}s)")
 
         # Run ffmpeg
-        result = subprocess.run(
-            ffmpeg_command,
-            capture_output=True,
-            text=True,
-            timeout=timeout
-        )
+        result = subprocess.run(ffmpeg_command, capture_output=True, text=True, timeout=timeout)
 
         if result.returncode != 0:
             raise Exception(f"ffmpeg failed: {result.stderr}")
@@ -230,7 +239,7 @@ def split_video_chapter(source_video_path, output_path, start_time, end_time, co
             "end_time": end_time,
             "source_codec": source_codec,
             "cut_mode": cut_mode_for_reencode(reencode),
-            "error": None
+            "error": None,
         }
 
     except subprocess.TimeoutExpired:
@@ -244,7 +253,7 @@ def split_video_chapter(source_video_path, output_path, start_time, end_time, co
             # False above, matching reencode_for_codec's fail-safe stream-copy
             # default for "unknown") instead of recomputing it here.
             "cut_mode": cut_mode_for_reencode(reencode),
-            "error": error_msg
+            "error": error_msg,
         }
     except Exception as e:
         error_msg = f"Error splitting video: {str(e)}"
@@ -257,7 +266,7 @@ def split_video_chapter(source_video_path, output_path, start_time, end_time, co
             # False above, matching reencode_for_codec's fail-safe stream-copy
             # default for "unknown") instead of recomputing it here.
             "cut_mode": cut_mode_for_reencode(reencode),
-            "error": error_msg
+            "error": error_msg,
         }
 
 
@@ -297,34 +306,29 @@ def extract_chapters_from_video(uploadable_chapters, data_directory):
     """
     if not uploadable_chapters:
         logging.warning("No chapters provided for extraction")
-        return {
-            'total_chapters': 0,
-            'successful_extractions': 0,
-            'failed_extractions': 0,
-            'results': []
-        }
+        return {"total_chapters": 0, "successful_extractions": 0, "failed_extractions": 0, "results": []}
 
     extraction_results = {
-        'total_chapters': len(uploadable_chapters),
-        'successful_extractions': 0,
-        'failed_extractions': 0,
-        'results': []
+        "total_chapters": len(uploadable_chapters),
+        "successful_extractions": 0,
+        "failed_extractions": 0,
+        "results": [],
     }
 
     codec_cache: dict = {}
 
     for chapter in uploadable_chapters:
-        chapter_id = chapter.get('chapter_id')
-        video_id = chapter.get('video_id')
-        start_time = chapter.get('start_time')
-        end_time = chapter.get('end_time')
+        chapter_id = chapter.get("chapter_id")
+        video_id = chapter.get("video_id")
+        start_time = chapter.get("start_time")
+        end_time = chapter.get("end_time")
 
         logging.info(f"Processing chapter {chapter_id} from video {video_id}")
 
         try:
             # Source videos are in: data_directory/downloads/{date}/{video_id}/
             # We need to search for the video across all dates in downloads folder
-            downloads_folder = os.path.join(data_directory, 'downloads')
+            downloads_folder = os.path.join(data_directory, "downloads")
 
             source_video_path = None
 
@@ -335,12 +339,12 @@ def extract_chapters_from_video(uploadable_chapters, data_directory):
 
                     if os.path.exists(video_folder):
                         # Look for video files (mp4, mkv, webm)
-                        video_extensions = ['.mp4', '.mkv', '.webm']
+                        video_extensions = [".mp4", ".mkv", ".webm"]
 
                         for file in os.listdir(video_folder):
                             if any(file.endswith(ext) for ext in video_extensions):
                                 # Skip chapter videos (to avoid using extracted chapters as source)
-                                if 'chapter_video' not in file:
+                                if "chapter_video" not in file:
                                     source_video_path = os.path.join(video_folder, file)
                                     break
 
@@ -358,7 +362,7 @@ def extract_chapters_from_video(uploadable_chapters, data_directory):
             # Create output path: data_directory/video_id/chapter_id/chapter_video.mp4
             chapter_folder = os.path.join(data_directory, str(video_id), str(chapter_id))
             os.makedirs(chapter_folder, exist_ok=True)
-            output_path = os.path.join(chapter_folder, 'chapter_video.mp4')
+            output_path = os.path.join(chapter_folder, "chapter_video.mp4")
 
             # Extract chapter using ffmpeg
             result = split_video_chapter(
@@ -369,28 +373,30 @@ def extract_chapters_from_video(uploadable_chapters, data_directory):
                 codec_cache=codec_cache,
             )
 
-            result['chapter_id'] = chapter_id
-            result['video_id'] = video_id
-            extraction_results['results'].append(result)
+            result["chapter_id"] = chapter_id
+            result["video_id"] = video_id
+            extraction_results["results"].append(result)
 
-            if result['success']:
-                extraction_results['successful_extractions'] += 1
+            if result["success"]:
+                extraction_results["successful_extractions"] += 1
                 logging.info(f"✅ Chapter {chapter_id} extracted successfully")
             else:
-                extraction_results['failed_extractions'] += 1
+                extraction_results["failed_extractions"] += 1
                 logging.error(f"❌ Chapter {chapter_id} extraction failed: {result.get('error')}")
 
         except Exception as e:
             error_msg = f"Error processing chapter {chapter_id}: {str(e)}"
             logging.error(error_msg)
-            extraction_results['results'].append({
-                'chapter_id': chapter_id,
-                'video_id': video_id,
-                'success': False,
-                'output_path': None,
-                'error': error_msg
-            })
-            extraction_results['failed_extractions'] += 1
+            extraction_results["results"].append(
+                {
+                    "chapter_id": chapter_id,
+                    "video_id": video_id,
+                    "success": False,
+                    "output_path": None,
+                    "error": error_msg,
+                }
+            )
+            extraction_results["failed_extractions"] += 1
 
     logging.info(
         f"Chapter extraction complete: {extraction_results['successful_extractions']}/{extraction_results['total_chapters']} "

@@ -9,7 +9,7 @@ These standards directly control AI developer behavior and are critical for prev
 - **Languages & Runtimes:** Python 3.12+, Apache Airflow 2.11.1
 - **Database:** PostgreSQL 16
 - **Style & Linting:** Ruff (modern, fast Python linter and formatter)
-- **Formatting:** PEP 8 compliance with 88-character line length (Black compatible)
+- **Formatting:** `ruff format` with 120-character line length, blocking in CI since #391
 - **Execution Environment:** Conda environment named `airflow`
 - **Deployment:** Docker Compose with LocalExecutor
 
@@ -111,7 +111,8 @@ from congreso_youtube.congreso_utils import process_data
 
 # Constants
 DEFAULT_ARGS = {...}
-DAG_ID = 'project_name'
+DAG_ID = "project_name"
+
 
 # Task functions
 @xcom_task
@@ -119,14 +120,14 @@ def extract_data(**context):
     """Extract data from source."""
     pass
 
+
 # DAG definition
 with DAG(
     dag_id=DAG_ID,
     default_args=DEFAULT_ARGS,
-    schedule='@daily',
+    schedule="@daily",
     catchup=False,
 ) as dag:
-
     task1 = PythonOperator(...)
     task2 = PostgresOperator(...)
 
@@ -145,6 +146,7 @@ from typing import Optional, Dict, Any
 import logging
 
 logger = logging.getLogger(__name__)
+
 
 def utility_function(param: str) -> Dict[str, Any]:
     """
@@ -177,8 +179,10 @@ uv run python <dag_file>.py
 # Linting (config lives in pyproject.toml [tool.ruff]; gated by .github/workflows/lint.yml)
 uv run ruff check <file>.py
 
-# Format check (declared, not CI-gated — see Ruff Configuration below)
+# Format check (blocking in CI since #391 — see Ruff Configuration below)
 uv run ruff format --check <file>.py
+# Fix locally with:
+uv run ruff format <file>.py
 ```
 
 ### DAG Testing
@@ -220,9 +224,13 @@ job (issue #269).
   `ignore = []`: no rule is globally disabled.
 - `[tool.ruff.lint.mccabe] max-complexity = 10` — functions above this
   complexity fail `C901` unless grandfathered (see below).
-- `[tool.ruff.format] quote-style = "double"` is **declared, not gated**: the
-  repo has never had `ruff format` run against it, and CI does not run
-  `ruff format --check`. Repo-wide formatting is a separate follow-up issue.
+- `[tool.ruff.format] quote-style = "double"` / `indent-style = "space"` is
+  **declared AND gated** (issue #391): the whole repo was formatted once,
+  and CI blocks drift via the "Ruff format (blocking)" step in
+  [`.github/workflows/lint.yml`](../../.github/workflows/lint.yml). The
+  block's shape (only these two keys) is locked by
+  `TestRuffFormatConfig.test_format_block_declares_only_the_two_gated_keys`
+  in `tests/test_ruff_config.py`.
 
 ### Suppressing a violation — two mechanisms, two different meanings
 
@@ -252,6 +260,12 @@ uv run ruff check . --no-cache --output-format json \
 Run `uv run ruff check .` to lint the whole repo locally with the same
 config and version CI uses (`ruff==0.16.5`, pinned in
 `[dependency-groups] dev`).
+
+Run `uv run ruff format .` before committing so the CI format gate doesn't
+surprise you — the formatter cannot fix every `E501`: it never splits a
+string literal or a comment to fit the line length, so a handful of
+residual `E501` entries remain in the baseline for those cases. Burning
+those down is tracked as a follow-up issue to #391.
 
 ## Version Control Best Practices
 
@@ -290,11 +304,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Log levels and usage
-logger.debug("Detailed diagnostic info")      # Development only
-logger.info("General informational messages") # Task progress
-logger.warning("Warning messages")            # Recoverable issues
-logger.error("Error messages")                # Task failures
-logger.critical("Critical issues")            # System failures
+logger.debug("Detailed diagnostic info")  # Development only
+logger.info("General informational messages")  # Task progress
+logger.warning("Warning messages")  # Recoverable issues
+logger.error("Error messages")  # Task failures
+logger.critical("Critical issues")  # System failures
 
 # Good logging example
 logger.info(f"Processing video_id={video_id}, session={session_number}")

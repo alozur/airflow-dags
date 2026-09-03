@@ -75,24 +75,23 @@ class CongressParticipantsDB:
                 updated_at           = NOW()
         """
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                for record in records:
-                    params = (
-                        record["normalized_name"],
-                        record["slug"],
-                        record["display_name"],
-                        record.get("party"),
-                        record.get("parliamentary_group"),
-                        record.get("constituency"),
-                        record.get("biography"),
-                        record.get("full_membership_date"),
-                        record.get("start_date"),
-                        record.get("group_entry_date"),
-                        record.get("photo_url"),
-                    )
-                    cur.execute(sql, params)
-                    upserted += 1
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            for record in records:
+                params = (
+                    record["normalized_name"],
+                    record["slug"],
+                    record["display_name"],
+                    record.get("party"),
+                    record.get("parliamentary_group"),
+                    record.get("constituency"),
+                    record.get("biography"),
+                    record.get("full_membership_date"),
+                    record.get("start_date"),
+                    record.get("group_entry_date"),
+                    record.get("photo_url"),
+                )
+                cur.execute(sql, params)
+                upserted += 1
 
         logger.info("upsert_batch: upserted %d / %d records", upserted, len(records))
         return {"upserted": upserted, "total": len(records)}
@@ -103,12 +102,9 @@ class CongressParticipantsDB:
 
         Used by lookup functions and the enrichment step.
         """
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"SELECT * FROM {self.participants_table} ORDER BY normalized_name"
-                )
-                return cur.fetchall()
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT * FROM {self.participants_table} ORDER BY normalized_name")
+            return cur.fetchall()
 
     def update_photo_url(self, normalized_name: str, photo_url: str) -> None:
         """
@@ -126,15 +122,15 @@ class CongressParticipantsDB:
             SET photo_url = %s, updated_at = NOW()
             WHERE normalized_name = %s AND photo_url IS NULL
         """
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (photo_url, normalized_name))
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (photo_url, normalized_name))
         logger.info("update_photo_url: set photo for %r", normalized_name)
 
 
 # ---------------------------------------------------------------------------
 # Module-level helper used by lookup functions (injectable for testing)
 # ---------------------------------------------------------------------------
+
 
 def _get_participants_for_lookup() -> list[dict]:
     """Instantiate a DB and fetch all participants. Extracted for monkeypatching."""
@@ -145,6 +141,7 @@ def _get_participants_for_lookup() -> list[dict]:
 # Module-level lookup API
 # ---------------------------------------------------------------------------
 
+
 def get_participants_roster() -> list[dict]:
     """Public roster accessor for chapter_speaker_resolution (issue #263).
 
@@ -154,6 +151,7 @@ def get_participants_roster() -> list[dict]:
     method that share a name — see the ratified A1 amendment.
     """
     return _get_participants_for_lookup()
+
 
 def lookup_participant(name: str) -> dict | None:
     """
@@ -188,9 +186,7 @@ def lookup_participant_by_slug(slug: str) -> dict | None:
     return next((row for row in rows if row.get("slug") == slug), None)
 
 
-def lookup_participant_fuzzy(
-    name: str, threshold: float = WIKIDATA_FUZZY_THRESHOLD
-) -> dict | None:
+def lookup_participant_fuzzy(name: str, threshold: float = WIKIDATA_FUZZY_THRESHOLD) -> dict | None:
     """
     Look up a participant using rapidfuzz token_sort_ratio fuzzy matching.
 

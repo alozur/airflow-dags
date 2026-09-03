@@ -26,6 +26,7 @@ Compose build contexts are isolated per directory; a shared module would require
 expanding both contexts to the repo root, rebuilding the whole repo into each
 image and breaking the trivial ``COPY server.py`` paths.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -97,7 +98,7 @@ def _default_model_loader() -> Callable[[str], list[dict]]:
         scores: list[np.ndarray] = []
         start = 0
         while start < len(waveform):
-            window = waveform[start: start + WINDOW_SAMPLES]
+            window = waveform[start : start + WINDOW_SAMPLES]
             if len(window) < WINDOW_SAMPLES:
                 window = np.pad(window, (0, WINDOW_SAMPLES - len(window)))
             interp.set_tensor(in_idx, window.astype(np.float32))
@@ -126,21 +127,25 @@ def _default_model_loader() -> Callable[[str], list[dict]]:
                 e = min(i * HOP_SECONDS + FRAME_SECONDS, duration)
                 if (e - s) >= min_duration:
                     window_scores = applause[run_start:i]
-                    intervals.append({
-                        "start": round(s, 3),
-                        "end": round(e, 3),
-                        "max_score": round(float(window_scores.max()), 4),
-                    })
+                    intervals.append(
+                        {
+                            "start": round(s, 3),
+                            "end": round(e, 3),
+                            "max_score": round(float(window_scores.max()), 4),
+                        }
+                    )
         if in_run:
             s = run_start * HOP_SECONDS
             e = duration
             if (e - s) >= min_duration:
                 window_scores = applause[run_start:]
-                intervals.append({
-                    "start": round(s, 3),
-                    "end": round(e, 3),
-                    "max_score": round(float(window_scores.max()), 4),
-                })
+                intervals.append(
+                    {
+                        "start": round(s, 3),
+                        "end": round(e, 3),
+                        "max_score": round(float(window_scores.max()), 4),
+                    }
+                )
 
         return intervals
 
@@ -239,9 +244,7 @@ def create_app(
                 )
             )
         else:
-            logger.info(
-                "yamnet-api: IDLE_TIMEOUT_SECONDS<=0 — sleep mode disabled, model stays resident"
-            )
+            logger.info("yamnet-api: IDLE_TIMEOUT_SECONDS<=0 — sleep mode disabled, model stays resident")
         yield
         # Cleanup: cancel watchdog on shutdown.
         task = _state.get("watchdog_task")
@@ -313,8 +316,7 @@ def create_app(
 
         if offset:
             intervals = [
-                {**iv, "start": float(iv["start"]) + offset, "end": float(iv["end"]) + offset}
-                for iv in intervals
+                {**iv, "start": float(iv["start"]) + offset, "end": float(iv["end"]) + offset} for iv in intervals
             ]
 
         return {"applause_intervals": intervals}

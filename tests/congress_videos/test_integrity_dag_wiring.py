@@ -9,32 +9,29 @@ Scenarios (from spec — DAG Task Wiring for Integrity Gate):
 
 from __future__ import annotations
 
-import pytest
-
 
 class TestIntegrityTaskExistsInDAG:
-
     def test_dag_loads_without_import_errors(self):
         """DAG must load cleanly — catches missing __init__ registration for
         check_source_video_integrity (task C3 is a prerequisite)."""
         from congress_videos.youtube_channel_monitor_dag import dag
+
         assert dag is not None
         assert dag.dag_id == "congress_youtube_channel_monitor"
 
     def test_check_source_integrity_task_exists(self):
         """A task with task_id='check_source_integrity' must be present in the DAG."""
         from congress_videos.youtube_channel_monitor_dag import dag
+
         task_ids = {t.task_id for t in dag.tasks}
-        assert "check_source_integrity" in task_ids, (
-            "DAG must contain a 'check_source_integrity' task (t3c2_integrity)"
-        )
+        assert "check_source_integrity" in task_ids, "DAG must contain a 'check_source_integrity' task (t3c2_integrity)"
 
 
 class TestIntegrityTaskTopology:
-
     def test_t3c2_integrity_is_direct_downstream_of_t3c2(self):
         """check_source_integrity must be a direct downstream of download_video_from_youtube."""
         from congress_videos.youtube_channel_monitor_dag import dag
+
         tasks_by_id = {t.task_id: t for t in dag.tasks}
 
         t3c2 = tasks_by_id["download_video_from_youtube"]
@@ -48,6 +45,7 @@ class TestIntegrityTaskTopology:
     def test_t3c2_integrity_is_direct_upstream_of_t_trim(self):
         """check_source_integrity must be a direct upstream of trim_chapter_silence."""
         from congress_videos.youtube_channel_monitor_dag import dag
+
         tasks_by_id = {t.task_id: t for t in dag.tasks}
 
         t3c2_integrity = tasks_by_id["check_source_integrity"]
@@ -62,6 +60,7 @@ class TestIntegrityTaskTopology:
         """download_video_from_youtube must NOT be a direct upstream of trim_chapter_silence
         (the integrity gate now sits between them)."""
         from congress_videos.youtube_channel_monitor_dag import dag
+
         tasks_by_id = {t.task_id: t for t in dag.tasks}
 
         t3c2 = tasks_by_id["download_video_from_youtube"]
@@ -76,6 +75,7 @@ class TestIntegrityTaskTopology:
     def test_t_trim_trigger_rule_is_all_done(self):
         """trim_chapter_silence must keep trigger_rule='all_done' (best-effort VAD)."""
         from congress_videos.youtube_channel_monitor_dag import dag
+
         t_trim = dag.get_task("trim_chapter_silence")
         assert str(t_trim.trigger_rule) == "all_done", (
             f"t_trim trigger_rule must be 'all_done', got {t_trim.trigger_rule!r}"
@@ -84,6 +84,7 @@ class TestIntegrityTaskTopology:
     def test_integrity_task_trigger_rule_is_none_failed_min_one_success(self):
         """check_source_integrity must use trigger_rule='none_failed_min_one_success'."""
         from congress_videos.youtube_channel_monitor_dag import dag
+
         t3c2_integrity = dag.get_task("check_source_integrity")
         assert str(t3c2_integrity.trigger_rule) == "none_failed_min_one_success", (
             f"check_source_integrity trigger_rule must be 'none_failed_min_one_success', "

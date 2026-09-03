@@ -9,8 +9,6 @@ from __future__ import annotations
 import subprocess
 from unittest.mock import MagicMock
 
-import pytest
-
 from utils.codec_detection import (
     cut_mode_for_reencode,
     detect_video_codec,
@@ -21,6 +19,7 @@ from utils.codec_detection import (
 # ---------------------------------------------------------------------------
 # detect_video_codec
 # ---------------------------------------------------------------------------
+
 
 class TestDetectVideoCodec:
     def test_h264_codec_name_returns_h264(self, mocker):
@@ -150,19 +149,16 @@ class TestDetectVideoCodec:
 # get_cached_codec
 # ---------------------------------------------------------------------------
 
+
 class TestGetCachedCodec:
     def test_cache_none_probes_every_call(self, mocker):
-        mock_detect = mocker.patch(
-            "utils.codec_detection.detect_video_codec", return_value="h264"
-        )
+        mock_detect = mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
         get_cached_codec("source.mp4", None)
         get_cached_codec("source.mp4", None)
         assert mock_detect.call_count == 2
 
     def test_cache_dict_probes_once_for_same_path(self, mocker):
-        mock_detect = mocker.patch(
-            "utils.codec_detection.detect_video_codec", return_value="h264"
-        )
+        mock_detect = mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
         cache: dict = {}
         get_cached_codec("source.mp4", cache)
         get_cached_codec("source.mp4", cache)
@@ -172,9 +168,7 @@ class TestGetCachedCodec:
     def test_cache_keys_by_absolute_path(self, mocker):
         import os as _os
 
-        mock_detect = mocker.patch(
-            "utils.codec_detection.detect_video_codec", return_value="h264"
-        )
+        mock_detect = mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
         cache: dict = {}
         get_cached_codec("./source.mp4", cache)
         get_cached_codec(_os.path.abspath("source.mp4"), cache)
@@ -182,17 +176,14 @@ class TestGetCachedCodec:
 
     def test_cache_stores_result_under_abspath(self, mocker):
         import os as _os
-        mock_detect = mocker.patch(
-            "utils.codec_detection.detect_video_codec", return_value="av1"
-        )
+
+        mock_detect = mocker.patch("utils.codec_detection.detect_video_codec", return_value="av1")
         cache: dict = {}
         get_cached_codec("source.mp4", cache)
         assert cache[_os.path.abspath("source.mp4")] == "av1"
 
     def test_different_paths_are_separate_entries(self, mocker):
-        mock_detect = mocker.patch(
-            "utils.codec_detection.detect_video_codec", return_value="h264"
-        )
+        mock_detect = mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
         cache: dict = {}
         get_cached_codec("a.mp4", cache)
         get_cached_codec("b.mp4", cache)
@@ -214,9 +205,7 @@ class TestGetCachedCodec:
     def test_path_with_spaces_uses_abspath_key(self, mocker):
         import os as _os
 
-        mock_detect = mocker.patch(
-            "utils.codec_detection.detect_video_codec", return_value="h264"
-        )
+        mock_detect = mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
         cache: dict = {}
         path = "some folder/my video.mp4"
         get_cached_codec(path, cache)
@@ -227,6 +216,7 @@ class TestGetCachedCodec:
 # ---------------------------------------------------------------------------
 # reencode_for_codec / cut_mode_for_reencode
 # ---------------------------------------------------------------------------
+
 
 class TestReencodeForCodec:
     def test_h264_reencodes(self):

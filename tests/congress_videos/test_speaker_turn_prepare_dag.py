@@ -2,6 +2,7 @@
 
 TDD cycle: RED tests written first; GREEN implementations follow.
 """
+
 from __future__ import annotations
 
 import logging
@@ -10,13 +11,14 @@ import subprocess
 from contextlib import ExitStack
 from pathlib import Path
 from subprocess import PIPE
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_ti(xcom_store: dict | None = None):
     """Return a TaskInstance double with an in-memory XCom store."""
@@ -69,6 +71,7 @@ def _make_turn(turn_id: int = 1, output_path: str = "/data/video.mp4") -> dict:
 # 1.1 DAG-load tests
 # ---------------------------------------------------------------------------
 
+
 class TestSpeakerTurnPrepareDagLoads:
     """Verify the DAG loads cleanly and has the required structural properties."""
 
@@ -101,9 +104,7 @@ class TestSpeakerTurnPrepareDagLoads:
         from congress_videos.speaker_turn_prepare_dag import dag
 
         tasks_by_id = {t.task_id: t for t in dag.tasks}
-        assert "prepare_turns" in tasks_by_id, (
-            f"prepare_turns task not found; tasks={list(tasks_by_id.keys())}"
-        )
+        assert "prepare_turns" in tasks_by_id, f"prepare_turns task not found; tasks={list(tasks_by_id.keys())}"
         prepare_task = tasks_by_id["prepare_turns"]
         assert prepare_task.pool == "nas_ffmpeg"
 
@@ -119,8 +120,6 @@ class TestSpeakerTurnPrepareDagLoads:
         """DAG source must not use .expand() as a live method call (no dynamic task mapping)."""
         import ast
 
-        from congress_videos.speaker_turn_prepare_dag import dag
-
         # Resolve the DAG source relative to this test file so the test is
         # portable across worktrees.
         dag_source = Path(__file__).parent.parent.parent / "congress_videos" / "speaker_turn_prepare_dag.py"
@@ -128,19 +127,14 @@ class TestSpeakerTurnPrepareDagLoads:
         tree = ast.parse(content)
         # Find any call nodes whose function is an attribute named 'expand'
         for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "expand"
-            ):
-                raise AssertionError(
-                    f"DAG uses .expand() at line {node.lineno} — dynamic task mapping is prohibited"
-                )
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "expand":
+                raise AssertionError(f"DAG uses .expand() at line {node.lineno} — dynamic task mapping is prohibited")
 
 
 # ---------------------------------------------------------------------------
 # 3.1–3.4 Sequential loop and sidecar tests
 # ---------------------------------------------------------------------------
+
 
 class TestPrepareTurnsCallableSequentialLoop:
     """Verify the prepare callable iterates sequentially and gates on the ffmpeg decode check/sidecars.
@@ -246,9 +240,11 @@ class TestPrepareTurnsCallableSequentialLoop:
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("subprocess.run") as mock_subproc,
         ):
+
             def fake_run(*args, **kwargs):
                 call_order.append("ffmpeg")
                 return MagicMock(returncode=0)
+
             mock_subproc.side_effect = fake_run
             _prepare_turns_callable()
 
@@ -337,6 +333,7 @@ class TestPrepareTurnsCallableSequentialLoop:
 # _trigger_thumbnail_for_turn was removed in issue #169 unify-upload-metadata.
 # ---------------------------------------------------------------------------
 
+
 class TestWriteTurnSidecarsGroupedRange:
     """Verify _write_turn_sidecars uses group_start/end_seconds for SRT windowing.
 
@@ -407,9 +404,7 @@ class TestWriteTurnSidecarsGroupedRange:
         content = srt_path.read_text(encoding="utf-8")
         assert len(content) > 0, "subtitles.srt must be non-empty for overlapping blocks"
         # First SRT entry must be re-timed to near 00:00:00 (19200 - 19157 = 43s)
-        assert "00:00:43" in content, (
-            f"First entry should be at ~43s (19200-19157), got: {content[:200]}"
-        )
+        assert "00:00:43" in content, f"First entry should be at ~43s (19200-19157), got: {content[:200]}"
 
     def test_group_span_no_overlap_writes_empty_file(self, tmp_path):
         """When no SRT blocks overlap the group span, subtitles.srt is 0 bytes and
@@ -420,9 +415,7 @@ class TestWriteTurnSidecarsGroupedRange:
         """
         from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
 
-        turn = self._make_grouped_turn(
-            tmp_path, group_start=50000.0, group_end=51000.0
-        )
+        turn = self._make_grouped_turn(tmp_path, group_start=50000.0, group_end=51000.0)
         video_dir = Path(turn["output_path"]).parent
 
         # Blocks entirely outside the 50000-51000 window
@@ -641,8 +634,7 @@ class TestWriteTurnSidecarsKeepIntervalsBranch:
             _write_turn_sidecars(turn)
 
         assert captured == [[(5.0, 70.0)]], (
-            f"must retime from the persisted keep interval [5,70), not the raw "
-            f"group span [0,75); got: {captured}"
+            f"must retime from the persisted keep interval [5,70), not the raw group span [0,75); got: {captured}"
         )
 
     def test_multi_interval_vad_trim_applied_to_first_and_last_only(self, tmp_path):
@@ -650,9 +642,7 @@ class TestWriteTurnSidecarsKeepIntervalsBranch:
         end; interior interval boundaries are untouched."""
         from congress_videos.speaker_turn_prepare_dag import _write_turn_sidecars
 
-        turn = self._make_turn(
-            tmp_path, keep_intervals=[[0.0, 30.0], [36.0, 80.0]]
-        )
+        turn = self._make_turn(tmp_path, keep_intervals=[[0.0, 30.0], [36.0, 80.0]])
 
         captured = []
 
@@ -667,8 +657,7 @@ class TestWriteTurnSidecarsKeepIntervalsBranch:
             _write_turn_sidecars(turn, trim_start_secs=2.0, trim_end_secs=3.0)
 
         assert captured == [[(2.0, 30.0), (36.0, 77.0)]], (
-            f"first interval start +2.0, last interval end -3.0, middle boundaries "
-            f"untouched; got: {captured}"
+            f"first interval start +2.0, last interval end -3.0, middle boundaries untouched; got: {captured}"
         )
 
     def test_missing_keep_intervals_falls_back_to_legacy_group_window(self, tmp_path):
@@ -838,8 +827,7 @@ class TestIntegrityCheckUsesFFmpeg:
         assert len(captured_cmd) == 1, "subprocess.run must be called exactly once"
         cmd = captured_cmd[0]
         assert cmd[0] == "ffmpeg", (
-            f"Integrity check must use 'ffmpeg', got '{cmd[0]}'. "
-            "ffprobe rejects -f null and always returns rc=1."
+            f"Integrity check must use 'ffmpeg', got '{cmd[0]}'. ffprobe rejects -f null and always returns rc=1."
         )
         assert cmd == ["ffmpeg", "-v", "error", "-i", "/data/v1.mp4", "-f", "null", "-"], (
             f"Full command mismatch: {cmd}"
@@ -849,6 +837,7 @@ class TestIntegrityCheckUsesFFmpeg:
 # ---------------------------------------------------------------------------
 # Smoke tests: _run_ffmpeg_decode_check with a real ffmpeg binary
 # ---------------------------------------------------------------------------
+
 
 class TestDecodeCheckSmoke:
     """Real ffmpeg smoke tests for _run_ffmpeg_decode_check (integration, slow)."""
@@ -863,9 +852,16 @@ class TestDecodeCheckSmoke:
         out = tmp_path / "out.mp4"
         subprocess.run(
             [
-                "ffmpeg", "-y",
-                "-f", "lavfi", "-i", "testsrc=duration=1:size=128x64:rate=25",
-                "-c:v", "libx264", "-preset", "ultrafast",
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=1:size=128x64:rate=25",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
                 str(out),
             ],
             stdout=PIPE,
@@ -916,15 +912,12 @@ class TestWriteTurnSidecarsNoAiCall:
                 return_value=fake_blocks,
             ),
             patch(
-                "congress_videos.modules.youtube.youtube_ai"
-                ".generate_youtube_metadata_for_selected_videos",
+                "congress_videos.modules.youtube.youtube_ai.generate_youtube_metadata_for_selected_videos",
             ) as mock_ai,
         ):
             _write_turn_sidecars(turn)
 
-        mock_ai.assert_not_called(), (
-            "_write_turn_sidecars must not call AI metadata generation after issue #169"
-        )
+        mock_ai.assert_not_called(), ("_write_turn_sidecars must not call AI metadata generation after issue #169")
 
     def test_write_turn_sidecars_writes_subtitles_srt(self, tmp_path):
         """_write_turn_sidecars still writes subtitles.srt after removing AI call."""
@@ -978,6 +971,7 @@ class TestPrepareTurnsCallableNoThumbnailTrigger:
             # _trigger_thumbnail_for_turn must not be callable (deleted) or must not be called.
             # After deletion, accessing it on the module raises AttributeError.
             import congress_videos.speaker_turn_prepare_dag as prepare_mod
+
             assert not hasattr(prepare_mod, "_trigger_thumbnail_for_turn"), (
                 "_trigger_thumbnail_for_turn must be deleted from the module (issue #169)"
             )
@@ -1021,7 +1015,9 @@ class TestSpeakerResolutionStep:
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_write_sidecars),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", side_effect=fake_resolve),
-            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
+            ),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             _prepare_turns_callable()
@@ -1048,7 +1044,9 @@ class TestSpeakerResolutionStep:
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker") as mock_resolve,
-            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
+            ),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             _prepare_turns_callable()
@@ -1068,7 +1066,9 @@ class TestSpeakerResolutionStep:
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars") as mock_sidecars,
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None),
-            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
+            ),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             _prepare_turns_callable()
@@ -1118,7 +1118,9 @@ class TestSpeakerResolutionStep:
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars") as mock_sidecars,
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", side_effect=RuntimeError("unexpected")),
-            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
+            ),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             _prepare_turns_callable()
@@ -1151,7 +1153,9 @@ class TestPromotionHook:
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
-            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
+            ),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             _prepare_turns_callable()
@@ -1174,7 +1178,9 @@ class TestPromotionHook:
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
-            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
+            ),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             _prepare_turns_callable()
@@ -1197,7 +1203,9 @@ class TestPromotionHook:
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
-            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
+            ),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             _prepare_turns_callable()
@@ -1220,7 +1228,9 @@ class TestPromotionHook:
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
-            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
+            ),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             _prepare_turns_callable()
@@ -1269,7 +1279,9 @@ class TestPromotionHook:
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars") as mock_sidecars,
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
-            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
+            ),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             _prepare_turns_callable()
@@ -1467,12 +1479,8 @@ class TestWriteTurnSidecarsVadWindowAdjustment:
 
         assert len(captured_bounds) == 1, "must call _window_srt_blocks exactly once"
         ws, we = captured_bounds[0]
-        assert ws == pytest.approx(group_start + 2.5), (
-            f"window_start must be {group_start+2.5}, got {ws}"
-        )
-        assert we == pytest.approx(group_end - 3.0), (
-            f"window_end must be {group_end-3.0}, got {we}"
-        )
+        assert ws == pytest.approx(group_start + 2.5), f"window_start must be {group_start + 2.5}, got {ws}"
+        assert we == pytest.approx(group_end - 3.0), f"window_end must be {group_end - 3.0}, got {we}"
 
     def test_sidecar_window_unchanged_on_zero_trim(self, tmp_path):
         """trim_start_secs=0.0, trim_end_secs=0.0 → _window_srt_blocks receives original bounds."""
@@ -1564,7 +1572,9 @@ class TestPrepareTurnsCallableVadStep:
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", side_effect=fake_vad),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_sidecars),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", side_effect=fake_resolve),
-            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
+            ),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             _prepare_turns_callable()
@@ -1593,7 +1603,9 @@ class TestPrepareTurnsCallableVadStep:
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(1.5, 2.0)),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_sidecars),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None),
-            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
+            ),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             _prepare_turns_callable()
@@ -1621,7 +1633,9 @@ class TestPrepareTurnsCallableVadStep:
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_sidecars),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None),
-            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
+            ),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             _prepare_turns_callable()
@@ -1644,7 +1658,9 @@ class TestPrepareTurnsCallableVadStep:
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(2.0, 3.0)),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None),
-            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
+            ),
             patch("congress_videos.speaker_turn_prepare_dag.subprocess.run") as mock_sub,
         ):
             mock_sub.return_value = MagicMock(returncode=0)
@@ -1653,9 +1669,7 @@ class TestPrepareTurnsCallableVadStep:
         # ffmpeg decode check must be called with the output_path
         mock_sub.assert_called_once()
         cmd = mock_sub.call_args[0][0]
-        assert "/data/v1.mp4" in cmd, (
-            f"Decode check must operate on output_path /data/v1.mp4; cmd={cmd}"
-        )
+        assert "/data/v1.mp4" in cmd, f"Decode check must operate on output_path /data/v1.mp4; cmd={cmd}"
 
     def test_monologue_and_qa_both_vad_called(self):
         """Two turns (different turn_type) → VAD called for both."""
@@ -1680,7 +1694,9 @@ class TestPrepareTurnsCallableVadStep:
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", side_effect=fake_vad),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None),
-            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
+            ),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             _prepare_turns_callable()
@@ -1726,9 +1742,7 @@ class TestQaPromotionReresolution:
             stack.enter_context(
                 patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db)
             )
-            mock_sidecars = stack.enter_context(
-                patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars")
-            )
+            mock_sidecars = stack.enter_context(patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"))
             stack.enter_context(
                 patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0))
             )
@@ -1763,9 +1777,7 @@ class TestQaPromotionReresolution:
         with caplog.at_level(logging.INFO, logger="congress_videos.speaker_turn_prepare_dag"):
             mock_db, mock_resolve, _ = self._run(turn, resolve_side_effect=[narrow, wide])
 
-        mock_db.mark_turn_resolved.assert_called_once_with(
-            "/data/v1.mp4", "carlos-ruiz", 0.90, "ai_srt_context", 1
-        )
+        mock_db.mark_turn_resolved.assert_called_once_with("/data/v1.mp4", "carlos-ruiz", 0.90, "ai_srt_context", 1)
         mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
         assert mock_resolve.call_count == 2
         assert mock_resolve.call_args_list[1][0][0]["turn_type"] == "qa"
@@ -1785,9 +1797,7 @@ class TestQaPromotionReresolution:
 
         assert mock_resolve.call_count == 2, "the wide pass must be attempted before falling back"
         assert mock_resolve.call_args_list[1][0][0]["turn_type"] == "qa"
-        mock_db.mark_turn_resolved.assert_called_once_with(
-            "/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1
-        )
+        mock_db.mark_turn_resolved.assert_called_once_with("/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1)
         mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
 
     def test_wide_rejected_by_gate_b_falls_back_to_narrow(self, caplog):
@@ -1803,9 +1813,7 @@ class TestQaPromotionReresolution:
 
         assert mock_resolve.call_count == 2, "the wide pass must be attempted before falling back"
         assert mock_resolve.call_args_list[1][0][0]["turn_type"] == "qa"
-        mock_db.mark_turn_resolved.assert_called_once_with(
-            "/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1
-        )
+        mock_db.mark_turn_resolved.assert_called_once_with("/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1)
         mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
         warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert warnings == [], f"no WARNING expected on a silent wide-reject; got: {[r.getMessage() for r in warnings]}"
@@ -1841,9 +1849,7 @@ class TestQaPromotionReresolution:
         mock_db, mock_resolve, _ = self._run(turn, resolve_return=narrow, wide_enabled=False)
 
         assert mock_resolve.call_count == 1
-        mock_db.mark_turn_resolved.assert_called_once_with(
-            "/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1
-        )
+        mock_db.mark_turn_resolved.assert_called_once_with("/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1)
         mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
 
     def test_wide_pass_does_not_mutate_original_turn(self):
@@ -1866,20 +1872,14 @@ class TestQaPromotionReresolution:
         (sticky rule) AND the wide slug is the one persisted."""
         turn = _make_turn(1, "/data/v1.mp4")
         turn["resolved_name"] = "Old Name"
-        participants = self._participants() + [
-            {"slug": "old-name-slug", "display_name": "Old Name", "party": "IND"}
-        ]
+        participants = self._participants() + [{"slug": "old-name-slug", "display_name": "Old Name", "party": "IND"}]
         narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
         wide = {"participant_slug": "old-name-slug", "confidence": 0.95, "evidence": "..."}
 
-        mock_db, mock_resolve, _ = self._run(
-            turn, participants=participants, resolve_side_effect=[narrow, wide]
-        )
+        mock_db, mock_resolve, _ = self._run(turn, participants=participants, resolve_side_effect=[narrow, wide])
 
         mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
-        mock_db.mark_turn_resolved.assert_called_once_with(
-            "/data/v1.mp4", "old-name-slug", 0.95, "ai_srt_context", 1
-        )
+        mock_db.mark_turn_resolved.assert_called_once_with("/data/v1.mp4", "old-name-slug", 0.95, "ai_srt_context", 1)
 
     def test_wide_pass_raises_falls_back_to_narrow(self):
         """The wide resolve_speaker call raises -> caught internally, narrow written,
@@ -1887,14 +1887,10 @@ class TestQaPromotionReresolution:
         turn = _make_turn(1, "/data/v1.mp4")
         narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
 
-        mock_db, mock_resolve, mock_sidecars = self._run(
-            turn, resolve_side_effect=[narrow, RuntimeError("wide boom")]
-        )
+        mock_db, mock_resolve, mock_sidecars = self._run(turn, resolve_side_effect=[narrow, RuntimeError("wide boom")])
 
         assert mock_resolve.call_count == 2, "the wide pass must be attempted before raising"
-        mock_db.mark_turn_resolved.assert_called_once_with(
-            "/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1
-        )
+        mock_db.mark_turn_resolved.assert_called_once_with("/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1)
         mock_sidecars.assert_called_once()
 
 
@@ -1937,7 +1933,5 @@ class TestQaReresolutionNoSignalRegression:
 
         assert mock_resolve.call_count == 1
         assert mock_crosscheck.call_count == 1
-        mock_db.mark_turn_resolved.assert_called_once_with(
-            "/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1
-        )
+        mock_db.mark_turn_resolved.assert_called_once_with("/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1)
         mock_db.promote_turn_type_to_qa.assert_not_called()

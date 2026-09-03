@@ -71,10 +71,7 @@ def get_domain_config(domain: str) -> dict:
     """
     config = _get_thumbnail_config()
     if domain not in config:
-        raise ConfigError(
-            f"Unknown thumbnail domain: {domain!r}. "
-            f"Available domains: {list(config.keys())}"
-        )
+        raise ConfigError(f"Unknown thumbnail domain: {domain!r}. Available domains: {list(config.keys())}")
     return config[domain]
 
 

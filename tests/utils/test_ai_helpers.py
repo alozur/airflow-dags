@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import httpx
 import openai
@@ -44,15 +44,18 @@ def _fake_response(status_code: int) -> httpx.Response:
 # clamp_value
 # ---------------------------------------------------------------------------
 
-class TestClampValue:
 
-    @pytest.mark.parametrize("value,min_v,max_v,expected", [
-        (5, 1, 10, 5),       # within range — unchanged
-        (0, 1, 10, 1),       # below min → clamped to min
-        (15, 1, 10, 10),     # above max → clamped to max
-        (1, 1, 10, 1),       # exactly at min boundary
-        (10, 1, 10, 10),     # exactly at max boundary
-    ])
+class TestClampValue:
+    @pytest.mark.parametrize(
+        "value,min_v,max_v,expected",
+        [
+            (5, 1, 10, 5),  # within range — unchanged
+            (0, 1, 10, 1),  # below min → clamped to min
+            (15, 1, 10, 10),  # above max → clamped to max
+            (1, 1, 10, 1),  # exactly at min boundary
+            (10, 1, 10, 10),  # exactly at max boundary
+        ],
+    )
     def test_clamp_parametrized(self, value: int, min_v: int, max_v: int, expected: int):
         assert clamp_value(value, min_v, max_v) == expected
 
@@ -70,15 +73,18 @@ class TestClampValue:
 # truncate_text
 # ---------------------------------------------------------------------------
 
-class TestTruncateText:
 
-    @pytest.mark.parametrize("text,max_length,suffix,expected", [
-        ("hello", 10, "...", "hello"),               # shorter than max — unchanged
-        ("hello world", 8, "...", "hello..."),        # truncated with default suffix
-        ("abcde", 5, "...", "abcde"),                 # exactly at max — unchanged
-        ("abcdef", 5, "...", "ab..."),                # one over max
-        ("hello", 5, "!", "hello"),                   # exactly at max with custom suffix
-    ])
+class TestTruncateText:
+    @pytest.mark.parametrize(
+        "text,max_length,suffix,expected",
+        [
+            ("hello", 10, "...", "hello"),  # shorter than max — unchanged
+            ("hello world", 8, "...", "hello..."),  # truncated with default suffix
+            ("abcde", 5, "...", "abcde"),  # exactly at max — unchanged
+            ("abcdef", 5, "...", "ab..."),  # one over max
+            ("hello", 5, "!", "hello"),  # exactly at max with custom suffix
+        ],
+    )
     def test_truncate_parametrized(self, text: str, max_length: int, suffix: str, expected: str):
         assert truncate_text(text, max_length, suffix) == expected
 
@@ -101,15 +107,15 @@ class TestTruncateText:
 # parse_json_response
 # ---------------------------------------------------------------------------
 
-class TestParseJsonResponse:
 
+class TestParseJsonResponse:
     def test_valid_json_object(self):
         result = parse_json_response('{"key": "value", "num": 42}')
         assert result["error"] is None
         assert result["data"] == {"key": "value", "num": 42}
 
     def test_valid_json_array(self):
-        result = parse_json_response('[1, 2, 3]')
+        result = parse_json_response("[1, 2, 3]")
         assert result["error"] is None
         assert result["data"] == [1, 2, 3]
 
@@ -152,8 +158,8 @@ class TestParseJsonResponse:
 # generate_chat_completion
 # ---------------------------------------------------------------------------
 
-class TestGenerateChatCompletion:
 
+class TestGenerateChatCompletion:
     def _make_fake_response(self, content: str) -> MagicMock:
         fake_response = MagicMock()
         fake_response.choices = [MagicMock()]
@@ -178,9 +184,7 @@ class TestGenerateChatCompletion:
 
     def test_passes_model_to_api(self, mocker):
         fake_response = self._make_fake_response("ok")
-        mock_create = mocker.patch(
-            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
-        )
+        mock_create = mocker.patch("utils.ai_helpers.openai.chat.completions.create", return_value=fake_response)
         generate_chat_completion("sys", "usr", model="gpt-4o")
         call_kwargs = mock_create.call_args.kwargs
         assert call_kwargs["model"] == "gpt-4o"
@@ -195,9 +199,7 @@ class TestGenerateChatCompletion:
         empty content with no error. Neither kwarg is safe to send.
         """
         fake_response = self._make_fake_response("ok")
-        mock_create = mocker.patch(
-            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
-        )
+        mock_create = mocker.patch("utils.ai_helpers.openai.chat.completions.create", return_value=fake_response)
         generate_chat_completion("sys", "usr")
         call_kwargs = mock_create.call_args.kwargs
         assert "temperature" not in call_kwargs
@@ -212,18 +214,14 @@ class TestGenerateChatCompletion:
         `max_tokens=` kwarg re-added alongside it.
         """
         fake_response = self._make_fake_response("ok")
-        mock_create = mocker.patch(
-            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
-        )
+        mock_create = mocker.patch("utils.ai_helpers.openai.chat.completions.create", return_value=fake_response)
         generate_chat_completion("sys", "usr")
         assert "max_tokens" not in mock_create.call_args.kwargs
 
     def test_no_budget_or_temperature_sent_for_any_model(self, mocker):
         """No model-name branching: the wire shape is the same regardless of model."""
         fake_response = self._make_fake_response("ok")
-        mock_create = mocker.patch(
-            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
-        )
+        mock_create = mocker.patch("utils.ai_helpers.openai.chat.completions.create", return_value=fake_response)
         generate_chat_completion("sys", "usr", model="gpt-4o-mini")
         call_kwargs = mock_create.call_args.kwargs
         assert "temperature" not in call_kwargs
@@ -232,9 +230,7 @@ class TestGenerateChatCompletion:
 
     def test_sends_system_and_user_messages(self, mocker):
         fake_response = self._make_fake_response("ok")
-        mock_create = mocker.patch(
-            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
-        )
+        mock_create = mocker.patch("utils.ai_helpers.openai.chat.completions.create", return_value=fake_response)
         generate_chat_completion("my system", "my user")
         messages = mock_create.call_args.kwargs["messages"]
         assert messages[0] == {"role": "system", "content": "my system"}
@@ -268,8 +264,8 @@ class TestGenerateChatCompletion:
 # generate_chat_completion — request timeout budget (issue #355)
 # ---------------------------------------------------------------------------
 
-class TestRequestTimeout:
 
+class TestRequestTimeout:
     def _make_fake_response(self, content: str) -> MagicMock:
         fake_response = MagicMock()
         fake_response.choices = [MagicMock()]
@@ -278,9 +274,7 @@ class TestRequestTimeout:
 
     def test_sends_default_split_timeout(self, mocker):
         fake_response = self._make_fake_response("ok")
-        mock_create = mocker.patch(
-            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
-        )
+        mock_create = mocker.patch("utils.ai_helpers.openai.chat.completions.create", return_value=fake_response)
 
         generate_chat_completion("sys", "usr")
 
@@ -293,9 +287,7 @@ class TestRequestTimeout:
         """Regression guard: `timeout=None` would tell the SDK "unbounded" —
         the exact bug issue #355 fixes."""
         fake_response = self._make_fake_response("ok")
-        mock_create = mocker.patch(
-            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
-        )
+        mock_create = mocker.patch("utils.ai_helpers.openai.chat.completions.create", return_value=fake_response)
 
         generate_chat_completion("sys", "usr")
 
@@ -306,9 +298,7 @@ class TestRequestTimeout:
 
     def test_caller_override_replaces_read_budget_only(self, mocker):
         fake_response = self._make_fake_response("ok")
-        mock_create = mocker.patch(
-            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
-        )
+        mock_create = mocker.patch("utils.ai_helpers.openai.chat.completions.create", return_value=fake_response)
 
         generate_chat_completion("sys", "usr", timeout=5.0)
 
@@ -322,9 +312,7 @@ class TestRequestTimeout:
         mocker.patch("utils.ai_helpers.LLM_TIMEOUT_SECONDS", 42.0)
         mocker.patch("utils.ai_helpers.LLM_CONNECT_TIMEOUT_SECONDS", 3.0)
         fake_response = self._make_fake_response("ok")
-        mock_create = mocker.patch(
-            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
-        )
+        mock_create = mocker.patch("utils.ai_helpers.openai.chat.completions.create", return_value=fake_response)
 
         generate_chat_completion("sys", "usr")
 
@@ -336,6 +324,7 @@ class TestRequestTimeout:
 # ---------------------------------------------------------------------------
 # generate_chat_completion / generate_json_completion — removed params (#375)
 # ---------------------------------------------------------------------------
+
 
 class TestRemovedParametersRejected:
     """`temperature` and `max_tokens` are no longer accepted by either helper.
@@ -355,8 +344,8 @@ class TestRemovedParametersRejected:
 # generate_json_completion
 # ---------------------------------------------------------------------------
 
-class TestGenerateJsonCompletion:
 
+class TestGenerateJsonCompletion:
     def test_successful_json_completion(self, mocker):
         mocker.patch(
             "utils.ai_helpers.generate_chat_completion",
@@ -429,9 +418,7 @@ class TestGenerateJsonCompletion:
         fake_response = MagicMock()
         fake_response.choices = [MagicMock()]
         fake_response.choices[0].message.content = '{"ok": true}'
-        mock_create = mocker.patch(
-            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
-        )
+        mock_create = mocker.patch("utils.ai_helpers.openai.chat.completions.create", return_value=fake_response)
         result = generate_json_completion("sys", "usr")
         call_kwargs = mock_create.call_args.kwargs
         assert "temperature" not in call_kwargs
@@ -453,9 +440,7 @@ class TestGenerateJsonCompletion:
         fake_response = MagicMock()
         fake_response.choices = [MagicMock()]
         fake_response.choices[0].message.content = '{"ok": true}'
-        mock_create = mocker.patch(
-            "utils.ai_helpers.openai.chat.completions.create", return_value=fake_response
-        )
+        mock_create = mocker.patch("utils.ai_helpers.openai.chat.completions.create", return_value=fake_response)
 
         generate_json_completion("sys", "usr", timeout=7.0)
 
@@ -468,8 +453,8 @@ class TestGenerateJsonCompletion:
 # classify_openai_error
 # ---------------------------------------------------------------------------
 
-class TestClassifyOpenAIError:
 
+class TestClassifyOpenAIError:
     def test_quota_via_type_is_permanent(self):
         exc = openai.RateLimitError(
             "You exceeded your current quota",
@@ -531,9 +516,7 @@ class TestClassifyOpenAIError:
         # Pins the E2 KeyError gotcha: exc.body is not a dict here (proxy/HTML
         # error page shape). classify_openai_error must use getattr, never
         # exc.body["error"]["type"], or this raises instead of returning.
-        exc = openai.APIError(
-            "proxy error", _fake_request(), body="<html>502 Bad Gateway</html>"
-        )
+        exc = openai.APIError("proxy error", _fake_request(), body="<html>502 Bad Gateway</html>")
         result = classify_openai_error(exc)
         assert result["permanent"] is None
         assert result["type"] is None
@@ -544,8 +527,8 @@ class TestClassifyOpenAIError:
 # OpenAI quota latch
 # ---------------------------------------------------------------------------
 
-class TestOpenAIQuotaLatch:
 
+class TestOpenAIQuotaLatch:
     def _make_fake_response(self, content: str) -> MagicMock:
         fake_response = MagicMock()
         fake_response.choices = [MagicMock()]

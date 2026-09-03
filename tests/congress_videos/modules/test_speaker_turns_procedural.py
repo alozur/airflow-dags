@@ -6,6 +6,7 @@ whitespace-collapsed text. Precision-first: ambiguous cases must NOT be flagged.
 
 No I/O, no DB, plain strings only.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -24,7 +25,6 @@ from congress_videos.modules.speaker_turns import (
 
 
 class TestModuleConstants:
-
     def test_max_duration_is_15_seconds(self):
         assert PROCEDURAL_MAX_DURATION_SECS == 15.0
 
@@ -40,7 +40,6 @@ class TestModuleConstants:
 
 
 class TestDurationGate:
-
     def test_typical_handoff_flagged(self):
         """Spec scenario: 6s turn, exact handoff phrase → flagged with reason."""
         flagged, reason = is_procedural_turn("tiene la palabra el señor Pérez", 6.0)
@@ -51,10 +50,7 @@ class TestDurationGate:
     def test_long_turn_with_handoff_phrase_not_flagged(self):
         """Spec scenario: 340s turn opening with handoff phrase then substance
         → NOT flagged regardless of text (duration gate alone excludes it)."""
-        text = (
-            "tiene la palabra el señor Pérez. " + "y a continuación quiero hablar largamente "
-            * 20
-        )
+        text = "tiene la palabra el señor Pérez. " + "y a continuación quiero hablar largamente " * 20
         flagged, reason = is_procedural_turn(text, 340.0)
         assert flagged is False
         assert reason is None
@@ -71,7 +67,6 @@ class TestDurationGate:
 
 
 class TestCoverageGate:
-
     def test_short_substantive_reply_not_flagged(self):
         """Spec scenario: 8s turn, no procedural phrase at all → NOT flagged."""
         flagged, reason = is_procedural_turn("sí, apoyo la moción", 8.0)
@@ -98,9 +93,7 @@ class TestCoverageGate:
         assert reason is None
 
     def test_anti_pattern_with_substance_never_flagged(self):
-        flagged, reason = is_procedural_turn(
-            "gracias, señor presidente, paso a exponer mi enmienda", 9.0
-        )
+        flagged, reason = is_procedural_turn("gracias, señor presidente, paso a exponer mi enmienda", 9.0)
         assert flagged is False
         assert reason is None
 
@@ -128,7 +121,6 @@ class TestCoverageGate:
 
 
 class TestAccentAndCaseTolerance:
-
     def test_uppercase_variant_flagged(self):
         flagged, reason = is_procedural_turn("TIENE LA PALABRA SU SEÑORÍA.", 4.0)
         assert flagged is True

@@ -29,7 +29,7 @@ def test_runner_uses_an_isolated_cpu_limited_container_with_read_only_inputs(tmp
     cache.mkdir()
     parameters.write_text("{}", encoding="utf-8")
     docker.write_text(
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DOCKER_ARGS\"\nprintf '{}\\n' > \"$FAKE_VAD_OUTPUT\"\n",
+        '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$DOCKER_ARGS"\nprintf \'{}\\n\' > "$FAKE_VAD_OUTPUT"\n',
         encoding="utf-8",
     )
     docker.chmod(0o755)
@@ -75,7 +75,7 @@ def test_runner_maps_non_sudo_host_identity_to_container_user(tmp_path: Path):
     cache.mkdir()
     parameters.write_text("{}", encoding="utf-8")
     docker.write_text(
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DOCKER_ARGS\"\nprintf '{}\\n' > \"$FAKE_VAD_OUTPUT\"\n",
+        '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$DOCKER_ARGS"\nprintf \'{}\\n\' > "$FAKE_VAD_OUTPUT"\n',
         encoding="utf-8",
     )
     docker.chmod(0o755)
@@ -110,9 +110,7 @@ def test_runner_prioritizes_system_docker_paths_before_path_lookup():
 
 
 @pytest.mark.parametrize("name, value", [("SUDO_UID", "not-a-number"), ("SUDO_GID", "10.5")])
-def test_runner_rejects_nonnumeric_sudo_identity_values(
-    tmp_path: Path, name: str, value: str
-):
+def test_runner_rejects_nonnumeric_sudo_identity_values(tmp_path: Path, name: str, value: str):
     docker = tmp_path / "docker"
     docker_was_invoked = tmp_path / "docker-was-invoked"
     audio = tmp_path / "full-run.wav"
@@ -122,7 +120,7 @@ def test_runner_rejects_nonnumeric_sudo_identity_values(
     audio.write_bytes(b"RIFF")
     cache.mkdir()
     parameters.write_text("{}", encoding="utf-8")
-    docker.write_text("#!/bin/sh\ntouch \"$DOCKER_WAS_INVOKED\"\nexit 99\n", encoding="utf-8")
+    docker.write_text('#!/bin/sh\ntouch "$DOCKER_WAS_INVOKED"\nexit 99\n', encoding="utf-8")
     docker.chmod(0o755)
 
     result = subprocess.run(

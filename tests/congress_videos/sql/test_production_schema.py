@@ -2,9 +2,10 @@
 snapshot (issues #238, #299, #304).
 
 Guards against the snapshot silently drifting from the latest applied view
-migration (currently 040) and from the live production DDL for the 11
+migration (currently 044) and from the live production DDL for the 11
 snapshotted base tables. Static SQL-text checks only — no DB connection.
 """
+
 from __future__ import annotations
 
 import re
@@ -12,14 +13,17 @@ from pathlib import Path
 
 import pytest
 
-SCHEMA_PATH = (
+SCHEMA_PATH = Path(__file__).resolve().parents[3] / "congress_videos" / "sql" / "production_schema.sql"
+
+MIGRATION_PATH = (
     Path(__file__).resolve().parents[3]
     / "congress_videos"
     / "sql"
-    / "production_schema.sql"
+    / "migrations"
+    / "044_deterministic_turn_publish_order.sql"
 )
 
-MIGRATION_PATH = (
+MIGRATION_040_PATH = (
     Path(__file__).resolve().parents[3]
     / "congress_videos"
     / "sql"
@@ -41,7 +45,7 @@ def _normalize_view_sql(text: str, view_name: str = "UPLOADABLE_TURNS") -> str:
 
     `CREATE OR REPLACE VIEW` is rewritten to `CREATE VIEW` so a migration that
     uses one form stays comparable to a snapshot that uses the other (038 vs
-    the snapshot's DROP + CREATE). No-op for uploadable_turns/040.
+    the snapshot's DROP + CREATE). No-op for uploadable_turns/044.
     """
     target = view_name.upper()
     stripped = re.sub(r"--[^\n]*", " ", text)  # also kills the DOWN block
@@ -76,65 +80,158 @@ def _table_block(table: str) -> str:
 # `\d production.<table>` DDL (canonical source), in FK-dependency order.
 TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
     "youtube_source_videos": (
-        "video_id", "video_title", "video_url", "session_number",
-        "session_date", "duration_seconds", "published_at", "channel_id",
-        "is_processed", "total_chapters", "created_at", "updated_at",
+        "video_id",
+        "video_title",
+        "video_url",
+        "session_number",
+        "session_date",
+        "duration_seconds",
+        "published_at",
+        "channel_id",
+        "is_processed",
+        "total_chapters",
+        "created_at",
+        "updated_at",
         "download_retry_after",
     ),
     "video_chapters": (
-        "chapter_id", "video_id", "title", "description", "start_time",
-        "end_time", "duration_minutes", "speakers", "topics",
-        "relevance_score", "speaker_relevance_points",
-        "topic_relevance_points", "public_interest_points",
-        "scoring_reasoning", "key_speakers", "is_current_topic",
-        "scoring_error", "scored_at", "is_uploaded_to_youtube",
-        "youtube_video_id", "youtube_upload_date", "created_at", "updated_at",
-        "timeline", "upload_attempts", "is_upload_abandoned",
-        "last_upload_error", "resolved_participant_slug", "turns_detected_at",
+        "chapter_id",
+        "video_id",
+        "title",
+        "description",
+        "start_time",
+        "end_time",
+        "duration_minutes",
+        "speakers",
+        "topics",
+        "relevance_score",
+        "speaker_relevance_points",
+        "topic_relevance_points",
+        "public_interest_points",
+        "scoring_reasoning",
+        "key_speakers",
+        "is_current_topic",
+        "scoring_error",
+        "scored_at",
+        "is_uploaded_to_youtube",
+        "youtube_video_id",
+        "youtube_upload_date",
+        "created_at",
+        "updated_at",
+        "timeline",
+        "upload_attempts",
+        "is_upload_abandoned",
+        "last_upload_error",
+        "resolved_participant_slug",
+        "turns_detected_at",
         "upload_verified_at",
     ),
     "llm_cache": ("cache_key", "model", "response", "created_at"),
     "congress_participants": (
-        "normalized_name", "display_name", "party", "parliamentary_group",
-        "constituency", "biography", "full_membership_date", "start_date",
-        "group_entry_date", "photo_url", "created_at", "updated_at",
-        "nickname", "slug",
+        "normalized_name",
+        "display_name",
+        "party",
+        "parliamentary_group",
+        "constituency",
+        "biography",
+        "full_membership_date",
+        "start_date",
+        "group_entry_date",
+        "photo_url",
+        "created_at",
+        "updated_at",
+        "nickname",
+        "slug",
     ),
     "speaker_normalization_cache": (
-        "id", "chapter_id", "dirty_speaker", "canonical_speaker",
-        "participant_normalized_name", "status", "confidence_score",
-        "created_at", "updated_at",
+        "id",
+        "chapter_id",
+        "dirty_speaker",
+        "canonical_speaker",
+        "participant_normalized_name",
+        "status",
+        "confidence_score",
+        "created_at",
+        "updated_at",
     ),
     "video_thumbnails": (
-        "thumbnail_id", "chapter_id", "youtube_video_id", "label", "style",
-        "prompt", "main_score", "local_path", "output_url", "openai_title",
-        "is_chosen", "created_at", "archetype", "art_direction_brief",
+        "thumbnail_id",
+        "chapter_id",
+        "youtube_video_id",
+        "label",
+        "style",
+        "prompt",
+        "main_score",
+        "local_path",
+        "output_url",
+        "openai_title",
+        "is_chosen",
+        "created_at",
+        "archetype",
+        "art_direction_brief",
     ),
     "speaker_turns": (
-        "turn_id", "chapter_id", "start_seconds", "end_seconds",
-        "speaker_label", "resolved_name", "confidence", "source",
-        "created_at", "updated_at", "interest_score", "is_procedural",
+        "turn_id",
+        "chapter_id",
+        "start_seconds",
+        "end_seconds",
+        "speaker_label",
+        "resolved_name",
+        "confidence",
+        "source",
+        "created_at",
+        "updated_at",
+        "interest_score",
+        "is_procedural",
         "procedural_reason",
     ),
     "speaker_turn_trim_proposals": (
-        "proposal_id", "turn_id", "start_seconds", "end_seconds", "tipo",
-        "score", "source", "is_voice_free", "created_at", "updated_at",
-        "is_approved", "approved_at",
+        "proposal_id",
+        "turn_id",
+        "start_seconds",
+        "end_seconds",
+        "tipo",
+        "score",
+        "source",
+        "is_voice_free",
+        "created_at",
+        "updated_at",
+        "is_approved",
+        "approved_at",
     ),
     "speaker_turn_videos": (
-        "video_id", "turn_id", "output_path", "materialized_at",
-        "is_uploaded_to_youtube", "youtube_video_id", "youtube_upload_date",
-        "prepared_at", "upload_verified_at", "upload_attempts",
-        "is_upload_abandoned", "last_upload_error", "turn_type",
-        "resolved_participant_slug", "speaker_resolution_confidence",
-        "speaker_resolution_method", "keep_intervals",
-        "thumbnail_republish_needed_at", "thumbnail_republished_at",
-        "thumbnail_republish_attempts", "thumbnail_republish_abandoned",
+        "video_id",
+        "turn_id",
+        "output_path",
+        "materialized_at",
+        "is_uploaded_to_youtube",
+        "youtube_video_id",
+        "youtube_upload_date",
+        "prepared_at",
+        "upload_verified_at",
+        "upload_attempts",
+        "is_upload_abandoned",
+        "last_upload_error",
+        "turn_type",
+        "resolved_participant_slug",
+        "speaker_resolution_confidence",
+        "speaker_resolution_method",
+        "keep_intervals",
+        "thumbnail_republish_needed_at",
+        "thumbnail_republished_at",
+        "thumbnail_republish_attempts",
+        "thumbnail_republish_abandoned",
         "last_thumbnail_republish_error",
     ),
     "video_analytics_snapshots": (
-        "snapshot_id", "chapter_id", "youtube_video_id", "checkpoint",
-        "metrics", "action_taken", "collected_at", "action_detail",
+        "snapshot_id",
+        "chapter_id",
+        "youtube_video_id",
+        "checkpoint",
+        "metrics",
+        "action_taken",
+        "collected_at",
+        "action_detail",
     ),
 }
 
@@ -155,7 +252,6 @@ FK_QUALIFICATIONS: tuple[tuple[str, str], ...] = (
 
 
 class TestProductionSchemaFileExists:
-
     def test_schema_file_exists(self):
         """production_schema.sql must exist at the expected path."""
         assert SCHEMA_PATH.exists(), f"Schema file not found: {SCHEMA_PATH}"
@@ -224,12 +320,12 @@ class TestUploadableTurns035GroupSpans:
 
     def test_cte_computes_min_start_and_max_end(self):
         sql = self._sql().upper()
-        assert re.search(
-            r"MIN\s*\(\s*ST\.START_SECONDS\s*\)\s+AS\s+GROUP_START_SECONDS", sql
-        ), "CTE must compute MIN(st.start_seconds) AS group_start_seconds"
-        assert re.search(
-            r"MAX\s*\(\s*ST\.END_SECONDS\s*\)\s+AS\s+GROUP_END_SECONDS", sql
-        ), "CTE must compute MAX(st.end_seconds) AS group_end_seconds"
+        assert re.search(r"MIN\s*\(\s*ST\.START_SECONDS\s*\)\s+AS\s+GROUP_START_SECONDS", sql), (
+            "CTE must compute MIN(st.start_seconds) AS group_start_seconds"
+        )
+        assert re.search(r"MAX\s*\(\s*ST\.END_SECONDS\s*\)\s+AS\s+GROUP_END_SECONDS", sql), (
+            "CTE must compute MAX(st.end_seconds) AS group_end_seconds"
+        )
 
     def test_cte_groups_by_output_path(self):
         sql = self._sql().upper()
@@ -237,9 +333,9 @@ class TestUploadableTurns035GroupSpans:
 
     def test_joins_group_spans_back_on_output_path(self):
         sql = self._sql().upper()
-        assert re.search(
-            r"JOIN\s+GROUP_SPANS\s+GS\s+ON\s+GS\.OUTPUT_PATH\s*=\s*STV\.OUTPUT_PATH", sql
-        ), "Must JOIN group_spans gs ON gs.output_path = stv.output_path"
+        assert re.search(r"JOIN\s+GROUP_SPANS\s+GS\s+ON\s+GS\.OUTPUT_PATH\s*=\s*STV\.OUTPUT_PATH", sql), (
+            "Must JOIN group_spans gs ON gs.output_path = stv.output_path"
+        )
 
     def test_outer_where_enforces_300_second_floor(self):
         sql = self._sql().upper()
@@ -260,9 +356,9 @@ class TestUploadableTurns040ProceduralGate:
 
     def test_inner_where_excludes_procedural_turns(self):
         sql = self._sql().upper()
-        assert re.search(
-            r"NOT\s+COALESCE\s*\(\s*ST\.IS_PROCEDURAL\s*,\s*FALSE\s*\)", sql
-        ), "Snapshot must gate on NOT COALESCE(st.is_procedural, FALSE)"
+        assert re.search(r"NOT\s+COALESCE\s*\(\s*ST\.IS_PROCEDURAL\s*,\s*FALSE\s*\)", sql), (
+            "Snapshot must gate on NOT COALESCE(st.is_procedural, FALSE)"
+        )
 
     def test_cte_computes_procedural_seconds(self):
         sql = self._sql().upper()
@@ -307,9 +403,7 @@ class TestProductionQualification:
     )
     def test_base_table_is_qualified(self, table):
         block = self._view_block()
-        assert f"production.{table}" in block, (
-            f"Base table {table} must appear qualified as production.{table}"
-        )
+        assert f"production.{table}" in block, f"Base table {table} must appear qualified as production.{table}"
 
     def test_group_spans_cte_reference_stays_unqualified(self):
         block = self._view_block().upper()
@@ -374,15 +468,13 @@ class TestVideoShortsTableSnapshot:
     def test_column_present_in_block(self, column):
         block = self._video_shorts_block().upper()
         assert re.search(rf"\b{column.upper()}\b", block), (
-            f"video_shorts column {column!r} missing from the extracted "
-            "CREATE TABLE block"
+            f"video_shorts column {column!r} missing from the extracted CREATE TABLE block"
         )
 
     def test_chapter_id_fk_is_production_qualified(self):
         block = re.sub(r"\s+", " ", self._video_shorts_block()).upper()
         assert "REFERENCES PRODUCTION.VIDEO_CHAPTERS(CHAPTER_ID) ON DELETE CASCADE" in block, (
-            "video_shorts.chapter_id must reference production.video_chapters "
-            "with an explicit schema qualification"
+            "video_shorts.chapter_id must reference production.video_chapters with an explicit schema qualification"
         )
 
 
@@ -403,16 +495,13 @@ class TestRemainingBaseTableSnapshots:
     def test_column_present_in_block(self, table, column):
         block = _table_block(table).upper()
         assert re.search(rf"\b{column.upper()}\b", block), (
-            f"{table} column {column!r} missing from the extracted "
-            "CREATE TABLE block"
+            f"{table} column {column!r} missing from the extracted CREATE TABLE block"
         )
 
     @pytest.mark.parametrize("table,references", FK_QUALIFICATIONS)
     def test_fk_is_production_qualified(self, table, references):
         block = re.sub(r"\s+", " ", _table_block(table)).upper()
-        assert references in block, (
-            f"{table} must carry an explicitly schema-qualified FK: {references}"
-        )
+        assert references in block, f"{table} must carry an explicitly schema-qualified FK: {references}"
 
     @pytest.mark.parametrize("table", (*TABLE_COLUMNS, "video_shorts"))
     def test_extracted_block_has_balanced_parens(self, table):
@@ -420,8 +509,7 @@ class TestRemainingBaseTableSnapshots:
         and would silently weaken every assertion above."""
         body = re.sub(r"--[^\n]*", "", _table_block(table))
         assert body.count("(") == body.count(")"), (
-            f"{table} block extraction stopped early — a literal '); ' appears "
-            "before the table's own closing paren"
+            f"{table} block extraction stopped early — a literal '); ' appears before the table's own closing paren"
         )
 
 
@@ -450,16 +538,73 @@ class TestVideoChaptersIndexCompleteness:
 
 class TestSnapshotLockstepWithLatestMigration:
     """The snapshot's uploadable_turns view must be semantically identical to
-    the latest applied view migration (040), modulo comments/qualification/
+    the latest applied view migration (044), modulo comments/qualification/
     whitespace."""
 
-    def test_normalized_view_matches_migration_040(self):
+    def test_normalized_view_matches_migration_044(self):
         snapshot_sql = SCHEMA_PATH.read_text(encoding="utf-8")
         migration_sql = MIGRATION_PATH.read_text(encoding="utf-8")
 
         assert _normalize_view_sql(snapshot_sql) == _normalize_view_sql(migration_sql), (
             "production_schema.sql's uploadable_turns view has drifted from "
-            "migration 040 — update the snapshot to stay in lockstep"
+            "migration 044 — update the snapshot to stay in lockstep"
+        )
+
+
+class TestUploadableTurns044PublishOrder:
+    """044: FIFO tie-break appended to the outer ORDER BY so LIMIT 1 is
+    deterministic by contract, not by plan stability (issue #328)."""
+
+    _TIEBREAK_SUFFIX = (
+        "ORDER BY COALESCE(DEDUP.INTEREST_SCORE, 1) DESC, "
+        "DEDUP.RELEVANCE_SCORE DESC, "
+        "DEDUP.SESSION_DATE DESC, "
+        "DEDUP.MATERIALIZED_AT ASC, "
+        "DEDUP.TURN_ID ASC"
+    )
+
+    def test_outer_order_by_is_editorial_keys_then_fifo_tiebreak(self):
+        """The three editorial keys keep their exact text/direction, and the
+        FIFO tie-break plus the turn_id backstop are appended strictly after
+        them — the whole ORDER BY is the last thing in the normalized view,
+        so one suffix check covers ordering, positioning, and direction."""
+        normalized = _normalize_view_sql(SCHEMA_PATH.read_text(encoding="utf-8"))
+        assert normalized.endswith(self._TIEBREAK_SUFFIX), (
+            "outer ORDER BY must end with the three unchanged editorial keys "
+            "followed by materialized_at ASC, turn_id ASC"
+        )
+
+    def test_tiebreak_carries_fifo_intent_comment(self):
+        """The materialized_at ASC clause must name its FIFO intent inline,
+        so a future reader does not mistake it for accidental ordering.
+
+        Scoped to the ORDER BY clause itself, NOT the whole view block: the
+        cumulative lineage header already reads "044 FIFO tie-break ... (issue
+        #328)", so a block-wide keyword scan would still pass with the inline
+        comment deleted — exactly the edit this test exists to catch.
+        """
+        block = TestProductionQualification._view_block()
+        marker = "ORDER BY COALESCE(dedup.interest_score"
+        assert marker in block, "outer ORDER BY not found in the uploadable_turns block"
+        order_by_clause = block[block.index(marker) :].upper()
+
+        assert "FIFO" in order_by_clause, (
+            "the materialized_at ASC tie-break must carry an inline comment naming its "
+            "FIFO intent, inside the ORDER BY clause itself — not only in the lineage header"
+        )
+        assert "#328" in order_by_clause, "the inline tie-break comment must cite issue #328"
+
+    def test_migration_044_body_is_040_plus_tiebreak(self):
+        """The transcription guard: migration 044's body must be migration
+        040's body with ONLY the two new tie-break keys appended. Comment-,
+        whitespace- and qualification-immune — this is what makes eligibility
+        preservation a mechanically enforced fact, not a reviewer's hope."""
+        migration_044 = _normalize_view_sql(MIGRATION_PATH.read_text(encoding="utf-8"))
+        migration_040 = _normalize_view_sql(MIGRATION_040_PATH.read_text(encoding="utf-8"))
+
+        assert migration_044 == migration_040 + ", DEDUP.MATERIALIZED_AT ASC, DEDUP.TURN_ID ASC", (
+            "migration 044's view body must equal migration 040's body with "
+            "exactly the FIFO tie-break appended to the ORDER BY"
         )
 
 
@@ -478,9 +623,9 @@ class TestChaptersSnapshotLockstepWithMigration038:
         snapshot_sql = SCHEMA_PATH.read_text(encoding="utf-8")
         migration_sql = MIGRATION_038_PATH.read_text(encoding="utf-8")
 
-        assert _normalize_view_sql(
-            snapshot_sql, "UPLOADABLE_CHAPTERS"
-        ) == _normalize_view_sql(migration_sql, "UPLOADABLE_CHAPTERS"), (
+        assert _normalize_view_sql(snapshot_sql, "UPLOADABLE_CHAPTERS") == _normalize_view_sql(
+            migration_sql, "UPLOADABLE_CHAPTERS"
+        ), (
             "production_schema.sql's uploadable_chapters view has drifted from "
             "migration 038 — update the snapshot to stay in lockstep"
         )

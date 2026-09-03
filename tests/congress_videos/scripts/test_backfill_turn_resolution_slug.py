@@ -59,9 +59,7 @@ class TestLoadPlan:
 
         entries = backfill.load_plan(path)
 
-        assert entries[0] == backfill.BackfillEntry(
-            turn_id=8124, expected_current_slug="old", new_slug="new"
-        )
+        assert entries[0] == backfill.BackfillEntry(turn_id=8124, expected_current_slug="old", new_slug="new")
         assert entries[1].expected_current_slug is None
 
     @pytest.mark.parametrize(
@@ -166,9 +164,7 @@ class TestRenderSummary:
         entry = backfill.BackfillEntry(turn_id=8124, expected_current_slug="old", new_slug="new")
         long_path = "/data/" + ("x" * 80) + "/turn_8124.mp4"
 
-        report = backfill.render_summary(
-            [entry], {8124: _row(8124, "old", output_path=long_path)}, **self._kwargs()
-        )
+        report = backfill.render_summary([entry], {8124: _row(8124, "old", output_path=long_path)}, **self._kwargs())
 
         for column in ("turn_id", "speaker_label", "old_slug", "new_slug", "status"):
             assert column in report
@@ -184,12 +180,8 @@ class TestRenderSummary:
             ("new", "new", _row(8124, "new"), "NO-CHANGE"),
         ],
     )
-    def test_derives_the_correct_status(
-        self, expected_current_slug, new_slug, current_row, want_status
-    ):
-        entry = backfill.BackfillEntry(
-            turn_id=8124, expected_current_slug=expected_current_slug, new_slug=new_slug
-        )
+    def test_derives_the_correct_status(self, expected_current_slug, new_slug, current_row, want_status):
+        entry = backfill.BackfillEntry(turn_id=8124, expected_current_slug=expected_current_slug, new_slug=new_slug)
         current_state = {8124: current_row} if current_row else {}
 
         report = backfill.render_summary([entry], current_state, **self._kwargs())
@@ -228,9 +220,7 @@ class TestParseArgs:
         args = backfill.parse_args(["--input", "p.json", "--confidence", "0.8"])
         assert args.rollback_out is None
 
-        args = backfill.parse_args(
-            ["--input", "p.json", "--confidence", "0.8", "--rollback-out", "inv.json"]
-        )
+        args = backfill.parse_args(["--input", "p.json", "--confidence", "0.8", "--rollback-out", "inv.json"])
         assert args.rollback_out == "inv.json"
 
 
@@ -250,9 +240,7 @@ class TestMainDryRun:
     def test_dry_run_end_to_end_zero_writes_and_zero_commits(self, monkeypatch, tmp_path):
         pg_conn, conn, cursor = _fake_pg_connection([])
         monkeypatch.setattr(backfill, "PostgresConnection", lambda: pg_conn)
-        path = _write_plan(
-            tmp_path, [{"turn_id": 8124, "expected_current_slug": "old", "new_slug": "new"}]
-        )
+        path = _write_plan(tmp_path, [{"turn_id": 8124, "expected_current_slug": "old", "new_slug": "new"}])
 
         exit_code = backfill.main(["--input", path, "--confidence", "1.0"])
 
@@ -266,9 +254,7 @@ class TestMainDryRun:
 
     def test_dry_run_never_calls_apply_backfill(self, monkeypatch, tmp_path):
         called = {"hit": False}
-        monkeypatch.setattr(
-            backfill, "apply_backfill", lambda *a, **kw: called.__setitem__("hit", True)
-        )
+        monkeypatch.setattr(backfill, "apply_backfill", lambda *a, **kw: called.__setitem__("hit", True))
         pg_conn, _conn, _cursor = _fake_pg_connection([])
         monkeypatch.setattr(backfill, "PostgresConnection", lambda: pg_conn)
         path = _write_plan(tmp_path, [{"turn_id": 1, "expected_current_slug": None, "new_slug": "n"}])
@@ -285,6 +271,7 @@ class TestMainDryRun:
         path = _write_plan(tmp_path, entries)
 
         assert backfill.main(["--input", path, "--confidence", confidence]) == 2
+
 
 class TestBuildUpdateQuery:
     def test_never_predicates_on_output_path(self):
@@ -313,10 +300,7 @@ class TestApplyBackfill:
         cursor = _apply_cursor([1, 1])
         conn = MagicMock()
         conn.cursor.return_value = cursor
-        entries = [
-            backfill.BackfillEntry(turn_id=t, expected_current_slug="old", new_slug="new")
-            for t in (9001, 3)
-        ]
+        entries = [backfill.BackfillEntry(turn_id=t, expected_current_slug="old", new_slug="new") for t in (9001, 3)]
 
         statuses = backfill.apply_backfill(conn, STV_TABLE, entries, 0.9, "manual_backfill")
 
@@ -333,10 +317,7 @@ class TestApplyBackfill:
         cursor = _apply_cursor([1, 0, 1])  # turn_id=8124 is the 2nd of 3 — its slug drifted
         conn = MagicMock()
         conn.cursor.return_value = cursor
-        entries = [
-            backfill.BackfillEntry(turn_id=t, expected_current_slug="old", new_slug="new")
-            for t in (1, 8124, 3)
-        ]
+        entries = [backfill.BackfillEntry(turn_id=t, expected_current_slug="old", new_slug="new") for t in (1, 8124, 3)]
 
         with pytest.raises(backfill.BackfillDriftError, match="8124"):
             backfill.apply_backfill(conn, STV_TABLE, entries, 1.0, "manual")
@@ -424,15 +405,20 @@ class TestMainExecute:
 
         exit_code = backfill.main(
             [
-                "--input", path, "--confidence", "1.0", "--execute", "--method", "manual_backfill",
-                "--rollback-out", str(rollback_path),
+                "--input",
+                path,
+                "--confidence",
+                "1.0",
+                "--execute",
+                "--method",
+                "manual_backfill",
+                "--rollback-out",
+                str(rollback_path),
             ]
         )
 
         assert exit_code == 0
-        update_calls = [
-            c for c in cursor.execute.call_args_list if c[0][0].strip().upper().startswith("UPDATE")
-        ]
+        update_calls = [c for c in cursor.execute.call_args_list if c[0][0].strip().upper().startswith("UPDATE")]
         assert len(update_calls) == 2
         for call in update_calls:
             assert "output_path" not in call[0][0]
@@ -440,16 +426,12 @@ class TestMainExecute:
         conn.rollback.assert_not_called()
         assert "UPDATED" in capsys.readouterr().out
         rollback_entries = backfill.load_plan(str(rollback_path))
-        assert rollback_entries[0] == backfill.BackfillEntry(
-            turn_id=1, expected_current_slug="new", new_slug="old"
-        )
+        assert rollback_entries[0] == backfill.BackfillEntry(turn_id=1, expected_current_slug="new", new_slug="old")
 
     def test_drift_aborts_rolls_back_exits_3_and_renders_refused_drift(self, monkeypatch, tmp_path, capsys):
         pg_conn, conn, _cursor = _fake_pg_connection_for_execute([], [0])
         monkeypatch.setattr(backfill, "PostgresConnection", lambda: pg_conn)
-        path = _write_plan(
-            tmp_path, [{"turn_id": 8124, "expected_current_slug": "old", "new_slug": "new"}]
-        )
+        path = _write_plan(tmp_path, [{"turn_id": 8124, "expected_current_slug": "old", "new_slug": "new"}])
 
         exit_code = backfill.main(["--input", path, "--confidence", "1.0", "--execute"])
 
@@ -463,25 +445,19 @@ class TestMainExecute:
             [{"definition": "CHECK (speaker_resolution_method = ANY (ARRAY['fuzzy']))"}], []
         )
         monkeypatch.setattr(backfill, "PostgresConnection", lambda: pg_conn)
-        path = _write_plan(
-            tmp_path, [{"turn_id": 1, "expected_current_slug": "old", "new_slug": "new"}]
-        )
+        path = _write_plan(tmp_path, [{"turn_id": 1, "expected_current_slug": "old", "new_slug": "new"}])
 
         exit_code = backfill.main(["--input", path, "--confidence", "1.0", "--execute"])
 
         assert exit_code == 3
-        update_calls = [
-            c for c in cursor.execute.call_args_list if c[0][0].strip().upper().startswith("UPDATE")
-        ]
+        update_calls = [c for c in cursor.execute.call_args_list if c[0][0].strip().upper().startswith("UPDATE")]
         assert update_calls == []
 
     def test_autocommit_true_refuses_before_any_query(self, monkeypatch, tmp_path):
         pg_conn, conn, cursor = _fake_pg_connection_for_execute([], [])
         conn.autocommit = True
         monkeypatch.setattr(backfill, "PostgresConnection", lambda: pg_conn)
-        path = _write_plan(
-            tmp_path, [{"turn_id": 1, "expected_current_slug": "old", "new_slug": "new"}]
-        )
+        path = _write_plan(tmp_path, [{"turn_id": 1, "expected_current_slug": "old", "new_slug": "new"}])
 
         exit_code = backfill.main(["--input", path, "--confidence", "1.0", "--execute"])
 

@@ -22,7 +22,7 @@ as standalone YouTube videos.
 import logging
 import os
 import time
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
@@ -58,9 +58,7 @@ IS_DEVELOPMENT = POSTGRES_SCHEMA == "development"
 # This is a calendar-day cap for long-form chapter uploads; database quota data
 # reports successful uploads_today, while limit=1 remains a selection safeguard.
 DAILY_LONG_FORM_UPLOAD_LIMIT = 1
-STALE_RUN_TOLERANCE_MINUTES = int(
-    os.getenv("CHAPTER_UPLOADER_STALE_RUN_TOLERANCE_MINUTES", "30")
-)
+STALE_RUN_TOLERANCE_MINUTES = int(os.getenv("CHAPTER_UPLOADER_STALE_RUN_TOLERANCE_MINUTES", "30"))
 _THUMBNAIL_DAG_ID = "generic_thumbnail_generator"
 _THUMBNAIL_RESULT_TASK_ID = "thumbnail_result"
 
@@ -77,8 +75,7 @@ def should_upload(**context):
         staleness = now - data_interval_end
         if staleness > timedelta(minutes=STALE_RUN_TOLERANCE_MINUTES):
             logging.info(
-                "Skipping stale re-parse replay: data_interval_end=%s is %s "
-                "behind now=%s (tolerance=%dm)",
+                "Skipping stale re-parse replay: data_interval_end=%s is %s behind now=%s (tolerance=%dm)",
                 data_interval_end,
                 staleness,
                 now,
@@ -91,8 +88,7 @@ def should_upload(**context):
     uploads_today = upload_quota.get("uploads_today", 0)
     if uploads_today >= DAILY_LONG_FORM_UPLOAD_LIMIT:
         logging.info(
-            "Skipping upload: %d long-form chapter upload(s) already recorded today "
-            "(daily limit=%d)",
+            "Skipping upload: %d long-form chapter upload(s) already recorded today (daily limit=%d)",
             uploads_today,
             DAILY_LONG_FORM_UPLOAD_LIMIT,
         )
@@ -140,9 +136,8 @@ def _resolve_chapter_speaker(chapter: dict, key_speakers: list, db) -> tuple[str
         canonicalized in place only when a primary match is found.
     """
     try:
-        raw_names = (
-            _speaker_mentions_from_entries(key_speakers)
-            + _speaker_mentions_from_entries(chapter.get("speakers"))
+        raw_names = _speaker_mentions_from_entries(key_speakers) + _speaker_mentions_from_entries(
+            chapter.get("speakers")
         )
 
         mentions: list[str] = []
@@ -439,8 +434,7 @@ def _unpublished_thumbnail_labels(upload_details: list | None) -> list[str]:
         if detail.get("thumbnail_success") is False:
             youtube_video_id = detail.get("youtube_video_id") or "<unknown>"
             labels.append(
-                f"{youtube_video_id} (chapter_id={detail.get('chapter_id')}, "
-                f"turn_id={detail.get('turn_id')})"
+                f"{youtube_video_id} (chapter_id={detail.get('chapter_id')}, turn_id={detail.get('turn_id')})"
             )
     return labels
 
@@ -474,9 +468,7 @@ def _turn_marking_problems(turn_updates: dict | None) -> list[str]:
 
     failed_details = [d for d in details if d.get("status") == "failed"]
     not_found_details = [
-        d
-        for d in details
-        if d.get("status") == "skipped" and d.get("reason") == "output_path_not_found"
+        d for d in details if d.get("status") == "skipped" and d.get("reason") == "output_path_not_found"
     ]
 
     problems = []
@@ -532,9 +524,7 @@ def trigger_thumbnail_generation(ti, **context) -> str | None:
             run_id=f"chapter_thumbnail_{context['run_id']}",
         )
     except Exception as exc:
-        logging.warning(
-            "Could not trigger thumbnail DAG for chapter_id=%s: %s", chapter_id, exc
-        )
+        logging.warning("Could not trigger thumbnail DAG for chapter_id=%s: %s", chapter_id, exc)
         ti.xcom_push(key="thumbnail_result", value=_thumbnail_failure(chapter_id))
         return None
 
@@ -568,9 +558,7 @@ def trigger_thumbnail_generation(ti, **context) -> str | None:
             and isinstance(result.get("title"), str)
             and result["title"]
         ):
-            logging.warning(
-                "Thumbnail DAG run %s returned no valid result", child_run_id
-            )
+            logging.warning("Thumbnail DAG run %s returned no valid result", child_run_id)
             ti.xcom_push(key="thumbnail_result", value=_thumbnail_failure(chapter_id))
             return child_run_id
 
@@ -592,10 +580,7 @@ def _backfill_thumbnail_video_id(ti, db=None) -> None:
     """
     thumbnail_result = ti.xcom_pull(key="thumbnail_result") or {}
     if not thumbnail_result.get("success"):
-        logging.info(
-            "_backfill_thumbnail_video_id: thumbnail_result.success is False — "
-            "skipping back-fill"
-        )
+        logging.info("_backfill_thumbnail_video_id: thumbnail_result.success is False — skipping back-fill")
         return
 
     upload_results = ti.xcom_pull(key="upload_results") or {}
@@ -612,8 +597,7 @@ def _backfill_thumbnail_video_id(ti, db=None) -> None:
 
     if youtube_video_id is None:
         logging.warning(
-            "_backfill_thumbnail_video_id: no youtube_video_id found for "
-            "chapter_id=%s in upload_details",
+            "_backfill_thumbnail_video_id: no youtube_video_id found for chapter_id=%s in upload_details",
             chapter_id,
         )
         return
@@ -623,9 +607,7 @@ def _backfill_thumbnail_video_id(ti, db=None) -> None:
 
         db = CongressionalVideoDB()
 
-    db.update_thumbnail_youtube_video_id(
-        chapter_id=chapter_id, youtube_video_id=youtube_video_id
-    )
+    db.update_thumbnail_youtube_video_id(chapter_id=chapter_id, youtube_video_id=youtube_video_id)
     logging.info(
         "_backfill_thumbnail_video_id: chapter_id=%s → %r",
         chapter_id,
@@ -642,23 +624,21 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
 }
 
-with (
-    DAG(
-        "congress_youtube_chapter_uploader",
-        default_args=default_args,
-        description="Upload top congressional video chapters to YouTube based on relevance score",
-        schedule="0 19 * * *",  # Run once daily at 19:00 UTC; gate enforces one long video per calendar day
-        start_date=datetime(2025, 11, 14),
-        catchup=False,
-        tags=["congress", "youtube", "chapters"],
-        params={
-            "max_chapters": 1,
-            "min_relevance_score": 2,
-            "isTesting": False,
-            "dry_run": False,  # Set to True to run the full pipeline without triggering the YouTube upload
-        },
-    ) as dag
-):
+with DAG(
+    "congress_youtube_chapter_uploader",
+    default_args=default_args,
+    description="Upload top congressional video chapters to YouTube based on relevance score",
+    schedule="0 19 * * *",  # Run once daily at 19:00 UTC; gate enforces one long video per calendar day
+    start_date=datetime(2025, 11, 14),
+    catchup=False,
+    tags=["congress", "youtube", "chapters"],
+    params={
+        "max_chapters": 1,
+        "min_relevance_score": 2,
+        "isTesting": False,
+        "dry_run": False,  # Set to True to run the full pipeline without triggering the YouTube upload
+    },
+) as dag:
     # Step 0: Ensure data directory exists
     t0 = PythonOperator(
         task_id="ensure_data_directory",
@@ -697,10 +677,12 @@ with (
             "turns_pending": turns_pending,
         }
         logging.info(
-            "Upload quota: %d today (%d chapters + %d turn videos), "
-            "%d chapters + %d turns in queue",
-            uploads_today, chapters_uploaded_today, turns_uploaded_today,
-            chapters_pending, turns_pending,
+            "Upload quota: %d today (%d chapters + %d turn videos), %d chapters + %d turns in queue",
+            uploads_today,
+            chapters_uploaded_today,
+            turns_uploaded_today,
+            chapters_pending,
+            turns_pending,
         )
         ti.xcom_push(key="upload_quota", value=result)
         return result
@@ -836,17 +818,14 @@ with (
             results = extraction_results.get("results") or []
             if not results or not results[0].get("success"):
                 logging.warning(
-                    "_prepare_upload_config: turn extraction result missing or failed — "
-                    "skipping upload config"
+                    "_prepare_upload_config: turn extraction result missing or failed — skipping upload config"
                 )
                 ti.xcom_push(key="upload_config", value=None)
                 return None
 
             output_path = results[0].get("output_path") or ""
             if not output_path:
-                logging.warning(
-                    "_prepare_upload_config: turn output_path missing — skipping"
-                )
+                logging.warning("_prepare_upload_config: turn output_path missing — skipping")
                 ti.xcom_push(key="upload_config", value=None)
                 return None
 
@@ -856,11 +835,7 @@ with (
             # _REQUIRED_SIDECARS and mask a failed thumbnail run.
             thumbnail_result = ti.xcom_pull(key="thumbnail_result") or {}
             title = thumbnail_result.get("title")
-            if (
-                thumbnail_result.get("success") is not True
-                or not isinstance(title, str)
-                or not title.strip()
-            ):
+            if thumbnail_result.get("success") is not True or not isinstance(title, str) or not title.strip():
                 raise ValueError(
                     "Turn upload aborted: thumbnail pipeline produced no usable title "
                     f"(chapter_id={results[0].get('chapter_id')}, "
@@ -878,8 +853,7 @@ with (
             fresh_title = title.strip()
             _write_orador_sidecars(output_path, fresh_title, fresh_desc)
             logging.info(
-                "_prepare_upload_config: turn path — overwrote sidecars from XCom metadata, "
-                "title=%r",
+                "_prepare_upload_config: turn path — overwrote sidecars from XCom metadata, title=%r",
                 fresh_title[:60] if fresh_title else "",
             )
 
@@ -982,9 +956,7 @@ with (
             return None
 
         # Trigger the DAG
-        logging.info(
-            f"Triggering generic_youtube_uploader with {len(config.get('videos', []))} videos"
-        )
+        logging.info(f"Triggering generic_youtube_uploader with {len(config.get('videos', []))} videos")
         dag_run = trigger_dag_api(
             dag_id="generic_youtube_uploader",
             conf=config,
@@ -1027,14 +999,10 @@ with (
                                 "video_file": video_config.get("video_file"),
                                 "success": dag_run.state == "success",
                                 "youtube_video_id": None,
-                                "error": "Upload failed - no results available"
-                                if dag_run.state == "failed"
-                                else None,
+                                "error": "Upload failed - no results available" if dag_run.state == "failed" else None,
                             }
                         )
-                    ti.xcom_push(
-                        key="upload_results", value={"upload_details": upload_details}
-                    )
+                    ti.xcom_push(key="upload_results", value={"upload_details": upload_details})
 
                 return dag_run.run_id
 
@@ -1052,20 +1020,14 @@ with (
         """
         updates = ti.xcom_pull(key="chapter_upload_updates")
         if updates is None:
-            raise Exception(
-                "chapter_upload_updates XCom missing after mark_chapters_uploaded succeeded"
-            )
+            raise Exception("chapter_upload_updates XCom missing after mark_chapters_uploaded succeeded")
 
         problems = []
 
         recorded = updates.get("recorded_failures", 0)
         failed = updates.get("failed_updates", 0)
         if recorded > 0 or failed > 0:
-            bad = [
-                d
-                for d in updates.get("details", [])
-                if d.get("status") in ("failure_recorded", "failed")
-            ]
+            bad = [d for d in updates.get("details", []) if d.get("status") in ("failure_recorded", "failed")]
             problems.append(
                 f"Chapter upload failures: {recorded} recorded, {failed} "
                 f"DB-update failures. Chapters: {[d.get('chapter_id') for d in bad]}"
@@ -1077,9 +1039,7 @@ with (
         # upload_results would double-report it and could mask the more
         # specific message above.
         upload_results = ti.xcom_pull(key="upload_results") or {}
-        thumbnail_labels = _unpublished_thumbnail_labels(
-            upload_results.get("upload_details")
-        )
+        thumbnail_labels = _unpublished_thumbnail_labels(upload_results.get("upload_details"))
         if thumbnail_labels:
             problems.append(
                 f"{len(thumbnail_labels)} video(s) uploaded without their custom "

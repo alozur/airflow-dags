@@ -19,11 +19,10 @@ Test groups:
 from __future__ import annotations
 
 import importlib
-import os
 import re
 import sys
 from datetime import UTC
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -41,14 +40,17 @@ class TestThumbnailConfigWiring:
         from congress_videos.modules.participants_db import lookup_participant_by_slug
 
         cfg = get_domain_config("congreso")
-        assert cfg["participants_lookup"] is lookup_participant_by_slug or \
-               cfg["participants_lookup"].__name__ == "lookup_participant_by_slug"
+        assert (
+            cfg["participants_lookup"] is lookup_participant_by_slug
+            or cfg["participants_lookup"].__name__ == "lookup_participant_by_slug"
+        )
 
     def test_lookup_participant_fuzzy_string_absent_from_thumbnail_config_source(self) -> None:
         """'lookup_participant_fuzzy' must NOT appear in thumbnail_config.py source."""
         import inspect
 
         import congress_videos.config.thumbnail_config as _tcfg
+
         source = inspect.getsource(_tcfg)
         assert "lookup_participant_fuzzy" not in source, (
             "thumbnail_config.py must not reference lookup_participant_fuzzy"
@@ -97,7 +99,8 @@ class TestDagSchedule:
         value — a `datetime.now() - timedelta(...)` default silently shifts on
         every DAG-file parse and can trigger a spurious catchup/backfill run
         on a schedule=None DAG (issue #206)."""
-        from datetime import datetime, timezone
+        from datetime import datetime
+
         dag = self.mod.dag
         assert dag.start_date == datetime(2025, 1, 1, tzinfo=UTC)
 
@@ -192,9 +195,7 @@ class TestArtDirectionResolvedPhotoWiring:
         )
         domain_cfg = {"styles": []}
         mocker.patch.object(dag_mod, "get_domain_config", return_value=domain_cfg)
-        art_direct = mocker.patch.object(
-            dag_mod, "art_direct", return_value={"text": "BRIEF"}
-        )
+        art_direct = mocker.patch.object(dag_mod, "art_direct", return_value={"text": "BRIEF"})
 
         dag_mod._task_art_direction(ti)
 
@@ -227,9 +228,7 @@ class TestArtDirectionResolvedPhotoWiring:
                     "resolve_participant_photo": photo_data,
                 }
             )
-            art_direct = mocker.patch.object(
-                dag_mod, "art_direct", return_value={"text": "BRIEF"}
-            )
+            art_direct = mocker.patch.object(dag_mod, "art_direct", return_value={"text": "BRIEF"})
             dag_mod._task_art_direction(ti)
             _, kwargs = art_direct.call_args
             assert kwargs["resolved_speaker_name"] is None
@@ -248,9 +247,7 @@ class TestDagTaskIds:
         dag = self.mod.dag
         actual_ids = {task.task_id for task in dag.tasks}
         assert actual_ids == EXPECTED_TASK_IDS, (
-            f"Task ID mismatch.\n"
-            f"  Extra: {actual_ids - EXPECTED_TASK_IDS}\n"
-            f"  Missing: {EXPECTED_TASK_IDS - actual_ids}"
+            f"Task ID mismatch.\n  Extra: {actual_ids - EXPECTED_TASK_IDS}\n  Missing: {EXPECTED_TASK_IDS - actual_ids}"
         )
 
 
@@ -335,23 +332,19 @@ class TestNoCongresoBranding:
 
     def test_no_congreso_literals_in_dag_source(self) -> None:
         import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
         source_path = dag_mod.__file__
         assert source_path is not None, "Module has no __file__"
         with open(source_path, encoding="utf-8") as fh:
             source = fh.read()
 
         # Strip import lines to allow 'congress_videos' package paths in import statements.
-        non_import_lines = [
-            line for line in source.splitlines()
-            if not re.match(r"\s*(import|from)\s+", line)
-        ]
+        non_import_lines = [line for line in source.splitlines() if not re.match(r"\s*(import|from)\s+", line)]
         body = "\n".join(non_import_lines)
 
-        forbidden = re.compile(r'\b(congreso|diputado|CONGRESO)\b', re.IGNORECASE)
+        forbidden = re.compile(r"\b(congreso|diputado|CONGRESO)\b", re.IGNORECASE)
         matches = forbidden.findall(body)
-        assert not matches, (
-            f"Found Congreso-specific literals in DAG task logic: {matches}"
-        )
+        assert not matches, f"Found Congreso-specific literals in DAG task logic: {matches}"
 
 
 # ---------------------------------------------------------------------------
@@ -433,9 +426,7 @@ class TestValidateInput:
 class TestTriangulate:
     """T-07: Edge cases — missing API key and unknown domain."""
 
-    def test_pikzels_api_key_absent_raises_environment_error(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_pikzels_api_key_absent_raises_environment_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When PIKZELS_API_KEY is absent, PikzelsClient construction raises EnvironmentError."""
         # Remove key from environment; force fresh module import.
         monkeypatch.delenv("PIKZELS_API_KEY", raising=False)
@@ -447,6 +438,7 @@ class TestTriangulate:
 
         with pytest.raises(EnvironmentError, match="PIKZELS_API_KEY"):
             from congress_videos.modules import pikzels_client as _pc  # noqa: F401
+
             _pc.PikzelsClient()
 
     def test_config_error_on_unknown_domain(self) -> None:
@@ -626,17 +618,11 @@ class TestTaskGenerateThumbnail:
 
         assert result["label"] == "option_a"
         # style must be the layout letter, not the old style prose
-        assert result["style"] in {"A", "B", "C"}, (
-            f"style must be a layout letter (A/B/C), got: {result['style']!r}"
-        )
+        assert result["style"] in {"A", "B", "C"}, f"style must be a layout letter (A/B/C), got: {result['style']!r}"
         # prompt must be a rendered Pikzels template containing the gold border spec
-        assert "#C9A84C" in result["prompt"], (
-            "prompt must be the rendered Pikzels template containing '#C9A84C'"
-        )
+        assert "#C9A84C" in result["prompt"], "prompt must be the rendered Pikzels template containing '#C9A84C'"
         # No persona key expected
-        assert "persona" not in result, (
-            "result must not contain 'persona' key — removed in this change"
-        )
+        assert "persona" not in result, "result must not contain 'persona' key — removed in this change"
 
     def test_no_photo_sends_none_support_image(self, mocker) -> None:
         """When support_image_b64 is empty, support_image_base64 is None."""
@@ -779,9 +765,7 @@ class TestTaskScoreOption:
 
         mock_pkz.score_thumbnail.assert_called_once()
         score_kwargs = mock_pkz.score_thumbnail.call_args[1]
-        assert "image_base64" in score_kwargs, (
-            "score_thumbnail must be called with image_base64= kwarg"
-        )
+        assert "image_base64" in score_kwargs, "score_thumbnail must be called with image_base64= kwarg"
         assert score_kwargs["image_base64"] == "data:image/png;base64,FAKEENCODED=="
 
     def test_main_score_extracted_from_score_result_dict(self, mocker, tmp_path) -> None:
@@ -863,8 +847,7 @@ class TestDagBranchAndTriggerRule:
         """choose_best_option must use trigger_rule='none_failed_min_one_success'."""
         task = self.dag.get_task("choose_best_option")
         assert task.trigger_rule == "none_failed_min_one_success", (
-            f"choose_best_option trigger_rule must be 'none_failed_min_one_success', "
-            f"got {task.trigger_rule!r}"
+            f"choose_best_option trigger_rule must be 'none_failed_min_one_success', got {task.trigger_rule!r}"
         )
 
 
@@ -1031,9 +1014,7 @@ class TestTaskArtDirectionRetry:
             }
         )
         mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
-        mock_art_direct = mocker.patch.object(
-            dag_mod, "art_direct", return_value={"text": "NUEVO"}
-        )
+        mock_art_direct = mocker.patch.object(dag_mod, "art_direct", return_value={"text": "NUEVO"})
 
         dag_mod._task_art_direction_retry(ti)
 
@@ -1059,9 +1040,7 @@ class TestTaskArtDirectionRetry:
                     "resolve_participant_photo": photo_data,
                 }
             )
-            mock_art_direct = mocker.patch.object(
-                dag_mod, "art_direct", return_value={"text": "NUEVO"}
-            )
+            mock_art_direct = mocker.patch.object(dag_mod, "art_direct", return_value={"text": "NUEVO"})
             dag_mod._task_art_direction_retry(ti)
             _, kwargs = mock_art_direct.call_args
             assert kwargs["resolved_speaker_name"] is None
@@ -1217,9 +1196,7 @@ class TestFetchRecentHistoryDagTask:
     def test_dag_has_fetch_recent_history_task(self) -> None:
         """DAG must contain a task with task_id='fetch_recent_history'."""
         task_ids = {task.task_id for task in self.dag.tasks}
-        assert "fetch_recent_history" in task_ids, (
-            f"DAG must have 'fetch_recent_history' task, got: {task_ids}"
-        )
+        assert "fetch_recent_history" in task_ids, f"DAG must have 'fetch_recent_history' task, got: {task_ids}"
 
     def test_fetch_recent_history_is_upstream_of_art_direction(self) -> None:
         """fetch_recent_history must be in the upstream set of art_direction."""
@@ -1279,9 +1256,7 @@ class TestFetchRecentHistoryDagTask:
 
         mock_art_direct.assert_called_once()
         _, kwargs = mock_art_direct.call_args
-        assert "sibling_briefs" in kwargs, (
-            "_task_art_direction must pass sibling_briefs= to art_direct"
-        )
+        assert "sibling_briefs" in kwargs, "_task_art_direction must pass sibling_briefs= to art_direct"
         assert kwargs["sibling_briefs"] == ["brief A sobre mercado"]
 
     def test_task_generate_title_passes_sibling_titles(self, mocker) -> None:
@@ -1305,9 +1280,7 @@ class TestFetchRecentHistoryDagTask:
 
         mock_generate_title.assert_called_once()
         _, kwargs = mock_generate_title.call_args
-        assert "sibling_titles" in kwargs, (
-            "_task_generate_title must pass sibling_titles= to generate_title"
-        )
+        assert "sibling_titles" in kwargs, "_task_generate_title must pass sibling_titles= to generate_title"
         assert kwargs["sibling_titles"] == ["Title X", "Title Y"]
 
 
@@ -1334,17 +1307,13 @@ class TestTaskGenerateTitleKeySpeakers:
         )
 
         mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
-        mock_generate_title = mocker.patch.object(
-            dag_mod, "generate_title", return_value="Un título"
-        )
+        mock_generate_title = mocker.patch.object(dag_mod, "generate_title", return_value="Un título")
 
         dag_mod._task_generate_title(ti)
 
         mock_generate_title.assert_called_once()
         _, kwargs = mock_generate_title.call_args
-        assert "key_speakers" in kwargs, (
-            "_task_generate_title must pass key_speakers= to generate_title"
-        )
+        assert "key_speakers" in kwargs, "_task_generate_title must pass key_speakers= to generate_title"
         assert kwargs["key_speakers"] == ["Ana Pastor"]
 
     def test_missing_key_speakers_does_not_raise(self, mocker) -> None:
@@ -1362,9 +1331,7 @@ class TestTaskGenerateTitleKeySpeakers:
         )
 
         mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
-        mock_generate_title = mocker.patch.object(
-            dag_mod, "generate_title", return_value="Un título"
-        )
+        mock_generate_title = mocker.patch.object(dag_mod, "generate_title", return_value="Un título")
 
         # Must not raise KeyError
         dag_mod._task_generate_title(ti)
@@ -1406,9 +1373,7 @@ class TestTaskDownloadOptionCanonicalPath:
         )
 
         mock_pkz = mocker.patch.object(dag_mod, "_pkz")
-        mock_get_thumbnail_dir = mocker.patch(
-            "congress_videos.generic_thumbnail_generator_dag.get_thumbnail_dir"
-        )
+        mock_get_thumbnail_dir = mocker.patch("congress_videos.generic_thumbnail_generator_dag.get_thumbnail_dir")
 
         result = dag_mod._task_download_option("option_a", ti=ti)
 
@@ -1420,9 +1385,7 @@ class TestTaskDownloadOptionCanonicalPath:
         assert local_path_str.startswith("/data/oradores/42/"), (
             f"Expected path under /data/oradores/42/, got {local_path_str!r}"
         )
-        assert local_path_str.endswith("option_a.png"), (
-            f"Expected filename option_a.png, got {local_path_str!r}"
-        )
+        assert local_path_str.endswith("option_a.png"), f"Expected filename option_a.png, got {local_path_str!r}"
 
     def test_chapter_conf_falls_back_to_get_thumbnail_dir(self, mocker) -> None:
         """No output_path in conf → legacy get_thumbnail_dir is used."""
@@ -1523,9 +1486,7 @@ class TestTaskDownloadOptionCanonicalPath:
 
         assert len(paths_written) == 2
         for p in paths_written:
-            assert p.startswith("/data/oradores/7/"), (
-                f"Both turns must write to /data/oradores/7/, got {p!r}"
-            )
+            assert p.startswith("/data/oradores/7/"), f"Both turns must write to /data/oradores/7/, got {p!r}"
 
     def test_turn_conf_thumbnail_result_basename_is_thumbnail_png(self, mocker) -> None:
         """Reconciliation: when canonical path used, _task_thumbnail_result.output_path ends with thumbnail.png."""
@@ -1587,9 +1548,7 @@ class TestArtDirectionConfPassthrough:
         ti = _make_fake_ti({"validate_input": conf_with_previous})
 
         mocker.patch.object(self.mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
-        mock_art_direct = mocker.patch.object(
-            self.mod, "art_direct", return_value=_FAKE_ART_BRIEF
-        )
+        mock_art_direct = mocker.patch.object(self.mod, "art_direct", return_value=_FAKE_ART_BRIEF)
 
         self.mod._task_art_direction(ti)
 
@@ -1608,9 +1567,7 @@ class TestArtDirectionConfPassthrough:
         ti = _make_fake_ti({"validate_input": conf_with_previous})
 
         mocker.patch.object(self.mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
-        mock_art_direct = mocker.patch.object(
-            self.mod, "art_direct", return_value=_FAKE_ART_BRIEF
-        )
+        mock_art_direct = mocker.patch.object(self.mod, "art_direct", return_value=_FAKE_ART_BRIEF)
 
         self.mod._task_art_direction(ti)
 
@@ -1623,9 +1580,7 @@ class TestArtDirectionConfPassthrough:
         ti = _make_fake_ti({"validate_input": _FAKE_CONF})
 
         mocker.patch.object(self.mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
-        mock_art_direct = mocker.patch.object(
-            self.mod, "art_direct", return_value=_FAKE_ART_BRIEF
-        )
+        mock_art_direct = mocker.patch.object(self.mod, "art_direct", return_value=_FAKE_ART_BRIEF)
 
         self.mod._task_art_direction(ti)
 
@@ -1648,14 +1603,10 @@ class TestGenerateTitleConfPassthrough:
             "previous_title": "El Congreso vota el futuro de las pensiones",
         }
         best = {"style": "A", "prompt": "mercado", "label": "option_a", "main_score": 77.0}
-        ti = _make_fake_ti(
-            {"validate_input": conf_with_previous, "choose_best_option": best}
-        )
+        ti = _make_fake_ti({"validate_input": conf_with_previous, "choose_best_option": best})
 
         mocker.patch.object(self.mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
-        mock_generate_title = mocker.patch.object(
-            self.mod, "generate_title", return_value="Un título nuevo"
-        )
+        mock_generate_title = mocker.patch.object(self.mod, "generate_title", return_value="Un título nuevo")
 
         self.mod._task_generate_title(ti)
 
@@ -1667,9 +1618,7 @@ class TestGenerateTitleConfPassthrough:
         ti = _make_fake_ti({"validate_input": _FAKE_CONF, "choose_best_option": best})
 
         mocker.patch.object(self.mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
-        mock_generate_title = mocker.patch.object(
-            self.mod, "generate_title", return_value="Un título"
-        )
+        mock_generate_title = mocker.patch.object(self.mod, "generate_title", return_value="Un título")
 
         self.mod._task_generate_title(ti)
 
@@ -1714,9 +1663,7 @@ class TestArchetypeCarriedOnOptionDict:
             "archetype": "careo",
         }
         conf = {**_FAKE_CONF, "output_path": str(tmp_path / "video.mp4")}
-        ti = _make_fake_ti(
-            {"validate_input": conf, "generate_thumbnail_option_a": gen_result}
-        )
+        ti = _make_fake_ti({"validate_input": conf, "generate_thumbnail_option_a": gen_result})
 
         mock_pkz = mocker.patch.object(self.mod, "_pkz")
         mock_pkz.download.return_value = None
@@ -1775,9 +1722,7 @@ class TestArtDirectionBriefCarriedOnOptionDict:
 
         assert result["art_direction_brief"] == _FAKE_ART_BRIEF
 
-    def test_option_b_result_carries_art_direction_retry_brief_verbatim(
-        self, mocker
-    ) -> None:
+    def test_option_b_result_carries_art_direction_retry_brief_verbatim(self, mocker) -> None:
         retry_brief = {**_FAKE_ART_BRIEF, "text": "otro enfoque"}
         ti = _make_fake_ti(
             {
@@ -1797,9 +1742,7 @@ class TestArtDirectionBriefCarriedOnOptionDict:
         assert result["art_direction_brief"] == retry_brief
         assert result["art_direction_brief"] != _FAKE_ART_BRIEF
 
-    def test_download_option_carries_art_direction_brief_from_generate_result(
-        self, mocker, tmp_path
-    ) -> None:
+    def test_download_option_carries_art_direction_brief_from_generate_result(self, mocker, tmp_path) -> None:
         gen_result = {
             "label": "option_a",
             "style": "A",
@@ -1808,9 +1751,7 @@ class TestArtDirectionBriefCarriedOnOptionDict:
             "art_direction_brief": _FAKE_ART_BRIEF,
         }
         conf = {**_FAKE_CONF, "output_path": str(tmp_path / "video.mp4")}
-        ti = _make_fake_ti(
-            {"validate_input": conf, "generate_thumbnail_option_a": gen_result}
-        )
+        ti = _make_fake_ti({"validate_input": conf, "generate_thumbnail_option_a": gen_result})
 
         mock_pkz = mocker.patch.object(self.mod, "_pkz")
         mock_pkz.download.return_value = None
@@ -1819,9 +1760,7 @@ class TestArtDirectionBriefCarriedOnOptionDict:
 
         assert result["art_direction_brief"] == _FAKE_ART_BRIEF
 
-    def test_score_option_preserves_art_direction_brief_via_spread(
-        self, mocker, tmp_path
-    ) -> None:
+    def test_score_option_preserves_art_direction_brief_via_spread(self, mocker, tmp_path) -> None:
         thumb_file = tmp_path / "option_a.png"
         thumb_file.write_bytes(b"\x89PNG" * 10)
         download_info = {

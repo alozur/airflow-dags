@@ -5,6 +5,7 @@ transport or parse failure (connection refused, timeout, non-200 response,
 or malformed JSON). Callers can catch the specific type or the ``RuntimeError``
 base to handle all sidecar failures uniformly.
 """
+
 from __future__ import annotations
 
 

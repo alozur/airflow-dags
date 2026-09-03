@@ -12,23 +12,17 @@ import re
 from pathlib import Path
 
 MIGRATION_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "congress_videos"
-    / "sql"
-    / "migrations"
-    / "027_add_turn_upload_tracking.sql"
+    Path(__file__).resolve().parents[3] / "congress_videos" / "sql" / "migrations" / "027_add_turn_upload_tracking.sql"
 )
 
 
 class TestMigration027FileExists:
-
     def test_migration_file_exists(self):
         """Migration file must exist at the expected path."""
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
 
 class TestMigration027TrackingColumns:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -59,9 +53,7 @@ class TestMigration027TrackingColumns:
     def test_youtube_upload_date_is_timestamptz(self):
         """youtube_upload_date must be TIMESTAMPTZ."""
         sql = self._sql().upper()
-        assert re.search(r"YOUTUBE_UPLOAD_DATE\s+TIMESTAMPTZ", sql), (
-            "youtube_upload_date must be TIMESTAMPTZ"
-        )
+        assert re.search(r"YOUTUBE_UPLOAD_DATE\s+TIMESTAMPTZ", sql), "youtube_upload_date must be TIMESTAMPTZ"
 
     def test_alters_speaker_turn_videos_table(self):
         """Migration must ALTER TABLE speaker_turn_videos."""
@@ -74,13 +66,10 @@ class TestMigration027TrackingColumns:
         # All ADD COLUMN occurrences must include IF NOT EXISTS
         add_column_matches = re.findall(r"ADD COLUMN(?:\s+IF\s+NOT\s+EXISTS)?", sql)
         for match in add_column_matches:
-            assert "IF NOT EXISTS" in match, (
-                f"Found ADD COLUMN without IF NOT EXISTS guard: {match!r}"
-            )
+            assert "IF NOT EXISTS" in match, f"Found ADD COLUMN without IF NOT EXISTS guard: {match!r}"
 
 
 class TestMigration027UploadableTurnsView:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -112,9 +101,7 @@ class TestMigration027UploadableTurnsView:
     def test_view_filters_relevance_score_gte_2(self):
         """View must filter relevance_score >= 2."""
         sql = self._sql()
-        assert re.search(r"relevance_score\s*>=\s*2", sql, re.IGNORECASE), (
-            "View must filter relevance_score >= 2"
-        )
+        assert re.search(r"relevance_score\s*>=\s*2", sql, re.IGNORECASE), "View must filter relevance_score >= 2"
 
     def test_view_orders_by_relevance_desc_then_session_date_desc(self):
         """View must ORDER BY relevance_score DESC, session_date DESC (spec ordering)."""
@@ -122,9 +109,7 @@ class TestMigration027UploadableTurnsView:
         assert re.search(r"ORDER\s+BY.*RELEVANCE_SCORE\s+DESC", sql, re.DOTALL), (
             "View must ORDER BY relevance_score DESC"
         )
-        assert re.search(r"SESSION_DATE\s+DESC", sql), (
-            "View must include SESSION_DATE DESC as secondary ORDER BY"
-        )
+        assert re.search(r"SESSION_DATE\s+DESC", sql), "View must include SESSION_DATE DESC as secondary ORDER BY"
 
     def test_view_joins_speaker_turn_videos(self):
         """View must JOIN speaker_turn_videos."""
@@ -164,7 +149,6 @@ class TestMigration027UploadableTurnsView:
 
 
 class TestMigration027DownBlock:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -172,8 +156,5 @@ class TestMigration027DownBlock:
     def test_down_block_drops_view(self):
         """DOWN block must drop the uploadable_turns view."""
         sql = self._sql().upper()
-        drop_view_lines = [
-            line for line in sql.splitlines()
-            if "UPLOADABLE_TURNS" in line and "DROP" in line
-        ]
+        drop_view_lines = [line for line in sql.splitlines() if "UPLOADABLE_TURNS" in line and "DROP" in line]
         assert drop_view_lines, "DOWN block must DROP VIEW uploadable_turns"

@@ -54,9 +54,7 @@ def parse_timestamp(ts: str) -> float:
 
     parts = time_part.split(":")
     if len(parts) != 3:
-        raise ValueError(
-            f"Timestamp must be in HH:MM:SS[,mmm] format, got: {ts!r}"
-        )
+        raise ValueError(f"Timestamp must be in HH:MM:SS[,mmm] format, got: {ts!r}")
 
     try:
         hours, minutes, seconds = int(parts[0]), int(parts[1]), int(parts[2])
@@ -64,9 +62,7 @@ def parse_timestamp(ts: str) -> float:
         raise ValueError(f"Non-integer component in timestamp: {ts!r}")
 
     if minutes >= 60 or seconds >= 60:
-        raise ValueError(
-            f"Minutes/seconds out of range (0-59) in timestamp: {ts!r}"
-        )
+        raise ValueError(f"Minutes/seconds out of range (0-59) in timestamp: {ts!r}")
 
     return float(hours * 3600 + minutes * 60 + seconds) + ms
 

@@ -155,10 +155,10 @@ def get_orador_video_dir(
     if channel_slug is None:
         # Function-local import avoids paths <-> youtube_channels circular dependency.
         from congress_videos.config.youtube_channels import DEFAULT_CHANNEL  # noqa: PLC0415
+
         channel_slug = DEFAULT_CHANNEL
     return Path(
-        f"{PROJECT_DATA_DIR}/{channel_slug}/{source_video_id}"
-        f"/video_chapters/{chapter_id}/oradores/{output_turn_id}"
+        f"{PROJECT_DATA_DIR}/{channel_slug}/{source_video_id}/video_chapters/{chapter_id}/oradores/{output_turn_id}"
     )
 
 
@@ -184,12 +184,11 @@ def get_orador_artifact_path(
     Returns:
         ``Path`` to the artifact file inside the orador turn directory.
     """
-    return get_orador_video_dir(
-        source_video_id, chapter_id, output_turn_id, channel_slug
-    ) / filename
+    return get_orador_video_dir(source_video_id, chapter_id, output_turn_id, channel_slug) / filename
 
 
 # --- Chapter-level short clip paths ---
+
 
 def get_video_chapter_dir(
     source_video_id: str,
@@ -213,11 +212,9 @@ def get_video_chapter_dir(
     if channel_slug is None:
         # Function-local import avoids paths <-> youtube_channels circular dependency.
         from congress_videos.config.youtube_channels import DEFAULT_CHANNEL  # noqa: PLC0415
+
         channel_slug = DEFAULT_CHANNEL
-    return Path(
-        f"{PROJECT_DATA_DIR}/{channel_slug}/{source_video_id}"
-        f"/video_chapters/{chapter_id}"
-    )
+    return Path(f"{PROJECT_DATA_DIR}/{channel_slug}/{source_video_id}/video_chapters/{chapter_id}")
 
 
 def get_chapter_shorts_dir(

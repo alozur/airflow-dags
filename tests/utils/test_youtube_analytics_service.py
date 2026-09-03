@@ -10,7 +10,7 @@ Verifies:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -18,7 +18,6 @@ from utils.youtube_helpers import get_youtube_analytics_service
 
 
 class TestGetYoutubeAnalyticsServiceMissingToken:
-
     def test_missing_token_file_raises_file_not_found(self, tmp_path):
         """Must raise FileNotFoundError when token file does not exist."""
         missing = str(tmp_path / "no_analytics_token.json")
@@ -27,7 +26,6 @@ class TestGetYoutubeAnalyticsServiceMissingToken:
 
 
 class TestGetYoutubeAnalyticsServiceBuildsCorrectApi:
-
     def test_calls_build_with_youtube_analytics_v2(self, mocker, tmp_path):
         """Must call build('youtubeAnalytics', 'v2', ...) — not the Data API."""
         token_file = tmp_path / "token.json"
@@ -51,9 +49,7 @@ class TestGetYoutubeAnalyticsServiceBuildsCorrectApi:
         assert pos_args[0] == "youtubeAnalytics", (
             f"First arg to build() must be 'youtubeAnalytics', got '{pos_args[0]}'"
         )
-        assert pos_args[1] == "v2", (
-            f"Second arg to build() must be 'v2', got '{pos_args[1]}'"
-        )
+        assert pos_args[1] == "v2", f"Second arg to build() must be 'v2', got '{pos_args[1]}'"
 
     def test_returns_service_from_build(self, mocker, tmp_path):
         """Must return the object produced by build()."""
@@ -99,7 +95,6 @@ class TestGetYoutubeAnalyticsServiceBuildsCorrectApi:
 
 
 class TestGetYoutubeAnalyticsServiceTokenRefresh:
-
     def test_expired_token_is_refreshed_before_build(self, mocker, tmp_path):
         """Expired credentials must be refreshed before build() is called."""
         token_file = tmp_path / "token.json"
