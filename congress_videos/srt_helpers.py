@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from congress_videos.config.paths import DOWNLOADS_DIR, PROJECT_DATA_DIR, get_video_chapter_dir
-from utils.ai_helpers import generate_json_completion
+from utils.llm_cache import cached_json_completion
 from utils.llm_config import LLM_CHEAP
 from utils.time_utils import parse_timestamp
 
@@ -630,7 +630,7 @@ def select_pretrim_window(
         f'Return JSON: {{"start_phrase": "<exact text from transcript>", "end_phrase": "<exact text from transcript>"}}'
     )
 
-    result = generate_json_completion(
+    result = cached_json_completion(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         model=LLM_CHEAP,

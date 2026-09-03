@@ -225,7 +225,7 @@ class TestFindSrtForChapter:
 class TestSelectPretrimWindow:
     def _patch_ai(self, mocker, start_phrase: str, end_phrase: str):
         return mocker.patch(
-            "congress_videos.srt_helpers.generate_json_completion",
+            "congress_videos.srt_helpers.cached_json_completion",
             return_value={
                 "error": None,
                 "data": {"start_phrase": start_phrase, "end_phrase": end_phrase},
@@ -273,7 +273,7 @@ class TestSelectPretrimWindow:
 
     def test_ai_call_error_returns_none(self, mocker, srt_file):
         mocker.patch(
-            "congress_videos.srt_helpers.generate_json_completion",
+            "congress_videos.srt_helpers.cached_json_completion",
             return_value={"error": "API timeout", "data": None},
         )
 
@@ -283,7 +283,7 @@ class TestSelectPretrimWindow:
 
     def test_ai_returns_empty_phrases_returns_none(self, mocker, srt_file):
         mocker.patch(
-            "congress_videos.srt_helpers.generate_json_completion",
+            "congress_videos.srt_helpers.cached_json_completion",
             return_value={"error": None, "data": {"start_phrase": "", "end_phrase": ""}},
         )
 
@@ -293,7 +293,7 @@ class TestSelectPretrimWindow:
 
     def test_ai_returns_wrong_keys_returns_none(self, mocker, srt_file):
         mocker.patch(
-            "congress_videos.srt_helpers.generate_json_completion",
+            "congress_videos.srt_helpers.cached_json_completion",
             return_value={"error": None, "data": {"wrong_key": "value"}},
         )
 
@@ -360,6 +360,58 @@ class TestSelectPretrimWindow:
         result = select_pretrim_window(str(path), target_secs=360)
 
         assert result is None
+
+    def test_cached_json_completion_receives_derived_prompt_text(self, mocker, srt_file):
+        """The exact single-parse-derived prompt text must reach
+        cached_json_completion, with model passed as a keyword (issue #208
+        item 8)."""
+        from congress_videos.srt_helpers import PRETRIM_MAX_CHARS
+
+        mock_ai = self._patch_ai(
+            mocker,
+            start_phrase="El presidente compareció ante el Congreso",
+            end_phrase="quedan a disposición de sus señorías",
+        )
+
+        select_pretrim_window(srt_file, target_secs=360)
+
+        expected_srt_text = _blocks_to_prompt_text(_parse_srt_blocks(srt_file), max_chars=PRETRIM_MAX_CHARS)
+        _, kwargs = mock_ai.call_args
+        assert kwargs.get("model") == LLM_CHEAP
+        assert expected_srt_text in kwargs.get("user_prompt", "")
+        assert kwargs.get("system_prompt")
+
+    def test_repeat_call_with_identical_inputs_is_a_cache_hit(self, mocker, srt_file):
+        """A second select_pretrim_window call with identical SRT content and
+        params must be served from the LLM cache without invoking the
+        underlying completion again (issue #208 item 8)."""
+        store: dict[str, dict] = {}
+
+        def _fake_get_cached(key):
+            return store.get(key)
+
+        def _fake_put_cached(key, model, response):
+            store[key] = response
+
+        mock_generate = mocker.patch(
+            "utils.llm_cache.generate_json_completion",
+            return_value={
+                "error": None,
+                "data": {
+                    "start_phrase": "El presidente compareció ante el Congreso",
+                    "end_phrase": "quedan a disposición de sus señorías",
+                },
+            },
+        )
+        mocker.patch("utils.llm_cache.get_cached", side_effect=_fake_get_cached)
+        mocker.patch("utils.llm_cache.put_cached", side_effect=_fake_put_cached)
+
+        first = select_pretrim_window(srt_file, target_secs=360)
+        second = select_pretrim_window(srt_file, target_secs=360)
+
+        assert mock_generate.call_count == 1
+        assert first == second
+        assert first is not None
 
 
 # ---------------------------------------------------------------------------
