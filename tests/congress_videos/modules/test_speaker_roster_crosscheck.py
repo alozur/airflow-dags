@@ -143,3 +143,106 @@ class TestCrosscheckSlug:
         verdict = crosscheck_slug("Juan de la Torre", ["Señor de la Peña"])
 
         assert verdict == "reject"
+
+
+# ---------------------------------------------------------------------------
+# _mention_name_from_entry (issue #272 slice 2: extracted from
+# chapter_roster_mentions to reduce cyclomatic complexity)
+# ---------------------------------------------------------------------------
+
+
+class TestMentionNameFromEntry:
+    """_mention_name_from_entry(entry) -> real mention name, or None."""
+
+    def test_dict_entry_with_name_key_returns_stripped_name(self):
+        """A dict entry with a 'name' key returns that name, stripped."""
+        from congress_videos.modules.speaker_roster_crosscheck import (
+            _mention_name_from_entry,
+        )
+
+        assert _mention_name_from_entry({"name": "  Félix Bolaños García  "}) == "Félix Bolaños García"
+
+    def test_str_entry_returns_stripped_name(self):
+        """A plain string entry returns itself, stripped."""
+        from congress_videos.modules.speaker_roster_crosscheck import (
+            _mention_name_from_entry,
+        )
+
+        assert _mention_name_from_entry(" Señor Carazo ") == "Señor Carazo"
+
+    def test_other_type_entry_returns_none(self):
+        """A non-str/non-dict entry (e.g. int) returns None."""
+        from congress_videos.modules.speaker_roster_crosscheck import (
+            _mention_name_from_entry,
+        )
+
+        assert _mention_name_from_entry(123) is None
+
+    def test_none_entry_returns_none(self):
+        """A None entry returns None, never raises."""
+        from congress_videos.modules.speaker_roster_crosscheck import (
+            _mention_name_from_entry,
+        )
+
+        assert _mention_name_from_entry(None) is None
+
+    def test_empty_string_entry_returns_none(self):
+        """An empty (or whitespace-only) string entry returns None."""
+        from congress_videos.modules.speaker_roster_crosscheck import (
+            _mention_name_from_entry,
+        )
+
+        assert _mention_name_from_entry("   ") is None
+
+    def test_placeholder_entry_returns_none(self):
+        """A known placeholder name (e.g. 'Desconocido') returns None."""
+        from congress_videos.modules.speaker_roster_crosscheck import (
+            _mention_name_from_entry,
+        )
+
+        assert _mention_name_from_entry("Desconocido") is None
+
+    def test_dict_entry_without_name_key_returns_none(self):
+        """A dict entry missing the 'name' key falls back to '', which is None after strip."""
+        from congress_videos.modules.speaker_roster_crosscheck import (
+            _mention_name_from_entry,
+        )
+
+        assert _mention_name_from_entry({"unexpected": "shape"}) is None
+
+
+# ---------------------------------------------------------------------------
+# _dedupe_case_insensitive (issue #272 slice 2)
+# ---------------------------------------------------------------------------
+
+
+class TestDedupeCaseInsensitive:
+    """_dedupe_case_insensitive(names) -> order-preserving, casefold-deduped list."""
+
+    def test_keeps_first_casing_of_duplicate(self):
+        """The first-seen casing of a case-insensitive duplicate is kept."""
+        from congress_videos.modules.speaker_roster_crosscheck import (
+            _dedupe_case_insensitive,
+        )
+
+        result = _dedupe_case_insensitive(["Félix Bolaños García", "félix bolaños garcía"])
+
+        assert result == ["Félix Bolaños García"]
+
+    def test_preserves_input_order_for_distinct_names(self):
+        """Distinct names are returned in their original order, untouched."""
+        from congress_videos.modules.speaker_roster_crosscheck import (
+            _dedupe_case_insensitive,
+        )
+
+        result = _dedupe_case_insensitive(["Señor Carazo", "Señora Funez"])
+
+        assert result == ["Señor Carazo", "Señora Funez"]
+
+    def test_empty_list_returns_empty_list(self):
+        """An empty input list returns an empty list."""
+        from congress_videos.modules.speaker_roster_crosscheck import (
+            _dedupe_case_insensitive,
+        )
+
+        assert _dedupe_case_insensitive([]) == []

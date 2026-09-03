@@ -120,7 +120,6 @@ indent-style = "space"
 "congress_videos/modules/speaker_normalization.py" = ["C901"]
 "congress_videos/modules/speaker_placeholders.py" = ["SIM103"]
 "congress_videos/modules/speaker_resolution.py" = ["C901"]
-"congress_videos/modules/speaker_roster_crosscheck.py" = ["C901"]
 "congress_videos/modules/speaker_turns.py" = ["C901", "F841", "SIM102", "SIM108"]
 "congress_videos/modules/thumbnail_generation.py" = ["N806", "SIM103"]
 "congress_videos/modules/trim_proposals.py" = ["SIM110"]
