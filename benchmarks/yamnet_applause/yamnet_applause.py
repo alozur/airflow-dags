@@ -11,6 +11,7 @@ Two modes:
              the minimum duration. They are proposals for review, never automatic
              cuts, and a candidate overlapping sustained voice must defer to voice.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -27,8 +28,7 @@ from tflite_runtime.interpreter import Interpreter
 # AudioSet scores, plus the canonical 521-class map.
 MODEL_URL = "https://tfhub.dev/google/lite-model/yamnet/classification/tflite/1?lite-format=tflite"
 CLASS_MAP_URL = (
-    "https://raw.githubusercontent.com/tensorflow/models/master/"
-    "research/audioset/yamnet/yamnet_class_map.csv"
+    "https://raw.githubusercontent.com/tensorflow/models/master/research/audioset/yamnet/yamnet_class_map.csv"
 )
 MODEL_FILENAME = "yamnet_classification.tflite"
 CLASS_MAP_FILENAME = "yamnet_class_map.csv"
@@ -69,9 +69,7 @@ def _applause_class_index(cache: str) -> int:
 def _read_waveform(audio_path: str) -> np.ndarray:
     data, sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
     if sample_rate != TARGET_SAMPLE_RATE:
-        raise SystemExit(
-            f"audio must be {TARGET_SAMPLE_RATE} Hz mono PCM, got {sample_rate} Hz"
-        )
+        raise SystemExit(f"audio must be {TARGET_SAMPLE_RATE} Hz mono PCM, got {sample_rate} Hz")
     return data.mean(axis=1).astype(np.float32)
 
 
@@ -175,10 +173,7 @@ def _run_inference(args: argparse.Namespace) -> None:
 
     with open(args.output, "w") as handle:
         json.dump(result, handle, indent=2)
-    print(
-        f"YAMNet applause candidates: {len(candidates)} "
-        f"(peak score {applause.max():.3f}) -> {args.output}"
-    )
+    print(f"YAMNet applause candidates: {len(candidates)} (peak score {applause.max():.3f}) -> {args.output}")
 
 
 def main() -> None:

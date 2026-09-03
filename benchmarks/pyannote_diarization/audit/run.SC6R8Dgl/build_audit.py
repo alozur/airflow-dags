@@ -6,6 +6,7 @@ candidate change point, and emits a labelling sheet (CSV + Markdown) for a human
 to mark each change as real / noise. Precision and a threshold suggestion are
 computed later from the filled-in labels.
 """
+
 from __future__ import annotations
 
 import csv
@@ -40,10 +41,22 @@ def main() -> None:
         clip_path = CLIPS / clip_name
         subprocess.run(
             [
-                "ffmpeg", "-y", "-loglevel", "error",
-                "-ss", f"{clip_start:.3f}", "-i", str(WAV),
-                "-t", f"{clip_len:.3f}",
-                "-ac", "1", "-ar", "16000", "-q:a", "4",
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{clip_start:.3f}",
+                "-i",
+                str(WAV),
+                "-t",
+                f"{clip_len:.3f}",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-q:a",
+                "4",
                 str(clip_path),
             ],
             check=True,
@@ -53,7 +66,7 @@ def main() -> None:
                 "idx": i,
                 "timestamp": ch["timestamp"],
                 "start_seconds": f"{start:.3f}",
-                "transition": f'{ch["from_speaker"]}->{ch["to_speaker"]}',
+                "transition": f"{ch['from_speaker']}->{ch['to_speaker']}",
                 "score_block_seconds": ch["confirmed_block_duration_seconds"],
                 "clip": f"clips/{clip_name}",
                 "label": "",  # fill: real | ruido
@@ -62,8 +75,14 @@ def main() -> None:
         )
 
     fields = [
-        "idx", "timestamp", "start_seconds", "transition",
-        "score_block_seconds", "clip", "label", "notes",
+        "idx",
+        "timestamp",
+        "start_seconds",
+        "transition",
+        "score_block_seconds",
+        "clip",
+        "label",
+        "notes",
     ]
     with (HERE / "audit-sheet.csv").open("w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields)
@@ -82,8 +101,7 @@ def main() -> None:
     ]
     for r in rows:
         lines.append(
-            f'| {r["idx"]} | {r["timestamp"]} | {r["transition"]} | '
-            f'{r["score_block_seconds"]} | {r["clip"]} |  |  |'
+            f"| {r['idx']} | {r['timestamp']} | {r['transition']} | {r['score_block_seconds']} | {r['clip']} |  |  |"
         )
     (HERE / "audit-sheet.md").write_text("\n".join(lines) + "\n")
     print(f"OK: {len(rows)} clips + audit-sheet.csv + audit-sheet.md")

@@ -21,6 +21,7 @@ For testing, use ``create_app(model_loader=...)`` to inject a stub.
 The ``clock``, ``sleep``, and ``exit_signal`` parameters are additional seams
 for unit tests that need deterministic timing without real sleeps.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -96,14 +97,14 @@ def _to_speaker_changes(
     for start, end, label in turns:
         seg = {"start": float(start), "end": float(end), "label": label}
         if previous is not None and previous["label"] != label:
-            segments.append({
-                "start_seconds": seg["start"],
-                "from_speaker": previous["label"],
-                "to_speaker": label,
-                "confirmed_block_duration_seconds": round(
-                    previous["end"] - previous["start"], 6
-                ),
-            })
+            segments.append(
+                {
+                    "start_seconds": seg["start"],
+                    "from_speaker": previous["label"],
+                    "to_speaker": label,
+                    "confirmed_block_duration_seconds": round(previous["end"] - previous["start"], 6),
+                }
+            )
         previous = seg
 
     return segments
@@ -202,9 +203,7 @@ def create_app(
                 )
             )
         else:
-            logger.info(
-                "diarize-api: IDLE_TIMEOUT_SECONDS<=0 — sleep mode disabled, model stays resident"
-            )
+            logger.info("diarize-api: IDLE_TIMEOUT_SECONDS<=0 — sleep mode disabled, model stays resident")
         yield
         # Cleanup: cancel watchdog on shutdown.
         task = _state.get("watchdog_task")
@@ -276,10 +275,7 @@ def create_app(
             _state["last_activity"] = clock()
 
         if chapter_offset:
-            changes = [
-                {**ch, "start_seconds": float(ch["start_seconds"]) + chapter_offset}
-                for ch in changes
-            ]
+            changes = [{**ch, "start_seconds": float(ch["start_seconds"]) + chapter_offset} for ch in changes]
 
         return {"speaker_changes": changes}
 

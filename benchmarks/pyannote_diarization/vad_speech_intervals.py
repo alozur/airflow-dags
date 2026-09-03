@@ -43,9 +43,7 @@ def _load_vad_pipeline(model_id: str, parameters: dict[str, Any]):
     except PackageNotFoundError as error:
         raise VADDependencyError("pyannote.audio v4 is not installed in this image") from error
     if not installed_version.startswith("4."):
-        raise VADDependencyError(
-            f"pyannote.audio v4 is required; installed version is {installed_version}"
-        )
+        raise VADDependencyError(f"pyannote.audio v4 is required; installed version is {installed_version}")
 
     try:
         import torch

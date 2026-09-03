@@ -30,13 +30,9 @@ def validate_full_duration(value: object) -> float:
     try:
         duration = _finite_number(value, "full video duration")
     except ValueError as error:
-        raise ValueError(
-            "full video duration must be at least 1,800 seconds for this benchmark"
-        ) from error
+        raise ValueError("full video duration must be at least 1,800 seconds for this benchmark") from error
     if duration < SAMPLE_DURATION_SECONDS:
-        raise ValueError(
-            "full video duration must be at least 1,800 seconds for this benchmark"
-        )
+        raise ValueError("full video duration must be at least 1,800 seconds for this benchmark")
     return duration
 
 
@@ -73,13 +69,9 @@ def build_report(
         "processed_sample_duration_seconds": SAMPLE_DURATION_SECONDS,
         "timing_seconds": {
             "image_build_host": _finite_number(image_build_seconds, "image build seconds"),
-            "audio_extraction": _finite_number(
-                audio_extraction_seconds, "audio extraction seconds"
-            ),
+            "audio_extraction": _finite_number(audio_extraction_seconds, "audio extraction seconds"),
             "diarization": _finite_number(diarization_seconds, "diarization seconds"),
-            "container_end_to_end": _finite_number(
-                container_end_to_end_seconds, "container end-to-end seconds"
-            ),
+            "container_end_to_end": _finite_number(container_end_to_end_seconds, "container end-to-end seconds"),
         },
         "speaker_turn_marker_count": speaker_turn_marker_count,
         "diarization_exit_status": diarization_exit_status,
