@@ -10,8 +10,8 @@ import pytest
 # fetch_youtube_channel_videos
 # --------------------------------------------------------------------------- #
 
-class TestFetchYoutubeChannelVideos:
 
+class TestFetchYoutubeChannelVideos:
     def test_raises_value_error_when_api_key_missing(self, monkeypatch, mocker):
         """ValueError raised when YOUTUBE_API_KEY env var is not set."""
         monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
@@ -36,11 +36,7 @@ class TestFetchYoutubeChannelVideos:
                         "publishedAt": "2025-05-22T10:00:00Z",
                         "title": "Sesion Plenaria (original) - 22 mayo",
                         "description": "Sesion plenaria del Congreso",
-                        "thumbnails": {
-                            "high": {
-                                "url": "https://i.ytimg.com/vi/hy1cnx-0Oww/hqdefault.jpg"
-                            }
-                        },
+                        "thumbnails": {"high": {"url": "https://i.ytimg.com/vi/hy1cnx-0Oww/hqdefault.jpg"}},
                         "channelTitle": "Congreso de los Diputados",
                     },
                 }
@@ -115,9 +111,7 @@ class TestFetchYoutubeChannelVideos:
         monkeypatch.setenv("YOUTUBE_API_KEY", "fake-key")
 
         fake_service = MagicMock()
-        fake_service.search.return_value.list.return_value.execute.side_effect = Exception(
-            "network error"
-        )
+        fake_service.search.return_value.list.return_value.execute.side_effect = Exception("network error")
         mocker.patch(
             "congress_videos.modules.youtube.youtube_channel.build",
             return_value=fake_service,
@@ -133,8 +127,8 @@ class TestFetchYoutubeChannelVideos:
 # filter_plenary_session_videos
 # --------------------------------------------------------------------------- #
 
-class TestFilterPlenarySessionVideos:
 
+class TestFilterPlenarySessionVideos:
     def _make_channel_videos(self, videos: list) -> dict:
         return {"total_videos": len(videos), "videos": videos}
 
@@ -300,8 +294,8 @@ class TestFilterPlenarySessionVideos:
 # get_video_details — ISO 8601 duration parsing
 # --------------------------------------------------------------------------- #
 
-class TestGetVideoDetails:
 
+class TestGetVideoDetails:
     def test_empty_plenary_videos_returns_empty_result(self, monkeypatch):
         """Empty input returns total_videos=0 without touching API."""
         monkeypatch.setenv("YOUTUBE_API_KEY", "fake-key")
@@ -484,8 +478,8 @@ class TestGetVideoDetails:
 # get_video_details — VOD freshness guard
 # --------------------------------------------------------------------------- #
 
-class TestGetVideoDetailsFreshnessGuard:
 
+class TestGetVideoDetailsFreshnessGuard:
     def _plenary(self, video_id: str = "vid-fresh") -> dict:
         return {
             "videos": [
@@ -539,9 +533,7 @@ class TestGetVideoDetailsFreshnessGuard:
         from datetime import datetime, timedelta, timezone
 
         monkeypatch.setenv("YOUTUBE_API_KEY", "fake-key")
-        ended_recently = (
-            datetime.now(timezone.utc) - timedelta(minutes=10)
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        ended_recently = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         mocker.patch(
             "congress_videos.modules.youtube.youtube_channel.build",
             return_value=self._fake_service(ended_recently),
@@ -559,9 +551,7 @@ class TestGetVideoDetailsFreshnessGuard:
         from datetime import datetime, timedelta, timezone
 
         monkeypatch.setenv("YOUTUBE_API_KEY", "fake-key")
-        ended_long_ago = (
-            datetime.now(timezone.utc) - timedelta(hours=5)
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        ended_long_ago = (datetime.now(timezone.utc) - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
         mocker.patch(
             "congress_videos.modules.youtube.youtube_channel.build",
             return_value=self._fake_service(ended_long_ago),
@@ -579,8 +569,8 @@ class TestGetVideoDetailsFreshnessGuard:
 # filter_unprocessed_videos — idempotency pre-download filter
 # --------------------------------------------------------------------------- #
 
-class TestFilterUnprocessedVideos:
 
+class TestFilterUnprocessedVideos:
     def _plenary(self, video_ids, target_date="2025-10-08"):
         return {
             "total_matches": len(video_ids),
@@ -590,9 +580,7 @@ class TestFilterUnprocessedVideos:
 
     def test_drops_processed_keeps_unprocessed_and_preserves_target_date(self, mocker):
         """Processed video_ids are dropped, unprocessed kept, target_date preserved."""
-        mock_db_cls = mocker.patch(
-            "congress_videos.modules.database.CongressionalVideoDB"
-        )
+        mock_db_cls = mocker.patch("congress_videos.modules.database.CongressionalVideoDB")
         mock_db_cls.return_value.get_processed_video_ids.return_value = {"A"}
 
         from congress_videos.modules.youtube.youtube_channel import filter_unprocessed_videos
@@ -606,9 +594,7 @@ class TestFilterUnprocessedVideos:
 
     def test_all_processed_yields_zero_matches(self, mocker):
         """When every candidate is processed, total_matches collapses to 0."""
-        mock_db_cls = mocker.patch(
-            "congress_videos.modules.database.CongressionalVideoDB"
-        )
+        mock_db_cls = mocker.patch("congress_videos.modules.database.CongressionalVideoDB")
         mock_db_cls.return_value.get_processed_video_ids.return_value = {"A", "B"}
 
         from congress_videos.modules.youtube.youtube_channel import filter_unprocessed_videos
@@ -621,9 +607,7 @@ class TestFilterUnprocessedVideos:
 
     def test_none_processed_keeps_all(self, mocker):
         """No processed rows -> nothing filtered."""
-        mock_db_cls = mocker.patch(
-            "congress_videos.modules.database.CongressionalVideoDB"
-        )
+        mock_db_cls = mocker.patch("congress_videos.modules.database.CongressionalVideoDB")
         mock_db_cls.return_value.get_processed_video_ids.return_value = set()
 
         from congress_videos.modules.youtube.youtube_channel import filter_unprocessed_videos
@@ -635,9 +619,7 @@ class TestFilterUnprocessedVideos:
 
     def test_empty_input_does_not_touch_db(self, mocker):
         """Empty 'videos' returns input unchanged and never instantiates the DB."""
-        mock_db_cls = mocker.patch(
-            "congress_videos.modules.database.CongressionalVideoDB"
-        )
+        mock_db_cls = mocker.patch("congress_videos.modules.database.CongressionalVideoDB")
 
         from congress_videos.modules.youtube.youtube_channel import filter_unprocessed_videos
 
@@ -649,9 +631,7 @@ class TestFilterUnprocessedVideos:
 
     def test_none_input_does_not_touch_db(self, mocker):
         """None input returns a safe empty dict and never instantiates the DB."""
-        mock_db_cls = mocker.patch(
-            "congress_videos.modules.database.CongressionalVideoDB"
-        )
+        mock_db_cls = mocker.patch("congress_videos.modules.database.CongressionalVideoDB")
 
         from congress_videos.modules.youtube.youtube_channel import filter_unprocessed_videos
 
@@ -662,9 +642,7 @@ class TestFilterUnprocessedVideos:
 
     def test_db_error_propagates_fail_closed(self, mocker):
         """DB error must propagate (fail-closed) — videos are NOT treated as unprocessed."""
-        mock_db_cls = mocker.patch(
-            "congress_videos.modules.database.CongressionalVideoDB"
-        )
+        mock_db_cls = mocker.patch("congress_videos.modules.database.CongressionalVideoDB")
         mock_db_cls.return_value.get_processed_video_ids.side_effect = RuntimeError("db down")
 
         from congress_videos.modules.youtube.youtube_channel import filter_unprocessed_videos
@@ -681,9 +659,7 @@ from datetime import UTC, datetime, timedelta, timezone  # noqa: E402 - scoped n
 
 
 def _iso_minutes_ago(minutes: int) -> str:
-    return (datetime.now(UTC) - timedelta(minutes=minutes)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    return (datetime.now(UTC) - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _item(
@@ -733,7 +709,6 @@ def _plenary(video_ids, target_date="2025-10-08", extra=None):
 
 
 class TestFilterFinishedStreams:
-
     # --- case (a): Data API cuts (no probe) --------------------------------- #
 
     def test_live_broadcast_dropped_without_probe(self, monkeypatch, mocker):
@@ -742,9 +717,7 @@ class TestFilterFinishedStreams:
             "congress_videos.modules.youtube.youtube_channel.build",
             return_value=_service({"A": [_item(broadcast="live")]}),
         )
-        probe = mocker.patch(
-            "congress_videos.modules.youtube.youtube_channel.probe_live_status"
-        )
+        probe = mocker.patch("congress_videos.modules.youtube.youtube_channel.probe_live_status")
 
         from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
 
@@ -760,9 +733,7 @@ class TestFilterFinishedStreams:
             "congress_videos.modules.youtube.youtube_channel.build",
             return_value=_service({"A": [item]}),
         )
-        probe = mocker.patch(
-            "congress_videos.modules.youtube.youtube_channel.probe_live_status"
-        )
+        probe = mocker.patch("congress_videos.modules.youtube.youtube_channel.probe_live_status")
 
         from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
 
@@ -777,9 +748,7 @@ class TestFilterFinishedStreams:
             "congress_videos.modules.youtube.youtube_channel.build",
             return_value=_service({"A": [_item(actual_end=None)]}),
         )
-        probe = mocker.patch(
-            "congress_videos.modules.youtube.youtube_channel.probe_live_status"
-        )
+        probe = mocker.patch("congress_videos.modules.youtube.youtube_channel.probe_live_status")
 
         from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
 
@@ -797,9 +766,7 @@ class TestFilterFinishedStreams:
             "congress_videos.modules.youtube.youtube_channel.build",
             return_value=_service({"A": [item]}),
         )
-        probe = mocker.patch(
-            "congress_videos.modules.youtube.youtube_channel.probe_live_status"
-        )
+        probe = mocker.patch("congress_videos.modules.youtube.youtube_channel.probe_live_status")
 
         from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
 
@@ -968,9 +935,7 @@ class TestFilterFinishedStreams:
 
     def test_mixed_batch_counts_only_survivors(self, monkeypatch, mocker):
         monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
-        items = {
-            vid: [_item(actual_end=_iso_minutes_ago(600))] for vid in ("A", "B", "C")
-        }
+        items = {vid: [_item(actual_end=_iso_minutes_ago(600))] for vid in ("A", "B", "C")}
         mocker.patch(
             "congress_videos.modules.youtube.youtube_channel.build",
             return_value=_service(items),
@@ -996,9 +961,7 @@ class TestFilterFinishedStreams:
     def test_empty_input_returned_as_is_no_calls(self, monkeypatch, mocker):
         monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
         build = mocker.patch("congress_videos.modules.youtube.youtube_channel.build")
-        probe = mocker.patch(
-            "congress_videos.modules.youtube.youtube_channel.probe_live_status"
-        )
+        probe = mocker.patch("congress_videos.modules.youtube.youtube_channel.probe_live_status")
 
         from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
 
@@ -1012,9 +975,7 @@ class TestFilterFinishedStreams:
     def test_guard_disabled_passthrough_no_calls(self, monkeypatch, mocker):
         monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
         build = mocker.patch("congress_videos.modules.youtube.youtube_channel.build")
-        probe = mocker.patch(
-            "congress_videos.modules.youtube.youtube_channel.probe_live_status"
-        )
+        probe = mocker.patch("congress_videos.modules.youtube.youtube_channel.probe_live_status")
 
         from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
 
@@ -1043,8 +1004,8 @@ class TestFilterFinishedStreams:
 # Package export (FR12)
 # --------------------------------------------------------------------------- #
 
-class TestFilterFinishedStreamsExport:
 
+class TestFilterFinishedStreamsExport:
     def test_importable_from_package_root(self):
         from congress_videos.modules.youtube import filter_finished_streams
 

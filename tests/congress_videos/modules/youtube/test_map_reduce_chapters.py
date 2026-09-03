@@ -44,7 +44,6 @@ def _ch(start: str, end: str, title: str = "x") -> dict:
 
 
 class TestWindowSrt:
-
     def test_short_srt_single_window(self):
         """SRT below the window threshold → exactly one window (single pass)."""
         srt = _make_srt(5, block_chars=200)  # ~1k chars
@@ -85,7 +84,6 @@ class TestWindowSrt:
 
 
 class TestStepBackForOverlap:
-
     def test_break_on_first_long_block_does_not_step_back(self):
         """A single preceding block already meets overlap_chars → break with back == 0."""
         from congress_videos.modules.youtube.map_reduce_chapters import _step_back_for_overlap
@@ -127,7 +125,6 @@ class TestStepBackForOverlap:
 
 
 class TestMapChapters:
-
     def test_single_window_one_call(self):
         srt = _make_srt(5, block_chars=200)
         windows = window_srt(srt, window_chars=80_000)
@@ -173,7 +170,6 @@ class TestMapChapters:
 
 
 class TestResolveSeams:
-
     def test_wider_boundary_wins(self):
         """Same chapter from adjacent windows → union of bounds (wider wins)."""
         w1 = [_ch("00:10:00", "00:15:00", "narrow")]
@@ -200,7 +196,6 @@ class TestResolveSeams:
 
 
 class TestReduceChapters:
-
     def test_seams_resolved_before_dedup(self):
         """Seam union runs first, then #6 dedup drops the narrower overlapper."""
         # W1/W2 = same chapter across seam → merged to 00:09:30–00:15:30.
@@ -226,7 +221,6 @@ class TestReduceChapters:
 
 
 class TestMapReduceIdentifyChapters:
-
     def test_short_srt_single_pass_passthrough(self):
         srt = _make_srt(5, block_chars=200)
         calls = []
@@ -255,5 +249,6 @@ class TestMapReduceIdentifyChapters:
         assert len(result) >= 1
         # Result is sorted by start time.
         from congress_videos.modules.youtube.map_reduce_chapters import _secs
+
         starts = [_secs(c["start_time"]) for c in result]
         assert starts == sorted(starts)

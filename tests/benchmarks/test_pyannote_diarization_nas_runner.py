@@ -12,9 +12,7 @@ RUNNER = Path("benchmarks/pyannote_diarization/run_nas_benchmark.sh")
 
 
 @pytest.mark.parametrize("sample_duration", ["0", "-1", "not-a-number", "nan", "inf"])
-def test_runner_rejects_invalid_sample_duration_before_docker(
-    tmp_path: Path, sample_duration: str
-):
+def test_runner_rejects_invalid_sample_duration_before_docker(tmp_path: Path, sample_duration: str):
     docker = tmp_path / "docker"
     docker_called = tmp_path / "docker-called"
     docker.write_text(

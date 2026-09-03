@@ -70,7 +70,7 @@ class TestRenderBlock:
             "# Generated from dev tip deadbee with ruff 0.16.5 by scripts/gen_ruff_baseline.py.\n"
             "# Regenerate/verify:\n"
             "#   uv run ruff check . --no-cache --output-format json \\\n"
-            "#     --config 'lint.per-file-ignores = { \"__init__.py\" = [\"F401\"] }' \\\n"
+            '#     --config \'lint.per-file-ignores = { "__init__.py" = ["F401"] }\' \\\n'
             "#     | uv run python scripts/gen_ruff_baseline.py --check\n"
             "# REMOVE-ONLY: entries may be deleted (debt paid) or the whole entry dropped when\n"
             "# its code list empties. NEVER add an entry to turn CI green — fix the code or use\n"
@@ -121,9 +121,7 @@ class TestCheckModeDrift:
         )
 
         fresh_entries = gen_ruff_baseline.build_entries(_FIXTURE_DIAGNOSTICS)
-        fresh_block = gen_ruff_baseline.render_block(
-            fresh_entries, base_sha="deadbee", ruff_version="0.16.5"
-        )
+        fresh_block = gen_ruff_baseline.render_block(fresh_entries, base_sha="deadbee", ruff_version="0.16.5")
         current_region = gen_ruff_baseline.extract_region(pyproject_path.read_text(encoding="utf-8"))
 
         assert current_region.rstrip("\n") != fresh_block.rstrip("\n")
@@ -150,21 +148,15 @@ class TestMainCheckExitCode:
         monkeypatch.setattr(
             sys,
             "stdin",
-            __import__("io").StringIO(
-                '[{"filename": "utils/whisper_helpers.py", "code": "F401"}]'
-            ),
+            __import__("io").StringIO('[{"filename": "utils/whisper_helpers.py", "code": "F401"}]'),
         )
 
-        exit_code = gen_ruff_baseline.main(
-            ["--check", "--pyproject", str(pyproject_path), "--base-sha", "deadbee"]
-        )
+        exit_code = gen_ruff_baseline.main(["--check", "--pyproject", str(pyproject_path), "--base-sha", "deadbee"])
 
         assert exit_code == 1
 
     def test_main_check_returns_0_when_no_drift(self, tmp_path, monkeypatch):
-        entries = gen_ruff_baseline.build_entries(
-            [{"filename": "utils/whisper_helpers.py", "code": "F401"}]
-        )
+        entries = gen_ruff_baseline.build_entries([{"filename": "utils/whisper_helpers.py", "code": "F401"}])
         block = gen_ruff_baseline.render_block(entries, base_sha="deadbee", ruff_version="0.16.5")
         pyproject_path = tmp_path / "pyproject.toml"
         pyproject_path.write_text("[tool.ruff]\nline-length = 120\n\n" + block, encoding="utf-8")
@@ -172,13 +164,9 @@ class TestMainCheckExitCode:
         monkeypatch.setattr(
             sys,
             "stdin",
-            __import__("io").StringIO(
-                '[{"filename": "utils/whisper_helpers.py", "code": "F401"}]'
-            ),
+            __import__("io").StringIO('[{"filename": "utils/whisper_helpers.py", "code": "F401"}]'),
         )
 
-        exit_code = gen_ruff_baseline.main(
-            ["--check", "--pyproject", str(pyproject_path), "--base-sha", "deadbee"]
-        )
+        exit_code = gen_ruff_baseline.main(["--check", "--pyproject", str(pyproject_path), "--base-sha", "deadbee"])
 
         assert exit_code == 0

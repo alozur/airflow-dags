@@ -5,6 +5,7 @@ CHECK is auto-named speaker_turns_source_check, so the idempotent mechanism
 here is DROP CONSTRAINT IF EXISTS + ADD CONSTRAINT, NOT a
 pg_constraint-guarded DO-block — this file asserts that DROP+ADD shape.
 """
+
 from __future__ import annotations
 
 import re
@@ -29,19 +30,15 @@ def _executable_sql() -> str:
 
 
 class TestMigration039FileExists:
-
     def test_migration_file_exists(self):
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
     def test_filename_sorts_after_038(self):
         names = sorted(p.name for p in MIGRATION_PATH.parent.glob("*.sql"))
-        assert names.index(MIGRATION_PATH.name) > names.index(
-            "038_restore_chapter_abandoned_gate.sql"
-        )
+        assert names.index(MIGRATION_PATH.name) > names.index("038_restore_chapter_abandoned_gate.sql")
 
 
 class TestMigration039ConstraintShape:
-
     def test_drops_the_autonamed_constraint(self):
         """DROP CONSTRAINT IF EXISTS speaker_turns_source_check — the exact
         name Postgres auto-assigns to migration 022's inline CHECK."""
@@ -75,7 +72,6 @@ class TestMigration039ConstraintShape:
 
 
 class TestMigration039DownBlock:
-
     def test_down_block_present(self):
         sql = _sql().upper()
         assert "-- DOWN" in sql

@@ -4,6 +4,7 @@ TDD RED tests:
 - select_unprepared_turns(limit): returns turns where prepared_at IS NULL
 - mark_turn_prepared(turn_id): UPDATE speaker_turn_videos SET prepared_at = now()
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -33,6 +34,7 @@ def _make_conn(rows=None, scalar=None):
 # 2.1 select_unprepared_turns
 # ---------------------------------------------------------------------------
 
+
 class TestSelectUnpreparedTurns:
     """select_unprepared_turns(limit) fetches turns where prepared_at IS NULL."""
 
@@ -47,9 +49,7 @@ class TestSelectUnpreparedTurns:
 
         call_args = cursor.execute.call_args
         query = call_args[0][0].upper()
-        assert "PREPARED_AT IS NULL" in query, (
-            f"Query must contain PREPARED_AT IS NULL; got: {call_args[0][0]}"
-        )
+        assert "PREPARED_AT IS NULL" in query, f"Query must contain PREPARED_AT IS NULL; got: {call_args[0][0]}"
 
     def test_sql_contains_is_uploaded_to_youtube_false(self):
         """Query must also filter is_uploaded_to_youtube = FALSE."""
@@ -109,9 +109,7 @@ class TestSelectUnpreparedTurns:
         call_args = cursor.execute.call_args
         params = call_args[0][1] if len(call_args[0]) > 1 else ()
         query = call_args[0][0].upper()
-        assert 2 in params or "LIMIT 2" in query, (
-            "Default limit must be 2"
-        )
+        assert 2 in params or "LIMIT 2" in query, "Default limit must be 2"
 
     def test_returns_list_of_dicts(self):
         """Return value must be a list of turn dicts."""
@@ -176,6 +174,7 @@ class TestSelectUnpreparedTurns:
 # 2.2 mark_turn_prepared
 # ---------------------------------------------------------------------------
 
+
 class TestMarkTurnPrepared:
     """mark_turn_prepared(turn_id) updates only prepared_at on matching turn_id row."""
 
@@ -194,9 +193,7 @@ class TestMarkTurnPrepared:
         assert "PREPARED_AT" in query
         assert "NOW()" in query or "CURRENT_TIMESTAMP" in query
         # Must NOT update is_uploaded_to_youtube
-        assert "IS_UPLOADED_TO_YOUTUBE" not in query, (
-            "mark_turn_prepared must NOT touch is_uploaded_to_youtube"
-        )
+        assert "IS_UPLOADED_TO_YOUTUBE" not in query, "mark_turn_prepared must NOT touch is_uploaded_to_youtube"
 
     def test_sql_uses_correct_turn_id(self):
         """UPDATE must filter WHERE turn_id = %s and pass 42 as param."""
@@ -274,9 +271,7 @@ class TestMarkTurnPreparedSiblingMarking:
         call_args = cursor.execute.call_args
         query = call_args[0][0]
         count = query.count("development.speaker_turn_videos")
-        assert count >= 2, (
-            f"Qualified table name must appear at least twice (outer + subquery), got {count}"
-        )
+        assert count >= 2, f"Qualified table name must appear at least twice (outer + subquery), got {count}"
 
     def test_params_tuple_is_single_turn_id_for_subquery(self):
         """Params must be (turn_id,) — single element, bound to the inner subquery WHERE."""

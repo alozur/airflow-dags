@@ -9,12 +9,7 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPT = (
-    Path(__file__).resolve().parents[3]
-    / "congress_videos"
-    / "scripts"
-    / "generate_youtube_token.py"
-)
+_SCRIPT = Path(__file__).resolve().parents[3] / "congress_videos" / "scripts" / "generate_youtube_token.py"
 
 
 def _load_script():
@@ -59,6 +54,4 @@ class TestScopeWiring:
         from congress_videos.config.youtube_channels import get_token_scopes
 
         assert gen.get_token_scopes is get_token_scopes
-        assert get_token_scopes("analytics") == (
-            "https://www.googleapis.com/auth/yt-analytics.readonly",
-        )
+        assert get_token_scopes("analytics") == ("https://www.googleapis.com/auth/yt-analytics.readonly",)

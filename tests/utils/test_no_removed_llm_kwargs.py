@@ -55,9 +55,7 @@ def _find_violations() -> list[str]:
                 callee = _callee_name(node.func)
                 for kw in node.keywords:
                     if kw.arg in _FORBIDDEN and (rel_path, callee) not in _ALLOWED:
-                        violations.append(
-                            f"{rel_path}:{node.lineno}: {callee}(... {kw.arg}=...)"
-                        )
+                        violations.append(f"{rel_path}:{node.lineno}: {callee}(... {kw.arg}=...)")
 
     return violations
 

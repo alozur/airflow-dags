@@ -15,6 +15,7 @@ from congress_videos.modules.youtube.youtube_upload import (
 # Helpers / builder functions
 # ---------------------------------------------------------------------------
 
+
 def _make_extraction_results(chapters: list[dict]) -> dict:
     return {
         "total_chapters": len(chapters),
@@ -24,9 +25,13 @@ def _make_extraction_results(chapters: list[dict]) -> dict:
     }
 
 
-def _make_chapter(chapter_id: int, video_id: str = "vid1", success: bool = True,
-                  output_path: str | None = None,
-                  turn_id: int | None = None) -> dict:
+def _make_chapter(
+    chapter_id: int,
+    video_id: str = "vid1",
+    success: bool = True,
+    output_path: str | None = None,
+    turn_id: int | None = None,
+) -> dict:
     result = {
         "chapter_id": chapter_id,
         "video_id": video_id,
@@ -45,8 +50,7 @@ def _make_metadata_results(topic_metadata: list[dict]) -> dict:
     return {"topic_metadata": topic_metadata}
 
 
-def _make_topic_metadata(chapter_id: int, title: str, description: str,
-                          video_id: str = "vid1") -> dict:
+def _make_topic_metadata(chapter_id: int, title: str, description: str, video_id: str = "vid1") -> dict:
     return {
         "chapter_id": chapter_id,
         "video_id": video_id,
@@ -66,8 +70,8 @@ def _make_thumbnail_results(thumbnails: list[dict]) -> dict:
 # Tests
 # ---------------------------------------------------------------------------
 
-class TestPrepareChapterUploadConfig:
 
+class TestPrepareChapterUploadConfig:
     # Guard conditions
 
     def test_none_extraction_results_returns_none(self):
@@ -91,10 +95,12 @@ class TestPrepareChapterUploadConfig:
         assert result is None
 
     def test_mixed_results_only_successful_included(self):
-        extraction = _make_extraction_results([
-            _make_chapter(1, success=True),
-            _make_chapter(2, success=False),
-        ])
+        extraction = _make_extraction_results(
+            [
+                _make_chapter(1, success=True),
+                _make_chapter(2, success=False),
+            ]
+        )
         result = prepare_chapter_upload_config(extraction, None)
         assert result is not None
         assert len(result["videos"]) == 1
@@ -113,18 +119,18 @@ class TestPrepareChapterUploadConfig:
     def test_with_metadata_uses_provided_title(self):
         chapter_id = 7
         extraction = _make_extraction_results([_make_chapter(chapter_id)])
-        metadata = _make_metadata_results([
-            _make_topic_metadata(chapter_id, "El gran debate", "Una descripción detallada")
-        ])
+        metadata = _make_metadata_results(
+            [_make_topic_metadata(chapter_id, "El gran debate", "Una descripción detallada")]
+        )
         result = prepare_chapter_upload_config(extraction, metadata)
         assert result["videos"][0]["title"] == "El gran debate"
 
     def test_with_metadata_uses_provided_description(self):
         chapter_id = 7
         extraction = _make_extraction_results([_make_chapter(chapter_id)])
-        metadata = _make_metadata_results([
-            _make_topic_metadata(chapter_id, "El gran debate", "Una descripción detallada")
-        ])
+        metadata = _make_metadata_results(
+            [_make_topic_metadata(chapter_id, "El gran debate", "Una descripción detallada")]
+        )
         result = prepare_chapter_upload_config(extraction, metadata)
         assert result["videos"][0]["description"] == "Una descripción detallada"
 
@@ -134,9 +140,9 @@ class TestPrepareChapterUploadConfig:
         chapter_id = 3
         extraction = _make_extraction_results([_make_chapter(chapter_id)])
         metadata = _make_metadata_results([_make_topic_metadata(chapter_id, "T", "D")])
-        thumbnails = _make_thumbnail_results([
-            {"chapter_id": chapter_id, "success": True, "output_path": "/thumbs/3.jpg"}
-        ])
+        thumbnails = _make_thumbnail_results(
+            [{"chapter_id": chapter_id, "success": True, "output_path": "/thumbs/3.jpg"}]
+        )
         result = prepare_chapter_upload_config(extraction, metadata, thumbnail_results=thumbnails)
         assert result["videos"][0]["thumbnail_file"] == "/thumbs/3.jpg"
 
@@ -144,9 +150,7 @@ class TestPrepareChapterUploadConfig:
         chapter_id = 4
         extraction = _make_extraction_results([_make_chapter(chapter_id)])
         metadata = _make_metadata_results([_make_topic_metadata(chapter_id, "T", "D")])
-        thumbnails = _make_thumbnail_results([
-            {"chapter_id": chapter_id, "success": False, "output_path": None}
-        ])
+        thumbnails = _make_thumbnail_results([{"chapter_id": chapter_id, "success": False, "output_path": None}])
         result = prepare_chapter_upload_config(extraction, metadata, thumbnail_results=thumbnails)
         assert "thumbnail_file" not in result["videos"][0]
 
@@ -181,8 +185,17 @@ class TestPrepareChapterUploadConfig:
         extraction = _make_extraction_results([_make_chapter(1)])
         result = prepare_chapter_upload_config(extraction, None)
         video = result["videos"][0]
-        for field in ["chapter_id", "video_id", "video_file", "title", "description",
-                      "category_id", "privacy_status", "tags", "made_for_kids"]:
+        for field in [
+            "chapter_id",
+            "video_id",
+            "video_file",
+            "title",
+            "description",
+            "category_id",
+            "privacy_status",
+            "tags",
+            "made_for_kids",
+        ]:
             assert field in video, f"Missing field: {field}"
 
 
@@ -191,15 +204,13 @@ class TestPrepareChapterUploadConfig:
 # Tests for the thumbnail_result integration (output_path + title override)
 # ---------------------------------------------------------------------------
 
-class TestPrepareChapterUploadConfigThumbnailResult:
 
+class TestPrepareChapterUploadConfigThumbnailResult:
     def test_success_thumbnail_result_sets_thumbnail_file_and_title(self):
         """When thumbnail_result={success:True}, thumbnail_file and title are overridden."""
         chapter_id = 42
         extraction = _make_extraction_results([_make_chapter(chapter_id)])
-        metadata = _make_metadata_results([
-            _make_topic_metadata(chapter_id, "Original Title", "A description")
-        ])
+        metadata = _make_metadata_results([_make_topic_metadata(chapter_id, "Original Title", "A description")])
         thumbnail_result = {
             "chapter_id": chapter_id,
             "success": True,
@@ -207,9 +218,7 @@ class TestPrepareChapterUploadConfigThumbnailResult:
             "title": "AI title",
         }
 
-        result = prepare_chapter_upload_config(
-            extraction, metadata, thumbnail_result=thumbnail_result
-        )
+        result = prepare_chapter_upload_config(extraction, metadata, thumbnail_result=thumbnail_result)
 
         assert result is not None
         video = result["videos"][0]
@@ -220,9 +229,7 @@ class TestPrepareChapterUploadConfigThumbnailResult:
         """When thumbnail_result={success:False}, original title used, no thumbnail_file."""
         chapter_id = 7
         extraction = _make_extraction_results([_make_chapter(chapter_id)])
-        metadata = _make_metadata_results([
-            _make_topic_metadata(chapter_id, "Original Title", "A description")
-        ])
+        metadata = _make_metadata_results([_make_topic_metadata(chapter_id, "Original Title", "A description")])
         thumbnail_result = {
             "chapter_id": chapter_id,
             "success": False,
@@ -230,9 +237,7 @@ class TestPrepareChapterUploadConfigThumbnailResult:
             "title": None,
         }
 
-        result = prepare_chapter_upload_config(
-            extraction, metadata, thumbnail_result=thumbnail_result
-        )
+        result = prepare_chapter_upload_config(extraction, metadata, thumbnail_result=thumbnail_result)
 
         assert result is not None
         video = result["videos"][0]
@@ -244,8 +249,8 @@ class TestPrepareChapterUploadConfigThumbnailResult:
 # TestWriteOradorSidecars — Slice 4b: best-effort title/description sidecars
 # ---------------------------------------------------------------------------
 
-class TestWriteOradorSidecars:
 
+class TestWriteOradorSidecars:
     def test_turn_writes_both_sidecars_exact_content(self, tmp_path):
         video_dir = tmp_path / "oradores" / "42"
         video_dir.mkdir(parents=True)
@@ -283,12 +288,8 @@ class TestWriteOradorSidecars:
     def test_prepare_config_turn_writes_sidecars(self, tmp_path):
         video_file = str(tmp_path / "video.mp4")
         chapter_id = 42
-        extraction = _make_extraction_results([
-            _make_chapter(chapter_id, output_path=video_file, turn_id=chapter_id)
-        ])
-        metadata = _make_metadata_results([
-            _make_topic_metadata(chapter_id, "TÍTULO ESPERADO", "Una descripción.")
-        ])
+        extraction = _make_extraction_results([_make_chapter(chapter_id, output_path=video_file, turn_id=chapter_id)])
+        metadata = _make_metadata_results([_make_topic_metadata(chapter_id, "TÍTULO ESPERADO", "Una descripción.")])
 
         prepare_chapter_upload_config(extraction, metadata, dry_run=False)
 
@@ -297,12 +298,12 @@ class TestWriteOradorSidecars:
     def test_prepare_config_chapter_no_sidecars(self, tmp_path):
         video_file = str(tmp_path / "video.mp4")
         chapter_id = 1
-        extraction = _make_extraction_results([
-            _make_chapter(chapter_id, output_path=video_file)  # no turn_id
-        ])
-        metadata = _make_metadata_results([
-            _make_topic_metadata(chapter_id, "T", "D")
-        ])
+        extraction = _make_extraction_results(
+            [
+                _make_chapter(chapter_id, output_path=video_file)  # no turn_id
+            ]
+        )
+        metadata = _make_metadata_results([_make_topic_metadata(chapter_id, "T", "D")])
 
         prepare_chapter_upload_config(extraction, metadata, dry_run=False)
 
@@ -311,12 +312,8 @@ class TestWriteOradorSidecars:
     def test_prepare_config_dry_run_no_sidecars(self, tmp_path):
         video_file = str(tmp_path / "video.mp4")
         chapter_id = 42
-        extraction = _make_extraction_results([
-            _make_chapter(chapter_id, output_path=video_file, turn_id=chapter_id)
-        ])
-        metadata = _make_metadata_results([
-            _make_topic_metadata(chapter_id, "T", "D")
-        ])
+        extraction = _make_extraction_results([_make_chapter(chapter_id, output_path=video_file, turn_id=chapter_id)])
+        metadata = _make_metadata_results([_make_topic_metadata(chapter_id, "T", "D")])
 
         prepare_chapter_upload_config(extraction, metadata, dry_run=True)
 

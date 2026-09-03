@@ -4,6 +4,7 @@ TDD RED cycle: written before implementation.
 Tests: chapter_roster_mentions() mention extraction + crosscheck_slug()
 accept/reject/no_opinion classification.
 """
+
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
@@ -95,9 +96,7 @@ class TestCrosscheckSlug:
         """felix-bolanos-garcia / 'Félix Bolaños García' vs an unrelated roster -> reject."""
         from congress_videos.modules.speaker_roster_crosscheck import crosscheck_slug
 
-        verdict = crosscheck_slug(
-            "Félix Bolaños García", ["Señor Carazo", "Señora Funez"]
-        )
+        verdict = crosscheck_slug("Félix Bolaños García", ["Señor Carazo", "Señora Funez"])
 
         assert verdict == "reject"
 

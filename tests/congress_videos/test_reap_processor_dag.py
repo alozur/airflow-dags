@@ -13,6 +13,7 @@ from congress_videos.reap_api import ReapCreditsExhausted
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_ti(xcom_store: dict | None = None) -> MagicMock:
     """Create a minimal Airflow TaskInstance double with in-memory XCom."""
     store: dict = xcom_store or {}
@@ -40,29 +41,34 @@ def _make_context(xcom_store: dict | None = None) -> dict:
 # DAG load tests
 # ---------------------------------------------------------------------------
 
-class TestCongressReapProcessorDAGLoads:
 
+class TestCongressReapProcessorDAGLoads:
     def test_dag_loads(self):
         from congress_videos.reap_processor_dag import dag
+
         assert dag is not None
         assert dag.dag_id == "congress_reap_processor"
 
     def test_dag_has_correct_task_count(self):
         from congress_videos.reap_processor_dag import dag
+
         # Tasks: claim_clip_from_queue, upload_to_reap, create_reap_job,
         #        wait_for_reap, check_credits_status
         assert len(dag.tasks) == 5
 
     def test_dag_has_correct_schedule(self):
         from congress_videos.reap_processor_dag import dag
-        assert dag.schedule_interval == '30 14,17 * * *'
+
+        assert dag.schedule_interval == "30 14,17 * * *"
 
     def test_dag_has_max_active_runs_1(self):
         from congress_videos.reap_processor_dag import dag
+
         assert dag.max_active_runs == 1
 
     def test_dag_correct_task_ids(self):
         from congress_videos.reap_processor_dag import dag
+
         task_ids = {t.task_id for t in dag.tasks}
         assert "claim_clip_from_queue" in task_ids
         assert "upload_to_reap" in task_ids
@@ -73,6 +79,7 @@ class TestCongressReapProcessorDAGLoads:
 
     def test_dag_correct_dependency_chain(self):
         from congress_videos.reap_processor_dag import dag
+
         tasks_by_id = {t.task_id: t for t in dag.tasks}
         t0 = tasks_by_id["claim_clip_from_queue"]
         t1 = tasks_by_id["upload_to_reap"]
@@ -90,8 +97,8 @@ class TestCongressReapProcessorDAGLoads:
 # TestClaimClipFromQueue
 # ---------------------------------------------------------------------------
 
-class TestClaimClipFromQueue:
 
+class TestClaimClipFromQueue:
     def test_empty_result_returns_false(self, mocker):
         from congress_videos.reap_processor_dag import _claim_clip_from_queue
 
@@ -135,10 +142,11 @@ class TestClaimClipFromQueue:
 # TestReapJobSensor
 # ---------------------------------------------------------------------------
 
-class TestReapJobSensor:
 
+class TestReapJobSensor:
     def _build_sensor(self):
         from congress_videos.reap_processor_dag import ReapJobSensor
+
         return ReapJobSensor(
             task_id="wait_for_reap_test",
             reap_project_id_key="reap_project_id_for_sensor",
@@ -150,10 +158,12 @@ class TestReapJobSensor:
 
     def test_processing_status_returns_false(self, mocker):
         sensor = self._build_sensor()
-        context = _make_context({
-            "reap_project_id_for_sensor": "proj-abc",
-            "chapter_id_for_sensor": 42,
-        })
+        context = _make_context(
+            {
+                "reap_project_id_for_sensor": "proj-abc",
+                "chapter_id_for_sensor": 42,
+            }
+        )
 
         mocker.patch(
             "congress_videos.reap_processor_dag.ReapApiClient.get_project_status",
@@ -167,10 +177,12 @@ class TestReapJobSensor:
 
     def test_completed_status_downloads_clips_inserts_rows_returns_true(self, mocker):
         sensor = self._build_sensor()
-        context = _make_context({
-            "reap_project_id_for_sensor": "proj-abc",
-            "chapter_id_for_sensor": 42,
-        })
+        context = _make_context(
+            {
+                "reap_project_id_for_sensor": "proj-abc",
+                "chapter_id_for_sensor": 42,
+            }
+        )
 
         clips = [
             {"clip_id": "clip-1", "clip_url": "https://cdn.reap.video/c1.mp4", "virality_score": 0.8},
@@ -205,10 +217,12 @@ class TestReapJobSensor:
     def test_completed_status_calls_update_video_short_status_done(self, mocker):
         """After successful sensor completion, update_video_short_status('done') must be called."""
         sensor = self._build_sensor()
-        context = _make_context({
-            "reap_project_id_for_sensor": "proj-abc",
-            "chapter_id_for_sensor": 42,
-        })
+        context = _make_context(
+            {
+                "reap_project_id_for_sensor": "proj-abc",
+                "chapter_id_for_sensor": 42,
+            }
+        )
 
         mock_client_cls = mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
         mock_client = mock_client_cls.return_value
@@ -234,10 +248,12 @@ class TestReapJobSensor:
 
     def test_failed_status_raises_airflow_exception(self, mocker):
         sensor = self._build_sensor()
-        context = _make_context({
-            "reap_project_id_for_sensor": "proj-abc",
-            "chapter_id_for_sensor": 42,
-        })
+        context = _make_context(
+            {
+                "reap_project_id_for_sensor": "proj-abc",
+                "chapter_id_for_sensor": 42,
+            }
+        )
 
         mock_client_cls = mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
         mock_client = mock_client_cls.return_value
@@ -253,10 +269,12 @@ class TestReapJobSensor:
 
     def test_credits_exhausted_pushes_flag_and_returns_true(self, mocker):
         sensor = self._build_sensor()
-        ti = _make_ti({
-            "reap_project_id_for_sensor": "proj-abc",
-            "chapter_id_for_sensor": 42,
-        })
+        ti = _make_ti(
+            {
+                "reap_project_id_for_sensor": "proj-abc",
+                "chapter_id_for_sensor": 42,
+            }
+        )
         context = {"ti": ti}
 
         mock_client_cls = mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
@@ -282,10 +300,12 @@ class TestReapJobSensor:
     @pytest.mark.parametrize("terminal_status", ["invalid", "expired", "error"])
     def test_various_failure_states_raise_airflow_exception(self, mocker, terminal_status: str):
         sensor = self._build_sensor()
-        context = _make_context({
-            "reap_project_id_for_sensor": "proj-abc",
-            "chapter_id_for_sensor": 42,
-        })
+        context = _make_context(
+            {
+                "reap_project_id_for_sensor": "proj-abc",
+                "chapter_id_for_sensor": 42,
+            }
+        )
 
         mock_client_cls = mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
         mock_client = mock_client_cls.return_value
@@ -304,8 +324,8 @@ class TestReapJobSensor:
 # TestUploadToReap
 # ---------------------------------------------------------------------------
 
-class TestUploadToReap:
 
+class TestUploadToReap:
     def _make_claimed_clip(self, chapter_id=1, clip_path="/data/c1.mp4", short_id=10):
         return {
             "id": short_id,
@@ -368,8 +388,8 @@ class TestUploadToReap:
 # TestCreateReapJob
 # ---------------------------------------------------------------------------
 
-class TestCreateReapJob:
 
+class TestCreateReapJob:
     def _make_claimed_clip(self, short_id=10, chapter_id=5):
         return {
             "id": short_id,
@@ -446,11 +466,13 @@ class TestCreateReapJob:
 # TestReapJobSensorCanonicalPath — Slice 6 (#133)
 # ---------------------------------------------------------------------------
 
+
 class TestReapJobSensorCanonicalPath:
     """Tests for the canonical write-point rewire in ReapJobSensor.poke."""
 
     def _build_sensor(self):
         from congress_videos.reap_processor_dag import ReapJobSensor
+
         return ReapJobSensor(
             task_id="wait_for_reap_canonical_test",
             reap_project_id_key="reap_project_id_for_sensor",
@@ -463,10 +485,12 @@ class TestReapJobSensorCanonicalPath:
     def test_canonical_path_used_when_source_video_id_present(self, mocker):
         """download_clip and insert_video_short_clip both receive the canonical str path."""
         sensor = self._build_sensor()
-        context = _make_context({
-            "reap_project_id_for_sensor": "proj-abc",
-            "chapter_id_for_sensor": 7,
-        })
+        context = _make_context(
+            {
+                "reap_project_id_for_sensor": "proj-abc",
+                "chapter_id_for_sensor": 7,
+            }
+        )
 
         clips = [{"clip_id": "clip-1", "clip_url": "https://cdn.reap.video/c1.mp4", "virality_score": 0.8}]
 
@@ -502,11 +526,14 @@ class TestReapJobSensorCanonicalPath:
     def test_skip_with_warning_when_source_video_id_is_none(self, mocker, caplog):
         """When get_source_video_id_for_chapter returns None, no download/insert, no exception."""
         import logging
+
         sensor = self._build_sensor()
-        context = _make_context({
-            "reap_project_id_for_sensor": "proj-xyz",
-            "chapter_id_for_sensor": 99,
-        })
+        context = _make_context(
+            {
+                "reap_project_id_for_sensor": "proj-xyz",
+                "chapter_id_for_sensor": 99,
+            }
+        )
 
         clips = [{"clip_id": "clip-X", "clip_url": "https://cdn.reap.video/cx.mp4", "virality_score": 0.5}]
 
@@ -533,11 +560,14 @@ class TestReapJobSensorCanonicalPath:
     def test_parent_mkdir_called_before_download(self, mocker):
         """dest_path.parent.mkdir(parents=True, exist_ok=True) must be called before download."""
         from pathlib import Path
+
         sensor = self._build_sensor()
-        context = _make_context({
-            "reap_project_id_for_sensor": "proj-mkdir",
-            "chapter_id_for_sensor": 5,
-        })
+        context = _make_context(
+            {
+                "reap_project_id_for_sensor": "proj-mkdir",
+                "chapter_id_for_sensor": 5,
+            }
+        )
 
         clips = [{"clip_id": "c1", "clip_url": "https://cdn.reap.video/c1.mp4", "virality_score": 0.6}]
 
@@ -573,6 +603,7 @@ class TestClipIdValidation:
 
     def _build_sensor(self):
         from congress_videos.reap_processor_dag import ReapJobSensor
+
         return ReapJobSensor(
             task_id="wait_for_reap_test",
             reap_project_id_key="reap_project_id_for_sensor",
@@ -584,10 +615,12 @@ class TestClipIdValidation:
 
     def _run_with_clips(self, mocker, clips):
         sensor = self._build_sensor()
-        context = _make_context({
-            "reap_project_id_for_sensor": "proj-abc",
-            "chapter_id_for_sensor": 42,
-        })
+        context = _make_context(
+            {
+                "reap_project_id_for_sensor": "proj-abc",
+                "chapter_id_for_sensor": 42,
+            }
+        )
 
         mock_client_cls = mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
         mock_client = mock_client_cls.return_value

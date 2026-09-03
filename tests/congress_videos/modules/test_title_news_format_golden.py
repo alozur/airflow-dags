@@ -30,18 +30,18 @@ import pytest
 # ---------------------------------------------------------------------------
 
 _CANNED_OUTPUTS: list[str] = [
-    "Sánchez anuncia recortes en el gasto público",          # proper name + verb
-    "Feijóo acusa al Gobierno de mentir en el Congreso",     # proper name + verb
+    "Sánchez anuncia recortes en el gasto público",  # proper name + verb
+    "Feijóo acusa al Gobierno de mentir en el Congreso",  # proper name + verb
     "Yolanda Díaz defiende la jornada laboral de 37,5 horas",  # proper name + verb
-    "El PSOE bloquea la reforma del sistema de pensiones",   # org + verb
+    "El PSOE bloquea la reforma del sistema de pensiones",  # org + verb
     "VOX abandona la sesión parlamentaria por segunda vez",  # party acronym
     "ESCÁNDALO: Sánchez admite el fallo en los datos del paro",  # ALL-CAPS hook word
-    "Feijóo critica la política energética del Ejecutivo",   # proper name + verb
+    "Feijóo critica la política energética del Ejecutivo",  # proper name + verb
     "Yolanda Díaz propone ampliar el permiso de paternidad",  # proper name + verb
     "El Gobierno aplaza la votación sobre la reforma fiscal",  # subject + verb
     "Sánchez defiende el acuerdo con Junts ante la oposición",  # proper name + verb
     "Feijóo pide elecciones anticipadas tras el escándalo",  # proper name + verb
-    "La ministra de Hacienda niega la subida del IRPF",      # description + verb
+    "La ministra de Hacienda niega la subida del IRPF",  # description + verb
 ]
 
 # One deliberately rejected title to verify the snapshot logic (not counted in
@@ -148,9 +148,7 @@ class TestNewsFormatGoldenSnapshots:
         runtime validation constraints (length, emoji, forbidden chars, question marks).
         """
         failing = [t for t in _CANNED_OUTPUTS if not _snapshot_is_valid(t)]
-        assert not failing, (
-            f"These canned titles fail _is_valid checks: {failing}"
-        )
+        assert not failing, f"These canned titles fail _is_valid checks: {failing}"
 
     def test_rejected_examples_fail_question_mark_check(self) -> None:
         """Known-bad question titles must be flagged by the question mark check.
@@ -159,9 +157,7 @@ class TestNewsFormatGoldenSnapshots:
         the pre-reform failure cases that drove issue #60.
         """
         for title in _REJECTED_EXAMPLES:
-            assert _has_question_mark(title), (
-                f"Expected {title!r} to be flagged as a question title"
-            )
+            assert _has_question_mark(title), f"Expected {title!r} to be flagged as a question title"
 
     def test_generate_title_end_to_end_strips_question_via_is_valid(self, mocker) -> None:
         """Integration: generate_title with canned question output returns sanitised result.

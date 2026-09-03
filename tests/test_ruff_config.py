@@ -75,11 +75,7 @@ class TestPerFileIgnoresPaths:
 
     def test_every_non_glob_key_resolves_to_an_existing_file(self):
         per_file_ignores = _load_pyproject()["tool"]["ruff"]["lint"]["per-file-ignores"]
-        missing = [
-            key
-            for key in per_file_ignores
-            if key != "__init__.py" and not (REPO_ROOT / key).is_file()
-        ]
+        missing = [key for key in per_file_ignores if key != "__init__.py" and not (REPO_ROOT / key).is_file()]
         assert missing == [], f"stale per-file-ignores entries (file no longer exists): {missing}"
 
 

@@ -4,6 +4,7 @@ uploadable_chapters (issue #251).
 Reads the SQL file statically and asserts structural properties.
 No DB connection required (mirrors test_migration_036.py / 037.py pattern).
 """
+
 from __future__ import annotations
 
 import re
@@ -43,7 +44,6 @@ def _select_list_slice(sql_upper: str) -> str:
 
 
 class TestMigration038FileExists:
-
     def test_migration_file_exists(self):
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
@@ -57,7 +57,6 @@ class TestMigration038FileExists:
 
 
 class TestMigration038ViewRecreation:
-
     def test_uses_create_or_replace_view(self):
         sql = _sql().upper()
         assert "CREATE OR REPLACE VIEW UPLOADABLE_CHAPTERS AS" in sql
@@ -84,9 +83,7 @@ class TestMigration038ViewRecreation:
         normalized, must be byte-identical to 021's — catches drift and
         guarantees resolved_participant_slug is retained as the last column."""
         sql_038 = _select_list_slice(_executable_sql().upper())
-        sql_021 = _select_list_slice(
-            re.sub(r"--[^\n]*", "", MIGRATION_021_PATH.read_text(encoding="utf-8")).upper()
-        )
+        sql_021 = _select_list_slice(re.sub(r"--[^\n]*", "", MIGRATION_021_PATH.read_text(encoding="utf-8")).upper())
         assert sql_038 == sql_021
 
     def test_retains_is_uploaded_to_youtube_predicate(self):
@@ -105,7 +102,6 @@ class TestMigration038ViewRecreation:
 
 
 class TestMigration038Hygiene:
-
     def test_no_schema_qualification(self):
         sql = _sql()
         assert not re.search(r"\bpublic\.\w+", sql), "Must not use public.-qualified names"

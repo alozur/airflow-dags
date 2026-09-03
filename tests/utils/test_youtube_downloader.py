@@ -13,6 +13,7 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_ydl_info(
     video_id: str = "vid123",
     title: str = "Test Video",
@@ -36,8 +37,8 @@ def _make_ydl_info(
 # download_with_pytubefix
 # ---------------------------------------------------------------------------
 
-class TestDownloadWithPytubefix:
 
+class TestDownloadWithPytubefix:
     def test_returns_error_when_pytubefix_not_installed(self, monkeypatch):
         """ImportError on pytubefix import returns error dict without raising."""
         # Remove pytubefix from sys.modules so import fails
@@ -75,11 +76,10 @@ class TestDownloadWithPytubefix:
         import importlib
 
         from utils import youtube_downloader
+
         importlib.reload(youtube_downloader)
 
-        result = youtube_downloader.download_with_pytubefix(
-            "https://youtube.com/watch?v=x", str(tmp_path)
-        )
+        result = youtube_downloader.download_with_pytubefix("https://youtube.com/watch?v=x", str(tmp_path))
 
         assert result["success"] is False
         assert result["error"] == "No suitable stream found"
@@ -127,6 +127,7 @@ class TestDownloadWithPytubefix:
         audio_chain.first.return_value = mock_audio_stream
 
         call_count = [0]
+
         def filter_side_effect(**kwargs):
             call_count[0] += 1
             if kwargs.get("only_audio"):
@@ -146,11 +147,10 @@ class TestDownloadWithPytubefix:
         mock_run.return_value = MagicMock(returncode=0, stderr="")
 
         from utils import youtube_downloader
+
         importlib.reload(youtube_downloader)
 
-        result = youtube_downloader.download_with_pytubefix(
-            "https://youtube.com/watch?v=vid1", str(tmp_path)
-        )
+        result = youtube_downloader.download_with_pytubefix("https://youtube.com/watch?v=vid1", str(tmp_path))
 
         assert result["success"] is True
         assert result["resolution"] == "720p"
@@ -186,6 +186,7 @@ class TestDownloadWithPytubefix:
         progressive_chain.first.return_value = mock_progressive_stream
 
         call_count = [0]
+
         def filter_side_effect(**kwargs):
             call_count[0] += 1
             if kwargs.get("progressive"):
@@ -202,11 +203,10 @@ class TestDownloadWithPytubefix:
         mocker.patch.dict(sys.modules, {"pytubefix": fake_pytubefix, "pytubefix.cli": fake_cli})
 
         from utils import youtube_downloader
+
         importlib.reload(youtube_downloader)
 
-        result = youtube_downloader.download_with_pytubefix(
-            "https://youtube.com/watch?v=vid2", str(tmp_path)
-        )
+        result = youtube_downloader.download_with_pytubefix("https://youtube.com/watch?v=vid2", str(tmp_path))
 
         assert result["success"] is True
         assert result["resolution"] == "480p"
@@ -217,8 +217,8 @@ class TestDownloadWithPytubefix:
 # download_youtube_video_for_upload
 # ---------------------------------------------------------------------------
 
-class TestDownloadYoutubeVideoForUpload:
 
+class TestDownloadYoutubeVideoForUpload:
     def test_pytubefix_success_returns_immediately(self, tmp_path, mocker):
         """If pytubefix succeeds, yt-dlp is never called (guard disabled to isolate
         the download short-circuit from the live-status probe, which also uses
@@ -260,9 +260,7 @@ class TestDownloadYoutubeVideoForUpload:
 
         from utils.youtube_downloader import download_youtube_video_for_upload
 
-        result = download_youtube_video_for_upload(
-            "https://youtube.com/watch?v=x", str(tmp_path)
-        )
+        result = download_youtube_video_for_upload("https://youtube.com/watch?v=x", str(tmp_path))
 
         assert result["success"] is True
         assert result["file_path"] == str(fake_file)
@@ -285,9 +283,7 @@ class TestDownloadYoutubeVideoForUpload:
 
         from utils.youtube_downloader import download_youtube_video_for_upload
 
-        result = download_youtube_video_for_upload(
-            "https://youtube.com/watch?v=x", str(tmp_path)
-        )
+        result = download_youtube_video_for_upload("https://youtube.com/watch?v=x", str(tmp_path))
 
         assert result["success"] is False
         assert "Download error" in result["error"]
@@ -307,9 +303,7 @@ class TestDownloadYoutubeVideoForUpload:
 
         from utils.youtube_downloader import download_youtube_video_for_upload
 
-        result = download_youtube_video_for_upload(
-            "https://youtube.com/watch?v=x", str(tmp_path)
-        )
+        result = download_youtube_video_for_upload("https://youtube.com/watch?v=x", str(tmp_path))
 
         assert result["success"] is False
         assert result["error"] is not None
@@ -442,8 +436,8 @@ class TestDownloadYoutubeVideoForUpload:
 # download_audio_only
 # ---------------------------------------------------------------------------
 
-class TestDownloadAudioOnly:
 
+class TestDownloadAudioOnly:
     def test_successful_audio_download(self, tmp_path, mocker):
         """Successful yt-dlp audio download returns success=True with file info."""
         fake_file = tmp_path / "vid123_Test Video_audio.webm"
@@ -490,9 +484,7 @@ class TestDownloadAudioOnly:
 
         from utils.youtube_downloader import download_audio_only
 
-        result = download_audio_only(
-            "https://youtube.com/watch?v=x", str(tmp_path), convert_to_mp3=True
-        )
+        result = download_audio_only("https://youtube.com/watch?v=x", str(tmp_path), convert_to_mp3=True)
 
         assert "postprocessors" in captured_opts
         assert captured_opts["postprocessors"][0]["key"] == "FFmpegExtractAudio"
@@ -572,9 +564,7 @@ class TestDownloadAudioOnly:
 
         from utils.youtube_downloader import download_audio_only
 
-        download_audio_only(
-            "https://youtube.com/watch?v=x", str(tmp_path), audio_format="mp3"
-        )
+        download_audio_only("https://youtube.com/watch?v=x", str(tmp_path), audio_format="mp3")
 
         assert "postprocessors" in captured_opts
 
@@ -583,8 +573,8 @@ class TestDownloadAudioOnly:
 # download_audio_in_chunks
 # ---------------------------------------------------------------------------
 
-class TestDownloadAudioInChunks:
 
+class TestDownloadAudioInChunks:
     def test_no_duration_returns_error(self, tmp_path, mocker):
         """Video with no duration field returns error without downloading."""
         fake_info = _make_ydl_info(duration=0)
@@ -615,7 +605,8 @@ class TestDownloadAudioInChunks:
             if call_count[0] == 0:
                 # First call: info extraction
                 m.extract_info.return_value = _make_ydl_info(
-                    video_id="vid777", duration=1200  # 20 minutes
+                    video_id="vid777",
+                    duration=1200,  # 20 minutes
                 )
             else:
                 # Subsequent calls: chunk downloads, create the chunk files
@@ -660,8 +651,8 @@ class TestDownloadAudioInChunks:
 # merge_video_audio_ffmpeg
 # ---------------------------------------------------------------------------
 
-class TestMergeVideoAudioFfmpeg:
 
+class TestMergeVideoAudioFfmpeg:
     def test_successful_merge(self, tmp_path, mock_subprocess_run):
         """Successful ffmpeg merge returns success=True with output path."""
         output_file = tmp_path / "merged.mp4"
@@ -669,9 +660,7 @@ class TestMergeVideoAudioFfmpeg:
 
         from utils.youtube_downloader import merge_video_audio_ffmpeg
 
-        result = merge_video_audio_ffmpeg(
-            "/tmp/video.mp4", "/tmp/audio.webm", str(output_file)
-        )
+        result = merge_video_audio_ffmpeg("/tmp/video.mp4", "/tmp/audio.webm", str(output_file))
 
         assert result["success"] is True
         assert result["output_path"] == str(output_file)
@@ -707,9 +696,7 @@ class TestMergeVideoAudioFfmpeg:
         """Merge returns error if output file does not exist after ffmpeg."""
         from utils.youtube_downloader import merge_video_audio_ffmpeg
 
-        result = merge_video_audio_ffmpeg(
-            "/v.mp4", "/a.webm", str(tmp_path / "missing_output.mp4")
-        )
+        result = merge_video_audio_ffmpeg("/v.mp4", "/a.webm", str(tmp_path / "missing_output.mp4"))
 
         assert result["success"] is False
         assert result["error"] == "Output file not created"
@@ -730,8 +717,8 @@ class TestMergeVideoAudioFfmpeg:
 # merge_video_audio_moviepy
 # ---------------------------------------------------------------------------
 
-class TestMergeVideoAudioMoviepy:
 
+class TestMergeVideoAudioMoviepy:
     def test_returns_error_when_moviepy_not_installed(self, monkeypatch):
         """ImportError on moviepy returns error dict without raising."""
         monkeypatch.setitem(sys.modules, "moviepy", None)
@@ -749,8 +736,8 @@ class TestMergeVideoAudioMoviepy:
 # download_youtube_subtitles
 # ---------------------------------------------------------------------------
 
-class TestDownloadYoutubeSubtitles:
 
+class TestDownloadYoutubeSubtitles:
     def test_no_subtitles_available_returns_error(self, tmp_path, mocker):
         """Video with no subtitles returns has_subtitles=False and error."""
         info = _make_ydl_info(subtitles={}, automatic_captions={})
@@ -854,8 +841,8 @@ class TestDownloadYoutubeSubtitles:
 # probe_live_status (finished-stream guard shared helper)
 # ---------------------------------------------------------------------------
 
-class TestProbeLiveStatus:
 
+class TestProbeLiveStatus:
     def _fake_ydl(self, info=None, exc=None):
         fake_ydl = MagicMock()
         fake_ydl.__enter__ = MagicMock(return_value=fake_ydl)
@@ -878,9 +865,7 @@ class TestProbeLiveStatus:
         from utils.youtube_downloader import probe_live_status
 
         assert probe_live_status("https://youtube.com/watch?v=x") == status
-        fake_ydl.extract_info.assert_called_once_with(
-            "https://youtube.com/watch?v=x", download=False
-        )
+        fake_ydl.extract_info.assert_called_once_with("https://youtube.com/watch?v=x", download=False)
 
     def test_missing_live_status_key_returns_none(self, mocker):
         """A dict without live_status returns None."""
@@ -969,22 +954,18 @@ class TestProbeLiveStatus:
 # download_youtube_video_for_upload — live_status guard (defense-in-depth)
 # ---------------------------------------------------------------------------
 
-class TestDownloadGuardLiveStatus:
 
+class TestDownloadGuardLiveStatus:
     @pytest.mark.parametrize("status", ["post_live", "is_live", "is_upcoming"])
     def test_not_ready_status_skips_before_any_download(self, tmp_path, mocker, status):
         """A not-ready live_status returns a skip result with no download attempt."""
-        mocker.patch(
-            "utils.youtube_downloader.probe_live_status", return_value=status
-        )
+        mocker.patch("utils.youtube_downloader.probe_live_status", return_value=status)
         mock_pytubefix = mocker.patch("utils.youtube_downloader.download_with_pytubefix")
         mock_ydl_class = mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL")
 
         from utils.youtube_downloader import download_youtube_video_for_upload
 
-        result = download_youtube_video_for_upload(
-            "https://youtube.com/watch?v=x", str(tmp_path)
-        )
+        result = download_youtube_video_for_upload("https://youtube.com/watch?v=x", str(tmp_path))
 
         assert result["success"] is False
         assert result["skipped"] is True
@@ -994,9 +975,7 @@ class TestDownloadGuardLiveStatus:
 
     def test_guard_runs_before_pytubefix_attempt(self, tmp_path, mocker):
         """With use_pytubefix_first=True, the guard short-circuits before pytubefix."""
-        mocker.patch(
-            "utils.youtube_downloader.probe_live_status", return_value="is_live"
-        )
+        mocker.patch("utils.youtube_downloader.probe_live_status", return_value="is_live")
         mock_pytubefix = mocker.patch("utils.youtube_downloader.download_with_pytubefix")
 
         from utils.youtube_downloader import download_youtube_video_for_upload
@@ -1011,9 +990,7 @@ class TestDownloadGuardLiveStatus:
     @pytest.mark.parametrize("status", ["was_live", "not_live"])
     def test_ready_status_proceeds_to_download(self, tmp_path, mocker, status):
         """A ready live_status lets the normal download path proceed."""
-        mocker.patch(
-            "utils.youtube_downloader.probe_live_status", return_value=status
-        )
+        mocker.patch("utils.youtube_downloader.probe_live_status", return_value=status)
         mock_pytubefix = mocker.patch(
             "utils.youtube_downloader.download_with_pytubefix",
             return_value={"success": True, "file_path": "/tmp/v.mp4", "resolution": "720p"},
@@ -1021,18 +998,14 @@ class TestDownloadGuardLiveStatus:
 
         from utils.youtube_downloader import download_youtube_video_for_upload
 
-        result = download_youtube_video_for_upload(
-            "https://youtube.com/watch?v=x", str(tmp_path)
-        )
+        result = download_youtube_video_for_upload("https://youtube.com/watch?v=x", str(tmp_path))
 
         assert result["success"] is True
         mock_pytubefix.assert_called_once()
 
     def test_probe_error_none_proceeds_to_download(self, tmp_path, mocker):
         """A probe error (None) is non-blocking: the download proceeds."""
-        mocker.patch(
-            "utils.youtube_downloader.probe_live_status", return_value=None
-        )
+        mocker.patch("utils.youtube_downloader.probe_live_status", return_value=None)
         mock_pytubefix = mocker.patch(
             "utils.youtube_downloader.download_with_pytubefix",
             return_value={"success": True, "file_path": "/tmp/v.mp4", "resolution": "720p"},
@@ -1040,9 +1013,7 @@ class TestDownloadGuardLiveStatus:
 
         from utils.youtube_downloader import download_youtube_video_for_upload
 
-        result = download_youtube_video_for_upload(
-            "https://youtube.com/watch?v=x", str(tmp_path)
-        )
+        result = download_youtube_video_for_upload("https://youtube.com/watch?v=x", str(tmp_path))
 
         assert result["success"] is True
         mock_pytubefix.assert_called_once()
@@ -1068,6 +1039,7 @@ class TestDownloadGuardLiveStatus:
 # ---------------------------------------------------------------------------
 # _warn_if_not_h264 (ffmpeg-codec-aware-cuts, Slice 3)
 # ---------------------------------------------------------------------------
+
 
 class TestWarnIfNotH264:
     def test_h264_detected_logs_no_warning(self, mocker, caplog):
@@ -1111,9 +1083,7 @@ class TestWarnIfNotH264:
     def test_reuses_shared_detect_video_codec_no_reimplementation(self, mocker):
         from utils.youtube_downloader import _warn_if_not_h264
 
-        mock_detect = mocker.patch(
-            "utils.youtube_downloader.detect_video_codec", return_value="h264"
-        )
+        mock_detect = mocker.patch("utils.youtube_downloader.detect_video_codec", return_value="h264")
         _warn_if_not_h264("/tmp/video.mp4", context="ctx")
 
         mock_detect.assert_called_once_with("/tmp/video.mp4")
@@ -1140,15 +1110,11 @@ class TestWarnIfNotH264WiredIntoYtdlpSuccessPath:
         fake_ydl.prepare_filename.return_value = str(fake_file)
 
         mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", return_value=fake_ydl)
-        mock_warn = mocker.patch(
-            "utils.youtube_downloader._warn_if_not_h264", return_value="h264"
-        )
+        mock_warn = mocker.patch("utils.youtube_downloader._warn_if_not_h264", return_value="h264")
 
         from utils.youtube_downloader import download_youtube_video_for_upload
 
-        result = download_youtube_video_for_upload(
-            "https://youtube.com/watch?v=x", str(tmp_path)
-        )
+        result = download_youtube_video_for_upload("https://youtube.com/watch?v=x", str(tmp_path))
 
         assert result["success"] is True
         mock_warn.assert_called_once_with(str(fake_file), context="vid123")
@@ -1170,9 +1136,7 @@ class TestWarnIfNotH264WiredIntoYtdlpSuccessPath:
 
         from utils.youtube_downloader import download_youtube_video_for_upload
 
-        result = download_youtube_video_for_upload(
-            "https://youtube.com/watch?v=x", str(tmp_path)
-        )
+        result = download_youtube_video_for_upload("https://youtube.com/watch?v=x", str(tmp_path))
 
         assert result["success"] is False
         mock_warn.assert_not_called()
@@ -1194,7 +1158,5 @@ class TestWarnIfNotH264WiredIntoYtdlpSuccessPath:
         )
 
         assert result["success"] is True
-        mock_warn.assert_called_once_with(
-            "/tmp/pytubefix_video.mp4", context="https://youtube.com/watch?v=x"
-        )
+        mock_warn.assert_called_once_with("/tmp/pytubefix_video.mp4", context="https://youtube.com/watch?v=x")
         mock_ydl_class.assert_not_called()

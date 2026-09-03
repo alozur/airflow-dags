@@ -12,23 +12,27 @@ import pytest
 # DAG load tests
 # ---------------------------------------------------------------------------
 
-class TestCongressYoutubeChannelMonitorDAGLoads:
 
+class TestCongressYoutubeChannelMonitorDAGLoads:
     def test_dag_loads(self):
         from congress_videos.youtube_channel_monitor_dag import dag
+
         assert dag is not None
         assert dag.dag_id == "congress_youtube_channel_monitor"
 
     def test_dag_has_correct_schedule(self):
         from congress_videos.youtube_channel_monitor_dag import dag
-        assert dag.schedule_interval == '0 * * * *'
+
+        assert dag.schedule_interval == "0 * * * *"
 
     def test_dag_serializes_runs(self):
         from congress_videos.youtube_channel_monitor_dag import dag
+
         assert dag.max_active_runs == 1
 
     def test_filter_unprocessed_videos_task_exists(self):
         from congress_videos.youtube_channel_monitor_dag import dag
+
         task_ids = {t.task_id for t in dag.tasks}
         assert "filter_unprocessed_videos" in task_ids
 
@@ -37,13 +41,14 @@ class TestCongressYoutubeChannelMonitorDAGLoads:
 # Topology tests
 # ---------------------------------------------------------------------------
 
-class TestFilterUnprocessedVideosTopology:
 
+class TestFilterUnprocessedVideosTopology:
     def test_sits_between_filter_plenary_and_finished_stream_guard(self):
         """filter_unprocessed_videos must be downstream of filter_plenary_sessions
         and upstream of the finished-stream guard
         (production path: t2 >> t2b >> t2_guard >> t2a)."""
         from congress_videos.youtube_channel_monitor_dag import dag
+
         tasks_by_id = {t.task_id: t for t in dag.tasks}
 
         t2 = tasks_by_id["filter_plenary_sessions"]
@@ -59,6 +64,7 @@ class TestFilterUnprocessedVideosTopology:
         """The test-mode path (create_test_video_data >> [t3a, t3b]) must NOT
         reach filter_unprocessed_videos."""
         from congress_videos.youtube_channel_monitor_dag import dag
+
         tasks_by_id = {t.task_id: t for t in dag.tasks}
 
         t0_test = tasks_by_id["create_test_video_data"]
@@ -80,12 +86,14 @@ class TestFilterUnprocessedVideosTopology:
 # (t5f_flatten -> t5f_map (.partial().expand()) -> t5f aggregate)
 # ---------------------------------------------------------------------------
 
+
 class TestDynamicChunkSummarizationMapping:
     """Verify improvement #9: per-chunk summarization is fanned out via
     Airflow dynamic task mapping (.expand) instead of a single serial task."""
 
     def test_mapped_summarize_task_exists(self):
         from congress_videos.youtube_channel_monitor_dag import dag
+
         task_ids = {t.task_id for t in dag.tasks}
         assert "flatten_chunks_for_mapping" in task_ids
         assert "summarize_one_chunk" in task_ids
@@ -97,12 +105,14 @@ class TestDynamicChunkSummarizationMapping:
         Airflow 2.10 exposes MappedOperator under airflow.models.mappedoperator,
         Airflow 3.x under airflow.sdk.definitions.mappedoperator."""
         from congress_videos.youtube_channel_monitor_dag import dag
+
         mapped = dag.get_task("summarize_one_chunk")
         assert type(mapped).__name__ == "MappedOperator"
 
     def test_dynamic_mapping_wiring_is_present(self):
         """Structural wiring: flatten -> map -> aggregate."""
         from congress_videos.youtube_channel_monitor_dag import dag
+
         tasks_by_id = {t.task_id: t for t in dag.tasks}
 
         flatten = tasks_by_id["flatten_chunks_for_mapping"]
@@ -119,16 +129,18 @@ class TestDynamicChunkSummarizationMapping:
 # finished-stream-guard (F.1) — filter_finished_streams topology + params
 # ---------------------------------------------------------------------------
 
-class TestFilterFinishedStreamsTopology:
 
+class TestFilterFinishedStreamsTopology:
     def test_task_exists(self):
         from congress_videos.youtube_channel_monitor_dag import dag
+
         task_ids = {t.task_id for t in dag.tasks}
         assert "filter_finished_streams" in task_ids
 
     def test_sits_between_filter_unprocessed_and_check_if_plenary_found(self):
         """Production path: t2b >> t2_guard >> t2a."""
         from congress_videos.youtube_channel_monitor_dag import dag
+
         tasks_by_id = {t.task_id: t for t in dag.tasks}
 
         t2b = tasks_by_id["filter_unprocessed_videos"]
@@ -143,6 +155,7 @@ class TestFilterFinishedStreamsTopology:
     def test_not_on_test_mode_path(self):
         """The test-mode path must NOT reach filter_finished_streams."""
         from congress_videos.youtube_channel_monitor_dag import dag
+
         tasks_by_id = {t.task_id: t for t in dag.tasks}
 
         t0_test = tasks_by_id["create_test_video_data"]
@@ -151,6 +164,7 @@ class TestFilterFinishedStreamsTopology:
 
     def test_guard_params_present_with_defaults(self):
         from congress_videos.youtube_channel_monitor_dag import dag
+
         params = dag.params
         assert "guard_enabled" in params
         assert "guard_floor_minutes" in params
@@ -161,6 +175,7 @@ class TestFilterFinishedStreamsTopology:
     def test_min_hours_since_end_param_default_is_12(self):
         """min_hours_since_end raised from 2 to 12 (fix-video-integrity #24)."""
         from congress_videos.youtube_channel_monitor_dag import dag
+
         assert int(dag.params["min_hours_since_end"]) == 12
 
     def test_empty_guard_result_routes_to_no_plenary_sessions(self):
@@ -185,27 +200,27 @@ class TestFilterFinishedStreamsTopology:
 # TASK 8 (RED) — t_normalize_speakers topology
 # ---------------------------------------------------------------------------
 
+
 class TestNormalizeSpeakersTask:
     """TASK 8 — t_normalize_speakers exists, is wired after save_chapters_to_db,
     and has trigger_rule='all_done'."""
 
     def test_normalize_speakers_task_exists(self):
         from congress_videos.youtube_channel_monitor_dag import dag
+
         task_ids = {t.task_id for t in dag.tasks}
-        assert "normalize_speakers" in task_ids, (
-            "Expected task_id 'normalize_speakers' in DAG tasks"
-        )
+        assert "normalize_speakers" in task_ids, "Expected task_id 'normalize_speakers' in DAG tasks"
 
     def test_normalize_speakers_trigger_rule_is_all_done(self):
         from congress_videos.youtube_channel_monitor_dag import dag
+
         tasks_by_id = {t.task_id: t for t in dag.tasks}
         t = tasks_by_id["normalize_speakers"]
-        assert str(t.trigger_rule) == "all_done", (
-            f"Expected trigger_rule='all_done', got {t.trigger_rule!r}"
-        )
+        assert str(t.trigger_rule) == "all_done", f"Expected trigger_rule='all_done', got {t.trigger_rule!r}"
 
     def test_normalize_speakers_is_downstream_of_save_chapters_to_db(self):
         from congress_videos.youtube_channel_monitor_dag import dag
+
         tasks_by_id = {t.task_id: t for t in dag.tasks}
 
         t9_db = tasks_by_id["save_chapters_to_db"]
@@ -221,12 +236,14 @@ class TestNormalizeSpeakersTask:
 # Phase 4 — Monitor cleanup: trigger_refinement removed, normalize_speakers terminal
 # ---------------------------------------------------------------------------
 
+
 class TestMonitorTriggerRefinementRemoved:
     """Negative tests: trigger_refinement task must NOT exist; normalize_speakers is terminal."""
 
     def test_no_trigger_refinement_task(self):
         """trigger_refinement task must not exist in the monitor DAG after cleanup."""
         from congress_videos.youtube_channel_monitor_dag import dag
+
         task_ids = {t.task_id for t in dag.tasks}
         assert "trigger_refinement" not in task_ids, (
             "trigger_refinement task must be deleted from the monitor DAG "
@@ -236,6 +253,7 @@ class TestMonitorTriggerRefinementRemoved:
     def test_normalize_speakers_is_terminal(self):
         """normalize_speakers must have no downstream tasks after trigger_refinement is removed."""
         from congress_videos.youtube_channel_monitor_dag import dag
+
         tasks_by_id = {t.task_id: t for t in dag.tasks}
         normalize = tasks_by_id["normalize_speakers"]
         assert len(normalize.downstream_list) == 0, (
@@ -247,6 +265,7 @@ class TestMonitorTriggerRefinementRemoved:
 # ---------------------------------------------------------------------------
 # Issue #158 — _resolve_srt_input fail-fast helper
 # ---------------------------------------------------------------------------
+
 
 class TestSplitSrtResolveInput:
     """Unit tests for the module-level _resolve_srt_input(ti) helper.
@@ -274,9 +293,9 @@ class TestSplitSrtResolveInput:
         from congress_videos.youtube_channel_monitor_dag import _resolve_srt_input
 
         ti = mock_task_instance
-        empty = {'total_downloaded': 0, 'videos': []}
-        ti.xcom_push(key='merged_srt_files', value=empty)
-        ti.xcom_push(key='youtube_subtitles', value=empty)
+        empty = {"total_downloaded": 0, "videos": []}
+        ti.xcom_push(key="merged_srt_files", value=empty)
+        ti.xcom_push(key="youtube_subtitles", value=empty)
 
         with pytest.raises(ValueError):
             _resolve_srt_input(ti)
@@ -286,8 +305,8 @@ class TestSplitSrtResolveInput:
         from congress_videos.youtube_channel_monitor_dag import _resolve_srt_input
 
         ti = mock_task_instance
-        merged = {'videos': [{'id': 1}]}
-        ti.xcom_push(key='merged_srt_files', value=merged)
+        merged = {"videos": [{"id": 1}]}
+        ti.xcom_push(key="merged_srt_files", value=merged)
         # youtube_subtitles left absent (None)
 
         result = _resolve_srt_input(ti)
@@ -298,8 +317,8 @@ class TestSplitSrtResolveInput:
         from congress_videos.youtube_channel_monitor_dag import _resolve_srt_input
 
         ti = mock_task_instance
-        subtitles = {'videos': [{'id': 2}]}
-        ti.xcom_push(key='youtube_subtitles', value=subtitles)
+        subtitles = {"videos": [{"id": 2}]}
+        ti.xcom_push(key="youtube_subtitles", value=subtitles)
         # merged_srt_files left absent (None)
 
         result = _resolve_srt_input(ti)
@@ -324,6 +343,7 @@ class TestSplitSrtResolveInput:
 # ---------------------------------------------------------------------------
 # Issue #206 — _resolve_target_date resolves at task runtime, not parse time
 # ---------------------------------------------------------------------------
+
 
 class TestResolveTargetDate:
     """Unit tests for the module-level _resolve_target_date(context) helper.
@@ -396,14 +416,16 @@ class TestResolveTargetDate:
 # payload at the XCom boundary (Postgres XCom backend stores every push).
 # ---------------------------------------------------------------------------
 
-class TestSlimTranscriptionsForXcom:
 
+class TestSlimTranscriptionsForXcom:
     def test_none_input_passes_through_unchanged(self):
         from congress_videos.youtube_channel_monitor_dag import _slim_transcriptions_for_xcom
+
         assert _slim_transcriptions_for_xcom(None) is None
 
     def test_non_dict_input_passes_through_unchanged(self):
         from congress_videos.youtube_channel_monitor_dag import _slim_transcriptions_for_xcom
+
         assert _slim_transcriptions_for_xcom("not a dict") == "not a dict"
 
     def test_preserves_total_transcribed_and_top_level_error(self):
@@ -421,19 +443,31 @@ class TestSlimTranscriptionsForXcom:
 
         result = {
             "total_transcribed": 1,
-            "videos": [{
-                "video_id": "abc123",
-                "video_title": "Sesión Plenaria",
-                "chunked": True,
-                "total_chunks": 2,
-                "successful_transcriptions": 2,
-                "chunks": [
-                    {"success": True, "text": "a" * 5000, "srt_path": "/srt/c1.srt",
-                     "chunk_number": 1, "segments": [{"start": 0, "end": 1, "text": "..."}]},
-                    {"success": True, "text": "b" * 5000, "srt_path": "/srt/c2.srt",
-                     "chunk_number": 2, "segments": [{"start": 1, "end": 2, "text": "..."}]},
-                ],
-            }],
+            "videos": [
+                {
+                    "video_id": "abc123",
+                    "video_title": "Sesión Plenaria",
+                    "chunked": True,
+                    "total_chunks": 2,
+                    "successful_transcriptions": 2,
+                    "chunks": [
+                        {
+                            "success": True,
+                            "text": "a" * 5000,
+                            "srt_path": "/srt/c1.srt",
+                            "chunk_number": 1,
+                            "segments": [{"start": 0, "end": 1, "text": "..."}],
+                        },
+                        {
+                            "success": True,
+                            "text": "b" * 5000,
+                            "srt_path": "/srt/c2.srt",
+                            "chunk_number": 2,
+                            "segments": [{"start": 1, "end": 2, "text": "..."}],
+                        },
+                    ],
+                }
+            ],
         }
 
         slimmed = _slim_transcriptions_for_xcom(result)
@@ -453,16 +487,18 @@ class TestSlimTranscriptionsForXcom:
 
         result = {
             "total_transcribed": 1,
-            "videos": [{
-                "video_id": "xyz789",
-                "chunked": False,
-                "audio_file_path": "/audio/xyz789.webm",
-                "transcription": "c" * 20000,
-                "transcription_success": True,
-                "srt_path": "/srt/xyz789.srt",
-                "transcription_duration": 12.3,
-                "error": None,
-            }],
+            "videos": [
+                {
+                    "video_id": "xyz789",
+                    "chunked": False,
+                    "audio_file_path": "/audio/xyz789.webm",
+                    "transcription": "c" * 20000,
+                    "transcription_success": True,
+                    "srt_path": "/srt/xyz789.srt",
+                    "transcription_duration": 12.3,
+                    "error": None,
+                }
+            ],
         }
 
         slimmed = _slim_transcriptions_for_xcom(result)
@@ -497,6 +533,7 @@ class TestTargetDateGuardrail:
 
     def _source(self) -> str:
         import congress_videos.youtube_channel_monitor_dag as mod
+
         return inspect.getsource(mod)
 
     def test_no_today_str_references(self):

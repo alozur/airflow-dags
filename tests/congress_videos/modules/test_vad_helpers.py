@@ -25,8 +25,8 @@ from congress_videos.modules.video_splitter import compute_ffmpeg_timeout
 # first_sustained_speech_start — pure core (the spec coverage anchor)
 # ---------------------------------------------------------------------------
 
-class TestFirstSustainedSpeechStart:
 
+class TestFirstSustainedSpeechStart:
     def test_long_initial_silence_returns_block_start_with_margin(self):
         """Sustained speech from ~320s after silence → block start minus margin."""
         # No voice until 320s, then a sustained 12s block (>= 8s).
@@ -37,8 +37,8 @@ class TestFirstSustainedSpeechStart:
     def test_short_burst_below_min_is_rejected(self):
         """A 1.5s burst (< 8s) is discarded; the later sustained block wins."""
         segments = [
-            (40.0, 41.5),          # 1.5s isolated burst
-            (320.0, 330.0),        # 10s sustained block
+            (40.0, 41.5),  # 1.5s isolated burst
+            (320.0, 330.0),  # 10s sustained block
         ]
         result = first_sustained_speech_start(segments)
         assert result == pytest.approx(318.0)  # picks 320 block, not the 40s burst
@@ -58,8 +58,8 @@ class TestFirstSustainedSpeechStart:
     def test_gap_over_threshold_breaks_the_block(self):
         """A gap > 2s splits blocks; first block < 8s is rejected."""
         segments = [
-            (10.0, 13.0),   # 3s
-            (20.0, 23.0),   # gap 7s > 2s → new block, only 3s — rejected
+            (10.0, 13.0),  # 3s
+            (20.0, 23.0),  # gap 7s > 2s → new block, only 3s — rejected
         ]
         assert first_sustained_speech_start(segments) is None
 
@@ -93,13 +93,13 @@ class TestFirstSustainedSpeechStart:
 # last_sustained_speech_end — pure mirror core
 # ---------------------------------------------------------------------------
 
-class TestLastSustainedSpeechEnd:
 
+class TestLastSustainedSpeechEnd:
     def test_last_block_selected_when_several_qualify(self):
         """Two sustained blocks separated by a >2s gap → end from the LATER one."""
         segments = [
-            (100.0, 110.0),   # 10s block (>= 8s) — qualifies but is NOT the last
-            (300.0, 312.0),   # gap 190s; 12s block (>= 8s) — the LAST qualifying
+            (100.0, 110.0),  # 10s block (>= 8s) — qualifies but is NOT the last
+            (300.0, 312.0),  # gap 190s; 12s block (>= 8s) — the LAST qualifying
         ]
         result = last_sustained_speech_end(segments, end_margin_secs=5.0)
         assert result == pytest.approx(317.0)  # 312 + 5s margin (latest block end)
@@ -107,8 +107,8 @@ class TestLastSustainedSpeechEnd:
     def test_trailing_short_clap_after_gap_is_excluded(self):
         """A short clap (<8s) after a >2s gap does NOT extend the end."""
         segments = [
-            (100.0, 112.0),   # 12s sustained block (the real end)
-            (140.0, 144.0),   # gap 28s > 2s; 4s clap < 8s → ignored
+            (100.0, 112.0),  # 12s sustained block (the real end)
+            (140.0, 144.0),  # gap 28s > 2s; 4s clap < 8s → ignored
         ]
         result = last_sustained_speech_end(segments, end_margin_secs=5.0)
         assert result == pytest.approx(117.0)  # 112 + 5s, NOT from the clap
@@ -151,8 +151,8 @@ class TestLastSustainedSpeechEnd:
 # detect_speech_bounds — single backend pass yields both edges
 # ---------------------------------------------------------------------------
 
-class TestDetectSpeechBounds:
 
+class TestDetectSpeechBounds:
     def test_returns_both_edges_from_same_segments(self, mocker):
         """One block 320..330 → start 318 (−2 margin), end 335 (+5 margin)."""
         mocker.patch(
@@ -204,8 +204,8 @@ class TestDetectSpeechBounds:
 # extract_audio_wav — ffmpeg args + failure
 # ---------------------------------------------------------------------------
 
-class TestExtractAudioWav:
 
+class TestExtractAudioWav:
     def test_builds_mono_16k_wav_command(self, mocker):
         run = mocker.patch(
             "congress_videos.modules.vad_helpers.subprocess.run",
@@ -238,9 +238,7 @@ class TestExtractAudioWav:
             "congress_videos.modules.vad_helpers.subprocess.run",
             return_value=MagicMock(returncode=0, stderr=""),
         )
-        out = extract_audio_wav(
-            "/data/clip.mp4", "/tmp/out.wav", start_secs=600.0, duration_secs=120.0
-        )
+        out = extract_audio_wav("/data/clip.mp4", "/tmp/out.wav", start_secs=600.0, duration_secs=120.0)
 
         assert out == "/tmp/out.wav"
         cmd = run.call_args[0][0]
@@ -263,9 +261,7 @@ class TestExtractAudioWav:
             "congress_videos.modules.vad_helpers.subprocess.run",
             return_value=MagicMock(returncode=0, stderr=""),
         )
-        extract_audio_wav(
-            "/data/clip.mp4", "/tmp/out.wav", start_secs=0.0, duration_secs=300.0
-        )
+        extract_audio_wav("/data/clip.mp4", "/tmp/out.wav", start_secs=0.0, duration_secs=300.0)
 
         assert run.call_args[1]["timeout"] == compute_ffmpeg_timeout(300)
 
@@ -287,8 +283,8 @@ class TestExtractAudioWav:
 # _webrtc_segments — lazy import + WAV reading (webrtcvad faked, no torch/audio)
 # ---------------------------------------------------------------------------
 
-class TestWebrtcSegments:
 
+class TestWebrtcSegments:
     def test_webrtc_segments_uses_lazy_import_and_wave(self, mocker):
         """_webrtc_segments lazy-imports webrtcvad and reads the WAV via wave.
 
@@ -314,6 +310,7 @@ class TestWebrtcSegments:
 
         # Fake a mono 16k WAV with ~15 frames worth of samples.
         import numpy as np
+
         n_samples = 480 * 15
         pcm = np.zeros(n_samples, dtype=np.int16).tobytes()
 

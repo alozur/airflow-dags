@@ -12,6 +12,7 @@ from congress_videos.modules.youtube.youtube_ai import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_merged_chapters(videos: list[dict]) -> dict:
     return {"total_videos": len(videos), "videos": videos}
 
@@ -25,8 +26,9 @@ def _make_video(video_id: str, chapters: list[dict]) -> dict:
     }
 
 
-def _make_chapter(title: str = "Test Chapter", speakers: list | None = None,
-                  topics: list | None = None, duration: float = 10.0) -> dict:
+def _make_chapter(
+    title: str = "Test Chapter", speakers: list | None = None, topics: list | None = None, duration: float = 10.0
+) -> dict:
     return {
         "title": title,
         "description": "Chapter description",
@@ -62,6 +64,7 @@ def _make_json_error(msg: str = "API failure") -> dict:
 # thumbnail pipeline's already-validated title.
 # ---------------------------------------------------------------------------
 
+
 def _make_top_video(chapter_id: int = 1) -> dict:
     return {
         "chapter_id": chapter_id,
@@ -90,9 +93,7 @@ class TestGenerateYoutubeMetadataForSelectedVideosDescriptionOnly:
             return_value="https://www.congreso.es/link",
         )
 
-        metadata_results = generate_youtube_metadata_for_selected_videos(
-            [_make_top_video()]
-        )
+        metadata_results = generate_youtube_metadata_for_selected_videos([_make_top_video()])
 
         topic_metadata = metadata_results["topic_metadata"][0]
         assert "title" not in topic_metadata
@@ -112,9 +113,7 @@ class TestGenerateYoutubeMetadataForSelectedVideosDescriptionOnly:
             return_value="https://www.congreso.es/link",
         )
 
-        metadata_results = generate_youtube_metadata_for_selected_videos(
-            [_make_top_video()]
-        )
+        metadata_results = generate_youtube_metadata_for_selected_videos([_make_top_video()])
 
         topic_metadata = metadata_results["topic_metadata"][0]
         assert "title" not in topic_metadata
@@ -134,6 +133,7 @@ def test_generate_youtube_title_removed_from_module():
 # generate_youtube_description
 # ---------------------------------------------------------------------------
 
+
 class TestGenerateYoutubeDescription:
     def test_success_returns_description_without_error(self, mocker):
         mocker.patch(
@@ -144,9 +144,7 @@ class TestGenerateYoutubeDescription:
             "congress_videos.modules.youtube.youtube_ai.construct_session_link",
             return_value="https://www.congreso.es/link",
         )
-        result = generate_youtube_description(
-            "Topic content", [], {"duration_estimated": "10 minutos"}, 42
-        )
+        result = generate_youtube_description("Topic content", [], {"duration_estimated": "10 minutos"}, 42)
         assert result["error"] is None
         assert len(result["description"]) > 0
 
@@ -182,6 +180,7 @@ class TestGenerateYoutubeDescription:
 # score_chapters_relevance
 # ---------------------------------------------------------------------------
 
+
 class TestScoreChaptersRelevance:
     def test_none_input_returns_zero_totals(self):
         result = score_chapters_relevance(None)
@@ -199,14 +198,16 @@ class TestScoreChaptersRelevance:
     def test_single_chapter_scored_correctly(self, mocker):
         mocker.patch(
             "congress_videos.modules.youtube.youtube_ai.cached_json_completion",
-            return_value=_make_json_result({
-                "speaker_relevance_points": 2,
-                "topic_relevance_points": 2,
-                "public_interest_points": 1,
-                "reasoning": "High-profile politicians discussing hot topic",
-                "key_speakers": ["Speaker One"],
-                "is_current_topic": True,
-            }),
+            return_value=_make_json_result(
+                {
+                    "speaker_relevance_points": 2,
+                    "topic_relevance_points": 2,
+                    "public_interest_points": 1,
+                    "reasoning": "High-profile politicians discussing hot topic",
+                    "key_speakers": ["Speaker One"],
+                    "is_current_topic": True,
+                }
+            ),
         )
         merged = _make_merged_chapters([_make_video("vid1", [_make_chapter()])])
         result = score_chapters_relevance(merged)
@@ -240,14 +241,16 @@ class TestScoreChaptersRelevance:
     def test_scores_clamped_to_valid_ranges(self, mocker):
         mocker.patch(
             "congress_videos.modules.youtube.youtube_ai.cached_json_completion",
-            return_value=_make_json_result({
-                "speaker_relevance_points": 10,   # exceeds max of 2
-                "topic_relevance_points": -1,     # below min of 0
-                "public_interest_points": 5,      # exceeds max of 1
-                "reasoning": "Test",
-                "key_speakers": [],
-                "is_current_topic": False,
-            }),
+            return_value=_make_json_result(
+                {
+                    "speaker_relevance_points": 10,  # exceeds max of 2
+                    "topic_relevance_points": -1,  # below min of 0
+                    "public_interest_points": 5,  # exceeds max of 1
+                    "reasoning": "Test",
+                    "key_speakers": [],
+                    "is_current_topic": False,
+                }
+            ),
         )
         merged = _make_merged_chapters([_make_video("vid1", [_make_chapter()])])
         result = score_chapters_relevance(merged)
@@ -264,22 +267,26 @@ class TestScoreChaptersRelevance:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return _make_json_result({
-                    "speaker_relevance_points": 2,
-                    "topic_relevance_points": 2,
-                    "public_interest_points": 1,
-                    "reasoning": "High",
+                return _make_json_result(
+                    {
+                        "speaker_relevance_points": 2,
+                        "topic_relevance_points": 2,
+                        "public_interest_points": 1,
+                        "reasoning": "High",
+                        "key_speakers": [],
+                        "is_current_topic": True,
+                    }
+                )
+            return _make_json_result(
+                {
+                    "speaker_relevance_points": 0,
+                    "topic_relevance_points": 1,
+                    "public_interest_points": 0,
+                    "reasoning": "Low",
                     "key_speakers": [],
-                    "is_current_topic": True,
-                })
-            return _make_json_result({
-                "speaker_relevance_points": 0,
-                "topic_relevance_points": 1,
-                "public_interest_points": 0,
-                "reasoning": "Low",
-                "key_speakers": [],
-                "is_current_topic": False,
-            })
+                    "is_current_topic": False,
+                }
+            )
 
         mocker.patch(
             "congress_videos.modules.youtube.youtube_ai.cached_json_completion",
@@ -309,19 +316,23 @@ class TestScoreChaptersRelevance:
     def test_multiple_videos_all_chapters_scored(self, mocker):
         mocker.patch(
             "congress_videos.modules.youtube.youtube_ai.cached_json_completion",
-            return_value=_make_json_result({
-                "speaker_relevance_points": 1,
-                "topic_relevance_points": 1,
-                "public_interest_points": 0,
-                "reasoning": "Mid",
-                "key_speakers": [],
-                "is_current_topic": False,
-            }),
+            return_value=_make_json_result(
+                {
+                    "speaker_relevance_points": 1,
+                    "topic_relevance_points": 1,
+                    "public_interest_points": 0,
+                    "reasoning": "Mid",
+                    "key_speakers": [],
+                    "is_current_topic": False,
+                }
+            ),
         )
-        merged = _make_merged_chapters([
-            _make_video("vid1", [_make_chapter("Ch1"), _make_chapter("Ch2")]),
-            _make_video("vid2", [_make_chapter("Ch3")]),
-        ])
+        merged = _make_merged_chapters(
+            [
+                _make_video("vid1", [_make_chapter("Ch1"), _make_chapter("Ch2")]),
+                _make_video("vid2", [_make_chapter("Ch3")]),
+            ]
+        )
         result = score_chapters_relevance(merged)
 
         assert result["total_videos"] == 2
@@ -332,6 +343,7 @@ class TestScoreChaptersRelevance:
 # ---------------------------------------------------------------------------
 # build_youtube_chapters_block
 # ---------------------------------------------------------------------------
+
 
 def _make_timeline_moment(time: str, speaker: str = "", content: str = "x") -> dict:
     return {"time": time, "speaker": speaker, "content": content}
@@ -370,9 +382,7 @@ def test_build_youtube_chapters_block_speaker_fallback_to_topic():
         _make_timeline_moment("00:01:00", ""),  # no speaker -> topic
         _make_timeline_moment("00:02:00", "   "),  # blank speaker -> topic
     ]
-    block = build_youtube_chapters_block(
-        timeline, "00:00:00", topics=["Sanidad", "Economía", "Vivienda"]
-    )
+    block = build_youtube_chapters_block(timeline, "00:00:00", topics=["Sanidad", "Economía", "Vivienda"])
 
     lines = block.splitlines()
     assert lines[0] == "00:00 Speaker One"

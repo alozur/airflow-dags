@@ -3,6 +3,7 @@
 Reads the SQL file statically and asserts structural properties.
 No DB connection required (mirrors test_migration_035.py pattern).
 """
+
 from __future__ import annotations
 
 import re
@@ -51,7 +52,6 @@ def _executable_sql() -> str:
 
 
 class TestMigration036FileExists:
-
     def test_migration_file_exists(self):
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
@@ -62,14 +62,11 @@ class TestMigration036FileExists:
 
 
 class TestMigration036TimestamptzConversion:
-
     @pytest.mark.parametrize("table, column", CONVERTED_COLUMNS)
     def test_column_pair_present(self, table, column):
         """Each of the 18 (table, column) pairs must appear in the migration."""
         sql = _sql()
-        assert f"'{table}'" in sql and f"'{column}'" in sql, (
-            f"Migration must reference {table}.{column}"
-        )
+        assert f"'{table}'" in sql and f"'{column}'" in sql, f"Migration must reference {table}.{column}"
 
     def test_uses_at_time_zone_utc(self):
         sql = _sql().upper()
@@ -95,7 +92,6 @@ class TestMigration036TimestamptzConversion:
 
 
 class TestMigration036ViewRecreation:
-
     def test_drops_uploadable_chapters_before_recreate(self):
         sql = _sql().upper()
         assert "DROP VIEW IF EXISTS UPLOADABLE_CHAPTERS" in sql
@@ -147,7 +143,6 @@ class TestMigration036ViewRecreation:
 
 
 class TestMigration036FkHygiene:
-
     def test_speaker_normalization_cache_fk_cascade_block_present(self):
         sql = _sql().upper()
         assert "SPEAKER_NORMALIZATION_CACHE" in sql
@@ -177,7 +172,6 @@ class TestMigration036FkHygiene:
 
 
 class TestMigration036Hygiene:
-
     def test_no_schema_qualification(self):
         sql = _sql()
         assert not re.search(r"\bpublic\.\w+", sql), "Must not use public.-qualified names"

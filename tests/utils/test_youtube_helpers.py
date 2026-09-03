@@ -38,19 +38,22 @@ def _forbidden_body(*, with_errors: bool = True) -> dict:
     otherwise only 'message' is present (error_details lands as a string)."""
     inner = {"code": 403, "message": "The caller does not have permission."}
     if with_errors:
-        inner["errors"] = [{
-            "message": inner["message"],
-            "domain": "youtube.thumbnail",
-            "reason": "forbidden",
-            "location": "videoId",
-            "locationType": "parameter",
-        }]
+        inner["errors"] = [
+            {
+                "message": inner["message"],
+                "domain": "youtube.thumbnail",
+                "reason": "forbidden",
+                "location": "videoId",
+                "locationType": "parameter",
+            }
+        ]
     return {"error": inner}
 
 
 # ---------------------------------------------------------------------------
 # classify_youtube_error (issue #311)
 # ---------------------------------------------------------------------------
+
 
 class TestClassifyYoutubeError:
     """Spec: tri-valued YouTube HttpError classification, status/reason/
@@ -102,9 +105,17 @@ class TestClassifyYoutubeError:
             exc = _http_error(403, _forbidden_body(with_errors=False))
             assert isinstance(exc.error_details, str)
         else:
-            body = {"error": {"code": 403, "message": "denied", "detail": {
-                "reason": "forbidden", "domain": "youtube.thumbnail", "location": "videoId",
-            }}}
+            body = {
+                "error": {
+                    "code": 403,
+                    "message": "denied",
+                    "detail": {
+                        "reason": "forbidden",
+                        "domain": "youtube.thumbnail",
+                        "location": "videoId",
+                    },
+                }
+            }
             exc = _http_error(403, body)
             assert isinstance(exc.error_details, dict)
 
@@ -122,6 +133,7 @@ class TestClassifyYoutubeError:
 # ---------------------------------------------------------------------------
 # validate_upload_config
 # ---------------------------------------------------------------------------
+
 
 class TestValidateUploadConfig:
     def test_none_raises_value_error(self):
@@ -150,17 +162,21 @@ class TestValidateUploadConfig:
 
     def test_video_missing_video_file_raises_value_error(self):
         with pytest.raises(ValueError, match="video_file"):
-            validate_upload_config({
-                "token_file": "/t.pickle",
-                "videos": [{"title": "My Video"}],
-            })
+            validate_upload_config(
+                {
+                    "token_file": "/t.pickle",
+                    "videos": [{"title": "My Video"}],
+                }
+            )
 
     def test_video_missing_title_raises_value_error(self):
         with pytest.raises(ValueError, match="title"):
-            validate_upload_config({
-                "token_file": "/t.pickle",
-                "videos": [{"video_file": "/v.mp4"}],
-            })
+            validate_upload_config(
+                {
+                    "token_file": "/t.pickle",
+                    "videos": [{"video_file": "/v.mp4"}],
+                }
+            )
 
     def test_valid_config_returns_same_dict(self):
         conf = {
@@ -174,6 +190,7 @@ class TestValidateUploadConfig:
 # ---------------------------------------------------------------------------
 # get_authenticated_youtube_service
 # ---------------------------------------------------------------------------
+
 
 class TestGetAuthenticatedYoutubeService:
     def test_missing_token_file_raises_file_not_found(self, tmp_path):
@@ -231,6 +248,7 @@ class TestGetAuthenticatedYoutubeService:
 # upload_video_to_youtube
 # ---------------------------------------------------------------------------
 
+
 class TestUploadVideoToYoutube:
     def test_missing_video_file_returns_error(self, tmp_path):
         youtube = MagicMock()
@@ -278,9 +296,7 @@ class TestUploadVideoToYoutube:
         youtube.videos.return_value.insert.return_value = insert_request
 
         with patch("utils.youtube_helpers.MediaFileUpload"):
-            upload_video_to_youtube(
-                youtube, str(video_file), "Title", "Desc", privacy_status="public"
-            )
+            upload_video_to_youtube(youtube, str(video_file), "Title", "Desc", privacy_status="public")
 
         call_kwargs = youtube.videos.return_value.insert.call_args.kwargs
         assert call_kwargs["body"]["status"]["privacyStatus"] == "public"
@@ -326,6 +342,7 @@ class TestUploadVideoToYoutube:
 # set_thumbnail_for_video
 # ---------------------------------------------------------------------------
 
+
 class TestSetThumbnailForVideo:
     def test_missing_thumbnail_file_returns_error(self, tmp_path):
         youtube = MagicMock()
@@ -351,9 +368,7 @@ class TestSetThumbnailForVideo:
         thumb_file.write_bytes(b"\xff\xd8\xff" * 100)
 
         youtube = MagicMock()
-        youtube.thumbnails.return_value.set.return_value.execute.side_effect = Exception(
-            "thumbnail size exceeded"
-        )
+        youtube.thumbnails.return_value.set.return_value.execute.side_effect = Exception("thumbnail size exceeded")
 
         with patch("utils.youtube_helpers.MediaFileUpload"):
             result = set_thumbnail_for_video(youtube, "video-abc", str(thumb_file))
@@ -369,9 +384,7 @@ class TestSetThumbnailForVideo:
         thumb_file.write_bytes(b"\xff\xd8\xff" * 100)
 
         youtube = MagicMock()
-        youtube.thumbnails.return_value.set.return_value.execute.side_effect = _http_error(
-            403, _forbidden_body()
-        )
+        youtube.thumbnails.return_value.set.return_value.execute.side_effect = _http_error(403, _forbidden_body())
 
         with patch("utils.youtube_helpers.MediaFileUpload"):
             result = set_thumbnail_for_video(youtube, "video-abc", str(thumb_file))
@@ -386,6 +399,7 @@ class TestSetThumbnailForVideo:
 # ---------------------------------------------------------------------------
 # update_video_title (issue #102) — fetch-then-patch
 # ---------------------------------------------------------------------------
+
 
 class TestUpdateVideoTitle:
     """Spec: update_video_title fetch-then-patch — mutate only title,
@@ -410,9 +424,7 @@ class TestUpdateVideoTitle:
         youtube.videos.return_value.list.return_value.execute.return_value = {
             "items": [{"id": "video-1", "snippet": self._existing_snippet()}]
         }
-        youtube.videos.return_value.update.return_value.execute.return_value = {
-            "id": "video-1"
-        }
+        youtube.videos.return_value.update.return_value.execute.return_value = {"id": "video-1"}
 
         result = update_video_title(youtube, "video-1", "New Provocative Title")
 
@@ -452,9 +464,7 @@ class TestUpdateVideoTitle:
         youtube.videos.return_value.list.return_value.execute.return_value = {
             "items": [{"id": "video-1", "snippet": self._existing_snippet()}]
         }
-        youtube.videos.return_value.update.return_value.execute.side_effect = _http_error(
-            403, _forbidden_body()
-        )
+        youtube.videos.return_value.update.return_value.execute.side_effect = _http_error(403, _forbidden_body())
 
         result = update_video_title(youtube, "video-1", "New Title")
 
@@ -473,9 +483,7 @@ class TestUpdateVideoTitle:
         youtube.videos.return_value.list.return_value.execute.return_value = {
             "items": [{"id": "video-1", "snippet": self._existing_snippet()}]
         }
-        youtube.videos.return_value.update.return_value.execute.side_effect = Exception(
-            "quotaExceeded"
-        )
+        youtube.videos.return_value.update.return_value.execute.side_effect = Exception("quotaExceeded")
 
         result = update_video_title(youtube, "video-1", "New Title")
 

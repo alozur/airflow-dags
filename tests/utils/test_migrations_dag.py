@@ -15,6 +15,7 @@ MIGRATIONS_DIR = Path(__file__).parents[2] / "congress_videos" / "sql" / "migrat
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_mock_pg(schema: str = "development", applied: list[str] | None = None):
     """
     Build a PostgresConnection mock.
@@ -58,9 +59,7 @@ def _make_mock_pg(schema: str = "development", applied: list[str] | None = None)
     mock_conn_write.__enter__ = MagicMock(return_value=mock_conn_write)
     mock_conn_write.__exit__ = MagicMock(return_value=False)
 
-    mock_pg.get_connection.side_effect = (
-        [mock_conn_lock, mock_conn_read] + [mock_conn_write] * 10
-    )
+    mock_pg.get_connection.side_effect = [mock_conn_lock, mock_conn_read] + [mock_conn_write] * 10
     mock_pg._lock_conn = mock_conn_lock
     mock_pg._lock_cursor = mock_cursor_lock
     mock_pg._write_conn = mock_conn_write
@@ -83,23 +82,27 @@ def _create_migration(base: Path, name: str, sql: str = "CREATE TABLE IF NOT EXI
 # DAG load
 # ---------------------------------------------------------------------------
 
-class TestRunMigrationsDAGLoads:
 
+class TestRunMigrationsDAGLoads:
     def test_dag_loads(self):
         from utils.migrations_dag import dag
+
         assert dag is not None
         assert dag.dag_id == "run_migrations"
 
     def test_dag_has_two_tasks(self):
         from utils.migrations_dag import dag
+
         assert len(dag.tasks) == 2
 
     def test_dag_schedule_is_none(self):
         from utils.migrations_dag import dag
+
         assert dag.schedule_interval is None
 
     def test_ensure_runs_before_apply(self):
         from utils.migrations_dag import dag
+
         ensure = dag.get_task("ensure_migrations_table")
         apply = dag.get_task("apply_pending_migrations")
         assert apply in ensure.downstream_list
@@ -109,8 +112,8 @@ class TestRunMigrationsDAGLoads:
 # _migration_connection (issue #203 — dedicated DDL migration role)
 # ---------------------------------------------------------------------------
 
-class TestMigrationCredentialResolution:
 
+class TestMigrationCredentialResolution:
     def test_both_env_vars_set_overrides_credentials(self, mocker, monkeypatch):
         """Both MIGRATION_POSTGRES_USER/PASSWORD set -> pg.user/password overridden."""
         from utils.migrations_dag import _migration_connection
@@ -184,8 +187,8 @@ class TestMigrationCredentialResolution:
 # _ensure_migrations_table
 # ---------------------------------------------------------------------------
 
-class TestEnsureMigrationsTable:
 
+class TestEnsureMigrationsTable:
     def _mock_pg(self, mocker, schema: str = "development") -> MagicMock:
         mock_cursor = MagicMock()
         mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
@@ -237,8 +240,8 @@ class TestEnsureMigrationsTable:
 # _apply_pending_migrations
 # ---------------------------------------------------------------------------
 
-class TestApplyPendingMigrations:
 
+class TestApplyPendingMigrations:
     def test_no_migration_files_skips_db(self, mocker, tmp_path):
         """No migration files: the advisory lock is still acquired (session
         span covers the whole function), but no read/write connection opens."""
@@ -297,7 +300,8 @@ class TestApplyPendingMigrations:
         _apply_pending_migrations()
 
         insert_call = next(
-            c for c in mock_cursor_write.execute.call_args_list
+            c
+            for c in mock_cursor_write.execute.call_args_list
             if "INSERT INTO" in c[0][0] and "schema_migrations" in c[0][0]
         )
         recorded_path = insert_call[0][1][0]
@@ -345,7 +349,8 @@ class TestApplyPendingMigrations:
         _apply_pending_migrations()
 
         insert_calls = [
-            c for c in mock_cursor_write.execute.call_args_list
+            c
+            for c in mock_cursor_write.execute.call_args_list
             if "INSERT INTO" in c[0][0] and "schema_migrations" in c[0][0]
         ]
         recorded = [c[0][1][0] for c in insert_calls]
@@ -356,8 +361,8 @@ class TestApplyPendingMigrations:
 # Advisory lock (issue #209) — schema-scoped, session-spanning
 # ---------------------------------------------------------------------------
 
-class TestAdvisoryLock:
 
+class TestAdvisoryLock:
     def test_lock_acquired_on_first_connection_before_any_file_applies(self, mocker, tmp_path):
         """The advisory lock connection must be the FIRST one opened, and its
         pg_advisory_lock call must happen before any migration read/write."""
@@ -372,10 +377,7 @@ class TestAdvisoryLock:
 
         # The lock connection (first item handed out by get_connection's
         # side_effect list) must have received the pg_advisory_lock call.
-        lock_calls = [
-            c for c in mock_pg._lock_cursor.execute.call_args_list
-            if "pg_advisory_lock" in c[0][0]
-        ]
+        lock_calls = [c for c in mock_pg._lock_cursor.execute.call_args_list if "pg_advisory_lock" in c[0][0]]
         assert len(lock_calls) == 1
 
     def test_lock_timeout_set_to_zero_on_lock_connection(self, mocker, tmp_path):
@@ -413,10 +415,7 @@ class TestAdvisoryLock:
 
         _apply_pending_migrations()
 
-        lock_call = next(
-            c for c in mock_pg._lock_cursor.execute.call_args_list
-            if "pg_advisory_lock" in c[0][0]
-        )
+        lock_call = next(c for c in mock_pg._lock_cursor.execute.call_args_list if "pg_advisory_lock" in c[0][0])
         sql_text, params = lock_call[0][0], lock_call[0][1]
         assert "development" not in sql_text
         assert "development" in params
@@ -435,14 +434,8 @@ class TestAdvisoryLock:
         mocker.patch("utils.migrations_dag.PostgresConnection", return_value=mock_pg_prod)
         _apply_pending_migrations()
 
-        dev_call = next(
-            c for c in mock_pg_dev._lock_cursor.execute.call_args_list
-            if "pg_advisory_lock" in c[0][0]
-        )
-        prod_call = next(
-            c for c in mock_pg_prod._lock_cursor.execute.call_args_list
-            if "pg_advisory_lock" in c[0][0]
-        )
+        dev_call = next(c for c in mock_pg_dev._lock_cursor.execute.call_args_list if "pg_advisory_lock" in c[0][0])
+        prod_call = next(c for c in mock_pg_prod._lock_cursor.execute.call_args_list if "pg_advisory_lock" in c[0][0])
         assert dev_call[0][1] != prod_call[0][1]
         assert dev_call[0][1][1] == "development"
         assert prod_call[0][1][1] == "production"
@@ -454,16 +447,15 @@ class TestAdvisoryLock:
 # Idempotency: static analysis of real migration files
 # ---------------------------------------------------------------------------
 
-_BARE_CREATE_TABLE = re.compile(r'\bCREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS\b)', re.IGNORECASE)
-_BARE_CREATE_INDEX = re.compile(r'\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+(?!IF\s+NOT\s+EXISTS\b)', re.IGNORECASE)
-_BARE_DROP_TABLE = re.compile(r'\bDROP\s+TABLE\s+(?!IF\s+EXISTS\b)', re.IGNORECASE)
-_BARE_INSERT = re.compile(r'\bINSERT\s+INTO\b', re.IGNORECASE)
+_BARE_CREATE_TABLE = re.compile(r"\bCREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS\b)", re.IGNORECASE)
+_BARE_CREATE_INDEX = re.compile(r"\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+(?!IF\s+NOT\s+EXISTS\b)", re.IGNORECASE)
+_BARE_DROP_TABLE = re.compile(r"\bDROP\s+TABLE\s+(?!IF\s+EXISTS\b)", re.IGNORECASE)
+_BARE_INSERT = re.compile(r"\bINSERT\s+INTO\b", re.IGNORECASE)
 
 _MIGRATION_FILES = sorted(MIGRATIONS_DIR.glob("*.sql"))
 
 
 class TestMigrationIdempotency:
-
     def test_migration_files_exist(self):
         assert len(_MIGRATION_FILES) > 0, f"No .sql files found in {MIGRATIONS_DIR}"
 
@@ -514,23 +506,17 @@ class TestMigrationIdempotency:
     @pytest.mark.parametrize("path", _MIGRATION_FILES, ids=lambda p: p.name)
     def test_no_bare_create_table(self, path: Path):
         sql = path.read_text()
-        assert not _BARE_CREATE_TABLE.search(sql), (
-            f"{path.name}: CREATE TABLE must use IF NOT EXISTS"
-        )
+        assert not _BARE_CREATE_TABLE.search(sql), f"{path.name}: CREATE TABLE must use IF NOT EXISTS"
 
     @pytest.mark.parametrize("path", _MIGRATION_FILES, ids=lambda p: p.name)
     def test_no_bare_create_index(self, path: Path):
         sql = path.read_text()
-        assert not _BARE_CREATE_INDEX.search(sql), (
-            f"{path.name}: CREATE INDEX must use IF NOT EXISTS"
-        )
+        assert not _BARE_CREATE_INDEX.search(sql), f"{path.name}: CREATE INDEX must use IF NOT EXISTS"
 
     @pytest.mark.parametrize("path", _MIGRATION_FILES, ids=lambda p: p.name)
     def test_no_bare_drop_table(self, path: Path):
         sql = path.read_text()
-        assert not _BARE_DROP_TABLE.search(sql), (
-            f"{path.name}: DROP TABLE must use IF EXISTS"
-        )
+        assert not _BARE_DROP_TABLE.search(sql), f"{path.name}: DROP TABLE must use IF EXISTS"
 
     @pytest.mark.parametrize("path", _MIGRATION_FILES, ids=lambda p: p.name)
     def test_no_seed_inserts(self, path: Path):
@@ -544,8 +530,8 @@ class TestMigrationIdempotency:
 # Owner-role assumption (issue #291)
 # ---------------------------------------------------------------------------
 
-class TestOwnerRoleForSchema:
 
+class TestOwnerRoleForSchema:
     def test_development_maps_to_airflow_dev(self, monkeypatch):
         from utils.migrations_dag import _owner_role_for_schema
 
@@ -573,7 +559,6 @@ class TestOwnerRoleForSchema:
 
 
 class TestOwnerRoleAssumption:
-
     def _mock_single_conn(self, mocker, schema: str):
         mock_cursor = MagicMock()
         mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
@@ -623,9 +608,7 @@ class TestOwnerRoleAssumption:
         assert "SET search_path" in executed[2]
         assert migration_sql in executed[3]
 
-    def test_set_role_failure_rolls_back_and_migration_still_applies(
-        self, mocker, monkeypatch, tmp_path
-    ):
+    def test_set_role_failure_rolls_back_and_migration_still_applies(self, mocker, monkeypatch, tmp_path):
         from utils.migrations_dag import _apply_pending_migrations
 
         monkeypatch.delenv("MIGRATION_OWNER_ROLE", raising=False)

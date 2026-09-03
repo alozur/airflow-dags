@@ -32,6 +32,7 @@ from congress_videos.modules.database import (
 # Fixtures
 # --------------------------------------------------------------------------- #
 
+
 def _skip_if_no_postgres():
     try:
         import psycopg2  # noqa: F401
@@ -137,6 +138,7 @@ def db(pg_conn):
 # Insert helpers
 # --------------------------------------------------------------------------- #
 
+
 def _insert_chapter(cur, *, video_id: str = "vid", youtube_upload_date: str = "2026-01-01") -> int:
     cur.execute(
         "INSERT INTO video_chapters (video_id, youtube_upload_date) VALUES (%s, %s) RETURNING chapter_id",
@@ -181,6 +183,7 @@ def _run_candidate_query(cur, min_virality_score: float = 0.0):
 # R4 — highest-value guard: ranking universe includes already-uploaded clips
 # --------------------------------------------------------------------------- #
 
+
 def test_uploaded_top_clips_consume_chapter_tier1_slots(db):
     """The chapter's top-3 scored clips are already uploaded (is_uploaded=TRUE).
     They still occupy Tier-1 ranks 1-3 in the ranking universe, so none of the
@@ -209,6 +212,7 @@ def test_uploaded_top_clips_consume_chapter_tier1_slots(db):
 # R1 — tier beats cross-chapter recency
 # --------------------------------------------------------------------------- #
 
+
 def test_tier_beats_recency_across_chapters(db):
     """Two chapters with different youtube_upload_date values, both with
     Tier-1 and Tier-2 candidates. Every returned Tier-2 row must sort after
@@ -233,6 +237,7 @@ def test_tier_beats_recency_across_chapters(db):
 # R8 — min_virality_score never changes tier assignment
 # --------------------------------------------------------------------------- #
 
+
 def test_min_virality_score_does_not_change_tier(db):
     with db.cursor() as cur:
         chapter_id = _insert_chapter(cur)
@@ -251,6 +256,7 @@ def test_min_virality_score_does_not_change_tier(db):
 # --------------------------------------------------------------------------- #
 # R1, R3, R5, R6, R7 — folded ranking scenarios
 # --------------------------------------------------------------------------- #
+
 
 def test_baseline_top_three_clips_are_tier1(db):
     """5 clips, no uploads -> exactly 3 Tier-1 (the 3 top scores), 2 Tier-2."""
@@ -320,12 +326,9 @@ def test_abandoned_top_clips_free_tier1_slots(db):
     with db.cursor() as cur:
         chapter_id = _insert_chapter(cur)
         abandoned_ids = [
-            _insert_clip(cur, chapter_id, virality_score=score, is_upload_abandoned=True)
-            for score in [9.0, 8.0, 7.0]
+            _insert_clip(cur, chapter_id, virality_score=score, is_upload_abandoned=True) for score in [9.0, 8.0, 7.0]
         ]
-        active_ids = [
-            _insert_clip(cur, chapter_id, virality_score=score) for score in [6.0, 5.0, 4.0]
-        ]
+        active_ids = [_insert_clip(cur, chapter_id, virality_score=score) for score in [6.0, 5.0, 4.0]]
 
         rows = _run_candidate_query(cur)
 
@@ -343,9 +346,7 @@ def test_null_local_file_path_consumes_rank_but_is_not_returned(db):
     with db.cursor() as cur:
         chapter_id = _insert_chapter(cur)
         missing_file_id = _insert_clip(cur, chapter_id, virality_score=9.0, local_file_path=None)
-        present_ids = [
-            _insert_clip(cur, chapter_id, virality_score=score) for score in [8.0, 7.0, 6.0]
-        ]
+        present_ids = [_insert_clip(cur, chapter_id, virality_score=score) for score in [8.0, 7.0, 6.0]]
 
         rows = _run_candidate_query(cur)
 

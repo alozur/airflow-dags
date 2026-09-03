@@ -15,6 +15,7 @@ Covers:
 This module must be Airflow-free (DD5): no `airflow` import, no import-time
 DB connection, token resolution, or filesystem probe.
 """
+
 from __future__ import annotations
 
 
@@ -72,9 +73,7 @@ class TestClassifyRepublishResult:
             classify_republish_result,
         )
 
-        status, detail = classify_republish_result(
-            {"success": False, "error": "quota exceeded"}
-        )
+        status, detail = classify_republish_result({"success": False, "error": "quota exceeded"})
 
         assert status == "retry"
         assert detail == "quota exceeded"
@@ -119,9 +118,7 @@ class TestAttemptThumbnailRepublish:
             assert thumbnail_path.endswith("thumbnail.png")
             return {"success": True}
 
-        status, _detail = attempt_thumbnail_republish(
-            "/data/turn/video.mp4", set_thumbnail_fn=fake_set_thumbnail
-        )
+        status, _detail = attempt_thumbnail_republish("/data/turn/video.mp4", set_thumbnail_fn=fake_set_thumbnail)
 
         assert status == "healed"
 
@@ -137,9 +134,7 @@ class TestAttemptThumbnailRepublish:
                 "error": f"{MISSING_FILE_ERROR_PREFIX} {thumbnail_path}",
             }
 
-        status, _detail = attempt_thumbnail_republish(
-            "/data/turn/video.mp4", set_thumbnail_fn=fake_set_thumbnail
-        )
+        status, _detail = attempt_thumbnail_republish("/data/turn/video.mp4", set_thumbnail_fn=fake_set_thumbnail)
 
         assert status == "abandon"
 
@@ -154,9 +149,7 @@ class TestAttemptThumbnailRepublish:
         def raising_set_thumbnail(thumbnail_path: str) -> dict:
             raise RuntimeError("connection reset")
 
-        status, detail = attempt_thumbnail_republish(
-            "/data/turn/video.mp4", set_thumbnail_fn=raising_set_thumbnail
-        )
+        status, detail = attempt_thumbnail_republish("/data/turn/video.mp4", set_thumbnail_fn=raising_set_thumbnail)
 
         assert status == "retry"
         assert "connection reset" in detail

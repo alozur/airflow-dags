@@ -74,7 +74,6 @@ def _trim(
 
 
 class TestKeepInterval:
-
     def test_frozen(self):
         """KeepInterval must be immutable."""
         ki = KeepInterval(start=0.0, end=10.0)
@@ -89,7 +88,6 @@ class TestKeepInterval:
 
 
 class TestMaterializationPlan:
-
     def test_frozen(self):
         """MaterializationPlan must be immutable."""
         plan = MaterializationPlan(
@@ -125,7 +123,6 @@ class TestMaterializationPlan:
 
 
 class TestLongTurnNoTrims:
-
     def test_single_plan_returned(self):
         """A lone long turn with no trims must produce exactly one plan."""
         turn = _turn(turn_id=1, chapter_id=5, start=0.0, end=600.0)
@@ -157,7 +154,6 @@ class TestLongTurnNoTrims:
 
 
 class TestLongTurnWithApprovedTrims:
-
     def _make_plans(self):
         # 600s turn, two non-overlapping trims at [120,150] and [300,360]
         turn = _turn(turn_id=2, chapter_id=1, start=0.0, end=600.0)
@@ -197,7 +193,6 @@ class TestLongTurnWithApprovedTrims:
 
 
 class TestUnapprovedTrimsIgnored:
-
     def test_unapproved_trim_produces_full_window(self):
         """A trim with is_approved=False in the input list must not be applied."""
         turn = _turn(turn_id=3, chapter_id=1, start=0.0, end=600.0)
@@ -214,7 +209,6 @@ class TestUnapprovedTrimsIgnored:
 
 
 class TestVoiceFreeFilterApplied:
-
     def test_not_voice_free_trim_is_dropped(self):
         """A trim with is_voice_free=False must not be excised even if approved."""
         turn = _turn(turn_id=4, chapter_id=1, start=0.0, end=600.0)
@@ -235,7 +229,6 @@ class TestVoiceFreeFilterApplied:
 
 
 class TestShortTurnGrouping:
-
     def test_two_adjacent_short_turns_become_one_plan(self):
         """Two consecutive short same-chapter turns must produce one plan."""
         # Each turn is 60s, well below 300s threshold
@@ -272,7 +265,6 @@ class TestShortTurnGrouping:
 
 
 class TestCrossChapterNotGrouped:
-
     def test_different_chapters_produce_separate_plans(self):
         """Short turns in different chapters must each produce their own plan."""
         t_a = _turn(turn_id=20, chapter_id=3, start=0.0, end=60.0)
@@ -296,7 +288,6 @@ class TestCrossChapterNotGrouped:
 
 
 class TestGapBeyondToleranceSplitsGroup:
-
     def test_gap_exceeds_tolerance(self):
         """Short turns with a gap > GROUP_GAP_TOLERANCE_SECS must not be grouped."""
         t_a = _turn(turn_id=30, chapter_id=5, start=0.0, end=60.0)
@@ -320,11 +311,10 @@ class TestGapBeyondToleranceSplitsGroup:
 
 
 class TestLongTurnInterruptsGroup:
-
     def test_three_plans_for_short_long_short(self):
         """[short_A, long_B, short_C] in same chapter → 3 separate plans."""
-        t_a = _turn(turn_id=40, chapter_id=6, start=0.0, end=60.0)     # short
-        t_b = _turn(turn_id=41, chapter_id=6, start=60.0, end=400.0)   # long (340s)
+        t_a = _turn(turn_id=40, chapter_id=6, start=0.0, end=60.0)  # short
+        t_b = _turn(turn_id=41, chapter_id=6, start=60.0, end=400.0)  # long (340s)
         t_c = _turn(turn_id=42, chapter_id=6, start=400.0, end=460.0)  # short
         plans = plan_turn_materialization([t_a, t_b, t_c], approved_trims=[])
         assert len(plans) == 3
@@ -346,7 +336,6 @@ class TestLongTurnInterruptsGroup:
 
 
 class TestTrimAtStartBoundary:
-
     def test_no_zero_duration_leading_segment(self):
         """Trim starting at turn start must not produce a [start, start] interval."""
         turn = _turn(turn_id=50, chapter_id=7, start=0.0, end=600.0)
@@ -354,9 +343,7 @@ class TestTrimAtStartBoundary:
         plans = plan_turn_materialization([turn], approved_trims=trims)
         ki = plans[0].keep_intervals
         # First keep must start at 60.0, not 0.0
-        assert all(interval.end > interval.start for interval in ki), (
-            "No zero-duration keep interval must be produced"
-        )
+        assert all(interval.end > interval.start for interval in ki), "No zero-duration keep interval must be produced"
         assert ki[0].start == 60.0
 
     def test_single_keep_after_start_trim(self):
@@ -374,16 +361,13 @@ class TestTrimAtStartBoundary:
 
 
 class TestTrimAtEndBoundary:
-
     def test_no_zero_duration_trailing_segment(self):
         """Trim ending at turn end must not produce a [end, end] interval."""
         turn = _turn(turn_id=51, chapter_id=7, start=0.0, end=600.0)
         trims = [_trim(turn_id=51, start=540.0, end=600.0)]  # trim at very end
         plans = plan_turn_materialization([turn], approved_trims=trims)
         ki = plans[0].keep_intervals
-        assert all(interval.end > interval.start for interval in ki), (
-            "No zero-duration keep interval must be produced"
-        )
+        assert all(interval.end > interval.start for interval in ki), "No zero-duration keep interval must be produced"
         assert ki[-1].end == 540.0
 
     def test_single_keep_before_end_trim(self):
@@ -516,7 +500,6 @@ class TestProceduralLongTurnPathUnaffected:
 
 
 class TestModuleConstants:
-
     def test_min_long_intervention_secs_value(self):
         """MIN_LONG_INTERVENTION_SECS must be 300.0."""
         assert MIN_LONG_INTERVENTION_SECS == 300.0
@@ -704,7 +687,7 @@ class TestClassifyTurnTypeChapter263Regression:
     def test_chapter_263_turns_202_210_regression(self):
         turn_ids = list(range(202, 211))
         real_segments = [
-            (8870.00, 8934.683, "SPEAKER_01"),   # 202
+            (8870.00, 8934.683, "SPEAKER_01"),  # 202
             (8934.683, 8934.763, "SPEAKER_03"),  # 203 (0.08s blip)
             (8934.763, 8934.913, "SPEAKER_01"),  # 204 (0.15s blip)
             (8934.913, 8934.930, "SPEAKER_03"),  # 205 (0.017s blip)
@@ -754,10 +737,7 @@ class TestDecimalInputs:
         assert len(plans) == 1
         keep = plans[0].keep_intervals
         assert keep == (KeepInterval(0.0, 10.0), KeepInterval(20.0, 400.0))
-        assert all(
-            isinstance(iv.start, float) and isinstance(iv.end, float)
-            for iv in keep
-        )
+        assert all(isinstance(iv.start, float) and isinstance(iv.end, float) for iv in keep)
 
     def test_input_dicts_are_not_mutated(self):
         """Coercion must copy rows, never mutate the caller's dicts."""

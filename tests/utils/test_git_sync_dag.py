@@ -4,23 +4,26 @@ from __future__ import annotations
 
 
 class TestGitSyncDAGLoads:
-
     def test_dag_loads(self):
         from utils.git_sync_dag import dag
+
         assert dag is not None
         assert dag.dag_id == "git_sync_dag"
 
     def test_dag_has_four_tasks(self):
         from utils.git_sync_dag import dag
+
         assert len(dag.tasks) == 4
 
     def test_dag_schedule_is_none(self):
         from utils.git_sync_dag import dag
-        schedule = getattr(dag, 'schedule_interval', None) or getattr(dag, 'schedule', None)
+
+        schedule = getattr(dag, "schedule_interval", None) or getattr(dag, "schedule", None)
         assert schedule is None
 
     def test_task_chain(self):
         from utils.git_sync_dag import dag
+
         configure = dag.get_task("configure_git")
         pull = dag.get_task("git_pull")
         status = dag.get_task("show_status")

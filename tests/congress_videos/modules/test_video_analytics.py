@@ -21,6 +21,7 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _utcnow() -> datetime:
     return datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
 
@@ -79,11 +80,13 @@ class TestPendingCheckpoints:
         from congress_videos.modules.video_analytics import pending_checkpoints
 
         now = _utcnow()
-        videos = [{
-            "chapter_id": 1,
-            "youtube_video_id": None,
-            "youtube_upload_date": now - timedelta(hours=30),
-        }]
+        videos = [
+            {
+                "chapter_id": 1,
+                "youtube_video_id": None,
+                "youtube_upload_date": now - timedelta(hours=30),
+            }
+        ]
         collected: set[tuple[str, str]] = set()
 
         result = pending_checkpoints(now, videos, collected)
@@ -388,9 +391,7 @@ class TestGetPendingAnalyticsCheckpoints:
     def test_returns_list_of_rows(self):
         """Method must return a list (fetchall result)."""
         cur = _make_cursor()
-        cur.fetchall.return_value = [
-            {"chapter_id": 1, "youtube_video_id": "abc", "youtube_upload_date": None}
-        ]
+        cur.fetchall.return_value = [{"chapter_id": 1, "youtube_video_id": "abc", "youtube_upload_date": None}]
         db, _ = _make_db(cur)
 
         result = db.get_pending_analytics_checkpoints()
@@ -1047,9 +1048,7 @@ class TestMarkActionTaken:
         db, _ = _make_db(cur)
         detail = {"checkpoint": "24h", "views": 10, "median_views": 1000}
 
-        db.mark_action_taken(
-            snapshot_id=42, action="thumbnail_regenerated", detail=detail
-        )
+        db.mark_action_taken(snapshot_id=42, action="thumbnail_regenerated", detail=detail)
 
         sql_calls = _executed_sql(cur)
         combined = " ".join(sql_calls)

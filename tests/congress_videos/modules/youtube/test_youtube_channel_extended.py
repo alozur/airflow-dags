@@ -10,6 +10,7 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_video(video_id: str = "vid001", title: str = "Test") -> dict:
     return {
         "video_id": video_id,
@@ -29,8 +30,8 @@ def _make_plenary(videos: list) -> dict:
 # get_video_descriptions
 # ---------------------------------------------------------------------------
 
-class TestGetVideoDescriptions:
 
+class TestGetVideoDescriptions:
     def test_empty_input_returns_zero(self, monkeypatch):
         """Empty or missing videos returns total_videos=0."""
         monkeypatch.setenv("YOUTUBE_API_KEY", "fake-key")
@@ -55,13 +56,7 @@ class TestGetVideoDescriptions:
 
         fake_service = MagicMock()
         fake_service.videos.return_value.list.return_value.execute.return_value = {
-            "items": [
-                {
-                    "snippet": {
-                        "description": "Full description text here.\nMultiple lines."
-                    }
-                }
-            ]
+            "items": [{"snippet": {"description": "Full description text here.\nMultiple lines."}}]
         }
         mocker.patch(
             "congress_videos.modules.youtube.youtube_channel.build",
@@ -98,9 +93,7 @@ class TestGetVideoDescriptions:
         monkeypatch.setenv("YOUTUBE_API_KEY", "fake-key")
 
         fake_service = MagicMock()
-        fake_service.videos.return_value.list.return_value.execute.side_effect = Exception(
-            "API error"
-        )
+        fake_service.videos.return_value.list.return_value.execute.side_effect = Exception("API error")
         mocker.patch(
             "congress_videos.modules.youtube.youtube_channel.build",
             return_value=fake_service,
@@ -116,8 +109,8 @@ class TestGetVideoDescriptions:
 # parse_description_links
 # ---------------------------------------------------------------------------
 
-class TestParseDescriptionLinks:
 
+class TestParseDescriptionLinks:
     def test_empty_input_returns_zero(self):
         """Empty or None input returns total_videos=0."""
         from congress_videos.modules.youtube.youtube_channel import parse_description_links
@@ -219,8 +212,8 @@ class TestParseDescriptionLinks:
 # scrape_press_release
 # ---------------------------------------------------------------------------
 
-class TestScrapePressRelease:
 
+class TestScrapePressRelease:
     def test_empty_input_returns_zero(self):
         """Empty or None input returns total_scraped=0."""
         from congress_videos.modules.youtube.youtube_channel import scrape_press_release
@@ -232,11 +225,7 @@ class TestScrapePressRelease:
         """Video with no press_release_link is skipped."""
         from congress_videos.modules.youtube.youtube_channel import scrape_press_release
 
-        parsed_links = {
-            "videos": [
-                {"video_id": "v1", "title": "Session", "press_release_link": None}
-            ]
-        }
+        parsed_links = {"videos": [{"video_id": "v1", "title": "Session", "press_release_link": None}]}
 
         result = scrape_press_release(parsed_links)
 
@@ -327,8 +316,8 @@ class TestScrapePressRelease:
 # extract_session_date
 # ---------------------------------------------------------------------------
 
-class TestExtractSessionDate:
 
+class TestExtractSessionDate:
     def test_empty_input_returns_zero(self):
         """Empty or None agendas returns total_processed=0."""
         from congress_videos.modules.youtube.youtube_channel import extract_session_date
@@ -340,11 +329,7 @@ class TestExtractSessionDate:
         """Video with no agenda_text is skipped."""
         from congress_videos.modules.youtube.youtube_channel import extract_session_date
 
-        agendas = {
-            "videos": [
-                {"video_id": "v1", "video_title": "Session", "agenda_text": ""}
-            ]
-        }
+        agendas = {"videos": [{"video_id": "v1", "video_title": "Session", "agenda_text": ""}]}
 
         result = extract_session_date(agendas, "2025-05-22")
 
@@ -393,11 +378,7 @@ class TestExtractSessionDate:
         from congress_videos.modules.youtube.youtube_channel import extract_session_date
 
         # Note: regex is 'Sesión\s+nº\s*(\d+)' — must use accented characters
-        agenda_text = (
-            "Sesión nº135\n"
-            "JUEVES, 22 DE MAYO\n"
-            "Punto 1: Debate\n"
-        )
+        agenda_text = "Sesión nº135\nJUEVES, 22 DE MAYO\nPunto 1: Debate\n"
 
         agendas = {
             "videos": [
@@ -421,13 +402,7 @@ class TestExtractSessionDate:
         from congress_videos.modules.youtube.youtube_channel import extract_session_date
 
         # Note: regex is 'Sesión\s+nº\s*(\d+)' — must use accented characters
-        agenda_text = (
-            "Sesión nº135\n"
-            "MIÉRCOLES, 21 DE MAYO\n"
-            "Punto 1: Debate\n"
-            "JUEVES, 22 DE MAYO\n"
-            "Punto 2: Votacion\n"
-        )
+        agenda_text = "Sesión nº135\nMIÉRCOLES, 21 DE MAYO\nPunto 1: Debate\nJUEVES, 22 DE MAYO\nPunto 2: Votacion\n"
 
         agendas = {
             "videos": [
@@ -450,11 +425,7 @@ class TestExtractSessionDate:
         """When target date is not in agenda dates, records warning entry."""
         from congress_videos.modules.youtube.youtube_channel import extract_session_date
 
-        agenda_text = (
-            "Sesión nº200\n"
-            "LUNES, 20 DE ENERO\n"
-            "Punto 1\n"
-        )
+        agenda_text = "Sesión nº200\nLUNES, 20 DE ENERO\nPunto 1\n"
 
         agendas = {
             "videos": [

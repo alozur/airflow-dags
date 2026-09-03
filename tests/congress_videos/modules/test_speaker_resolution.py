@@ -2,6 +2,7 @@
 
 TDD RED cycle: all 14 scenarios written before implementation.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -11,6 +12,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_turn(
     turn_id: int = 1,
@@ -32,18 +34,12 @@ def _make_turn(
 
 
 def _make_participants(slugs=("pedro-sanchez", "alberto-feijoo", "yolanda-diaz")):
-    return [
-        {"slug": s, "display_name": s.replace("-", " ").title(), "party": "TEST"}
-        for s in slugs
-    ]
+    return [{"slug": s, "display_name": s.replace("-", " ").title(), "party": "TEST"} for s in slugs]
 
 
 def _make_blocks(blocks_data):
     """Build SRT block dicts from list of (start_secs, end_secs, text)."""
-    return [
-        {"start_secs": s, "end_secs": e, "text": t}
-        for s, e, t in blocks_data
-    ]
+    return [{"start_secs": s, "end_secs": e, "text": t} for s, e, t in blocks_data]
 
 
 def _ok_completion(
@@ -79,6 +75,7 @@ ANNOUNCEMENT_TEXT = "Tiene la palabra el señor Sánchez."
 # Constants
 # ---------------------------------------------------------------------------
 
+
 class TestConstants:
     def test_intro_window_secs_constant_value(self):
         """INTRO_WINDOW_SECS must equal 120."""
@@ -103,8 +100,8 @@ class TestConstants:
 # resolve_speaker — core scenarios
 # ---------------------------------------------------------------------------
 
-class TestResolveSpeakerHappyPath:
 
+class TestResolveSpeakerHappyPath:
     def test_resolve_speaker_happy_path(self):
         """Happy path: model returns valid slug >= 0.80 → returns dict."""
         from congress_videos.modules.speaker_resolution import resolve_speaker
@@ -112,10 +109,12 @@ class TestResolveSpeakerHappyPath:
         turn = _make_turn(start_seconds=300.0, end_seconds=500.0)
         participants = _make_participants(["pedro-sanchez"])
         # Intro window: [180, 300); turn window: [300, 360)
-        blocks = _make_blocks([
-            (200.0, 210.0, ANNOUNCEMENT_TEXT),
-            (310.0, 320.0, "Señor presidente, el Gobierno..."),
-        ])
+        blocks = _make_blocks(
+            [
+                (200.0, 210.0, ANNOUNCEMENT_TEXT),
+                (310.0, 320.0, "Señor presidente, el Gobierno..."),
+            ]
+        )
 
         def fake_completion(system, user, **kw):
             return _ok_completion("pedro-sanchez", 0.95)
@@ -133,7 +132,6 @@ class TestResolveSpeakerHappyPath:
 
 
 class TestResolveSpeakerBelowConfidence:
-
     def test_resolve_speaker_below_confidence(self):
         """Model returns confidence 0.65 (< 0.80) → returns None."""
         from congress_videos.modules.speaker_resolution import resolve_speaker
@@ -155,7 +153,6 @@ class TestResolveSpeakerBelowConfidence:
 
 
 class TestResolveSpeakerHallucinatedSlug:
-
     def test_resolve_speaker_hallucinated_slug(self):
         """Model returns slug not in participants list → returns None."""
         from congress_videos.modules.speaker_resolution import resolve_speaker
@@ -177,7 +174,6 @@ class TestResolveSpeakerHallucinatedSlug:
 
 
 class TestResolveSpeakerEmptyIntroWindowFallback:
-
     def test_resolve_speaker_empty_intro_window_fallback(self):
         """No SRT blocks before start_seconds → falls back to turn-only context; resolution attempted."""
         from congress_videos.modules.speaker_resolution import resolve_speaker
@@ -187,9 +183,11 @@ class TestResolveSpeakerEmptyIntroWindowFallback:
         participants = _make_participants(["pedro-sanchez"])
         # Only blocks inside the turn window [10, 70) — must still carry an
         # announcement phrase somewhere in intro+turn text for the pre-gate.
-        blocks = _make_blocks([
-            (15.0, 25.0, "Tiene la palabra el señor Sánchez, comienzo mi intervención"),
-        ])
+        blocks = _make_blocks(
+            [
+                (15.0, 25.0, "Tiene la palabra el señor Sánchez, comienzo mi intervención"),
+            ]
+        )
         called = []
 
         def fake_completion(system, user, **kw):
@@ -209,7 +207,6 @@ class TestResolveSpeakerEmptyIntroWindowFallback:
 
 
 class TestResolveSpeakerNoSrtFile:
-
     def test_resolve_speaker_no_srt_file(self):
         """SRT file absent → returns None without raising."""
         from congress_videos.modules.speaker_resolution import resolve_speaker
@@ -271,7 +268,6 @@ class TestResolveSpeakerCanonicalDir:
 
 
 class TestResolveSpeakerCompletionRaises:
-
     def test_resolve_speaker_completion_raises(self):
         """completion_fn raises exception → returns None (never-raise)."""
         from congress_videos.modules.speaker_resolution import resolve_speaker
@@ -293,7 +289,6 @@ class TestResolveSpeakerCompletionRaises:
 
 
 class TestResolveSpeakerParseError:
-
     def test_resolve_speaker_parse_error(self):
         """completion_fn returns error field set → returns None."""
         from congress_videos.modules.speaker_resolution import resolve_speaker
@@ -315,7 +310,6 @@ class TestResolveSpeakerParseError:
 
 
 class TestResolveSpeakerConfidenceBoundary:
-
     def test_resolve_speaker_confidence_exactly_at_threshold(self):
         """confidence == 0.80 → returns dict (boundary inclusive)."""
         from congress_videos.modules.speaker_resolution import resolve_speaker
@@ -357,7 +351,6 @@ class TestResolveSpeakerConfidenceBoundary:
 
 
 class TestResolveSpeakerEmptyParticipants:
-
     def test_resolve_speaker_empty_participants_list(self):
         """participants=[] → returns None (no valid slug to validate against)."""
         from congress_videos.modules.speaker_resolution import resolve_speaker
@@ -379,7 +372,6 @@ class TestResolveSpeakerEmptyParticipants:
 
 
 class TestResolveSpeakerSlugCaseSensitivity:
-
     def test_resolve_speaker_slug_case_sensitivity(self):
         """slug returned with wrong case vs participants → returns None."""
         from congress_videos.modules.speaker_resolution import resolve_speaker
@@ -405,8 +397,8 @@ class TestResolveSpeakerSlugCaseSensitivity:
 # Rule 3 (issue #283) — intro-window anchor on group_start_seconds
 # ---------------------------------------------------------------------------
 
-class TestIntroWindowAnchor:
 
+class TestIntroWindowAnchor:
     def test_group_start_seconds_anchors_intro_window(self):
         """group_start_seconds anchors the 120s intro look-back window, not
         the representative turn's own start_seconds (issue #283 rule 3)."""
@@ -418,9 +410,11 @@ class TestIntroWindowAnchor:
         # Block near t=95 is inside the NEW window [max(0,100-120),100)=[0,100)
         # but far outside the OLD window [400-120,400)=[280,400). "señor" is
         # inserted so the block also satisfies the announcement pre-gate.
-        blocks = _make_blocks([
-            (90.0, 95.0, "Tiene la palabra el señor diputado Sanchez."),
-        ])
+        blocks = _make_blocks(
+            [
+                (90.0, 95.0, "Tiene la palabra el señor diputado Sanchez."),
+            ]
+        )
         captured = {}
 
         def fake_completion(system, user, **kw):
@@ -491,9 +485,11 @@ class TestIntroWindowAnchor:
         turn["group_start_seconds"] = 100.0
         participants = _make_participants(["pedro-sanchez"])
         # Block at start_seconds + 10 must remain in the turn-context window.
-        blocks = _make_blocks([
-            (410.0, 420.0, "Tiene la palabra el señor Sánchez, comienzo mi intervención"),
-        ])
+        blocks = _make_blocks(
+            [
+                (410.0, 420.0, "Tiene la palabra el señor Sánchez, comienzo mi intervención"),
+            ]
+        )
         captured = {}
 
         def fake_completion(system, user, **kw):
@@ -514,6 +510,7 @@ class TestIntroWindowAnchor:
 # Announcement pre-gate (issue #284)
 # ---------------------------------------------------------------------------
 
+
 class TestAnnouncementPreGate:
     """resolve_speaker MUST call has_announcement_phrase against the
     combined intro_text + turn_text BEFORE invoking completion_fn."""
@@ -525,10 +522,12 @@ class TestAnnouncementPreGate:
 
         turn = _make_turn(start_seconds=300.0)
         participants = _make_participants(["pedro-sanchez"])
-        blocks = _make_blocks([
-            (200.0, 210.0, "El Gobierno presentará el proyecto de ley mañana."),
-            (310.0, 320.0, "Continuamos con el siguiente punto del orden del día."),
-        ])
+        blocks = _make_blocks(
+            [
+                (200.0, 210.0, "El Gobierno presentará el proyecto de ley mañana."),
+                (310.0, 320.0, "Continuamos con el siguiente punto del orden del día."),
+            ]
+        )
         call_count = []
 
         def fake_completion(system, user, **kw):
@@ -577,11 +576,13 @@ class TestAnnouncementPreGate:
         participants = _make_participants(["pedro-sanchez"])
         # Diarization-blip text fragments — ordinary speech, never an
         # announcement phrase (same shape as the #283 chapter-263 blips).
-        blocks = _make_blocks([
-            (8870.00, 8934.683, "y por eso el grupo mantiene su posición"),
-            (8934.683, 8934.763, "eh"),
-            (8934.763, 8934.913, "no, no es así"),
-        ])
+        blocks = _make_blocks(
+            [
+                (8870.00, 8934.683, "y por eso el grupo mantiene su posición"),
+                (8934.683, 8934.763, "eh"),
+                (8934.763, 8934.913, "no, no es así"),
+            ]
+        )
         call_count = []
 
         def fake_completion(system, user, **kw):
@@ -601,6 +602,7 @@ class TestAnnouncementPreGate:
 # ---------------------------------------------------------------------------
 # Evidence verification (issue #284)
 # ---------------------------------------------------------------------------
+
 
 class TestEvidenceVerification:
     """resolve_speaker independently verifies completion_fn's evidence
@@ -676,7 +678,8 @@ class TestEvidenceVerification:
 
         def fake_completion(system, user, **kw):
             return _ok_completion(
-                "pedro-sanchez", 0.99,
+                "pedro-sanchez",
+                0.99,
                 evidence="El orador afirmó categóricamente que la economía mejorará",
             )
 
@@ -765,6 +768,7 @@ class TestEvidenceSupportedBoundary:
 # _chapter_span (issue #322)
 # ---------------------------------------------------------------------------
 
+
 class TestChapterSpan:
     """_chapter_span parses turn['start_time']/['end_time'] (video_chapters
     VARCHAR SRT timestamps) into (start_seconds, end_seconds), or None."""
@@ -807,6 +811,7 @@ class TestChapterSpan:
 # _evidence_supported_in_blocks (issue #322) — sliding-join anchored gate
 # ---------------------------------------------------------------------------
 
+
 class TestEvidenceSupportedInBlocks:
     """Locates evidence across a sliding join of up to ANCHOR_JOIN_BLOCKS=3
     consecutive blocks, reusing _evidence_supported verbatim per join.
@@ -848,11 +853,13 @@ class TestEvidenceSupportedInBlocks:
         r1 = "el nuevo decreto aprobado recientemente por unanimidad y consenso"
         r2 = "por el consejo de ministros"
         evidence = f"{r0} {r1} {r2}"
-        blocks = _make_blocks([
-            (0.0, 5.0, f"Interviene la portavoz socialista para {r0}"),
-            (5.0, 10.0, f"eh pues bueno la verdad es que {r1}"),
-            (10.0, 15.0, f"{r2} este mismo lunes por la tarde noche"),
-        ])
+        blocks = _make_blocks(
+            [
+                (0.0, 5.0, f"Interviene la portavoz socialista para {r0}"),
+                (5.0, 10.0, f"eh pues bueno la verdad es que {r1}"),
+                (10.0, 15.0, f"{r2} este mismo lunes por la tarde noche"),
+            ]
+        )
 
         for window in (blocks[:1], blocks[1:2], blocks[2:3]):
             assert _evidence_supported_in_blocks(evidence, window) is False
@@ -870,12 +877,14 @@ class TestEvidenceSupportedInBlocks:
             "sobre vivienda social urbana",
         )
         evidence = f"{r0} {r1} {r2} {r3}"
-        blocks = _make_blocks([
-            (0.0, 5.0, f"Interviene la portavoz socialista para {r0}"),
-            (5.0, 10.0, f"eh pues bueno {r1}"),
-            (10.0, 15.0, f"la verdad es que {r2}"),
-            (15.0, 20.0, f"{r3} segun confirmaron fuentes del propio ministerio"),
-        ])
+        blocks = _make_blocks(
+            [
+                (0.0, 5.0, f"Interviene la portavoz socialista para {r0}"),
+                (5.0, 10.0, f"eh pues bueno {r1}"),
+                (10.0, 15.0, f"la verdad es que {r2}"),
+                (15.0, 20.0, f"{r3} segun confirmaron fuentes del propio ministerio"),
+            ]
+        )
 
         assert _evidence_supported_in_blocks(evidence, blocks, join_size=3) is False
 
@@ -897,10 +906,12 @@ def _run_anchored_gate_case(evidence_offset, confidence=0.95, turn_type=None):
         turn["turn_type"] = turn_type
     participants = _make_participants(["pedro-sanchez"])
     unique_evidence = "Comparece hoy el ministro de Hacienda ante la prensa"
-    blocks = _make_blocks([
-        _PREGATE_BLOCK,
-        (1000.0 + evidence_offset, 1005.0 + evidence_offset, unique_evidence),
-    ])
+    blocks = _make_blocks(
+        [
+            _PREGATE_BLOCK,
+            (1000.0 + evidence_offset, 1005.0 + evidence_offset, unique_evidence),
+        ]
+    )
 
     def fake_completion(system, user, **kw):
         return _ok_completion("pedro-sanchez", confidence, evidence=unique_evidence)
@@ -977,6 +988,7 @@ class TestAnchoredEvidenceGateIntegration:
 # Announcement pre-gate stays unchanged in slice 1 (issue #322)
 # ---------------------------------------------------------------------------
 
+
 class TestPreGateUnchangedSlice1:
     """Slice 1 only anchors the EVIDENCE gate; the pre-gate keeps reading
     the narrow intro+turn text for every turn_type (D4's rebind is
@@ -994,11 +1006,13 @@ class TestPreGateUnchangedSlice1:
         # anchor=1000; announcement at anchor-300=700 sits inside the
         # widened evidence region ([400,1060)) but outside the narrow
         # intro [880,1000) and turn [1000,1060) windows the pre-gate reads.
-        blocks = _make_blocks([
-            (700.0, 705.0, ANNOUNCEMENT_TEXT),
-            (900.0, 905.0, "El Gobierno remite el informe correspondiente."),
-            (1010.0, 1015.0, "Continuamos con el siguiente punto del orden del dia."),
-        ])
+        blocks = _make_blocks(
+            [
+                (700.0, 705.0, ANNOUNCEMENT_TEXT),
+                (900.0, 905.0, "El Gobierno remite el informe correspondiente."),
+                (1010.0, 1015.0, "Continuamos con el siguiente punto del orden del dia."),
+            ]
+        )
         call_count = []
 
         def fake_completion(system, user, **kw):
@@ -1018,6 +1032,7 @@ class TestPreGateUnchangedSlice1:
 # ---------------------------------------------------------------------------
 # Evidence-aware resolution prompt (issue #284)
 # ---------------------------------------------------------------------------
+
 
 class TestSystemPromptEvidenceRule:
     """SPEAKER_RESOLUTION_SYSTEM_PROMPT must instruct the model that
@@ -1041,6 +1056,7 @@ class TestSystemPromptEvidenceRule:
 # qa-gated wide prompt context (issue #322, slice 2)
 # ---------------------------------------------------------------------------
 
+
 class TestWideUserTemplate:
     """SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE (D6): tail from INTRO WINDOW
     onward is byte-identical to the narrow template; a new {chapter_text}
@@ -1053,8 +1069,8 @@ class TestWideUserTemplate:
         )
 
         marker = "INTRO WINDOW"
-        wide_tail = SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE[SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE.index(marker):]
-        narrow_tail = SPEAKER_RESOLUTION_USER_TEMPLATE[SPEAKER_RESOLUTION_USER_TEMPLATE.index(marker):]
+        wide_tail = SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE[SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE.index(marker) :]
+        narrow_tail = SPEAKER_RESOLUTION_USER_TEMPLATE[SPEAKER_RESOLUTION_USER_TEMPLATE.index(marker) :]
         assert wide_tail == narrow_tail
 
         rendered = SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE.format(
@@ -1093,6 +1109,7 @@ class TestNonQaPromptUnchanged:
 # _build_qa_chapter_text (issue #322, D7) — head+tail hybrid truncation
 # ---------------------------------------------------------------------------
 
+
 class TestBuildQaChapterText:
     """Pure function: renders '[HH:MM:SS] text' per block, joined by '\\n'.
     Passthrough under QA_CONTEXT_MAX_CHARS; block-granular head+tail hybrid
@@ -1117,10 +1134,9 @@ class TestBuildQaChapterText:
 
         monkeypatch.setattr(sr, "QA_CONTEXT_MAX_CHARS", 200)
         monkeypatch.setattr(sr, "QA_CONTEXT_HEAD_CHARS", 40)
-        blocks = _make_blocks([
-            (i * 10.0, i * 10.0 + 5.0, f"bloque numero {i} con texto de relleno adicional")
-            for i in range(10)
-        ])
+        blocks = _make_blocks(
+            [(i * 10.0, i * 10.0 + 5.0, f"bloque numero {i} con texto de relleno adicional") for i in range(10)]
+        )
 
         result = sr._build_qa_chapter_text(blocks)
 
@@ -1188,11 +1204,13 @@ class TestQaGatedWideContext:
         future_text = "Este texto pertenece a un turno futuro fuera de la region."
         # Announcement only at anchor-300=700s: inside chapter/region,
         # OUTSIDE the narrow intro window [880,1000) the pre-gate used to read.
-        result, user, call_count = _run_qa_case([
-            (700.0, 705.0, _FAR_BACK_ANNOUNCEMENT),
-            (1000.0, 1005.0, _TURN_EVIDENCE_TEXT),
-            (1200.0, 1205.0, future_text),  # >= region_end (1060), still inside chapter span
-        ])
+        result, user, call_count = _run_qa_case(
+            [
+                (700.0, 705.0, _FAR_BACK_ANNOUNCEMENT),
+                (1000.0, 1005.0, _TURN_EVIDENCE_TEXT),
+                (1200.0, 1205.0, future_text),  # >= region_end (1060), still inside chapter span
+            ]
+        )
 
         assert call_count == 1  # pre-gate widened too (D4) — LLM reached
         assert result is not None

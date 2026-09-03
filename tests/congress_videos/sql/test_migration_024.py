@@ -21,14 +21,12 @@ MIGRATION_PATH = (
 
 
 class TestMigration024FileExists:
-
     def test_migration_file_exists(self):
         """Migration file must exist at the expected path."""
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
 
 class TestMigration024UpBlock:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -70,9 +68,7 @@ class TestMigration024UpBlock:
         # Find the approved_at line and ensure NOT NULL is absent on that line
         for line in sql.splitlines():
             if "APPROVED_AT" in line and "ADD COLUMN" in line:
-                assert "NOT NULL" not in line, (
-                    "approved_at must be nullable (no NOT NULL)"
-                )
+                assert "NOT NULL" not in line, "approved_at must be nullable (no NOT NULL)"
                 break
 
     def test_no_schema_qualification(self):
@@ -82,7 +78,6 @@ class TestMigration024UpBlock:
 
 
 class TestMigration024Idempotency:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -101,7 +96,6 @@ class TestMigration024Idempotency:
 
 
 class TestMigration024DownBlock:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -116,21 +110,15 @@ class TestMigration024DownBlock:
         sql = self._sql().upper()
         assert "IS_APPROVED" in sql
         # Both ADD (UP) and DROP (DOWN) must reference IS_APPROVED
-        assert sql.count("IS_APPROVED") >= 2, (
-            "is_approved must appear in both UP (ADD) and DOWN (DROP)"
-        )
+        assert sql.count("IS_APPROVED") >= 2, "is_approved must appear in both UP (ADD) and DOWN (DROP)"
 
     def test_down_drops_approved_at(self):
         """DOWN block must drop the approved_at column."""
         sql = self._sql().upper()
         assert "APPROVED_AT" in sql
-        assert sql.count("APPROVED_AT") >= 2, (
-            "approved_at must appear in both UP (ADD) and DOWN (DROP)"
-        )
+        assert sql.count("APPROVED_AT") >= 2, "approved_at must appear in both UP (ADD) and DOWN (DROP)"
 
     def test_down_does_not_drop_table(self):
         """DOWN block must NOT drop the entire table — only the two new columns."""
         sql = self._sql().upper()
-        assert "DROP TABLE" not in sql, (
-            "DOWN migration must only drop columns, not the whole table"
-        )
+        assert "DROP TABLE" not in sql, "DOWN migration must only drop columns, not the whole table"

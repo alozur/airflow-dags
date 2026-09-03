@@ -27,8 +27,8 @@ def _xcom_round_trip(value):
 # xcom_task — no input_key (func called with no args)
 # ---------------------------------------------------------------------------
 
-class TestXcomTaskNoInputKey:
 
+class TestXcomTaskNoInputKey:
     def test_func_called_without_args(self, mock_task_instance):
         func = MagicMock(return_value="result_value")
         xcom_task(mock_task_instance, func, output_key="my_key")
@@ -60,8 +60,8 @@ class TestXcomTaskNoInputKey:
 # xcom_task — with input_key (pulls then calls func with value)
 # ---------------------------------------------------------------------------
 
-class TestXcomTaskWithInputKey:
 
+class TestXcomTaskWithInputKey:
     def test_xcom_pull_called_with_input_key(self, mock_task_instance):
         mock_task_instance.xcom_store["in_key"] = "input_data"
         func = MagicMock(return_value="processed")
@@ -91,8 +91,8 @@ class TestXcomTaskWithInputKey:
 # xcom_task — branch=True returns the result
 # ---------------------------------------------------------------------------
 
-class TestXcomTaskBranchMode:
 
+class TestXcomTaskBranchMode:
     def test_branch_true_returns_func_result(self, mock_task_instance):
         func = MagicMock(return_value="task_a")
         result = xcom_task(mock_task_instance, func, output_key="branch_out", branch=True)
@@ -106,9 +106,7 @@ class TestXcomTaskBranchMode:
     def test_branch_true_with_input_key(self, mock_task_instance):
         mock_task_instance.xcom_store["check"] = "value"
         func = MagicMock(return_value="go_left")
-        result = xcom_task(
-            mock_task_instance, func, output_key="decision", input_key="check", branch=True
-        )
+        result = xcom_task(mock_task_instance, func, output_key="decision", input_key="check", branch=True)
         assert result == "go_left"
         func.assert_called_once_with("value")
 
@@ -122,8 +120,8 @@ class TestXcomTaskBranchMode:
 # ensure_project_data_directory
 # ---------------------------------------------------------------------------
 
-class TestEnsureProjectDataDirectory:
 
+class TestEnsureProjectDataDirectory:
     def test_creates_directory_if_not_exists(self, tmp_path):
         base = str(tmp_path / "airflow_data")
         result = ensure_project_data_directory("my_project", base_data_path=base)
@@ -156,7 +154,6 @@ class TestEnsureProjectDataDirectory:
 
 
 class TestUtcNormalizeRows:
-
     def test_non_utc_offset_datetime_becomes_utc_offset(self):
         original = datetime(2026, 8, 20, 10, 0, tzinfo=timezone(timedelta(hours=2)))
         row = {"chapter_id": 42, "youtube_video_id": "abc123", "youtube_upload_date": original}
@@ -232,7 +229,6 @@ class TestUtcNormalizeRows:
 
 
 class TestXComSerializerRoundTrip:
-
     def test_raw_non_utc_offset_row_breaks_xcom_round_trip(self):
         """Bug-pin: an UN-normalized non-UTC offset datetime always breaks the
         real XCom serializer round-trip, both before and after the fix — this

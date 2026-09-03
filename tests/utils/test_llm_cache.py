@@ -23,6 +23,7 @@ from utils.llm_cache import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _fake_pg(fetch_row=None, capture=None):
     """Build a fake PostgresConnection whose cursor returns ``fetch_row``.
 
@@ -59,6 +60,7 @@ def _fake_pg(fetch_row=None, capture=None):
 # make_cache_key
 # ---------------------------------------------------------------------------
 
+
 class TestMakeCacheKey:
     def test_key_is_deterministic_for_same_inputs(self):
         k1 = make_cache_key("gpt-4o-mini", "sys", "user", temperature=0.0)
@@ -90,25 +92,29 @@ class TestMakeCacheKey:
 # get_cached / put_cached graceful degradation
 # ---------------------------------------------------------------------------
 
+
 class TestGetCached:
     def test_hit_returns_stored_response(self, mocker):
         stored = {"data": {"ok": True}, "raw_content": "{}", "error": None}
         mocker.patch.object(
-            llm_cache, "PostgresConnection",
+            llm_cache,
+            "PostgresConnection",
             return_value=_fake_pg(fetch_row={"response": stored}),
         )
         assert get_cached("abc") == stored
 
     def test_miss_returns_none(self, mocker):
         mocker.patch.object(
-            llm_cache, "PostgresConnection",
+            llm_cache,
+            "PostgresConnection",
             return_value=_fake_pg(fetch_row=None),
         )
         assert get_cached("abc") is None
 
     def test_db_error_returns_none_and_does_not_raise(self, mocker):
         mocker.patch.object(
-            llm_cache, "PostgresConnection",
+            llm_cache,
+            "PostgresConnection",
             side_effect=RuntimeError("connection refused"),
         )
         # Must degrade gracefully — treated as a miss, never raises.
@@ -119,7 +125,8 @@ class TestGetCached:
         name 'llm_cache' and must not contain any f-string brace remnants."""
         capture: list = []
         mocker.patch.object(
-            llm_cache, "PostgresConnection",
+            llm_cache,
+            "PostgresConnection",
             return_value=_fake_pg(fetch_row=None, capture=capture),
         )
         get_cached("anykey")
@@ -134,7 +141,8 @@ class TestPutCached:
     def test_uses_insert_on_conflict_do_nothing(self, mocker):
         capture: list = []
         mocker.patch.object(
-            llm_cache, "PostgresConnection",
+            llm_cache,
+            "PostgresConnection",
             return_value=_fake_pg(capture=capture),
         )
         put_cached("key123", "gpt-4o-mini", {"data": 1})
@@ -150,7 +158,8 @@ class TestPutCached:
 
     def test_db_error_does_not_raise(self, mocker):
         mocker.patch.object(
-            llm_cache, "PostgresConnection",
+            llm_cache,
+            "PostgresConnection",
             side_effect=RuntimeError("disk full"),
         )
         # Should swallow the error and return None without raising.
@@ -161,7 +170,8 @@ class TestPutCached:
         name 'llm_cache' and must not contain any f-string brace remnants."""
         capture: list = []
         mocker.patch.object(
-            llm_cache, "PostgresConnection",
+            llm_cache,
+            "PostgresConnection",
             return_value=_fake_pg(capture=capture),
         )
         put_cached("key123", "gpt-4o-mini", {"data": 1})
@@ -176,13 +186,12 @@ class TestPutCached:
 # cached_json_completion
 # ---------------------------------------------------------------------------
 
+
 class TestCachedJsonCompletion:
     def test_miss_calls_model_and_stores_result(self, mocker):
         live = {"data": {"foo": "bar"}, "raw_content": "{}", "error": None}
         mocker.patch.object(llm_cache, "get_cached", return_value=None)
-        gen = mocker.patch.object(
-            llm_cache, "generate_json_completion", return_value=live
-        )
+        gen = mocker.patch.object(llm_cache, "generate_json_completion", return_value=live)
         put = mocker.patch.object(llm_cache, "put_cached")
 
         result = cached_json_completion("sys", "user", model="gpt-4o-mini")
@@ -206,9 +215,7 @@ class TestCachedJsonCompletion:
     def test_error_result_is_not_cached(self, mocker):
         err = {"data": None, "raw_content": None, "error": "model down"}
         mocker.patch.object(llm_cache, "get_cached", return_value=None)
-        mocker.patch.object(
-            llm_cache, "generate_json_completion", return_value=err
-        )
+        mocker.patch.object(llm_cache, "generate_json_completion", return_value=err)
         put = mocker.patch.object(llm_cache, "put_cached")
 
         result = cached_json_completion("sys", "user")
@@ -221,12 +228,11 @@ class TestCachedJsonCompletion:
         yields the live result and never raises."""
         live = {"data": {"ok": 1}, "raw_content": "{}", "error": None}
         mocker.patch.object(
-            llm_cache, "PostgresConnection",
+            llm_cache,
+            "PostgresConnection",
             side_effect=RuntimeError("db unreachable"),
         )
-        gen = mocker.patch.object(
-            llm_cache, "generate_json_completion", return_value=live
-        )
+        gen = mocker.patch.object(llm_cache, "generate_json_completion", return_value=live)
 
         result = cached_json_completion("sys", "user")
 
@@ -237,9 +243,7 @@ class TestCachedJsonCompletion:
         """A successful response whose data is falsy (empty) is still stored."""
         live = {"data": {}, "raw_content": "", "error": None}
         mocker.patch.object(llm_cache, "get_cached", return_value=None)
-        mocker.patch.object(
-            llm_cache, "generate_json_completion", return_value=live
-        )
+        mocker.patch.object(llm_cache, "generate_json_completion", return_value=live)
         put = mocker.patch.object(llm_cache, "put_cached")
 
         result = cached_json_completion("sys", "user")

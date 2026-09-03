@@ -78,7 +78,6 @@ def _make_db():
 
 
 class TestMarkTurnThumbnailRepublishNeeded:
-
     def test_raises_value_error_when_both_keys_falsy(self):
         db, _ = _make_db()
 
@@ -112,9 +111,7 @@ class TestMarkTurnThumbnailRepublishNeeded:
         """Attempts/abandoned stay cumulative — see database.py:433."""
         db, cursor = _make_db()
 
-        db.mark_turn_thumbnail_republish_needed(
-            output_path="/path/turn1.mp4", error_message="quota exceeded"
-        )
+        db.mark_turn_thumbnail_republish_needed(output_path="/path/turn1.mp4", error_message="quota exceeded")
 
         query = cursor.execute.call_args[0][0]
         set_clause = query[: query.upper().index("WHERE")].upper()
@@ -251,9 +248,7 @@ class TestRecordTurnThumbnailRepublishFailure:
             "thumbnail_republish_abandoned": False,
         }
 
-        db.record_turn_thumbnail_republish_failure(
-            "/a.mp4", error_message="quota exceeded"
-        )
+        db.record_turn_thumbnail_republish_failure("/a.mp4", error_message="quota exceeded")
 
         set_clause = _set_clause(cursor.execute.call_args[0][0])
         assert "THUMBNAIL_REPUBLISH_ATTEMPTS" in set_clause and "COALESCE" in set_clause
@@ -297,9 +292,7 @@ class TestRecordTurnThumbnailRepublishFailure:
             "thumbnail_republish_abandoned": True,
         }
 
-        db.record_turn_thumbnail_republish_failure(
-            "/a.mp4", "Thumbnail file not found: /a/thumbnail.png", abandon=True
-        )
+        db.record_turn_thumbnail_republish_failure("/a.mp4", "Thumbnail file not found: /a/thumbnail.png", abandon=True)
 
         query, params = cursor.execute.call_args[0]
         assert True in params  # the abandon literal is passed through as a param

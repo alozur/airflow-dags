@@ -4,6 +4,7 @@ Retimes SRT blocks across N kept windows with cumulative offsets equal to the
 sum of the PREVIOUSLY KEPT window durations (so the output SRT lines up with
 the concatenated, gap-free cut video). Pure; no I/O.
 """
+
 from __future__ import annotations
 
 from congress_videos.srt_helpers import _window_srt_blocks, _window_srt_blocks_multi

@@ -5,6 +5,7 @@ Covers issue #207 (git-sync credential hygiene) and issue #215 (NAS deploy
 topology parity). docker-compose.test.yml is a separate, untouched e2e stack
 and is only referenced here to assert it stays uncoupled from these changes.
 """
+
 from __future__ import annotations
 
 import re
@@ -39,7 +40,6 @@ def _command_text(service: dict) -> str:
 
 @pytest.mark.parametrize("path", [DEV_COMPOSE, PROD_COMPOSE], ids=lambda p: p.name)
 class TestComposeParses:
-
     def test_yaml_parses_cleanly(self, path: Path):
         config = _load(path)
         assert "services" in config
@@ -53,9 +53,7 @@ class TestNoTokenInGitRemoteURL:
     def test_init_dags_command_has_no_credential_in_url(self, path: Path):
         config = _load(path)
         command_text = _command_text(config["services"]["init-dags"])
-        assert not _TOKEN_IN_URL.search(command_text), (
-            f"{path.name}: init-dags command embeds credentials in a URL"
-        )
+        assert not _TOKEN_IN_URL.search(command_text), f"{path.name}: init-dags command embeds credentials in a URL"
         assert not _GITHUB_TOKEN_AT.search(command_text), (
             f"{path.name}: init-dags command embeds GITHUB_TOKEN directly in the remote URL"
         )
@@ -91,11 +89,7 @@ class TestDevContainerNamesSuffixedDev:
 
     def test_every_declared_container_name_ends_dev(self):
         config = _load(DEV_COMPOSE)
-        names = [
-            service["container_name"]
-            for service in config["services"].values()
-            if "container_name" in service
-        ]
+        names = [service["container_name"] for service in config["services"].values() if "container_name" in service]
         assert names, "No container_name declared in docker-compose.yml"
         for name in names:
             assert name.endswith("-dev"), f"{name} must end with -dev"
@@ -110,8 +104,7 @@ class TestExternalNetworkNameOverride:
         config = _load(path)
         network = config["networks"]["ml_api_network"]
         assert network == {"external": True, "name": "ml-apis_ml_api_network"}, (
-            f"{path.name}: ml_api_network must be {{external: True, "
-            f"name: 'ml-apis_ml_api_network'}}, got {network}"
+            f"{path.name}: ml_api_network must be {{external: True, name: 'ml-apis_ml_api_network'}}, got {network}"
         )
 
 

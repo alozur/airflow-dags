@@ -266,9 +266,7 @@ class TestMarkTurnsUploadedSiblingMarking:
         call_args = cursor.execute.call_args
         query = call_args[0][0]
         count = query.count("development.speaker_turn_videos")
-        assert count >= 2, (
-            f"Qualified table name must appear at least twice (outer + subquery), got {count}"
-        )
+        assert count >= 2, f"Qualified table name must appear at least twice (outer + subquery), got {count}"
 
     def test_params_tuple_is_youtube_video_id_then_turn_id(self):
         """Params must be (youtube_video_id, turn_id) — youtube_video_id for SET, turn_id for subquery WHERE."""
@@ -282,9 +280,7 @@ class TestMarkTurnsUploadedSiblingMarking:
 
         call_args = cursor.execute.call_args
         params = call_args[0][1]
-        assert params == ("vid_abc", 7), (
-            f"Params must be (youtube_video_id, turn_id) = ('vid_abc', 7), got {params}"
-        )
+        assert params == ("vid_abc", 7), f"Params must be (youtube_video_id, turn_id) = ('vid_abc', 7), got {params}"
 
 
 class TestMarkTurnsUploadedByOutputPath:
@@ -298,16 +294,12 @@ class TestMarkTurnsUploadedByOutputPath:
 
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
-            db.mark_turns_uploaded_by_output_path(
-                output_path="/path/turn1.mp4", youtube_video_id="vid1"
-            )
+            db.mark_turns_uploaded_by_output_path(output_path="/path/turn1.mp4", youtube_video_id="vid1")
 
         call_args = cursor.execute.call_args
         query = call_args[0][0].upper()
         assert "WHERE OUTPUT_PATH = %S" in query
-        assert "SELECT" not in query, (
-            "output_path fallback must not use a subquery like mark_turns_uploaded"
-        )
+        assert "SELECT" not in query, "output_path fallback must not use a subquery like mark_turns_uploaded"
 
     def test_sets_all_three_tracking_columns(self):
         from congress_videos.modules.database import CongressionalVideoDB
@@ -316,9 +308,7 @@ class TestMarkTurnsUploadedByOutputPath:
 
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
-            db.mark_turns_uploaded_by_output_path(
-                output_path="/path/turn1.mp4", youtube_video_id="vid1"
-            )
+            db.mark_turns_uploaded_by_output_path(output_path="/path/turn1.mp4", youtube_video_id="vid1")
 
         call_args = cursor.execute.call_args
         query = call_args[0][0].upper()
@@ -335,15 +325,11 @@ class TestMarkTurnsUploadedByOutputPath:
 
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
-            db.mark_turns_uploaded_by_output_path(
-                output_path="/path/turn1.mp4", youtube_video_id="vid_abc"
-            )
+            db.mark_turns_uploaded_by_output_path(output_path="/path/turn1.mp4", youtube_video_id="vid_abc")
 
         call_args = cursor.execute.call_args
         params = call_args[0][1]
-        assert params == ("vid_abc", "/path/turn1.mp4"), (
-            f"Params must be (youtube_video_id, output_path), got {params}"
-        )
+        assert params == ("vid_abc", "/path/turn1.mp4"), f"Params must be (youtube_video_id, output_path), got {params}"
 
     def test_returns_cursor_rowcount(self):
         """Return value must be cur.rowcount, so callers can distinguish 0 rows matched."""
@@ -354,9 +340,7 @@ class TestMarkTurnsUploadedByOutputPath:
 
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
-            result = db.mark_turns_uploaded_by_output_path(
-                output_path="/path/grouped.mp4", youtube_video_id="vid1"
-            )
+            result = db.mark_turns_uploaded_by_output_path(output_path="/path/grouped.mp4", youtube_video_id="vid1")
 
         assert result == 3
 
@@ -368,9 +352,7 @@ class TestMarkTurnsUploadedByOutputPath:
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
             with pytest.raises(ValueError):
-                db.mark_turns_uploaded_by_output_path(
-                    output_path="", youtube_video_id="vid1"
-                )
+                db.mark_turns_uploaded_by_output_path(output_path="", youtube_video_id="vid1")
 
     def test_raises_value_error_on_none_output_path(self):
         from congress_videos.modules.database import CongressionalVideoDB
@@ -380,9 +362,7 @@ class TestMarkTurnsUploadedByOutputPath:
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
             with pytest.raises(ValueError):
-                db.mark_turns_uploaded_by_output_path(
-                    output_path=None, youtube_video_id="vid1"
-                )
+                db.mark_turns_uploaded_by_output_path(output_path=None, youtube_video_id="vid1")
 
     def test_updates_speaker_turn_videos_table(self):
         from congress_videos.modules.database import CongressionalVideoDB
@@ -391,9 +371,7 @@ class TestMarkTurnsUploadedByOutputPath:
 
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
-            db.mark_turns_uploaded_by_output_path(
-                output_path="/path/turn1.mp4", youtube_video_id="vid1"
-            )
+            db.mark_turns_uploaded_by_output_path(output_path="/path/turn1.mp4", youtube_video_id="vid1")
 
         call_args = cursor.execute.call_args
         query = call_args[0][0].upper()

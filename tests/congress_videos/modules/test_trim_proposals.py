@@ -43,15 +43,19 @@ def _turn(turn_id: int = 1, start: float = 0.0, end: float = 60.0) -> dict:
 
 def _stub_vad(segments: list[tuple[float, float]]):
     """Return a VadFn that always returns the given voiced segments."""
+
     def vad_fn(wav_path: str, offset: float) -> list[tuple[float, float]]:
         return segments
+
     return vad_fn
 
 
 def _stub_yamnet(rounds: list[dict]):
     """Return a YamnetFn that always returns the given applause rounds."""
+
     def yamnet_fn(wav_path: str, offset: float) -> list[dict]:
         return rounds
+
     return yamnet_fn
 
 
@@ -61,7 +65,6 @@ def _stub_yamnet(rounds: list[dict]):
 
 
 class TestTrimProposalDataclass:
-
     def test_fields_required(self):
         """TrimProposal must carry all seven required fields."""
         proposal = TrimProposal(
@@ -130,7 +133,6 @@ class TestTrimProposalDataclass:
 
 
 class TestIsVoiceFree:
-
     def test_disjoint_interval_returns_true(self):
         """Interval [5, 10] vs voiced [20, 30] — disjoint, gate returns True."""
         assert is_voice_free((5.0, 10.0), [(20.0, 30.0)]) is True
@@ -178,7 +180,6 @@ class TestIsVoiceFree:
 
 
 class TestSilenceGaps:
-
     def test_full_voiced_coverage_no_gaps(self):
         """Turn [0,60] fully voiced → zero silence gaps."""
         gaps = _silence_gaps([(0.0, 60.0)], turn_start=0.0, turn_end=60.0, min_duration=1.0)
@@ -266,14 +267,11 @@ class TestGenerateTrimProposalsSidecarFailure:
         def failing_yamnet(wav_path, offset):
             raise ValueError("unexpected API shape")
 
-        proposals = generate_trim_proposals(
-            turn, "/fake/audio.wav", vad_fn, failing_yamnet, min_duration_secs=1.0
-        )
+        proposals = generate_trim_proposals(turn, "/fake/audio.wav", vad_fn, failing_yamnet, min_duration_secs=1.0)
         assert [p.kind for p in proposals] == ["silence"]
 
 
 class TestGenerateTrimProposalsSilence:
-
     def test_full_voiced_no_silence_proposals(self):
         """VAD returns full turn coverage → zero silence proposals emitted."""
         turn = _turn(turn_id=1, start=0.0, end=60.0)
@@ -290,8 +288,7 @@ class TestGenerateTrimProposalsSilence:
         vad_fn = _stub_vad([(0.0, 20.0), (40.0, 60.0)])
         yamnet_fn = _stub_yamnet([])
 
-        proposals = generate_trim_proposals(turn, "/fake/audio.wav", vad_fn, yamnet_fn,
-                                            min_duration_secs=1.0)
+        proposals = generate_trim_proposals(turn, "/fake/audio.wav", vad_fn, yamnet_fn, min_duration_secs=1.0)
         silence_props = [p for p in proposals if p.kind == "silence"]
         assert len(silence_props) == 1
         p = silence_props[0]
@@ -308,8 +305,7 @@ class TestGenerateTrimProposalsSilence:
         vad_fn = _stub_vad([(0.0, 10.0), (20.0, 30.0)])
         yamnet_fn = _stub_yamnet([])
 
-        proposals = generate_trim_proposals(turn, "/fake/audio.wav", vad_fn, yamnet_fn,
-                                            min_duration_secs=1.0)
+        proposals = generate_trim_proposals(turn, "/fake/audio.wav", vad_fn, yamnet_fn, min_duration_secs=1.0)
         for p in proposals:
             assert p.turn_id == 42
 
@@ -319,8 +315,7 @@ class TestGenerateTrimProposalsSilence:
         vad_fn = _stub_vad([(0.0, 5.0), (15.0, 30.0)])
         yamnet_fn = _stub_yamnet([])
 
-        proposals = generate_trim_proposals(turn, "/fake/audio.wav", vad_fn, yamnet_fn,
-                                            min_duration_secs=1.0)
+        proposals = generate_trim_proposals(turn, "/fake/audio.wav", vad_fn, yamnet_fn, min_duration_secs=1.0)
         silence_props = [p for p in proposals if p.kind == "silence"]
         assert silence_props, "Expected at least one silence proposal"
         for p in silence_props:
@@ -333,7 +328,6 @@ class TestGenerateTrimProposalsSilence:
 
 
 class TestGenerateTrimProposalsApplause:
-
     def test_empty_yamnet_returns_no_applause_proposals(self):
         """YamnetFn returning [] → zero applause proposals."""
         turn = _turn(start=0.0, end=60.0)
@@ -351,8 +345,9 @@ class TestGenerateTrimProposalsApplause:
         vad_fn = _stub_vad([])
         yamnet_fn = _stub_yamnet([{"start": 5.0, "end": 15.0, "max_score": 0.92}])
 
-        proposals = generate_trim_proposals(turn, "/fake/audio.wav", vad_fn, yamnet_fn,
-                                            min_duration_secs=1.0, applause_score_threshold=0.5)
+        proposals = generate_trim_proposals(
+            turn, "/fake/audio.wav", vad_fn, yamnet_fn, min_duration_secs=1.0, applause_score_threshold=0.5
+        )
         applause_props = [p for p in proposals if p.kind == "applause"]
         assert len(applause_props) == 1
         p = applause_props[0]
@@ -370,12 +365,11 @@ class TestGenerateTrimProposalsApplause:
         vad_fn = _stub_vad([(30.0, 50.0)])
         yamnet_fn = _stub_yamnet([{"start": 35.0, "end": 45.0, "max_score": 0.85}])
 
-        proposals = generate_trim_proposals(turn, "/fake/audio.wav", vad_fn, yamnet_fn,
-                                            min_duration_secs=1.0, applause_score_threshold=0.5)
-        applause_props = [p for p in proposals if p.kind == "applause"]
-        assert applause_props == [], (
-            "Applause proposal overlapping voice must be dropped by is_voice_free gate"
+        proposals = generate_trim_proposals(
+            turn, "/fake/audio.wav", vad_fn, yamnet_fn, min_duration_secs=1.0, applause_score_threshold=0.5
         )
+        applause_props = [p for p in proposals if p.kind == "applause"]
+        assert applause_props == [], "Applause proposal overlapping voice must be dropped by is_voice_free gate"
 
     def test_applause_below_score_threshold_filtered(self):
         """Applause score below applause_score_threshold → not emitted."""
@@ -383,8 +377,7 @@ class TestGenerateTrimProposalsApplause:
         vad_fn = _stub_vad([])
         yamnet_fn = _stub_yamnet([{"start": 5.0, "end": 20.0, "max_score": 0.30}])
 
-        proposals = generate_trim_proposals(turn, "/fake/audio.wav", vad_fn, yamnet_fn,
-                                            applause_score_threshold=0.5)
+        proposals = generate_trim_proposals(turn, "/fake/audio.wav", vad_fn, yamnet_fn, applause_score_threshold=0.5)
         applause_props = [p for p in proposals if p.kind == "applause"]
         assert applause_props == [], "Applause below score threshold must be filtered"
 
@@ -395,8 +388,9 @@ class TestGenerateTrimProposalsApplause:
         # Interval is 2s, min_duration is 3s
         yamnet_fn = _stub_yamnet([{"start": 5.0, "end": 7.0, "max_score": 0.90}])
 
-        proposals = generate_trim_proposals(turn, "/fake/audio.wav", vad_fn, yamnet_fn,
-                                            min_duration_secs=3.0, applause_score_threshold=0.5)
+        proposals = generate_trim_proposals(
+            turn, "/fake/audio.wav", vad_fn, yamnet_fn, min_duration_secs=3.0, applause_score_threshold=0.5
+        )
         applause_props = [p for p in proposals if p.kind == "applause"]
         assert applause_props == [], "Short applause below min_duration must be filtered"
 
@@ -407,12 +401,11 @@ class TestGenerateTrimProposalsApplause:
         vad_fn = _stub_vad([(20.0, 40.0)])
         yamnet_fn = _stub_yamnet([{"start": 5.0, "end": 20.0, "max_score": 0.88}])
 
-        proposals = generate_trim_proposals(turn, "/fake/audio.wav", vad_fn, yamnet_fn,
-                                            min_duration_secs=1.0, applause_score_threshold=0.5)
-        applause_props = [p for p in proposals if p.kind == "applause"]
-        assert len(applause_props) == 1, (
-            "Applause adjacent to voice boundary (end==voice_start) must NOT be dropped"
+        proposals = generate_trim_proposals(
+            turn, "/fake/audio.wav", vad_fn, yamnet_fn, min_duration_secs=1.0, applause_score_threshold=0.5
         )
+        applause_props = [p for p in proposals if p.kind == "applause"]
+        assert len(applause_props) == 1, "Applause adjacent to voice boundary (end==voice_start) must NOT be dropped"
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +414,6 @@ class TestGenerateTrimProposalsApplause:
 
 
 class TestUpsertProposals:
-
     def _make_proposal(self, turn_id: int = 1, start: float = 10.0) -> TrimProposal:
         return TrimProposal(
             turn_id=turn_id,
@@ -477,9 +469,7 @@ class TestUpsertProposals:
         # Extract the SQL string from the first execute call
         call_args = cursor.execute.call_args
         sql_arg = call_args[0][0]
-        assert "ON CONFLICT" in sql_arg.upper(), (
-            "Upsert SQL must contain ON CONFLICT clause for idempotency"
-        )
+        assert "ON CONFLICT" in sql_arg.upper(), "Upsert SQL must contain ON CONFLICT clause for idempotency"
 
     def test_upsert_sql_updates_score_and_source(self):
         """ON CONFLICT branch must update score and source (and updated_at)."""
@@ -503,7 +493,8 @@ class TestUpsertProposals:
         cursor = MagicMock()
 
         _upsert_proposals(
-            cursor, [self._make_proposal()],
+            cursor,
+            [self._make_proposal()],
             table="production.speaker_turn_trim_proposals",
         )
 
@@ -526,7 +517,6 @@ class TestUpsertProposals:
 
 
 class TestGenerateTrimProposalsExceptionHandling:
-
     def test_vad_fn_exception_falls_back_to_full_turn_gap(self):
         """When vad_fn raises, voiced_segments defaults to [] so full turn becomes a silence gap."""
         turn = _turn(start=0.0, end=60.0)
@@ -535,8 +525,7 @@ class TestGenerateTrimProposalsExceptionHandling:
             raise RuntimeError("VAD backend unavailable")
 
         yamnet_fn = _stub_yamnet([])
-        proposals = generate_trim_proposals(turn, "/fake/audio.wav", failing_vad, yamnet_fn,
-                                            min_duration_secs=1.0)
+        proposals = generate_trim_proposals(turn, "/fake/audio.wav", failing_vad, yamnet_fn, min_duration_secs=1.0)
         # When VAD fails, voiced_segments=[] → entire turn is one gap
         silence_props = [p for p in proposals if p.kind == "silence"]
         assert len(silence_props) == 1
@@ -668,9 +657,15 @@ class TestUpsertProposalsCursorContract:
 
         # Return one real proposal so _upsert_proposals is actually called
         from congress_videos.modules.trim_proposals import TrimProposal
+
         proposal = TrimProposal(
-            turn_id=99, start_seconds=110.0, end_seconds=120.0,
-            kind="silence", score=None, source="vad_webrtc", is_voice_free=True,
+            turn_id=99,
+            start_seconds=110.0,
+            end_seconds=120.0,
+            kind="silence",
+            score=None,
+            source="vad_webrtc",
+            is_voice_free=True,
         )
         monkeypatch.setattr(mod, "generate_trim_proposals", lambda *a, **k: [proposal])
         # Do NOT monkeypatch _upsert_proposals — exercise real wiring

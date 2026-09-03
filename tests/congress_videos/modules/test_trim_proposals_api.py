@@ -3,6 +3,7 @@
 All HTTP calls are intercepted via the injected ``poster`` (or by patching
 ``requests.post``).  No real network connection is ever made.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -155,6 +156,7 @@ class TestUrlFromEnvVars:
         monkeypatch.setenv("YAMNET_API_PORT", "9999")
 
         import sys
+
         for key in list(sys.modules.keys()):
             if "trim_proposals_api" in key:
                 del sys.modules[key]
@@ -169,6 +171,7 @@ class TestUrlFromEnvVars:
         monkeypatch.delenv("YAMNET_API_PORT", raising=False)
 
         import sys
+
         for key in list(sys.modules.keys()):
             if "trim_proposals_api" in key:
                 del sys.modules[key]
@@ -183,6 +186,7 @@ class TestNoSubprocessInTrimProposalsApi:
     def test_no_subprocess_import(self):
         """trim_proposals_api must not import subprocess — it uses HTTP transport."""
         import sys
+
         for key in list(sys.modules.keys()):
             if "trim_proposals_api" in key:
                 del sys.modules[key]
@@ -199,6 +203,7 @@ class TestNoSubprocessInTrimProposalsApi:
 # ---------------------------------------------------------------------------
 # Phase: check_yamnet_api_health (issue #179)
 # ---------------------------------------------------------------------------
+
 
 class TestCheckYamnetApiHealth:
     """Health probe that raises SidecarApiError on any failure condition.

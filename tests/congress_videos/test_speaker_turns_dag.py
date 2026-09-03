@@ -4,6 +4,7 @@ Covers the DAG-load smoke test and the per-chapter orchestration
 (`run_chapter_turns`) with all I/O collaborators mocked — no Airflow
 execution, Docker, DB, or filesystem.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -70,6 +71,7 @@ class TestDagLoads:
         """trigger callable must call trigger_dag_api with speaker_turn_videos_dag.DAG_ID."""
         import importlib
         import sys
+
         # ensure a fresh module load so the import is live
         for m in list(sys.modules.keys()):
             if "speaker_turns_dag" in m or "speaker_turn_videos_dag" in m:
@@ -77,17 +79,13 @@ class TestDagLoads:
         mod = importlib.import_module("congress_videos.speaker_turns_dag")
         import congress_videos.speaker_turn_videos_dag as stv_dag
 
-        mock_trigger = mocker.patch(
-            "congress_videos.speaker_turns_dag.trigger_dag_api"
-        )
+        mock_trigger = mocker.patch("congress_videos.speaker_turns_dag.trigger_dag_api")
         mod._trigger_materialize()
 
         mock_trigger.assert_called_once()
         call_kwargs = mock_trigger.call_args
         dag_id_arg = call_kwargs[1].get("dag_id") or call_kwargs[0][0]
-        assert dag_id_arg == stv_dag.DAG_ID, (
-            f"Expected dag_id={stv_dag.DAG_ID!r}, got {dag_id_arg!r}"
-        )
+        assert dag_id_arg == stv_dag.DAG_ID, f"Expected dag_id={stv_dag.DAG_ID!r}, got {dag_id_arg!r}"
         conf_arg = call_kwargs[1].get("conf")
         assert conf_arg == {}, f"Expected conf={{}}, got {conf_arg!r}"
 
@@ -147,7 +145,8 @@ class TestRunChapterTurns:
         monkeypatch.setattr(mod, "extract_audio_wav", lambda *a, **k: "/tmp/c.wav")
         monkeypatch.setattr(mod, "find_srt_for_chapter", lambda *a, **k: "/srt/x.srt")
         monkeypatch.setattr(
-            mod, "_parse_srt_blocks",
+            mod,
+            "_parse_srt_blocks",
             lambda p: [{"start_secs": 600.0, "end_secs": 602.0, "text": "Tiene la palabra"}],
         )
         turns = [object(), object()]
@@ -251,13 +250,17 @@ class TestSelectChapters:
     def test_maps_view_rows_to_dicts(self, monkeypatch):
         mod = _fresh()
         cur = MagicMock()
-        cur.description = [("chapter_id",), ("video_id",), ("session_date",),
-                           ("start_time",), ("end_time",)]
+        cur.description = [("chapter_id",), ("video_id",), ("session_date",), ("start_time",), ("end_time",)]
         # PostgresConnection uses RealDictCursor, so rows are dict-like, not tuples.
-        cur.fetchall.return_value = [{"chapter_id": 7, "video_id": "abc",
-                                      "session_date": "2026-06-10",
-                                      "start_time": "00:10:00,000",
-                                      "end_time": "00:40:00,000"}]
+        cur.fetchall.return_value = [
+            {
+                "chapter_id": 7,
+                "video_id": "abc",
+                "session_date": "2026-06-10",
+                "start_time": "00:10:00,000",
+                "end_time": "00:40:00,000",
+            }
+        ]
         conn = MagicMock()
         conn.cursor.return_value.__enter__.return_value = cur
         pg = MagicMock()
@@ -267,9 +270,15 @@ class TestSelectChapters:
 
         rows = mod.select_chapters(limit=1)
 
-        assert rows == [{"chapter_id": 7, "video_id": "abc",
-                         "session_date": "2026-06-10",
-                         "start_time": "00:10:00,000", "end_time": "00:40:00,000"}]
+        assert rows == [
+            {
+                "chapter_id": 7,
+                "video_id": "abc",
+                "session_date": "2026-06-10",
+                "start_time": "00:10:00,000",
+                "end_time": "00:40:00,000",
+            }
+        ]
 
 
 class TestSelectChaptersProgressFilter:
@@ -321,8 +330,13 @@ class TestSelectChaptersProgressFilter:
         mod = _fresh()
         cur = MagicMock()
         cur.fetchall.return_value = [
-            {"chapter_id": 263, "video_id": "x", "session_date": "2026-06-10",
-             "start_time": "00:00:00,000", "end_time": "00:10:00,000"},
+            {
+                "chapter_id": 263,
+                "video_id": "x",
+                "session_date": "2026-06-10",
+                "start_time": "00:00:00,000",
+                "end_time": "00:10:00,000",
+            },
         ]
         self._make_pg_mock(monkeypatch, mod, cur)
 
@@ -388,9 +402,7 @@ class TestProcessTask:
 
         monkeypatch.setattr(mod, "run_chapter_turns", fake_run)
 
-        summary = mod._process_task(
-            **self._ti_with([{"chapter_id": 1}, {"chapter_id": 2}, {"chapter_id": 3}])
-        )
+        summary = mod._process_task(**self._ti_with([{"chapter_id": 1}, {"chapter_id": 2}, {"chapter_id": 3}]))
 
         assert summary == {"processed": 1, "skipped": 2, "turns": 3}
         conn.commit.assert_called_once()
@@ -501,6 +513,7 @@ class TestProcessTaskMarkDetected:
     def test_each_ok_chapter_commits_independently(self, monkeypatch):
         """2 ok chapters commit individually; the 3rd raising SidecarApiError aborts the task."""
         from congress_videos.modules.sidecar_api_error import SidecarApiError
+
         mod = _fresh()
 
         def fake_run(chapter, **k):
@@ -512,9 +525,7 @@ class TestProcessTaskMarkDetected:
         _, conn, _ = self._make_process_mock(monkeypatch, mod, fake_run)
 
         with pytest.raises(SidecarApiError):
-            mod._process_task(
-                **self._ti_with([{"chapter_id": 1}, {"chapter_id": 2}, {"chapter_id": 3}])
-            )
+            mod._process_task(**self._ti_with([{"chapter_id": 1}, {"chapter_id": 2}, {"chapter_id": 3}]))
 
         assert conn.commit.call_count == 2, (
             f"Expected 2 independent commits (one per ok chapter), got {conn.commit.call_count}"
@@ -571,7 +582,9 @@ class TestPersistChapterTurns:
         monkeypatch.setattr(mod, "_upsert_turns", fake_upsert)
 
         mod._persist_chapter_turns(
-            pg, 7, [object()],
+            pg,
+            7,
+            [object()],
             turns_table="development.speaker_turns",
             vc_table="development.video_chapters",
         )
@@ -585,9 +598,7 @@ class TestPersistChapterTurns:
         update_idx = next(i for i, (_n, sql) in enumerate(call_order) if "TURNS_DETECTED_AT" in sql)
         commit_idx = next(i for i, (n, _sql) in enumerate(call_order) if n == "conn.commit")
 
-        assert insert_idx < update_idx < commit_idx, (
-            f"Expected upsert → UPDATE → commit ordering, got: {call_order}"
-        )
+        assert insert_idx < update_idx < commit_idx, f"Expected upsert → UPDATE → commit ordering, got: {call_order}"
 
     def test_update_targets_the_given_chapter_id(self, monkeypatch):
         mod = _fresh()
@@ -599,15 +610,14 @@ class TestPersistChapterTurns:
         monkeypatch.setattr(mod, "_upsert_turns", MagicMock())
 
         mod._persist_chapter_turns(
-            pg, 42, [],
+            pg,
+            42,
+            [],
             turns_table="development.speaker_turns",
             vc_table="development.video_chapters",
         )
 
-        update_call = next(
-            c for c in cur.execute.call_args_list
-            if "TURNS_DETECTED_AT" in str(c.args[0]).upper()
-        )
+        update_call = next(c for c in cur.execute.call_args_list if "TURNS_DETECTED_AT" in str(c.args[0]).upper())
         assert update_call.args[1] == (42,)
         conn.commit.assert_called_once()
 
@@ -631,7 +641,8 @@ class TestProcessTaskPersistenceFailure:
         monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
         monkeypatch.setattr(mod, "check_diarize_api_health", lambda **k: None)
         monkeypatch.setattr(
-            mod, "_upsert_turns",
+            mod,
+            "_upsert_turns",
             MagicMock(side_effect=RuntimeError("db constraint violation")),
         )
 
@@ -643,10 +654,7 @@ class TestProcessTaskPersistenceFailure:
         summary = mod._process_task(**self._ti_with([{"chapter_id": 9}]))
 
         assert summary == {"processed": 0, "skipped": 1, "turns": 0}
-        update_calls = [
-            c for c in cur.execute.call_args_list
-            if "TURNS_DETECTED_AT" in str(c.args[0]).upper()
-        ]
+        update_calls = [c for c in cur.execute.call_args_list if "TURNS_DETECTED_AT" in str(c.args[0]).upper()]
         assert update_calls == [], "turns_detected_at must not be marked on persistence failure"
 
 
@@ -671,11 +679,13 @@ class TestProcessTaskFailFast:
     def test_infra_down_before_loop_raises_and_skips_chapters(self, monkeypatch):
         """check_diarize_api_health raises SidecarApiError → _process_task raises; run_chapter_turns never called."""
         from congress_videos.modules.sidecar_api_error import SidecarApiError
+
         mod = _fresh()
         self._make_pg_mock(monkeypatch, mod)
 
         monkeypatch.setattr(
-            mod, "check_diarize_api_health",
+            mod,
+            "check_diarize_api_health",
             lambda **k: (_ for _ in ()).throw(SidecarApiError("diarize-api unreachable")),
         )
         run_chapter_turns_mock = MagicMock()
@@ -689,6 +699,7 @@ class TestProcessTaskFailFast:
     def test_midrun_sidecar_error_fails_task_not_skips(self, monkeypatch):
         """Probe ok, run_chapter_turns raises SidecarApiError for chapter → _process_task raises (not skips)."""
         from congress_videos.modules.sidecar_api_error import SidecarApiError
+
         mod = _fresh()
         self._make_pg_mock(monkeypatch, mod)
 

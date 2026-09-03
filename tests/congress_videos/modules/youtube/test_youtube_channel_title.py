@@ -68,20 +68,14 @@ class TestGetVideoDetailsPropagatesRealTitle:
     def test_enriched_video_contains_real_api_title(self):
         """The 'title' key in the enriched video dict must come from snippet.title,
         NOT from the placeholder title in the input mock dict."""
-        selected_video = create_test_video_data(
-            "https://www.youtube.com/watch?v=ZBU0bVpYXM4"
-        )
+        selected_video = create_test_video_data("https://www.youtube.com/watch?v=ZBU0bVpYXM4")
         placeholder = selected_video["videos"][0]
         real_api_title = "Sesión Plenaria 15 enero 2025"
         real_api_published_at = "2025-01-15T08:00:00Z"
 
-        api_response = _make_api_response(
-            placeholder["video_id"], real_api_title, real_api_published_at
-        )
+        api_response = _make_api_response(placeholder["video_id"], real_api_title, real_api_published_at)
         mock_yt_service = MagicMock()
-        mock_yt_service.videos.return_value.list.return_value.execute.return_value = (
-            api_response
-        )
+        mock_yt_service.videos.return_value.list.return_value.execute.return_value = api_response
 
         with patch(
             "congress_videos.modules.youtube.youtube_channel.build",
@@ -102,17 +96,13 @@ class TestGetVideoDetailsPropagatesRealTitle:
 
     def test_placeholder_title_does_not_appear_when_api_returns_different_title(self):
         """Regression: the old spread (**video) allowed placeholder to propagate."""
-        selected_video = create_test_video_data(
-            "https://www.youtube.com/watch?v=ABCDEFGHIJK"
-        )
+        selected_video = create_test_video_data("https://www.youtube.com/watch?v=ABCDEFGHIJK")
         placeholder = selected_video["videos"][0]
         real_api_title = "Sesión Extraordinaria 20 febrero 2025"
 
         api_response = _make_api_response(placeholder["video_id"], real_api_title)
         mock_yt_service = MagicMock()
-        mock_yt_service.videos.return_value.list.return_value.execute.return_value = (
-            api_response
-        )
+        mock_yt_service.videos.return_value.list.return_value.execute.return_value = api_response
 
         with patch(
             "congress_videos.modules.youtube.youtube_channel.build",
@@ -132,17 +122,11 @@ class TestGetVideoDetailsPropagatesRealTitle:
 @pytest.mark.parametrize("published_at", [_UNSET, ""])
 def test_enriched_video_keeps_input_publication_time_when_api_omits_it(published_at):
     """Missing and empty API publication time preserve the selected record."""
-    selected_video = create_test_video_data(
-        "https://www.youtube.com/watch?v=ZBU0bVpYXM4"
-    )
+    selected_video = create_test_video_data("https://www.youtube.com/watch?v=ZBU0bVpYXM4")
     placeholder = selected_video["videos"][0]
-    api_response = _make_api_response(
-        placeholder["video_id"], "API title", published_at
-    )
+    api_response = _make_api_response(placeholder["video_id"], "API title", published_at)
     mock_yt_service = MagicMock()
-    mock_yt_service.videos.return_value.list.return_value.execute.return_value = (
-        api_response
-    )
+    mock_yt_service.videos.return_value.list.return_value.execute.return_value = api_response
 
     with patch(
         "congress_videos.modules.youtube.youtube_channel.build",

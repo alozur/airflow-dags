@@ -2,6 +2,7 @@
 
 Static SQL assertions, no DB connection (mirrors test_migration_042.py).
 """
+
 from __future__ import annotations
 
 import re
@@ -26,33 +27,25 @@ def _executable_sql() -> str:
 
 
 class TestMigration043FileExists:
-
     def test_migration_file_exists(self):
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
     def test_filename_sorts_after_042(self):
         names = sorted(p.name for p in MIGRATION_PATH.parent.glob("*.sql"))
-        assert names.index(MIGRATION_PATH.name) > names.index(
-            "042_thumbnail_republish.sql"
-        )
+        assert names.index(MIGRATION_PATH.name) > names.index("042_thumbnail_republish.sql")
 
 
 class TestMigration043AddsColumnVerbatim:
-
     NEW_COLUMN_CLAUSE = "ADD COLUMN IF NOT EXISTS art_direction_brief JSONB"
 
     def test_column_added_verbatim_on_video_thumbnails(self):
         sql = _executable_sql()
         assert "ALTER TABLE video_thumbnails".lower() in sql.lower()
-        assert self.NEW_COLUMN_CLAUSE in sql, (
-            f"Missing clause: {self.NEW_COLUMN_CLAUSE!r}"
-        )
+        assert self.NEW_COLUMN_CLAUSE in sql, f"Missing clause: {self.NEW_COLUMN_CLAUSE!r}"
 
     def test_column_type_is_jsonb(self):
         sql = _executable_sql()
-        match = re.search(
-            r"ADD COLUMN IF NOT EXISTS art_direction_brief\s+(\w+)", sql
-        )
+        match = re.search(r"ADD COLUMN IF NOT EXISTS art_direction_brief\s+(\w+)", sql)
         assert match is not None
         assert match.group(1).upper() == "JSONB"
 

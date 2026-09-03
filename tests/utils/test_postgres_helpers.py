@@ -8,8 +8,8 @@ import pytest
 # PostgresConnection.__init__
 # ---------------------------------------------------------------------------
 
-class TestPostgresConnectionInit:
 
+class TestPostgresConnectionInit:
     def test_initialises_from_env_vars(self, monkeypatch):
         monkeypatch.setenv("POSTGRES_HOST", "db.example.com")
         monkeypatch.setenv("POSTGRES_PORT", "5433")
@@ -19,6 +19,7 @@ class TestPostgresConnectionInit:
         monkeypatch.setenv("POSTGRES_SCHEMA", "myschema")
 
         from utils.postgres_helpers import PostgresConnection
+
         conn = PostgresConnection()
 
         assert conn.host == "db.example.com"
@@ -37,6 +38,7 @@ class TestPostgresConnectionInit:
         monkeypatch.delenv("POSTGRES_SCHEMA", raising=False)
 
         from utils.postgres_helpers import PostgresConnection
+
         conn = PostgresConnection()
         assert conn.schema == "public"
 
@@ -48,6 +50,7 @@ class TestPostgresConnectionInit:
         monkeypatch.setenv("POSTGRES_PASSWORD", "pass")
 
         from utils.postgres_helpers import PostgresConnection
+
         with pytest.raises(ValueError, match="POSTGRES_HOST"):
             PostgresConnection()
 
@@ -59,16 +62,20 @@ class TestPostgresConnectionInit:
         monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
 
         from utils.postgres_helpers import PostgresConnection
+
         with pytest.raises(ValueError, match="POSTGRES_PASSWORD"):
             PostgresConnection()
 
-    @pytest.mark.parametrize("missing_var", [
-        "POSTGRES_HOST",
-        "POSTGRES_PORT",
-        "POSTGRES_DB",
-        "POSTGRES_USER",
-        "POSTGRES_PASSWORD",
-    ])
+    @pytest.mark.parametrize(
+        "missing_var",
+        [
+            "POSTGRES_HOST",
+            "POSTGRES_PORT",
+            "POSTGRES_DB",
+            "POSTGRES_USER",
+            "POSTGRES_PASSWORD",
+        ],
+    )
     def test_raises_for_each_required_var_missing(self, monkeypatch, missing_var: str):
         required = {
             "POSTGRES_HOST": "localhost",
@@ -82,6 +89,7 @@ class TestPostgresConnectionInit:
         monkeypatch.delenv(missing_var, raising=False)
 
         from utils.postgres_helpers import PostgresConnection
+
         with pytest.raises(ValueError):
             PostgresConnection()
 
@@ -93,6 +101,7 @@ class TestPostgresConnectionInit:
         monkeypatch.setenv("POSTGRES_PASSWORD", "pass")
 
         from utils.postgres_helpers import PostgresConnection
+
         with pytest.raises(ValueError) as exc_info:
             PostgresConnection()
 
@@ -105,8 +114,8 @@ class TestPostgresConnectionInit:
 # PostgresConnection.get_qualified_table
 # ---------------------------------------------------------------------------
 
-class TestGetQualifiedTable:
 
+class TestGetQualifiedTable:
     def _make_conn(self, monkeypatch, schema: str = "myschema") -> object:
         monkeypatch.setenv("POSTGRES_HOST", "localhost")
         monkeypatch.setenv("POSTGRES_PORT", "5432")
@@ -115,6 +124,7 @@ class TestGetQualifiedTable:
         monkeypatch.setenv("POSTGRES_PASSWORD", "pass")
         monkeypatch.setenv("POSTGRES_SCHEMA", schema)
         from utils.postgres_helpers import PostgresConnection
+
         return PostgresConnection()
 
     def test_returns_schema_dot_table(self, monkeypatch):
@@ -127,14 +137,15 @@ class TestGetQualifiedTable:
         result = conn.get_qualified_table("users")
         assert result == "public.users"
 
-    @pytest.mark.parametrize("schema,table,expected", [
-        ("dev", "sessions", "dev.sessions"),
-        ("prod", "videos", "prod.videos"),
-        ("test_schema", "congress", "test_schema.congress"),
-    ])
-    def test_various_schema_and_table_combinations(
-        self, monkeypatch, schema: str, table: str, expected: str
-    ):
+    @pytest.mark.parametrize(
+        "schema,table,expected",
+        [
+            ("dev", "sessions", "dev.sessions"),
+            ("prod", "videos", "prod.videos"),
+            ("test_schema", "congress", "test_schema.congress"),
+        ],
+    )
+    def test_various_schema_and_table_combinations(self, monkeypatch, schema: str, table: str, expected: str):
         conn = self._make_conn(monkeypatch, schema=schema)
         assert conn.get_qualified_table(table) == expected
 
@@ -143,8 +154,8 @@ class TestGetQualifiedTable:
 # PostgresConnection.get_connection
 # ---------------------------------------------------------------------------
 
-class TestGetConnection:
 
+class TestGetConnection:
     def _set_env(self, monkeypatch):
         monkeypatch.setenv("POSTGRES_HOST", "db.host.io")
         monkeypatch.setenv("POSTGRES_PORT", "5433")
@@ -158,6 +169,7 @@ class TestGetConnection:
         mock_connect, mock_conn, _ = mock_psycopg2_connection
 
         from utils.postgres_helpers import PostgresConnection
+
         pg = PostgresConnection()
         with pg.get_connection():
             pass
@@ -175,6 +187,7 @@ class TestGetConnection:
         mock_connect, _, _ = mock_psycopg2_connection
 
         from utils.postgres_helpers import PostgresConnection
+
         with PostgresConnection().get_connection():
             pass
 
@@ -189,6 +202,7 @@ class TestGetConnection:
         mock_connect, _, _ = mock_psycopg2_connection
 
         from utils.postgres_helpers import PostgresConnection
+
         with PostgresConnection().get_connection(statement_timeout_ms=0):
             pass
 
@@ -200,6 +214,7 @@ class TestGetConnection:
         mock_connect, _, _ = mock_psycopg2_connection
 
         from utils.postgres_helpers import PostgresConnection
+
         with PostgresConnection().get_connection():
             pass
 
@@ -210,6 +225,7 @@ class TestGetConnection:
         _, mock_conn, _ = mock_psycopg2_connection
 
         from utils.postgres_helpers import PostgresConnection
+
         with PostgresConnection().get_connection() as conn:
             assert conn is mock_conn
 
@@ -218,6 +234,7 @@ class TestGetConnection:
         _, mock_conn, _ = mock_psycopg2_connection
 
         from utils.postgres_helpers import PostgresConnection
+
         with PostgresConnection().get_connection():
             pass
 
@@ -230,6 +247,7 @@ class TestGetConnection:
         _, mock_conn, _ = mock_psycopg2_connection
 
         from utils.postgres_helpers import PostgresConnection
+
         with pytest.raises(RuntimeError, match="boom"):
             with PostgresConnection().get_connection():
                 raise RuntimeError("boom")

@@ -24,13 +24,17 @@ from utils.whisper_helpers import (
 # format_timestamp_srt
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("seconds,expected", [
-    (0.0,       "00:00:00,000"),
-    (1.0,       "00:00:01,000"),
-    (60.0,      "00:01:00,000"),
-    (3600.0,    "01:00:00,000"),
-    (3723.456,  "01:02:03,456"),
-])
+
+@pytest.mark.parametrize(
+    "seconds,expected",
+    [
+        (0.0, "00:00:00,000"),
+        (1.0, "00:00:01,000"),
+        (60.0, "00:01:00,000"),
+        (3600.0, "01:00:00,000"),
+        (3723.456, "01:02:03,456"),
+    ],
+)
 def test_format_timestamp_srt_known_values(seconds, expected):
     assert format_timestamp_srt(seconds) == expected
 
@@ -38,6 +42,7 @@ def test_format_timestamp_srt_known_values(seconds, expected):
 # ---------------------------------------------------------------------------
 # create_srt_from_segments
 # ---------------------------------------------------------------------------
+
 
 class TestCreateSrtFromSegments:
     def test_empty_list_returns_empty_string(self):
@@ -72,6 +77,7 @@ class TestCreateSrtFromSegments:
 # save_srt_file
 # ---------------------------------------------------------------------------
 
+
 class TestSaveSrtFile:
     def test_saves_to_srt_files_folder(self, tmp_path):
         audio_dir = tmp_path / "downloads" / "2025-05-23" / "vid42" / "audio_chunks"
@@ -101,6 +107,7 @@ class TestSaveSrtFile:
 # ---------------------------------------------------------------------------
 # merge_srt_files
 # ---------------------------------------------------------------------------
+
 
 class TestMergeSrtFiles:
     def test_empty_list_returns_error(self, tmp_path):
@@ -151,6 +158,7 @@ class TestMergeSrtFiles:
 # transcribe_audio_file  (Docker API path via use_local_whisper=False)
 # ---------------------------------------------------------------------------
 
+
 class TestTranscribeAudioFile:
     def test_missing_audio_file_returns_error(self, tmp_path):
         missing = str(tmp_path / "nonexistent.webm")
@@ -175,9 +183,7 @@ class TestTranscribeAudioFile:
         mock_post = mocker.patch("utils.whisper_helpers.requests.post")
         mock_post.side_effect = requests.exceptions.Timeout()
 
-        result = transcribe_audio_file(
-            str(temp_audio_file), timeout=30, use_local_whisper=False
-        )
+        result = transcribe_audio_file(str(temp_audio_file), timeout=30, use_local_whisper=False)
 
         assert_error_result(result, "timeout")
 
@@ -207,8 +213,8 @@ class TestTranscribeAudioFile:
 # per model_size per process lifetime.
 # ---------------------------------------------------------------------------
 
-class TestWhisperModelCache:
 
+class TestWhisperModelCache:
     def _audio_file(self, tmp_path, name="chunk.webm"):
         audio_file = tmp_path / "downloads" / "2025-05-22" / "v1" / "audio_chunks" / name
         audio_file.parent.mkdir(parents=True, exist_ok=True)
@@ -229,24 +235,16 @@ class TestWhisperModelCache:
     def test_same_model_size_loads_once_across_two_calls(self, tmp_path, mocker):
         fake_whisper = self._fake_whisper(mocker)
 
-        transcribe_audio_file_with_local_whisper(
-            str(self._audio_file(tmp_path, "a.webm")), model_size="tiny"
-        )
-        transcribe_audio_file_with_local_whisper(
-            str(self._audio_file(tmp_path, "b.webm")), model_size="tiny"
-        )
+        transcribe_audio_file_with_local_whisper(str(self._audio_file(tmp_path, "a.webm")), model_size="tiny")
+        transcribe_audio_file_with_local_whisper(str(self._audio_file(tmp_path, "b.webm")), model_size="tiny")
 
         fake_whisper.load_model.assert_called_once_with("tiny")
 
     def test_two_distinct_model_sizes_each_load_once(self, tmp_path, mocker):
         fake_whisper = self._fake_whisper(mocker)
 
-        transcribe_audio_file_with_local_whisper(
-            str(self._audio_file(tmp_path, "a.webm")), model_size="tiny"
-        )
-        transcribe_audio_file_with_local_whisper(
-            str(self._audio_file(tmp_path, "b.webm")), model_size="base"
-        )
+        transcribe_audio_file_with_local_whisper(str(self._audio_file(tmp_path, "a.webm")), model_size="tiny")
+        transcribe_audio_file_with_local_whisper(str(self._audio_file(tmp_path, "b.webm")), model_size="base")
 
         assert fake_whisper.load_model.call_count == 2
         fake_whisper.load_model.assert_any_call("tiny")
@@ -255,12 +253,8 @@ class TestWhisperModelCache:
     def test_clear_model_cache_forces_reload(self, tmp_path, mocker):
         fake_whisper = self._fake_whisper(mocker)
 
-        transcribe_audio_file_with_local_whisper(
-            str(self._audio_file(tmp_path, "a.webm")), model_size="tiny"
-        )
+        transcribe_audio_file_with_local_whisper(str(self._audio_file(tmp_path, "a.webm")), model_size="tiny")
         clear_model_cache()
-        transcribe_audio_file_with_local_whisper(
-            str(self._audio_file(tmp_path, "b.webm")), model_size="tiny"
-        )
+        transcribe_audio_file_with_local_whisper(str(self._audio_file(tmp_path, "b.webm")), model_size="tiny")
 
         assert fake_whisper.load_model.call_count == 2

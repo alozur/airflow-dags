@@ -32,6 +32,7 @@ from congress_videos.config.paths import (
 # Module-level constants
 # ---------------------------------------------------------------------------
 
+
 class TestModuleConstants:
     """Verify constant strings are non-empty and terminate with expected segments."""
 
@@ -73,6 +74,7 @@ class TestModuleConstants:
 # get_download_date_path
 # ---------------------------------------------------------------------------
 
+
 class TestGetDownloadDatePath:
     def test_returns_correct_path(self):
         result = get_download_date_path("2025-10-08")
@@ -96,6 +98,7 @@ class TestGetDownloadDatePath:
 # get_download_video_path
 # ---------------------------------------------------------------------------
 
+
 class TestGetDownloadVideoPath:
     def test_returns_correct_path(self):
         result = get_download_video_path("2025-10-08", "hy1cnx-0Oww")
@@ -113,6 +116,7 @@ class TestGetDownloadVideoPath:
 # ---------------------------------------------------------------------------
 # get_download_file_path
 # ---------------------------------------------------------------------------
+
 
 class TestGetDownloadFilePath:
     def test_returns_correct_path(self):
@@ -138,6 +142,7 @@ class TestGetDownloadFilePath:
 # ---------------------------------------------------------------------------
 # ensure_directory_exists
 # ---------------------------------------------------------------------------
+
 
 class TestEnsureDirectoryExists:
     def test_creates_directory(self, tmp_path):
@@ -167,6 +172,7 @@ class TestEnsureDirectoryExists:
 # ---------------------------------------------------------------------------
 # get_orador_video_dir — T1
 # ---------------------------------------------------------------------------
+
 
 class TestGetOradorVideoDir:
     """Tests for get_orador_video_dir helper (canonical speaker-turn layout)."""
@@ -213,6 +219,7 @@ class TestGetOradorVideoDir:
 # get_orador_artifact_path — T2
 # ---------------------------------------------------------------------------
 
+
 class TestGetOradorArtifactPath:
     """Tests for get_orador_artifact_path helper."""
 
@@ -220,13 +227,16 @@ class TestGetOradorArtifactPath:
         result = get_orador_artifact_path("abc123", 7, 42, "video.mp4")
         assert result == get_orador_video_dir("abc123", 7, 42) / "video.mp4"
 
-    @pytest.mark.parametrize("filename", [
-        "video.mp4",
-        "subtitles.srt",
-        "thumbnail.png",
-        "title.txt",
-        "description.txt",
-    ])
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "video.mp4",
+            "subtitles.srt",
+            "thumbnail.png",
+            "title.txt",
+            "description.txt",
+        ],
+    )
     def test_all_five_artifact_filenames(self, filename: str):
         result = get_orador_artifact_path("abc123", 7, 42, filename)
         assert result.name == filename
@@ -250,6 +260,7 @@ class TestGetOradorArtifactPath:
 # TestOradorHelpersImportPurity — T3
 # ---------------------------------------------------------------------------
 
+
 class TestOradorHelpersImportPurity:
     """Tests that helpers are pure, deterministic, and importable without Airflow."""
 
@@ -269,6 +280,7 @@ class TestOradorHelpersImportPurity:
         from congress_videos.config.paths import (
             get_orador_video_dir as _v,
         )
+
         assert callable(_v)
         assert callable(_a)
 
@@ -277,13 +289,17 @@ class TestOradorHelpersImportPurity:
 # TestChapterShortPathHelpers — Slice 6 (#133)
 # ---------------------------------------------------------------------------
 
+
 class TestChapterShortPathHelpers:
     """Unit tests for chapter-level short-clip path helpers (Slice 6)."""
 
-    @pytest.mark.parametrize("source_video_id,chapter_id,clip_id,expected_suffix", [
-        ("abc123", 7, "clip01", "congreso-es-tv/abc123/video_chapters/7/shorts/clip01.mp4"),
-        ("xyz999", 42, "clip99", "congreso-es-tv/xyz999/video_chapters/42/shorts/clip99.mp4"),
-    ])
+    @pytest.mark.parametrize(
+        "source_video_id,chapter_id,clip_id,expected_suffix",
+        [
+            ("abc123", 7, "clip01", "congreso-es-tv/abc123/video_chapters/7/shorts/clip01.mp4"),
+            ("xyz999", 42, "clip99", "congreso-es-tv/xyz999/video_chapters/42/shorts/clip99.mp4"),
+        ],
+    )
     def test_canonical_segment_order(self, source_video_id, chapter_id, clip_id, expected_suffix):
         result = get_chapter_short_file_path(source_video_id, chapter_id, clip_id)
         assert str(result).endswith(expected_suffix)

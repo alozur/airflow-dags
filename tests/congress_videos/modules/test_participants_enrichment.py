@@ -192,9 +192,7 @@ class TestEnrichMissingPhotos:
 
         result = mod.enrich_missing_photos()
 
-        mock_db.update_photo_url.assert_called_once_with(
-            "ana lopez sanchez", "http://example.com/photo.jpg"
-        )
+        mock_db.update_photo_url.assert_called_once_with("ana lopez sanchez", "http://example.com/photo.jpg")
         assert result["enriched"] == 1
 
     def test_ambiguous_match_warns_and_skips_update(self, mock_psycopg2_connection, monkeypatch, caplog):
@@ -462,9 +460,7 @@ class TestFetchCongresCodParlamentario:
         """
         from congress_videos.modules.participants_enrichment import fetch_congreso_cod_parlamentario
 
-        mock_requests.post.return_value = mock_requests.make_response(
-            status_code=200, json_data={"data": []}
-        )
+        mock_requests.post.return_value = mock_requests.make_response(status_code=200, json_data={"data": []})
 
         fetch_congreso_cod_parlamentario()
 
@@ -487,9 +483,7 @@ class TestFetchCongresCodParlamentario:
                 }
             ]
         }
-        mock_requests.post.return_value = mock_requests.make_response(
-            status_code=200, json_data=entries
-        )
+        mock_requests.post.return_value = mock_requests.make_response(status_code=200, json_data=entries)
 
         result = fetch_congreso_cod_parlamentario()
 
@@ -527,7 +521,8 @@ class TestFillCongresoPhotoFallback:
 
         monkeypatch.setattr(mod, "CongressParticipantsDB", lambda: mock_db)
         monkeypatch.setattr(
-            mod, "fetch_congreso_cod_parlamentario",
+            mod,
+            "fetch_congreso_cod_parlamentario",
             lambda: {"garcia lopez maria": "ABC123"},
         )
 
@@ -549,7 +544,8 @@ class TestFillCongresoPhotoFallback:
 
         monkeypatch.setattr(mod, "CongressParticipantsDB", lambda: mock_db)
         monkeypatch.setattr(
-            mod, "fetch_congreso_cod_parlamentario",
+            mod,
+            "fetch_congreso_cod_parlamentario",
             lambda: {"garcia lopez maria": "ABC123"},
         )
 
@@ -573,7 +569,8 @@ class TestFillCongresoPhotoFallback:
 
         monkeypatch.setattr(mod, "CongressParticipantsDB", lambda: mock_db)
         monkeypatch.setattr(
-            mod, "fetch_congreso_cod_parlamentario",
+            mod,
+            "fetch_congreso_cod_parlamentario",
             lambda: {"garcia lopez maria": "ABC123"},
         )
 
@@ -592,7 +589,8 @@ class TestFillCongresoPhotoFallback:
 
         monkeypatch.setattr(mod, "CongressParticipantsDB", lambda: mock_db)
         monkeypatch.setattr(
-            mod, "fetch_congreso_cod_parlamentario",
+            mod,
+            "fetch_congreso_cod_parlamentario",
             lambda: {"garcia lopez maria": "ABC123"},
         )
 
@@ -612,7 +610,8 @@ class TestFillCongresoPhotoFallback:
 
         monkeypatch.setattr(mod, "CongressParticipantsDB", lambda: mock_db)
         monkeypatch.setattr(
-            mod, "fetch_congreso_cod_parlamentario",
+            mod,
+            "fetch_congreso_cod_parlamentario",
             lambda: {},
         )
 
@@ -676,10 +675,7 @@ class TestFillCongresoPhotoFallback:
         """fetch_congreso_cod_parlamentario called exactly once even with 3 null-photo rows."""
         from congress_videos.modules import participants_enrichment as mod
 
-        rows = [
-            _make_participant_row(normalized_name=f"deputy {i}", photo_url=None)
-            for i in range(3)
-        ]
+        rows = [_make_participant_row(normalized_name=f"deputy {i}", photo_url=None) for i in range(3)]
         mock_db = MagicMock()
         mock_db.get_all_participants.return_value = rows
 

@@ -22,6 +22,7 @@ from tests.helpers.assertions import assert_error_result, assert_success_result
 # convert_srt_time_to_seconds
 # ---------------------------------------------------------------------------
 
+
 class TestConvertSrtTimeToSeconds:
     def test_zero_time(self):
         assert convert_srt_time_to_seconds("00:00:00,000") == 0.0
@@ -57,6 +58,7 @@ class TestConvertSrtTimeToSeconds:
 # ---------------------------------------------------------------------------
 # split_video_chapter
 # ---------------------------------------------------------------------------
+
 
 class TestSplitVideoChapter:
     def test_source_not_found_returns_error(self, tmp_path):
@@ -131,15 +133,25 @@ class TestSplitVideoChapter:
 
         result = split_video_chapter(str(source), output, "00:00:00,000", "00:00:30,000")
 
-        for key in ["success", "output_path", "file_size_bytes", "file_size_mb",
-                    "duration_seconds", "start_time", "end_time", "error",
-                    "source_codec", "cut_mode"]:
+        for key in [
+            "success",
+            "output_path",
+            "file_size_bytes",
+            "file_size_mb",
+            "duration_seconds",
+            "start_time",
+            "end_time",
+            "error",
+            "source_codec",
+            "cut_mode",
+        ]:
             assert key in result, f"Missing key: {key}"
 
 
 # ---------------------------------------------------------------------------
 # split_video_chapter — codec-aware cuts (ffmpeg-codec-aware-cuts, Slice 2)
 # ---------------------------------------------------------------------------
+
 
 class TestSplitVideoChapterCodecAware:
     def _ok_run(self, mocker, tmp_path):
@@ -276,6 +288,7 @@ class TestSplitVideoChapterCodecAware:
 # extract_chapters_from_video
 # ---------------------------------------------------------------------------
 
+
 class TestExtractChaptersFromVideo:
     def test_empty_list_returns_zero_totals(self):
         result = extract_chapters_from_video([], "/some/path")
@@ -407,6 +420,7 @@ class TestExtractChaptersFromVideo:
 # build_ffmpeg_cut_cmd (default: frame-accurate re-encode, input-seek)
 # ---------------------------------------------------------------------------
 
+
 class TestBuildFfmpegCutCmd:
     def test_default_input_seek_ss_before_input(self):
         """Input seeking: -ss BEFORE -i so exposure shrinks to the cut window."""
@@ -433,12 +447,18 @@ class TestBuildFfmpegCutCmd:
         assert "-err_detect" not in cmd
         assert cmd.index("-ss") < cmd.index("-i"), "-ss before -i so copy fast-seeks without decoding"
         assert cmd == [
-            'ffmpeg', '-y',
-            '-ss', str(start),
-            '-i', src,
-            '-t', str(duration),
-            '-c', 'copy',
-            '-avoid_negative_ts', 'make_zero',
+            "ffmpeg",
+            "-y",
+            "-ss",
+            str(start),
+            "-i",
+            src,
+            "-t",
+            str(duration),
+            "-c",
+            "copy",
+            "-avoid_negative_ts",
+            "make_zero",
             out,
         ]
 
@@ -457,16 +477,26 @@ class TestBuildFfmpegCutCmd:
         duration = 30.0
         cmd = build_ffmpeg_cut_cmd(src=src, out=out, start=start, duration=duration)
         assert cmd == [
-            'ffmpeg', '-y',
-            '-err_detect', 'ignore_err',
-            '-ss', str(start),
-            '-i', src,
-            '-t', str(duration),
-            '-c:v', 'libx264',
-            '-preset', 'veryfast',
-            '-crf', '20',
-            '-c:a', 'aac',
-            '-avoid_negative_ts', 'make_zero',
+            "ffmpeg",
+            "-y",
+            "-err_detect",
+            "ignore_err",
+            "-ss",
+            str(start),
+            "-i",
+            src,
+            "-t",
+            str(duration),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "20",
+            "-c:a",
+            "aac",
+            "-avoid_negative_ts",
+            "make_zero",
             out,
         ]
 
@@ -497,6 +527,7 @@ class TestBuildFfmpegCutCmd:
 # compute_ffmpeg_timeout (Batch 3, #12: adaptive timeout, base=120 factor=8)
 # ---------------------------------------------------------------------------
 
+
 class TestComputeFfmpegTimeout:
     def test_scales_with_duration(self):
         # 120 + 8 * 300 = 2520
@@ -524,6 +555,7 @@ class TestComputeFfmpegTimeout:
 # AV1 integration cut (requires ffmpeg + AV1 encoder)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 @pytest.mark.slow
 class TestAv1CutIntegration:
@@ -533,9 +565,9 @@ class TestAv1CutIntegration:
     failing the suite when the binary or encoder is missing.
     """
 
-    SOURCE_DURATION = 10.0          # seconds
+    SOURCE_DURATION = 10.0  # seconds
     SOURCE_SIZE = "128x64"
-    SOURCE_RATE = 25                # fps
+    SOURCE_RATE = 25  # fps
 
     def _av1_encoder_available(self) -> str | None:
         """Return the first available AV1 encoder name, or None."""
@@ -543,7 +575,9 @@ class TestAv1CutIntegration:
             return None
         result = subprocess.run(
             ["ffmpeg", "-hide_banner", "-encoders"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         for name in ("libaom-av1", "libsvtav1", "librav1e"):
             if name in result.stdout:
@@ -554,13 +588,18 @@ class TestAv1CutIntegration:
         """Generate a short synthetic AV1 video at *tmp_path*."""
         path = os.path.join(tmp_path, "source_av1.mp4")
         cmd = [
-            "ffmpeg", "-y",
-            "-f", "lavfi",
-            "-i", f"testsrc=duration={self.SOURCE_DURATION}"
-                   f":size={self.SOURCE_SIZE}:rate={self.SOURCE_RATE}",
-            "-c:v", encoder,
-            "-crf", "63",
-            "-g", "25",
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc=duration={self.SOURCE_DURATION}:size={self.SOURCE_SIZE}:rate={self.SOURCE_RATE}",
+            "-c:v",
+            encoder,
+            "-crf",
+            "63",
+            "-g",
+            "25",
         ]
         # Speed preset differs per encoder
         if encoder == "libaom-av1":
@@ -606,13 +645,20 @@ class TestAv1CutIntegration:
         # stream is copied byte-for-byte, so it MUST still be av1, not h264.
         probe = subprocess.run(
             [
-                "ffprobe", "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=codec_name",
-                "-of", "csv=p=0",
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "csv=p=0",
                 output,
             ],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         assert probe.returncode == 0
         assert "av1" in probe.stdout.strip().lower()
