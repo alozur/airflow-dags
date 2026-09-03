@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 
 class TestLoadEnvIfLocal:
     def test_does_not_call_load_dotenv_in_docker_env(self, monkeypatch, mocker):

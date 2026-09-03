@@ -8,7 +8,7 @@ cap per video.
 from __future__ import annotations
 
 from contextlib import ExitStack
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest

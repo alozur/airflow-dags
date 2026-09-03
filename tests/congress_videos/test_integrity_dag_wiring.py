@@ -9,8 +9,6 @@ Scenarios (from spec — DAG Task Wiring for Integrity Gate):
 
 from __future__ import annotations
 
-import pytest
-
 
 class TestIntegrityTaskExistsInDAG:
     def test_dag_loads_without_import_errors(self):
