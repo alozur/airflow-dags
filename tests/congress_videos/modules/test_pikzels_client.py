@@ -134,7 +134,9 @@ class TestRequestRetry:
 
         client = PikzelsClient(max_retries=5)
 
-        with patch.object(client._session, "request", side_effect=[resp_503a, resp_503b, resp_200]) as mock_req:
+        with patch.object(  # noqa: SIM117 - inline comment on the inner with explains the real-sleep suppression
+            client._session, "request", side_effect=[resp_503a, resp_503b, resp_200]
+        ) as mock_req:
             with patch("time.sleep"):  # suppress real sleep
                 result = client._request("POST", "/v2/thumbnail/text", {"prompt": "test"})
 
@@ -150,7 +152,7 @@ class TestRequestRetry:
 
         client = PikzelsClient(max_retries=5)
 
-        with patch.object(client._session, "request", return_value=resp_400) as mock_req:
+        with patch.object(client._session, "request", return_value=resp_400) as mock_req:  # noqa: SIM117 - pytest.raises is the assertion boundary, not just another context manager
             with pytest.raises(PikzelsError) as exc_info:
                 client._request("POST", "/v2/thumbnail/text", {"prompt": "bad"})
 
@@ -168,13 +170,15 @@ class TestRequestRetry:
 
         client = PikzelsClient(max_retries=3)
 
-        with patch.object(
-            client._session,
-            "request",
-            side_effect=[req_lib.Timeout("connection timed out"), resp_200],
-        ) as mock_req:
-            with patch("time.sleep"):
-                result = client._request("POST", "/v2/thumbnail/text", {"prompt": "ok"})
+        with (
+            patch.object(
+                client._session,
+                "request",
+                side_effect=[req_lib.Timeout("connection timed out"), resp_200],
+            ) as mock_req,
+            patch("time.sleep"),
+        ):
+            result = client._request("POST", "/v2/thumbnail/text", {"prompt": "ok"})
 
         assert mock_req.call_count == 2
         assert result == ok_body
@@ -190,13 +194,15 @@ class TestRequestRetry:
 
         client = PikzelsClient(max_retries=3)
 
-        with patch.object(
-            client._session,
-            "request",
-            side_effect=[req_lib.ConnectionError("no route to host"), resp_200],
-        ) as mock_req:
-            with patch("time.sleep"):
-                result = client._request("POST", "/v2/thumbnail/text", {"prompt": "ok"})
+        with (
+            patch.object(
+                client._session,
+                "request",
+                side_effect=[req_lib.ConnectionError("no route to host"), resp_200],
+            ) as mock_req,
+            patch("time.sleep"),
+        ):
+            result = client._request("POST", "/v2/thumbnail/text", {"prompt": "ok"})
 
         assert mock_req.call_count == 2
         assert result == ok_body
@@ -210,10 +216,9 @@ class TestRequestRetry:
 
         client = PikzelsClient(max_retries=2)
 
-        with patch.object(client._session, "request", return_value=resp_503) as mock_req:
-            with patch("time.sleep"):
-                with pytest.raises(PikzelsError):
-                    client._request("POST", "/v2/thumbnail/text", {"prompt": "x"})
+        with patch.object(client._session, "request", return_value=resp_503) as mock_req, patch("time.sleep"):  # noqa: SIM117 - pytest.raises is the assertion boundary, not just another context manager
+            with pytest.raises(PikzelsError):
+                client._request("POST", "/v2/thumbnail/text", {"prompt": "x"})
 
         # max_retries=2 means attempts 0, 1, 2 → 3 total calls
         assert mock_req.call_count == 3
@@ -499,14 +504,16 @@ class TestTriangulateRetry:
 
         client = PikzelsClient(max_retries=1)
 
-        with patch.object(
-            client._session,
-            "request",
-            side_effect=req_lib.Timeout("timed out"),
+        with (  # noqa: SIM117 - pytest.raises is the assertion boundary, not just another context manager
+            patch.object(
+                client._session,
+                "request",
+                side_effect=req_lib.Timeout("timed out"),
+            ),
+            patch("time.sleep"),
         ):
-            with patch("time.sleep"):
-                with pytest.raises(PikzelsError) as exc_info:
-                    client._request("POST", "/v2/thumbnail/text", {"prompt": "x"})
+            with pytest.raises(PikzelsError) as exc_info:
+                client._request("POST", "/v2/thumbnail/text", {"prompt": "x"})
 
         assert exc_info.value.code == "NETWORK_ERROR"
 
@@ -518,7 +525,7 @@ class TestTriangulateRetry:
 
         client = PikzelsClient(max_retries=0)
 
-        with patch.object(
+        with patch.object(  # noqa: SIM117 - pytest.raises is the assertion boundary, not just another context manager
             client._session,
             "request",
             side_effect=req_lib.ConnectionError("no route"),
@@ -537,10 +544,12 @@ class TestTriangulateRetry:
 
         client = PikzelsClient(max_retries=1)
 
-        with patch.object(client._session, "request", return_value=resp_503):
-            with patch("time.sleep"):
-                with pytest.raises(PikzelsError) as exc_info:
-                    client._request("POST", "/v2/thumbnail/text", {"prompt": "x"})
+        with (  # noqa: SIM117 - pytest.raises is the assertion boundary, not just another context manager
+            patch.object(client._session, "request", return_value=resp_503),
+            patch("time.sleep"),
+        ):
+            with pytest.raises(PikzelsError) as exc_info:
+                client._request("POST", "/v2/thumbnail/text", {"prompt": "x"})
 
         assert exc_info.value.status == 503
 
