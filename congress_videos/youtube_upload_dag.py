@@ -22,7 +22,7 @@ as standalone YouTube videos.
 import logging
 import os
 import time
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api

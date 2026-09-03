@@ -28,7 +28,7 @@ USAGE from another DAG:
     )
 """
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
