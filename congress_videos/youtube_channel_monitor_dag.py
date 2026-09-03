@@ -20,7 +20,7 @@ Congress website directly.
 
 import logging
 import os
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import BranchPythonOperator, PythonOperator, ShortCircuitOperator
@@ -722,48 +722,46 @@ with DAG(
         pg = PostgresConnection()
         chapters_table = pg.get_qualified_table("video_chapters")
 
-        with pg.get_connection() as conn:
-            with conn.cursor() as cur:
-                for video_result in db_save_results.get("videos", []):
-                    video_id = video_result.get("video_id")
-                    if video_result.get("error"):
-                        continue
-                    # Fetch saved chapters for this video
-                    cur.execute(
-                        f"SELECT chapter_id, speakers, key_speakers, timeline "
-                        f"FROM {chapters_table} WHERE video_id = %s",
-                        (video_id,),
-                    )
-                    rows = cur.fetchall()
-                    for row in rows:
-                        chapter_id = row["chapter_id"]
-                        speakers_raw = row.get("speakers") or []
-                        key_speakers_raw = row.get("key_speakers") or []
-                        timeline_raw = row.get("timeline") or []
-                        if isinstance(timeline_raw, str):
-                            timeline_raw = _json.loads(timeline_raw)
-                        try:
-                            result = normalize_chapter_speakers(
+        with pg.get_connection() as conn, conn.cursor() as cur:
+            for video_result in db_save_results.get("videos", []):
+                video_id = video_result.get("video_id")
+                if video_result.get("error"):
+                    continue
+                # Fetch saved chapters for this video
+                cur.execute(
+                    f"SELECT chapter_id, speakers, key_speakers, timeline FROM {chapters_table} WHERE video_id = %s",
+                    (video_id,),
+                )
+                rows = cur.fetchall()
+                for row in rows:
+                    chapter_id = row["chapter_id"]
+                    speakers_raw = row.get("speakers") or []
+                    key_speakers_raw = row.get("key_speakers") or []
+                    timeline_raw = row.get("timeline") or []
+                    if isinstance(timeline_raw, str):
+                        timeline_raw = _json.loads(timeline_raw)
+                    try:
+                        result = normalize_chapter_speakers(
+                            chapter_id,
+                            speakers_raw,
+                            key_speakers_raw,
+                            timeline_raw,
+                            conn,
+                            snc,
+                            session_date=video_dates.get(video_id),
+                        )
+                        if result.updated:
+                            logging.info(
+                                "_normalize_speakers: chapter %d updated with %d correction(s)",
                                 chapter_id,
-                                speakers_raw,
-                                key_speakers_raw,
-                                timeline_raw,
-                                conn,
-                                snc,
-                                session_date=video_dates.get(video_id),
+                                len(result.corrections),
                             )
-                            if result.updated:
-                                logging.info(
-                                    "_normalize_speakers: chapter %d updated with %d correction(s)",
-                                    chapter_id,
-                                    len(result.corrections),
-                                )
-                        except Exception as exc:  # noqa: BLE001
-                            logging.warning(
-                                "_normalize_speakers: error normalizing chapter %d: %s",
-                                chapter_id,
-                                exc,
-                            )
+                    except Exception as exc:  # noqa: BLE001
+                        logging.warning(
+                            "_normalize_speakers: error normalizing chapter %d: %s",
+                            chapter_id,
+                            exc,
+                        )
         return True
 
     t_normalize_speakers = ShortCircuitOperator(

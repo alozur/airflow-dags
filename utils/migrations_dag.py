@@ -153,10 +153,9 @@ default_args = {
 def _ensure_migrations_table() -> None:
     pg = _migration_connection()
     schema = pg.schema
-    with pg.get_connection(statement_timeout_ms=0) as conn:
-        with conn.cursor() as cur:
-            _assume_owner_role(conn, cur, schema)
-            cur.execute(f"""
+    with pg.get_connection(statement_timeout_ms=0) as conn, conn.cursor() as cur:
+        _assume_owner_role(conn, cur, schema)
+        cur.execute(f"""
                 CREATE TABLE IF NOT EXISTS {schema}.schema_migrations (
                     id           SERIAL PRIMARY KEY,
                     migration    VARCHAR(500) NOT NULL UNIQUE,
@@ -202,10 +201,9 @@ def _apply_pending_migrations(**context) -> None:
             logging.info("No migration files found under %s", DAGS_REPO_PATH)
             return
 
-        with pg.get_connection(statement_timeout_ms=0) as conn:
-            with conn.cursor() as cur:
-                cur.execute(f"SELECT migration FROM {schema}.schema_migrations")
-                applied = {row["migration"] for row in cur.fetchall()}
+        with pg.get_connection(statement_timeout_ms=0) as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT migration FROM {schema}.schema_migrations")
+            applied = {row["migration"] for row in cur.fetchall()}
 
         logging.info(
             "Found %d migration file(s), %d already applied",
@@ -225,15 +223,14 @@ def _apply_pending_migrations(**context) -> None:
             sql = path.read_text()
 
             # Each migration runs in its own transaction — partial progress is preserved on failure
-            with pg.get_connection(statement_timeout_ms=0) as conn:
-                with conn.cursor() as cur:
-                    _assume_owner_role(conn, cur, schema)
-                    cur.execute(f"SET search_path TO {schema}, public")
-                    cur.execute(sql)
-                    cur.execute(
-                        f"INSERT INTO {schema}.schema_migrations (migration) VALUES (%s)",
-                        (relative,),
-                    )
+            with pg.get_connection(statement_timeout_ms=0) as conn, conn.cursor() as cur:
+                _assume_owner_role(conn, cur, schema)
+                cur.execute(f"SET search_path TO {schema}, public")
+                cur.execute(sql)
+                cur.execute(
+                    f"INSERT INTO {schema}.schema_migrations (migration) VALUES (%s)",
+                    (relative,),
+                )
 
             logging.info("Applied: %s", relative)
             applied_count += 1
