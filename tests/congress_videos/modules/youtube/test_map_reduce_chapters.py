@@ -84,6 +84,48 @@ class TestWindowSrt:
             assert first_line.strip().isdigit()
 
 
+class TestStepBackForOverlap:
+
+    def test_break_on_first_long_block_does_not_step_back(self):
+        """A single preceding block already meets overlap_chars → break with back == 0."""
+        from congress_videos.modules.youtube.map_reduce_chapters import _step_back_for_overlap
+
+        next_start = _step_back_for_overlap(
+            block_lengths=[100, 100, 500],
+            start_block=0,
+            next_start=2,
+            overlap_chars=50,
+            separator="\n\n",
+        )
+        assert next_start == 2
+
+    def test_overlap_larger_than_all_preceding_blocks_floors_at_start_block_plus_one(self):
+        """overlap_chars exceeds every preceding block → floors at start_block + 1."""
+        from congress_videos.modules.youtube.map_reduce_chapters import _step_back_for_overlap
+
+        next_start = _step_back_for_overlap(
+            block_lengths=[100, 100, 100, 100],
+            start_block=0,
+            next_start=3,
+            overlap_chars=10_000,
+            separator="\n\n",
+        )
+        assert next_start == 1
+
+    def test_zero_overlap_returns_next_start_unchanged(self):
+        """overlap_chars == 0 → the `if overlap_chars > 0:` guard skips, next_start untouched."""
+        from congress_videos.modules.youtube.map_reduce_chapters import _step_back_for_overlap
+
+        next_start = _step_back_for_overlap(
+            block_lengths=[100, 100, 100],
+            start_block=0,
+            next_start=2,
+            overlap_chars=0,
+            separator="\n\n",
+        )
+        assert next_start == 2
+
+
 class TestMapChapters:
 
     def test_single_window_one_call(self):
