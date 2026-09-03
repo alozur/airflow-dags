@@ -224,11 +224,24 @@ Las imágenes son **específicas por entorno** desde issue #255: `my-airflow:dev
 
 Construir la imagen de **dev** localmente en el NAS a partir del `Dockerfile` del repositorio:
 
+> **El host del NAS no tiene `git`.** Solo los contenedores lo tienen (`init-dags` usa la
+> imagen `alpine/git`). Descargar el contexto de build como tarball con `curl`, que sí está
+> presente en `/usr/bin/curl`. El repositorio es público, así que no hace falta token.
+
 ```bash
-# Clonar/actualizar el repositorio en el NAS (solo para construir la imagen)
-cd /tmp && git clone https://<GITHUB_USER>:<GITHUB_TOKEN>@github.com/<GITHUB_USER>/airflow-dags.git && \
-cd airflow-dags && docker build -t my-airflow:dev .
+# Fijar el commit exacto que se va a construir (nunca una rama móvil)
+SHA=<commit-sha-de-la-rama-del-PR>
+
+rm -rf /tmp/afb && mkdir -p /tmp/afb && cd /tmp/afb
+/usr/bin/curl -sL https://github.com/alozur/airflow-dags/archive/$SHA.tar.gz | /usr/bin/tar xz
+cd airflow-dags-$SHA
+/usr/local/bin/docker build -t my-airflow:dev .
 ```
+
+> **`ssh nas "<cadena>"` puede devolver exit 0 aunque un comando interno falle.** Abrir
+> siempre con `set -e` y comprobar el resultado de forma explícita (`docker images`), nunca
+> confiar en el código de salida del ssh. Es el mismo modo de fallo que enmascara un exit
+> code detrás de un `| tail`.
 
 Promover a **prod** es un `docker tag`, nunca un segundo build — la imagen es idéntica bit a bit (base + paquetes apt únicamente; el código de los DAGs llega vía el volumen `init-dags`, no la imagen), y evita drift de un `apt-get` re-ejecutado o un segundo build lento en el NAS:
 
