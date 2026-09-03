@@ -736,7 +736,11 @@ class TestSummarizeSilenceChunks:
         assert "error" in result["videos"][0]
 
     def test_one_video_two_chunks_produces_two_summarized_chunks(self, mocker):
-        summary_json = '{"speakers": [{"name": "Juan", "role": "Diputado"}], "topics": ["Presupuestos"], "timeline": [], "summary": "Debate sobre presupuestos"}'
+        summary_json = (
+            '{"speakers": [{"name": "Juan", "role": "Diputado"}], '
+            '"topics": ["Presupuestos"], "timeline": [], '
+            '"summary": "Debate sobre presupuestos"}'
+        )
         self._make_openai_summary_response(mocker, summary_json)
 
         from congress_videos.modules.youtube.download import summarize_silence_chunks
@@ -1075,7 +1079,11 @@ class TestIdentifyInterestingChapters:
         assert "error" in result["videos"][0]
 
     def test_long_chunk_triggers_ai_analysis(self, mocker):
-        chapters_json = '{"interesting_chapters": [{"title": "Debate", "description": "Desc", "start_time": "00:00:00", "end_time": "01:00:00", "duration_minutes": 60, "speakers": [], "topics": []}]}'
+        chapters_json = (
+            '{"interesting_chapters": [{"title": "Debate", "description": "Desc", '
+            '"start_time": "00:00:00", "end_time": "01:00:00", "duration_minutes": 60, '
+            '"speakers": [], "topics": []}]}'
+        )
         _patch_completion(mocker, chapters_json)
 
         from congress_videos.modules.youtube.download import identify_interesting_chapters

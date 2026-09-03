@@ -46,3 +46,20 @@ jobs:
       - name: Ruff format (blocking)
         # Fix locally with: uv run ruff format .
         run: uv run --no-sync ruff format --check .
+
+      - name: Ruff baseline drift (blocking, remove-only)
+        # Two steps, not a pipe, on purpose: this ruff run legitimately exits 1
+        # (it reports every grandfathered violation by design), and the default
+        # shell is `bash -e {0}` WITHOUT pipefail — a pipe would hide a genuine
+        # ruff crash (exit >= 2) behind the script's own exit code.
+        run: |
+          rc=0
+          uv run --no-sync ruff check . --no-cache --output-format json \
+            --config 'lint.per-file-ignores = { "__init__.py" = ["F401"] }' \
+            > "$RUNNER_TEMP/ruff-baseline.json" || rc=$?
+          if [ "$rc" -ge 2 ]; then
+            echo "::error::ruff exited $rc (operational failure, not a lint finding)"
+            exit "$rc"
+          fi
+          uv run --no-sync python scripts/gen_ruff_baseline.py --check-remove-only \
+            < "$RUNNER_TEMP/ruff-baseline.json"

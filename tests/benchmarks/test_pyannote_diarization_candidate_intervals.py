@@ -52,7 +52,10 @@ def test_cli_writes_clamped_union_of_diarization_gaps_as_candidates(tmp_path: Pa
         "rules": {
             "candidate_label": "NO_DIARIZED_SPEECH",
             "min_gap_seconds": 3.0,
-            "scope": "Raw diarization gaps are candidate cuts only; audio classification and validation are required. They do not classify applause or non-speech.",
+            "scope": (
+                "Raw diarization gaps are candidate cuts only; audio classification and validation are "
+                "required. They do not classify applause or non-speech."
+            ),
         },
         "source_summary_path": str(source),
         "total_candidate_seconds": 12.0,

@@ -198,11 +198,17 @@ def _insert_minimal_turn(
             (video_id, session_date),
         )
         cur.execute(
-            "INSERT INTO video_chapters (chapter_id, video_id, relevance_score) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (
+                "INSERT INTO video_chapters (chapter_id, video_id, relevance_score) VALUES (%s, %s, %s) "
+                "ON CONFLICT DO NOTHING"
+            ),
             (chapter_id_val, video_id, relevance_score),
         )
         cur.execute(
-            "INSERT INTO speaker_turns (turn_id, chapter_id, interest_score) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (
+                "INSERT INTO speaker_turns (turn_id, chapter_id, interest_score) VALUES (%s, %s, %s) "
+                "ON CONFLICT DO NOTHING"
+            ),
             (turn_id, chapter_id_val, interest_score),
         )
         cur.execute(

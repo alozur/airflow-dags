@@ -1288,7 +1288,10 @@ def _analyze_single_chunk(
 
     try:
         # Prepare chunk summary text for AI
-        summary_text = f"Chunk {chunk_number} ({summary_chunk['start_time']} - {summary_chunk['end_time']}) - Duration: {chunk_duration:.1f} minutes\n\n"
+        summary_text = (
+            f"Chunk {chunk_number} ({summary_chunk['start_time']} - {summary_chunk['end_time']}) - "
+            f"Duration: {chunk_duration:.1f} minutes\n\n"
+        )
 
         if summary_chunk.get("speakers"):
             summary_text += "Speakers:\n"
@@ -1498,7 +1501,8 @@ def identify_interesting_chapters(
                     # Chunk is in optimal range (< 15 min OR 15-45 min)
                     reason = "too short" if chunk_duration < min_chapter_duration else "optimal duration"
                     logging.info(
-                        f"  ⚡ Chunk {chunk_number} is {chunk_duration:.1f} minutes ({reason}). Returning whole chunk without AI analysis."
+                        f"  ⚡ Chunk {chunk_number} is {chunk_duration:.1f} minutes ({reason}). "
+                        f"Returning whole chunk without AI analysis."
                     )
 
                     # Return the entire chunk as a single "interesting chapter"
@@ -1560,7 +1564,8 @@ def identify_interesting_chapters(
             )
 
             logging.info(
-                f"✅ Video {video_id}: Found {total_chapters_found} interesting chapters across {len(chunks_with_chapters)} chunks"
+                f"✅ Video {video_id}: Found {total_chapters_found} interesting chapters "
+                f"across {len(chunks_with_chapters)} chunks"
             )
 
         except Exception as e:

@@ -11,14 +11,17 @@ SHORTS_METADATA_SYSTEM_PROMPT = (
     "Creas títulos impactantes y descripciones atractivas basadas en la transcripción real del clip. "
     "Tu lenguaje es directo, claro y accesible para el ciudadano de a pie. "
     "SIEMPRE incluye al político principal en el título usando el nivel más corto que sea inequívoco: "
-    "Nivel 1 (solo apellido): figuras de máxima notoriedad cuyo apellido es inconfundible (Sánchez, Feijóo, Abascal, Junqueras). "
-    "Nivel 2 (nombre + apellido principal): figuras conocidas con apellido ambiguo o compartido (Yolanda Díaz, Ayuso, Iglesias, Montero). "
+    "Nivel 1 (solo apellido): figuras de máxima notoriedad cuyo apellido es inconfundible "
+    "(Sánchez, Feijóo, Abascal, Junqueras). "
+    "Nivel 2 (nombre + apellido principal): figuras conocidas con apellido ambiguo o compartido "
+    "(Yolanda Díaz, Ayuso, Iglesias, Montero). "
     "Nivel 3 (cargo + apellido): políticos mediáticos pero no de primer nivel (Ministra Ribera, Portavoz Hernando). "
     "Nivel 4 (cargo solo): cuando el nombre no aporta reconocimiento al público general. "
     "Si el ponente principal está vacío o es desconocido, identifica al político por su cargo o rol en el título."
 )
 
-SHORTS_METADATA_USER_PROMPT_TEMPLATE = """Genera el título y la descripción para un YouTube Short del Congreso de España.
+SHORTS_METADATA_USER_PROMPT_TEMPLATE = """\
+Genera el título y la descripción para un YouTube Short del Congreso de España.
 
 PONENTE PRINCIPAL: {primary_speaker}
 (otros ponentes: {secondary_speakers})
@@ -34,7 +37,8 @@ CONTEXTO:
 FORMATO DE RESPUESTA (JSON):
 {{
   "title": "<máximo 90 caracteres, impactante, en español, sin comillas ni #Shorts>",
-  "description": "<150-400 caracteres: 2-3 frases sobre lo que se dice, emojis relevantes, termina con #Congreso #España #Política #Shorts>"
+  "description": "<150-400 caracteres: 2-3 frases sobre lo que se dice, emojis relevantes, \
+termina con #Congreso #España #Política #Shorts>"
 }}
 
 REQUISITOS TÍTULO:
@@ -113,7 +117,8 @@ Ejemplos de buen estilo:
 - "CRISIS ENERGÉTICA REVELADA"
 - "GOBIERNO: POLÍTICAS SECRETAS"
 
-IMPORTANTE: Si la frase supera {max_length} caracteres, acórtala eliminando palabras completas, NUNCA cortando palabras a la mitad.
+IMPORTANTE: Si la frase supera {max_length} caracteres, acórtala eliminando palabras completas, \
+NUNCA cortando palabras a la mitad.
 
 Devuelve SOLO la frase, sin explicaciones."""
 
@@ -175,7 +180,8 @@ ART_DIRECTION_SYSTEM_PROMPT = (
     "PROHIBICIÓN ABSOLUTA: no incluyas nunca URLs ni la palabra 'http' en ningún campo. "
     "Pikzels rechaza cualquier prompt que contenga 'http'.\n\n"
     "Responde SOLO con JSON válido, sin markdown:\n"
-    '{"text": "...", "background": "...", "person": "...", "mood": "...", "archetype": "careo|denuncia|monologo|anuncio|generico"}'
+    '{"text": "...", "background": "...", "person": "...", "mood": "...", '
+    '"archetype": "careo|denuncia|monologo|anuncio|generico"}'
 )
 
 # Sibling-brief injection block: appended to the art_direct user prompt when
@@ -263,7 +269,8 @@ THUMBNAIL_TITLE_NAMELESS_INSTRUCTION = (
 THUMBNAIL_TITLE_SYSTEM_PROMPT = (
     "Eres un redactor político experto en titulares de alto impacto para YouTube. "
     "Escribe titulares declarativos en formato de noticias: [Nombre] + verbo de acción + complemento o cita. "
-    "Ejemplos correctos: «El portavoz anuncia recortes en pensiones», «El líder de la oposición acusa al Gobierno de corrupción». "
+    "Ejemplos correctos: «El portavoz anuncia recortes en pensiones», "
+    "«El líder de la oposición acusa al Gobierno de corrupción». "
     "NUNCA uses signos de interrogación (¿?): ningún titular puede ser una pregunta. "
     "Los títulos deben generar urgencia y curiosidad sin perder rigor informativo. "
     "Varía el registro emocional entre títulos consecutivos: alterna entre urgencia, pérdida, "
@@ -426,7 +433,8 @@ Tu tarea es extraer información estructurada de un segmento de transcripción:
 
 IMPORTANTE: Devuelve SIEMPRE un JSON válido con la estructura exacta especificada."""
 
-CHUNK_SUMMARY_USER_PROMPT_TEMPLATE = """Analiza este segmento de sesión parlamentaria y extrae la información estructurada.
+CHUNK_SUMMARY_USER_PROMPT_TEMPLATE = """\
+Analiza este segmento de sesión parlamentaria y extrae la información estructurada.
 
 INFORMACIÓN DEL SEGMENTO:
 - Chunk: {chunk_number}
@@ -472,9 +480,11 @@ INSTRUCCIONES:
 Devuelve SOLO el JSON, sin markdown ni explicaciones."""
 
 # Chapter Identification - Identify interesting sub-chapters within each chunk
-CHAPTER_IDENTIFICATION_SYSTEM_PROMPT = """Eres un experto en identificar contenido interesante en sesiones parlamentarias españolas para crear clips de YouTube.
+CHAPTER_IDENTIFICATION_SYSTEM_PROMPT = """\
+Eres un experto en identificar contenido interesante en sesiones parlamentarias españolas para crear clips de YouTube.
 
-Tu tarea es analizar UN CHUNK de sesión parlamentaria que dura MÁS de 45 minutos y decidir si dividirlo o mantenerlo completo.
+Tu tarea es analizar UN CHUNK de sesión parlamentaria que dura MÁS de 45 minutos y decidir \
+si dividirlo o mantenerlo completo.
 
 🎯 FILOSOFÍA: "Prioriza COHERENCIA TEMÁTICA sobre duración"
 
@@ -602,7 +612,8 @@ Output: 1 capítulo completo (≤ 120 min, OK)
   "interesting_chapters": [
     {{
       "title": "Recuerdo a las Víctimas de la Dana y Responsabilidad del Gobierno",
-      "description": "Debate completo sobre las víctimas de la Dana, incluyendo todas las intervenciones sobre responsabilidad, ayudas y prevención.",
+      "description": "Debate completo sobre las víctimas de la Dana, \
+incluyendo todas las intervenciones sobre responsabilidad, ayudas y prevención.",
       "start_time": "00:00:00,000",
       "end_time": "01:30:00,000",
       "duration_minutes": 90.0,
@@ -662,9 +673,11 @@ Output: 2 capítulos (uno por tema)
 Devuelve SOLO el JSON."""
 
 # Chapter Relevance Scoring - Score chapters from 0-5 based on political relevance
-CHAPTER_RELEVANCE_SCORING_SYSTEM_PROMPT = """Eres un experto en política española que evalúa la relevancia de debates parlamentarios para contenido de YouTube.
+CHAPTER_RELEVANCE_SCORING_SYSTEM_PROMPT = """\
+Eres un experto en política española que evalúa la relevancia de debates parlamentarios para contenido de YouTube.
 
-Tu tarea es evaluar debates según múltiples criterios. El score final (0-5) se calculará automáticamente sumando los puntos de cada criterio.
+Tu tarea es evaluar debates según múltiples criterios. El score final (0-5) se calculará automáticamente \
+sumando los puntos de cada criterio.
 
 CRITERIOS DE EVALUACIÓN:
 
@@ -702,7 +715,8 @@ ESCALA FINAL (suma automática de puntos):
 - 1 punto: MUY BAJA relevancia → No subir
 - 0 puntos (0+0+0): Sin relevancia → Definitivamente no subir
 
-IMPORTANTE: Sé objetivo y evalúa la relevancia real para el público español general, no solo para expertos en política."""
+IMPORTANTE: Sé objetivo y evalúa la relevancia real para el público español general, \
+no solo para expertos en política."""
 
 # Chapter Speaker Resolution — resolves chapter speaker mentions against a full
 # participant roster in one batched call (issue #263). Consumed identically by
@@ -752,10 +766,12 @@ Candidate participant:
   - normalized_name: {normalized_name}
 {context_block}
 Decide if the dirty name and the candidate refer to the same person.
-Return ONLY valid JSON: {{\"decision\": \"match\" | \"no_match\" | \"needs_manual\", \"confidence\": <0-1>, \"reason\": \"<one sentence>\"}}"""
+Return ONLY valid JSON: {{\"decision\": \"match\" | \"no_match\" | \"needs_manual\", \
+\"confidence\": <0-1>, \"reason\": \"<one sentence>\"}}"""
 
 
-CHAPTER_RELEVANCE_SCORING_USER_PROMPT_TEMPLATE = """Evalúa la relevancia de este capítulo de sesión parlamentaria para contenido de YouTube.
+CHAPTER_RELEVANCE_SCORING_USER_PROMPT_TEMPLATE = """\
+Evalúa la relevancia de este capítulo de sesión parlamentaria para contenido de YouTube.
 
 === INFORMACIÓN DEL CAPÍTULO ===
 Título: {chapter_title}
