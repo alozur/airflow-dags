@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -12,7 +12,6 @@ from congress_videos.modules.institutional_role_resolver import (
     CatalogLoader,
     CatalogValidationError,
 )
-
 
 CATALOG_PATH = (
     Path(__file__).parents[2]

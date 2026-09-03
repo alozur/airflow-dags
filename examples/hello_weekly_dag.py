@@ -1,6 +1,8 @@
 from datetime import datetime
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+
 
 def say_hello_weekly():
   print("Hello from my weekly Airflow DAG!")

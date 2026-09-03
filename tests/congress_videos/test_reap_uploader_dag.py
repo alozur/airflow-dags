@@ -6,7 +6,6 @@ import logging
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # 7.7 — DAG 2 load test (reap_shorts_uploader)
 # ---------------------------------------------------------------------------
@@ -708,6 +707,7 @@ class TestFormatSessionLine:
     def test_both_present_returns_full_line(self):
         """Spec scenario: both session_number and session_date present."""
         from datetime import date
+
         from congress_videos.reap_shorts_uploader_dag import _format_session_line
 
         result = _format_session_line(150, date(2024, 3, 12))
@@ -725,6 +725,7 @@ class TestFormatSessionLine:
     def test_date_only_returns_date_line(self):
         """Spec scenario: only session_date present."""
         from datetime import date
+
         from congress_videos.reap_shorts_uploader_dag import _format_session_line
 
         result = _format_session_line(None, date(2025, 11, 5))
@@ -742,6 +743,7 @@ class TestFormatSessionLine:
     def test_all_twelve_months_in_spanish(self):
         """All months produce the correct Spanish name."""
         from datetime import date
+
         from congress_videos.reap_shorts_uploader_dag import _format_session_line
 
         expected_months = [
@@ -774,6 +776,7 @@ class TestGenerateMetadataSessionLine:
     def test_description_ends_with_session_suffix_when_data_available(self, mocker):
         """Task 4.3 — AI success + session data: description ends with Spanish session line."""
         from datetime import date
+
         from congress_videos.reap_shorts_uploader_dag import _generate_metadata
 
         mock_db_cls = mocker.patch(

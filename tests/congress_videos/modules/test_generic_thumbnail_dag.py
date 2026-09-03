@@ -22,10 +22,10 @@ import importlib
 import os
 import re
 import sys
+from datetime import UTC
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # ThumbnailConfigWiring tests (GROUP 2 — REQ-A2)
@@ -46,8 +46,9 @@ class TestThumbnailConfigWiring:
 
     def test_lookup_participant_fuzzy_string_absent_from_thumbnail_config_source(self) -> None:
         """'lookup_participant_fuzzy' must NOT appear in thumbnail_config.py source."""
-        import congress_videos.config.thumbnail_config as _tcfg
         import inspect
+
+        import congress_videos.config.thumbnail_config as _tcfg
         source = inspect.getsource(_tcfg)
         assert "lookup_participant_fuzzy" not in source, (
             "thumbnail_config.py must not reference lookup_participant_fuzzy"
@@ -98,7 +99,7 @@ class TestDagSchedule:
         on a schedule=None DAG (issue #206)."""
         from datetime import datetime, timezone
         dag = self.mod.dag
-        assert dag.start_date == datetime(2025, 1, 1, tzinfo=timezone.utc)
+        assert dag.start_date == datetime(2025, 1, 1, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------

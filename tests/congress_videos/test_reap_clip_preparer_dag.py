@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
-from unittest.mock import MagicMock
 from airflow.exceptions import AirflowException
-
 
 # ---------------------------------------------------------------------------
 # Helpers

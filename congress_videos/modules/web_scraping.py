@@ -4,8 +4,8 @@ Web scraping utilities for congressional audiovisual archive.
 This module handles URL construction for congressional session links.
 """
 
-from datetime import datetime, timedelta
 import logging
+from datetime import datetime, timedelta
 
 from congress_videos.config.constants import (
     BASE_SESSION_URL,

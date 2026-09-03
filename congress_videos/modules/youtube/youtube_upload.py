@@ -10,7 +10,6 @@ import os
 
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
 
-
 _REQUIRED_SIDECARS = ("title.txt", "description.txt", "thumbnail.png", "subtitles.srt")
 
 

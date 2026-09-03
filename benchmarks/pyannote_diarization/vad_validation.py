@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 CANDIDATE_LABEL = "NO_DIARIZED_SPEECH"
 REJECTED_LABEL = "REJECTED_VOICE_PRESENT"
 CONFIRMED_LABEL = "CONFIRMED_NO_VOICE"

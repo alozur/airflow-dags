@@ -10,7 +10,6 @@ import requests
 from congress_videos import reap_api
 from congress_videos.reap_api import ReapApiClient, ReapCreditsExhausted
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

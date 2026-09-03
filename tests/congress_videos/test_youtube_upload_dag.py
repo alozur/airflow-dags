@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
@@ -687,7 +687,7 @@ def _make_context_for_should_upload(
     from datetime import datetime, timezone
     from unittest.mock import MagicMock
 
-    logical_date = datetime(2026, 7, 31, hour, 0, 0, tzinfo=timezone.utc)
+    logical_date = datetime(2026, 7, 31, hour, 0, 0, tzinfo=UTC)
 
     ti = MagicMock(name="TaskInstance")
     ti.xcom_pull.return_value = {
@@ -766,19 +766,21 @@ class TestShouldUpload:
     def test_stale_run_returns_false(self):
         """data_interval_end ~2h in the past, queue above threshold → False (stale skip)."""
         from datetime import datetime, timedelta, timezone
+
         from congress_videos.youtube_upload_dag import should_upload
 
         ctx = _make_context_for_should_upload(queue_size=11, hour=11)
-        ctx["data_interval_end"] = datetime.now(timezone.utc) - timedelta(hours=2)
+        ctx["data_interval_end"] = datetime.now(UTC) - timedelta(hours=2)
         assert should_upload(**ctx) is False
 
     def test_fresh_run_proceeds_to_threshold(self):
         """data_interval_end ~1 min in the past, queue above threshold → True (threshold applies)."""
         from datetime import datetime, timedelta, timezone
+
         from congress_videos.youtube_upload_dag import should_upload
 
         ctx = _make_context_for_should_upload(queue_size=11, hour=11)
-        ctx["data_interval_end"] = datetime.now(timezone.utc) - timedelta(minutes=1)
+        ctx["data_interval_end"] = datetime.now(UTC) - timedelta(minutes=1)
         assert should_upload(**ctx) is True
 
     def test_missing_data_interval_end_falls_through(self):
@@ -794,12 +796,13 @@ class TestShouldUpload:
         """data_interval_end exactly 30 min in the past → True (guard uses strict >, not >=)."""
         from datetime import datetime, timedelta, timezone
         from unittest.mock import patch
+
         from congress_videos.youtube_upload_dag import (
-            should_upload,
             STALE_RUN_TOLERANCE_MINUTES,
+            should_upload,
         )
 
-        frozen_now = datetime(2026, 7, 31, 12, 0, 0, tzinfo=timezone.utc)
+        frozen_now = datetime(2026, 7, 31, 12, 0, 0, tzinfo=UTC)
         # exactly at boundary: staleness == tolerance, NOT greater
         data_interval_end = frozen_now - timedelta(minutes=STALE_RUN_TOLERANCE_MINUTES)
 
@@ -2228,6 +2231,7 @@ class TestDualQueueWiredIntoDag:
     def test_get_uploadable_item_task_is_python_operator(self):
         """The get_uploadable_item task must be a PythonOperator."""
         from airflow.operators.python import PythonOperator
+
         from congress_videos.youtube_upload_dag import dag
 
         tasks_by_id = {t.task_id: t for t in dag.tasks}
@@ -2749,6 +2753,7 @@ class TestUploadDagTurnPathRefactor:
     def test_run_generate_thumbnail_called_for_turns(self):
         """When item_type=turn, _run_generate_thumbnail must trigger the thumbnail DAG (issue #169)."""
         from unittest.mock import patch
+
         from congress_videos.youtube_upload_dag import _run_generate_thumbnail
 
         store = {
@@ -2836,6 +2841,7 @@ class TestUploadDagTurnPathRefactor:
     def test_prepare_upload_config_turn_no_ai_call(self, tmp_path):
         """For turn items, _prepare_upload_config must not call youtube_ai."""
         from unittest.mock import patch
+
         from congress_videos.youtube_upload_dag import _prepare_upload_config
 
         turn_dir = tmp_path / "oradores" / "1"

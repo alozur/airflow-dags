@@ -11,7 +11,7 @@ from congress_videos.modules.speaker_placeholders import is_placeholder
 
 
 def format_speaker_list(
-    speakers_info: List[Dict[str, str]],
+    speakers_info: list[dict[str, str]],
     max_speakers: int = 10,
     include_role: bool = True,
 ) -> str:
@@ -57,7 +57,7 @@ def format_speaker_list(
 
 
 def format_speaker_context(
-    speakers_info: List[Dict[str, str]], max_speakers: int = 3, prefix: str = "Participan"
+    speakers_info: list[dict[str, str]], max_speakers: int = 3, prefix: str = "Participan"
 ) -> str:
     """
     Format speakers into a compact context string for prompts.

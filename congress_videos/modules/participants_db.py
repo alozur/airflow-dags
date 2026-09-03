@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import logging
 
-from utils.postgres_helpers import PostgresConnection
+from congress_videos.config.constants import WIKIDATA_FUZZY_THRESHOLD
 from congress_videos.modules.participants_ingestion import (
     ParticipantRecord,
     normalize_member_name,
 )
-from congress_videos.config.constants import WIKIDATA_FUZZY_THRESHOLD
+from utils.postgres_helpers import PostgresConnection
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +210,7 @@ def lookup_participant_fuzzy(
         Best-matching row dict (includes ``display_name``) if score >= threshold,
         None otherwise.
     """
-    from rapidfuzz.fuzz import token_sort_ratio, token_set_ratio  # lazy import — Slice 2 dependency
+    from rapidfuzz.fuzz import token_set_ratio, token_sort_ratio  # lazy import — Slice 2 dependency
 
     key = normalize_member_name(name)
     rows = _get_participants_for_lookup()

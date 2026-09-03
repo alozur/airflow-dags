@@ -22,38 +22,38 @@ def __getattr__(name):
                 'scrape_press_release', 'download_and_read_agenda', 'extract_session_date',
                 'extract_agenda_section']:
         from .youtube_channel import (
+            download_and_read_agenda,
+            extract_agenda_section,
+            extract_session_date,
             fetch_youtube_channel_videos,
+            filter_finished_streams,
             filter_plenary_session_videos,
             filter_unprocessed_videos,
-            filter_finished_streams,
-            get_video_details,
             get_video_descriptions,
+            get_video_details,
             parse_description_links,
             scrape_press_release,
-            download_and_read_agenda,
-            extract_session_date,
-            extract_agenda_section,
         )
         return locals()[name]
 
     # download functions
     elif name in ['download_video_from_youtube', 'extract_audio_from_youtube', 'create_test_video_data', 'transcribe_audio_with_whisper', 'merge_transcription_srt_files', 'identify_interesting_chapters', 'merge_interesting_chapters', 'try_download_subtitles_from_youtube', 'split_srt_by_silence', 'summarize_silence_chunks', 'summarize_one_chunk', 'aggregate_chunk_summaries', 'flatten_chunks_for_mapping', 'regroup_summarized_chunks', 'check_source_video_integrity']:
         from .download import (
+            aggregate_chunk_summaries,
+            check_source_video_integrity,
+            create_test_video_data,
             download_video_from_youtube,
             extract_audio_from_youtube,
-            create_test_video_data,
-            transcribe_audio_with_whisper,
-            merge_transcription_srt_files,
+            flatten_chunks_for_mapping,
             identify_interesting_chapters,
             merge_interesting_chapters,
-            try_download_subtitles_from_youtube,
-            split_srt_by_silence,
-            summarize_silence_chunks,
-            summarize_one_chunk,
-            aggregate_chunk_summaries,
-            flatten_chunks_for_mapping,
+            merge_transcription_srt_files,
             regroup_summarized_chunks,
-            check_source_video_integrity,
+            split_srt_by_silence,
+            summarize_one_chunk,
+            summarize_silence_chunks,
+            transcribe_audio_with_whisper,
+            try_download_subtitles_from_youtube,
         )
         return locals()[name]
 

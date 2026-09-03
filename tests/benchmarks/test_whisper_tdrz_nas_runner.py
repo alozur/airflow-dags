@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
 RUNNER = Path("benchmarks/whisper_tdrz/run_nas_benchmark.sh")
 
 

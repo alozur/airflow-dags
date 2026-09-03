@@ -1,6 +1,7 @@
 """Custom assertion helpers for the airflow-dags test suite."""
 
 from __future__ import annotations
+
 from typing import Any
 
 

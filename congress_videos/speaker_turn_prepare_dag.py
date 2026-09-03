@@ -25,6 +25,7 @@ from airflow.operators.python import PythonOperator
 
 from congress_videos.config.constants import SPEAKER_TURN_PREPARE_DAG_ID
 from congress_videos.modules.database import CongressionalVideoDB
+from congress_videos.modules.participants_db import CongressParticipantsDB
 from congress_videos.modules.speaker_placeholders import is_placeholder
 from congress_videos.modules.speaker_resolution import (
     QA_WIDE_CONTEXT_ENABLED,
@@ -35,7 +36,6 @@ from congress_videos.modules.speaker_roster_crosscheck import (
     chapter_roster_mentions,
     crosscheck_slug,
 )
-from congress_videos.modules.participants_db import CongressParticipantsDB
 from congress_videos.modules.vad_helpers import trim_turn_silence_with_vad
 from utils.env_loader import load_env_if_local
 

@@ -8,7 +8,6 @@ from congress_videos.modules.youtube.youtube_ai import (
     score_chapters_relevance,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

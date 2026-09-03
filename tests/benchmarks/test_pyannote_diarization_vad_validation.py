@@ -7,7 +7,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 CLI = Path("benchmarks/pyannote_diarization/vad_validation.py")
 
 

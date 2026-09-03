@@ -16,15 +16,15 @@ import os
 from datetime import date, datetime, timedelta
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
+from airflow.operators.python import PythonOperator
 
-from congress_videos.modules.database import CongressionalVideoDB
-from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
 from congress_videos.config.ai_prompts import (
     SHORTS_METADATA_SYSTEM_PROMPT,
     SHORTS_METADATA_USER_PROMPT_TEMPLATE,
 )
+from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
+from congress_videos.modules.database import CongressionalVideoDB
 from utils.ai_helpers import generate_json_completion, truncate_text
 from utils.airflow_helpers import xcom_task
 from utils.env_loader import load_env_if_local
@@ -276,6 +276,7 @@ with DAG(
 
     def _trigger_youtube_upload(ti, **context):
         import time
+
         from airflow.models import DagRun, XCom
 
         pending_shorts = ti.xcom_pull(key="pending_shorts") or []

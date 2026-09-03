@@ -69,7 +69,7 @@ class TestMaxWindowHours:
 
     def test_max_window_hours_matches_90d_checkpoint(self):
         cfg = _load()
-        assert cfg.MAX_WINDOW_HOURS == cfg.CHECKPOINTS["90d"]
+        assert cfg.CHECKPOINTS["90d"] == cfg.MAX_WINDOW_HOURS
 
 
 class TestMetricFields:
@@ -153,7 +153,7 @@ class TestUnderperformanceActionConstants:
 
     def test_action_values_mirrors_migration_041_check_constraint(self):
         cfg = _load()
-        assert cfg.ACTION_VALUES == {
+        assert {
             "cold_start",
             "ok",
             "capped",
@@ -161,4 +161,4 @@ class TestUnderperformanceActionConstants:
             "thumbnail_regenerated",
             "thumbnail_and_title_regenerated",
             "failed",
-        }
+        } == cfg.ACTION_VALUES

@@ -6,18 +6,11 @@ This module handles downloading videos and extracting audio from YouTube using y
 
 import logging
 
-from congress_videos.config.paths import (
-    get_download_video_path,
-    ensure_directory_exists
-)
+from congress_videos.config.paths import ensure_directory_exists, get_download_video_path
 from utils.llm_cache import cached_json_completion
 from utils.llm_config import LLM_CHEAP
 from utils.time_utils import parse_timestamp
-from utils.youtube_downloader import (
-    download_youtube_video_for_upload,
-    download_audio_only,
-    download_audio_in_chunks
-)
+from utils.youtube_downloader import download_audio_in_chunks, download_audio_only, download_youtube_video_for_upload
 
 # SRT content larger than this threshold (in chars) is too big for a single LLM call
 # and should eventually be handled by map-reduce (Batch 4). Until then, send full
@@ -498,11 +491,7 @@ def transcribe_audio_with_whisper(extracted_audio, language: str = "es", timeout
         - total_transcribed: Number of videos transcribed
         - videos: List with video_id, transcription text or chunks
     """
-    from utils.whisper_helpers import (
-        transcribe_audio_file,
-        transcribe_audio_chunks,
-        check_whisper_api_health
-    )
+    from utils.whisper_helpers import check_whisper_api_health, transcribe_audio_chunks, transcribe_audio_file
 
     if not extracted_audio or not extracted_audio.get('videos'):
         logging.warning("No extracted audio to transcribe")
@@ -612,8 +601,9 @@ def merge_transcription_srt_files(transcriptions, target_date: str):
         - videos: List with video_id, merged_srt_path, total_entries
     """
     from pathlib import Path
-    from utils.whisper_helpers import merge_srt_files
+
     from congress_videos.config.paths import get_download_video_path
+    from utils.whisper_helpers import merge_srt_files
 
     if not transcriptions or not transcriptions.get('videos'):
         logging.warning("No transcriptions to merge")
@@ -718,8 +708,9 @@ def split_srt_by_silence(srt_data, target_date: str, min_silence_seconds: int = 
         - videos: List with video_id, chunks (with SRT content)
     """
     from pathlib import Path
-    from utils.ai_chapter_analyzer import chunk_by_silence
+
     from congress_videos.config.paths import get_download_video_path
+    from utils.ai_chapter_analyzer import chunk_by_silence
 
     if not srt_data or not srt_data.get('videos'):
         logging.warning("No SRT data to split into chunks")
@@ -848,11 +839,12 @@ def summarize_one_chunk(chunk_ref: dict) -> dict:
         failure (never raises — failures are captured so one bad chunk does not
         sink the mapped task group).
     """
+    import json
+
     from congress_videos.config.ai_prompts import (
         CHUNK_SUMMARY_SYSTEM_PROMPT,
         CHUNK_SUMMARY_USER_PROMPT_TEMPLATE,
     )
-    import json
 
     base = {
         "chunk_number": chunk_ref['chunk_number'],
@@ -1339,9 +1331,13 @@ def _analyze_single_chunk(
     LLM result, all-ranges-invalid), and both except handlers. Always
     returns a single ``chunks_with_chapters`` entry dict — never ``None``.
     """
-    from congress_videos.config.ai_prompts import CHAPTER_IDENTIFICATION_SYSTEM_PROMPT, CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE
-    from utils.ai_chapter_analyzer import _flatten_speakers
     import json
+
+    from congress_videos.config.ai_prompts import (
+        CHAPTER_IDENTIFICATION_SYSTEM_PROMPT,
+        CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE,
+    )
+    from utils.ai_chapter_analyzer import _flatten_speakers
 
     logging.info(f"  🔍 Chunk {chunk_number} is {chunk_duration:.1f} minutes (>45 min). Using AI to analyze content...")
 

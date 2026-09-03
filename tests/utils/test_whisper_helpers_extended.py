@@ -8,7 +8,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # save_srt_file — exception handler (fallback path, lines 95-102)
 # ---------------------------------------------------------------------------

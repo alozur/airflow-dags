@@ -4,7 +4,9 @@ from contextlib import contextmanager
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
+
 from utils.env_loader import load_env_if_local
+
 load_env_if_local()
 
 # Server-side circuit breakers for the shared NAS Postgres (max_connections=100).

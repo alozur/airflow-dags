@@ -6,7 +6,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 # --------------------------------------------------------------------------- #
 # fetch_youtube_channel_videos
 # --------------------------------------------------------------------------- #
@@ -678,11 +677,11 @@ class TestFilterUnprocessedVideos:
 # filter_finished_streams — pre-branch readiness gate
 # --------------------------------------------------------------------------- #
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone  # noqa: E402 - scoped near its usage, not a sys.path hack
 
 
 def _iso_minutes_ago(minutes: int) -> str:
-    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime(
+    return (datetime.now(UTC) - timedelta(minutes=minutes)).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
 

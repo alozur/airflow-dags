@@ -12,7 +12,7 @@ Functions:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from congress_videos.config.analytics_config import (
@@ -60,9 +60,9 @@ def pending_checkpoints(
         upload_date: datetime = row["youtube_upload_date"]
         # Ensure both are timezone-aware for safe arithmetic.
         if upload_date.tzinfo is None:
-            upload_date = upload_date.replace(tzinfo=timezone.utc)
+            upload_date = upload_date.replace(tzinfo=UTC)
         if now.tzinfo is None:
-            now = now.replace(tzinfo=timezone.utc)
+            now = now.replace(tzinfo=UTC)
 
         elapsed_hours = (now - upload_date).total_seconds() / 3600.0
 
@@ -105,7 +105,7 @@ def parse_analytics_response(resp: dict[str, Any]) -> dict[str, Any | None]:
     rows = resp.get("rows", [])
 
     if not rows:
-        return {field: None for field in METRIC_FIELDS}
+        return dict.fromkeys(METRIC_FIELDS)
 
     row = rows[0]
     col_index: dict[str, int] = {name: i for i, name in enumerate(headers)}

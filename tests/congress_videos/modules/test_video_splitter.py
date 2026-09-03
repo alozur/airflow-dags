@@ -18,7 +18,6 @@ from congress_videos.modules.video_splitter import (
 )
 from tests.helpers.assertions import assert_error_result, assert_success_result
 
-
 # ---------------------------------------------------------------------------
 # convert_srt_time_to_seconds
 # ---------------------------------------------------------------------------

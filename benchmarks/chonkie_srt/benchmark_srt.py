@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import json
-from pathlib import Path
 import re
 import sys
+from dataclasses import dataclass
+from pathlib import Path
 from time import perf_counter
 from typing import Any
 

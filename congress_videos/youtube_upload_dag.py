@@ -22,21 +22,21 @@ as standalone YouTube videos.
 import logging
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from airflow import DAG
+from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 from airflow.models import XCom
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
-from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 
 from congress_videos.config import speaker_normalization_config as snc
+from congress_videos.config.paths import get_video_chapter_dir
 from congress_videos.modules.chapter_speaker_resolution import resolve_chapter_speakers
 from congress_videos.modules.participants_db import (
     get_participants_roster,
     lookup_participant_by_slug,
     lookup_participant_fuzzy,
 )
-from congress_videos.config.paths import get_video_chapter_dir
 from congress_videos.modules.speaker_placeholders import is_placeholder
 from congress_videos.modules.upload_marking import mark_chapter_uploads, mark_turn_uploads
 from congress_videos.srt_helpers import (
@@ -73,7 +73,7 @@ def should_upload(**context):
     """
     data_interval_end = context.get("data_interval_end")
     if data_interval_end:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         staleness = now - data_interval_end
         if staleness > timedelta(minutes=STALE_RUN_TOLERANCE_MINUTES):
             logging.info(
@@ -965,6 +965,7 @@ with (
     def trigger_upload_with_config(ti, **context):
         """Trigger the generic YouTube uploader DAG with config from XCom."""
         import time
+
         from airflow.models import XCom
 
         if context.get("params", {}).get("dry_run", False):

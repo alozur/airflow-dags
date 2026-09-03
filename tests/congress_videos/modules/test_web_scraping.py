@@ -10,7 +10,6 @@ from freezegun import freeze_time
 from congress_videos.config.constants import BASE_SESSION_URL, LEGISLATURE_ID, ORGANO_ID
 from congress_videos.modules.web_scraping import construct_session_link
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

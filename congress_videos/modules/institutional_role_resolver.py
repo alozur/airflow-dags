@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date
-import json
 from pathlib import Path
-import re
-import unicodedata
 from urllib.parse import urlparse
 
 

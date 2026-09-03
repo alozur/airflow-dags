@@ -187,8 +187,9 @@ class TestNoSubprocessInTrimProposalsApi:
             if "trim_proposals_api" in key:
                 del sys.modules[key]
 
-        import congress_videos.modules.trim_proposals_api as tpa
         import inspect
+
+        import congress_videos.modules.trim_proposals_api as tpa
 
         source = inspect.getsource(tpa)
         assert "import subprocess" not in source

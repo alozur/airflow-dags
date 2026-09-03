@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
 PREPARER = Path("benchmarks/pyannote_diarization/prepare_vad_model.sh")
 
 
