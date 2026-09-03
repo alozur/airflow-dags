@@ -21,8 +21,8 @@ patching in tests, mirroring congress_videos.modules.speaker_resolution.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 from congress_videos.config.ai_prompts import (
     CHAPTER_SPEAKER_RESOLUTION_SYSTEM_PROMPT,

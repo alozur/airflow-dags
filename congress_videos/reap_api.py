@@ -10,7 +10,6 @@ import os
 
 import requests
 
-
 DEFAULT_BASE_URL = "https://public.reap.video/api/v1/automation"
 
 # (connect, read) timeouts in seconds. Without these, a stalled TCP connection

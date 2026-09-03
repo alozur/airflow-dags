@@ -6,7 +6,6 @@ never-raises behavior, and input-order preservation.
 """
 from __future__ import annotations
 
-
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------

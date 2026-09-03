@@ -29,8 +29,9 @@ import os
 import signal
 import tempfile
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
-from typing import Annotated, Callable
+from typing import Annotated
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.encoders import jsonable_encoder

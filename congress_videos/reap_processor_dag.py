@@ -7,8 +7,8 @@ to Reap, waits for job completion via sensor, and downloads all resulting shorts
 """
 
 import logging
-import re
 import os
+import re
 from datetime import datetime, timedelta
 
 from airflow import DAG

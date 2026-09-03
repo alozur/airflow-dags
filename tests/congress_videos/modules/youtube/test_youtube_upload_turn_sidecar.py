@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # 4.1 Turn upload reads pre-prepared sidecars; no thumbnail trigger
 # ---------------------------------------------------------------------------
@@ -72,6 +71,7 @@ class TestPrepareOradorUploadConfig:
     def test_no_generic_thumbnail_generator_call(self, tmp_path):
         """prepare_orador_upload_config must NOT call generic_thumbnail_generator."""
         from unittest.mock import patch
+
         from congress_videos.modules.youtube.youtube_upload import prepare_orador_upload_config
 
         turn_dir = tmp_path / "oradores" / "1"
@@ -92,6 +92,7 @@ class TestPrepareOradorUploadConfig:
         """prepare_orador_upload_config must not call any AI service (no subprocess for ffmpeg)."""
         import subprocess
         from unittest.mock import patch
+
         from congress_videos.modules.youtube.youtube_upload import prepare_orador_upload_config
 
         turn_dir = tmp_path / "oradores" / "1"

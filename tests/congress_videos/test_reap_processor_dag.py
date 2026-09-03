@@ -9,7 +9,6 @@ from airflow.exceptions import AirflowException
 
 from congress_videos.reap_api import ReapCreditsExhausted
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

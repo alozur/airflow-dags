@@ -15,7 +15,6 @@ import pytest
 from congress_videos.modules.vad_helpers import trim_chapter_silence_with_vad
 from utils.time_utils import parse_timestamp
 
-
 # ---------------------------------------------------------------------------
 # trim_chapter_silence_with_vad — synthetic chapters, mocked VAD/ffmpeg/locator
 # ---------------------------------------------------------------------------

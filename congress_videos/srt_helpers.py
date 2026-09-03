@@ -62,9 +62,9 @@ def _serialize_srt_blocks(blocks: list[dict]) -> str:
 def find_srt_for_chapter(
     video_id: str,
     chapter_id: int,
-    session_date: Optional[str] = None,
-    canonical_dir: Optional[str] = None,
-) -> Optional[str]:
+    session_date: str | None = None,
+    canonical_dir: str | None = None,
+) -> str | None:
     """
     Try common SRT path patterns, return first existing path or None.
 
@@ -131,7 +131,7 @@ def parse_srt_to_text(srt_path: str, max_chars: int | None = None) -> str:
             integer to enforce a hard limit (e.g. for legacy callers).
     """
     try:
-        with open(srt_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(srt_path, encoding="utf-8", errors="replace") as f:
             content = f.read()
     except OSError as e:
         logger.warning("Failed to read SRT file %s: %s", srt_path, e)
@@ -194,7 +194,7 @@ def _srt_timestamp_to_seconds(ts: str) -> float:
 def _parse_srt_blocks(srt_path: str) -> list[dict]:
     """Parse SRT into list of {start_secs, end_secs, text} dicts."""
     try:
-        with open(srt_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(srt_path, encoding="utf-8", errors="replace") as f:
             content = f.read()
     except OSError as e:
         logger.warning("Failed to read SRT for block parsing %s: %s", srt_path, e)
@@ -239,7 +239,7 @@ def _parse_srt_blocks(srt_path: str) -> list[dict]:
     return result
 
 
-def _find_phrase_in_blocks(blocks: list[dict], phrase: str) -> Optional[dict]:
+def _find_phrase_in_blocks(blocks: list[dict], phrase: str) -> dict | None:
     """
     Find the first SRT block whose text contains the phrase.
 
@@ -335,9 +335,9 @@ def write_chapter_srt_sidecar(
     chapter_id: int,
     start_time,
     end_time,
-    session_date: Optional[str] = None,
-    channel_slug: Optional[str] = None,
-) -> Optional[Path]:
+    session_date: str | None = None,
+    channel_slug: str | None = None,
+) -> Path | None:
     """Persist a padded, absolute-timestamped SRT sidecar for one chapter.
 
     Locates the source via ``find_srt_for_chapter`` (never passing
@@ -507,7 +507,7 @@ def _window_srt_text(video_id: str, start_seconds: float, end_seconds: float) ->
     return " ".join(texts)
 
 
-def score_turn_interest(window_text: str, completion_fn=None) -> Optional[int]:
+def score_turn_interest(window_text: str, completion_fn=None) -> int | None:
     """Score a turn's SRT window 0–10 for YouTube newsworthiness.
 
     Mirrors the robustness pattern of ``extract_lapidary_quote``:
@@ -557,7 +557,7 @@ def score_turn_interest(window_text: str, completion_fn=None) -> Optional[int]:
 def select_pretrim_window(
     srt_path: str,
     target_secs: int = 360,
-) -> Optional[dict]:
+) -> dict | None:
     """
     Use AI to identify the most engaging window in the SRT content.
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -176,7 +176,7 @@ class TestUtcNormalizeRows:
         result = utc_normalize_row(row)
 
         normalized = result["youtube_upload_date"]
-        assert normalized.tzinfo == timezone.utc
+        assert normalized.tzinfo == UTC
         assert (normalized.year, normalized.month, normalized.day) == (2026, 8, 20)
         assert (normalized.hour, normalized.minute) == (10, 0)
 
@@ -264,7 +264,7 @@ class TestXComSerializerRoundTrip:
     def test_offset_zero_round_trips_before_and_after_normalization(self):
         row = {
             "chapter_id": 1,
-            "youtube_upload_date": datetime(2026, 8, 20, 10, 0, tzinfo=timezone.utc),
+            "youtube_upload_date": datetime(2026, 8, 20, 10, 0, tzinfo=UTC),
         }
 
         raw_result = _xcom_round_trip([row])

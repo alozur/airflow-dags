@@ -18,7 +18,6 @@ from congress_videos.modules.chapter_speaker_resolution import (
     SpeakerMatch,
 )
 
-
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------

@@ -70,7 +70,7 @@ class _StubYoutubeDL:
     def __init__(self, *args, **kwargs) -> None:
         self.params = kwargs
 
-    def __enter__(self) -> "_StubYoutubeDL":
+    def __enter__(self) -> _StubYoutubeDL:
         return self
 
     def __exit__(self, *_exc_info) -> None:

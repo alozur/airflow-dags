@@ -11,7 +11,6 @@ from congress_videos.modules.youtube.youtube_upload import (
     prepare_chapter_upload_config,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers / builder functions
 # ---------------------------------------------------------------------------

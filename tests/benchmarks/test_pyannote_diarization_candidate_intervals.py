@@ -7,7 +7,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 CLI = Path("benchmarks/pyannote_diarization/candidate_intervals.py")
 
 

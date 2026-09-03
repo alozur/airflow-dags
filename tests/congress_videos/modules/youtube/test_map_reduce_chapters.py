@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from congress_videos.modules.youtube.map_reduce_chapters import (
     Window,
+    _resolve_seams,
     map_chapters,
     map_reduce_identify_chapters,
     reduce_chapters,
     window_srt,
-    _resolve_seams,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

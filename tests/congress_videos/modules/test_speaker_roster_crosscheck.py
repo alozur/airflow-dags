@@ -6,7 +6,6 @@ accept/reject/no_opinion classification.
 """
 from __future__ import annotations
 
-
 # ---------------------------------------------------------------------------
 # chapter_roster_mentions
 # ---------------------------------------------------------------------------

@@ -5,10 +5,9 @@ from __future__ import annotations
 import sys
 import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, call, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -74,6 +73,7 @@ class TestDownloadWithPytubefix:
         mocker.patch.dict(sys.modules, {"pytubefix": fake_pytubefix, "pytubefix.cli": fake_cli})
 
         import importlib
+
         from utils import youtube_downloader
         importlib.reload(youtube_downloader)
 
@@ -86,8 +86,8 @@ class TestDownloadWithPytubefix:
 
     def test_adaptive_stream_with_ffmpeg_merge_succeeds(self, tmp_path, mocker):
         """Adaptive video+audio streams with successful ffmpeg merge returns success."""
-        import subprocess
         import importlib
+        import subprocess
 
         # Create fake output files so size checks pass
         video_tmp = tmp_path / "vid1_video_temp.webm"

@@ -1,14 +1,17 @@
 # dags/repo/utils/airflow_helpers.py
-from typing import Any, Callable, Iterable, Optional
-from airflow.models.taskinstance import TaskInstance
-from datetime import datetime, timezone
 import os
+from collections.abc import Callable, Iterable
+from datetime import UTC, datetime, timezone
+from typing import Any, Optional
+
+from airflow.models.taskinstance import TaskInstance
+
 
 def xcom_task(
   ti: TaskInstance,
   func: Callable,
   output_key: str,
-  input_key: Optional[str] = None,
+  input_key: str | None = None,
   branch: bool = False
 ):
   """
@@ -44,13 +47,13 @@ def ensure_project_data_directory(project_name: str, base_data_path: str = "/opt
   :return: Full path to the project data directory
   """
   project_data_path = os.path.join(base_data_path, project_name)
-  
+
   if not os.path.exists(project_data_path):
       os.makedirs(project_data_path, exist_ok=True)
       print(f"Created project data directory: {project_data_path}")
   else:
       print(f"Project data directory already exists: {project_data_path}")
-  
+
   return project_data_path
 
 
@@ -64,8 +67,8 @@ def _to_utc(value: Any) -> Any:
     if not isinstance(value, datetime):
         return value
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def utc_normalize_row(row: Any) -> Any:

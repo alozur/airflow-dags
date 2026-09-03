@@ -850,7 +850,7 @@ class TestApplyTextGateLlmFallback:
 
     def test_happy_path_gives_llm_resolved(self):
         """Roster-validated LLM name -> llm_resolved, confidence=0.85."""
-        from congress_videos.modules.speaker_turns import _apply_text_gate, LLM_RESOLVED_CONFIDENCE
+        from congress_videos.modules.speaker_turns import LLM_RESOLVED_CONFIDENCE, _apply_text_gate
         t = 100.0
         segments = [_no_phrase_segment(t)]
         srt_blocks = _intro_blocks(t)
@@ -1128,7 +1128,7 @@ class TestDetectTurns:
 
     def test_gap_merge_applied(self):
         """Two same-speaker changes with tiny gap → gap merge applied."""
-        from congress_videos.modules.speaker_turns import detect_turns, Turn
+        from congress_videos.modules.speaker_turns import Turn, detect_turns
         chapter = _make_chapter()
         # Two consecutive changes to SPEAKER_01 with 0.5s gap between them
         changes = [

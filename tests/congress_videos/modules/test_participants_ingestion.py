@@ -112,8 +112,8 @@ class TestFetchActiveDeputies:
     def test_portlet_post_default(self, mock_requests, monkeypatch):
         """Default path: POST to portlet URL with correct form body and browser UA."""
         from congress_videos.config.constants import (
-            CONGRESO_DEPUTIES_PORTLET_URL,
             CONGRESO_BROWSER_USER_AGENT,
+            CONGRESO_DEPUTIES_PORTLET_URL,
         )
 
         monkeypatch.delenv("CONGRESO_DEPUTIES_URL", raising=False)
@@ -295,6 +295,7 @@ class TestParseDeputies:
     def test_slug_key_present_in_participant_record(self):
         """ParticipantRecord TypedDict has a 'slug' key (non-optional str)."""
         import typing
+
         from congress_videos.modules.participants_ingestion import ParticipantRecord
 
         hints = typing.get_type_hints(ParticipantRecord)

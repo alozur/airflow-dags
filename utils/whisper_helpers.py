@@ -14,7 +14,6 @@ from typing import Dict, List, Optional
 
 import requests
 
-
 # Whisper API configuration
 # From docker network: whisper-api:9000
 # From host: localhost:9000
@@ -25,7 +24,7 @@ WHISPER_API_URL = f"http://{WHISPER_API_HOST}:{WHISPER_API_PORT}"
 # Process-lifetime cache of loaded Whisper models, keyed by model_size
 # (issue #202) — loading a model is expensive; repeated transcription calls
 # within one process (e.g. one chunk per XCom task) must not reload it.
-_MODEL_CACHE: Dict[str, object] = {}
+_MODEL_CACHE: dict[str, object] = {}
 
 
 def _get_cached_model(model_size: str):
@@ -131,7 +130,7 @@ def transcribe_audio_file_with_local_whisper(
     language: str = "es",
     model_size: str = "tiny",
     save_srt: bool = True,
-) -> Dict:
+) -> dict:
     """
     Transcribe audio using local OpenAI Whisper library with SRT generation.
 
@@ -220,7 +219,7 @@ def transcribe_audio_file(
     use_local_whisper: bool = True,
     model_size: str = "tiny",
     save_srt: bool = True,
-) -> Dict:
+) -> dict:
     """
     Transcribe a single audio file.
 
@@ -336,10 +335,10 @@ def transcribe_audio_file(
 
 
 def transcribe_audio_chunks(
-    audio_chunks: List[Dict],
+    audio_chunks: list[dict],
     language: str = "es",
     timeout: int = 3600
-) -> Dict:
+) -> dict:
     """
     Transcribe multiple audio chunks using the Whisper API.
 
@@ -407,7 +406,7 @@ def transcribe_audio_chunks(
     }
 
 
-def merge_srt_files(srt_files: List[str], output_path: str) -> Dict:
+def merge_srt_files(srt_files: list[str], output_path: str) -> dict:
     """
     Merge multiple SRT files into one, simplifying the format.
 
@@ -445,7 +444,7 @@ def merge_srt_files(srt_files: List[str], output_path: str) -> Dict:
                 logging.warning(f"SRT file not found: {srt_file}")
                 continue
 
-            with open(srt_file, 'r', encoding='utf-8') as f:
+            with open(srt_file, encoding='utf-8') as f:
                 content = f.read()
 
             # Parse SRT entries

@@ -96,7 +96,7 @@ def download_with_pytubefix(
     youtube_url: str,
     output_dir: str,
     min_resolution: int = 720,
-) -> Dict[str, any]:
+) -> dict[str, any]:
     """
     Download YouTube video using pytubefix (alternative to yt-dlp).
 
@@ -275,7 +275,7 @@ def download_youtube_video_for_upload(
     cookies_file: str = "/opt/airflow/data/congress_videos/youtube_cookies.txt",
     use_pytubefix_first: bool = True,
     guard_live_status: bool = True,
-) -> Dict[str, any]:
+) -> dict[str, any]:
     """
     Download YouTube video in format ready for re-upload to YouTube.
 
@@ -415,7 +415,7 @@ def download_youtube_video_for_upload(
                 logger.info(f"✅ Download complete: {file_path.name}")
                 logger.info(f"   Size: {file_size_mb:.2f} MB")
                 logger.info(f"   Duration: {info.get('duration_string')}")
-                logger.info(f"   Ready for YouTube upload!")
+                logger.info("   Ready for YouTube upload!")
                 try:
                     _warn_if_not_h264(str(file_path), context=info.get("id") or youtube_url)
                 except Exception as e:
@@ -443,7 +443,7 @@ def download_audio_only(
     output_dir: str,
     convert_to_mp3: bool = False,
     audio_format: str = "webm",
-) -> Dict[str, any]:
+) -> dict[str, any]:
     """
     Download audio only from YouTube video.
 
@@ -547,7 +547,7 @@ def download_audio_in_chunks(
     output_dir: str,
     chunk_duration_minutes: int = 10,
     audio_format: str = "webm",
-) -> Dict[str, any]:
+) -> dict[str, any]:
     """
     Download audio from YouTube and split into time-based chunks.
 
@@ -690,7 +690,7 @@ def merge_video_audio_ffmpeg(
     video_path: str,
     audio_path: str,
     output_path: str,
-) -> Dict[str, any]:
+) -> dict[str, any]:
     """
     Merge separate video and audio files using ffmpeg.
 
@@ -713,7 +713,7 @@ def merge_video_audio_ffmpeg(
     }
 
     try:
-        logger.info(f"Merging video and audio with ffmpeg...")
+        logger.info("Merging video and audio with ffmpeg...")
         logger.info(f"  Video: {video_path}")
         logger.info(f"  Audio: {audio_path}")
         logger.info(f"  Output: {output_path}")
@@ -760,7 +760,7 @@ def merge_video_audio_moviepy(
     video_path: str,
     audio_path: str,
     output_path: str,
-) -> Dict[str, any]:
+) -> dict[str, any]:
     """
     Merge separate video and audio files using MoviePy (no ffmpeg binary needed).
 
@@ -790,7 +790,7 @@ def merge_video_audio_moviepy(
     }
 
     try:
-        logger.info(f"Merging video and audio with MoviePy (this may take a while)...")
+        logger.info("Merging video and audio with MoviePy (this may take a while)...")
         logger.info(f"  Video: {video_path}")
         logger.info(f"  Audio: {audio_path}")
         logger.info(f"  Output: {output_path}")
@@ -820,8 +820,8 @@ def merge_video_audio_moviepy(
 def download_youtube_subtitles(
     youtube_url: str,
     output_dir: str,
-    languages: List[str] = None
-) -> Dict:
+    languages: list[str] = None
+) -> dict:
     """
     Download SRT subtitles directly from YouTube if available.
 
@@ -953,7 +953,7 @@ def download_youtube_subtitles(
             # Simply copy the content from the downloaded subtitle to merged file
             logger.info(f"Creating merged subtitle file from: {main_subtitle}")
 
-            with open(main_subtitle, 'r', encoding='utf-8') as src:
+            with open(main_subtitle, encoding='utf-8') as src:
                 subtitle_content = src.read()
 
             with open(merged_path, 'w', encoding='utf-8') as dst:
@@ -972,7 +972,7 @@ def download_youtube_subtitles(
             logger.warning(f"Could not copy subtitles to merged file: {e}")
             result['merged_srt_path'] = main_subtitle
 
-        logger.info(f"✅ Successfully downloaded subtitles from YouTube!")
+        logger.info("✅ Successfully downloaded subtitles from YouTube!")
         logger.info(f"   Languages: {[f['language'] for f in downloaded_files]}")
         logger.info(f"   Main subtitle: {result['merged_srt_path']}")
 

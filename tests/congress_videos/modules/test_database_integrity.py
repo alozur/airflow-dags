@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Fixtures (mirrors test_database.py pattern)
 # ---------------------------------------------------------------------------
@@ -108,6 +107,7 @@ class TestRecordSourceIntegrityFailure:
     def test_default_retry_hours_is_12(self, db):
         """Default retry_after_hours must be 12."""
         import inspect
+
         from congress_videos.modules.database import CongressionalVideoDB
 
         sig = inspect.signature(CongressionalVideoDB.record_source_integrity_failure)

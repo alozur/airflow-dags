@@ -37,7 +37,7 @@ checkpoint) only.
 import logging
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
@@ -552,7 +552,7 @@ with DAG(
         "thumbnail/title for eligible videos (issue #102)."
     ),
     schedule=None,
-    start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    start_date=datetime(2026, 1, 1, tzinfo=UTC),
     catchup=False,
     max_active_runs=1,
     tags=["congress", "youtube", "analytics", "actions"],

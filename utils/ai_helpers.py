@@ -62,7 +62,7 @@ def reset_openai_quota_latch() -> None:
     _openai_quota_latched = False
 
 
-def classify_openai_error(exc: BaseException) -> Dict[str, Any]:
+def classify_openai_error(exc: BaseException) -> dict[str, Any]:
     """Classify an openai>=2 exception as permanent, transient, or unknown.
 
     Returns {"permanent": True|False|None, "type": str|None, "code": str|None,
@@ -96,7 +96,7 @@ def classify_openai_error(exc: BaseException) -> Dict[str, Any]:
     status = getattr(exc, "status_code", None)
 
     if exc_type == "insufficient_quota" or exc_code in _QUOTA_CODES:
-        permanent: Optional[bool] = True
+        permanent: bool | None = True
     elif status in (401, 403):
         permanent = True
     elif status == 429 or (isinstance(status, int) and 500 <= status < 600):
@@ -120,8 +120,8 @@ def generate_chat_completion(
     system_prompt: str,
     user_prompt: str,
     model: str = LLM_DEFAULT,
-    timeout: Optional[float] = None,
-) -> Dict[str, Any]:
+    timeout: float | None = None,
+) -> dict[str, Any]:
     """
     Generate a chat completion using OpenAI API.
 
@@ -231,7 +231,7 @@ def generate_chat_completion(
         }
 
 
-def parse_json_response(response_text: str) -> Dict[str, Any]:
+def parse_json_response(response_text: str) -> dict[str, Any]:
     """
     Parse JSON from OpenAI response, handling markdown code blocks.
 
@@ -276,8 +276,8 @@ def generate_json_completion(
     system_prompt: str,
     user_prompt: str,
     model: str = LLM_CHEAP,
-    timeout: Optional[float] = None,
-) -> Dict[str, Any]:
+    timeout: float | None = None,
+) -> dict[str, Any]:
     """
     Generate a JSON completion using OpenAI API with automatic parsing.
 

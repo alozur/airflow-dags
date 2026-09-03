@@ -8,11 +8,10 @@ cap per video.
 from __future__ import annotations
 
 from contextlib import ExitStack
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # DAG shape (8.1)
@@ -1124,7 +1123,7 @@ class TestSnapshotAgeDays:
 
         assert _snapshot_age_days("not-a-datetime") is None
 
-    @pytest.mark.parametrize("tzinfo", [None, timezone.utc])
+    @pytest.mark.parametrize("tzinfo", [None, UTC])
     def test_age_in_whole_days_for_naive_and_aware(self, tzinfo):
         from congress_videos.video_analytics_actions_dag import _snapshot_age_days
 

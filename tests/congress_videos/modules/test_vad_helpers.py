@@ -21,7 +21,6 @@ from congress_videos.modules.vad_helpers import (
 )
 from congress_videos.modules.video_splitter import compute_ffmpeg_timeout
 
-
 # ---------------------------------------------------------------------------
 # first_sustained_speech_start — pure core (the spec coverage anchor)
 # ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@ specifically for monitoring the Congress YouTube channel for plenary sessions.
 import logging
 import os
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 import requests
@@ -294,7 +294,7 @@ def filter_finished_streams(
                 continue
 
             end_dt = datetime.fromisoformat(actual_end_time.replace("Z", "+00:00"))
-            elapsed = datetime.now(timezone.utc) - end_dt
+            elapsed = datetime.now(UTC) - end_dt
 
             # (c) cheap pre-probe skip: obviously too fresh
             if elapsed < timedelta(minutes=guard_floor_minutes):
@@ -397,7 +397,7 @@ def get_video_details(plenary_videos, min_hours_since_end: int = 12):
                 continue
 
             end_dt = datetime.fromisoformat(actual_end_time.replace("Z", "+00:00"))
-            elapsed = datetime.now(timezone.utc) - end_dt
+            elapsed = datetime.now(UTC) - end_dt
             if elapsed < timedelta(hours=min_hours_since_end):
                 logging.info(
                     f"Skipping {video_id}: ended {elapsed} ago, "
@@ -709,9 +709,9 @@ def download_and_read_agenda(parsed_links, target_date: str):
 
     # Import path helpers
     from congress_videos.config.paths import (
+        ensure_directory_exists,
         get_download_file_path,
         get_download_video_path,
-        ensure_directory_exists,
     )
 
     # Headers to make the request look like it's from a real browser

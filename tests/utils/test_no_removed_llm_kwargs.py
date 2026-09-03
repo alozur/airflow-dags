@@ -67,7 +67,7 @@ class TestNoRemovedLlmKwargsOnAnyCall:
         violations = _find_violations()
         assert violations == [], (
             "Found forbidden temperature/max_tokens/max_completion_tokens "
-            f"kwargs at call sites:\n" + "\n".join(violations)
+            "kwargs at call sites:\n" + "\n".join(violations)
         )
 
 

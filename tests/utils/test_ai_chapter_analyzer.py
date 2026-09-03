@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # --------------------------------------------------------------------------- #
 # parse_timestamp_to_seconds
 # --------------------------------------------------------------------------- #
@@ -67,7 +66,7 @@ class TestFormatSecondsToTimestamp:
 
     def test_round_trip_parse_format(self):
         """parse_timestamp_to_seconds -> format_seconds_to_timestamp is lossless (no ms)."""
-        from utils.ai_chapter_analyzer import parse_timestamp_to_seconds, format_seconds_to_timestamp
+        from utils.ai_chapter_analyzer import format_seconds_to_timestamp, parse_timestamp_to_seconds
 
         original = "02:45:33"
         seconds = parse_timestamp_to_seconds(original)
@@ -500,6 +499,7 @@ class TestDetectSilenceGapsAdaptive:
     def test_adaptive_fallback_when_no_gaps_pass(self, caplog):
         """Spec #13: when adaptive produces 0 gaps, falls back to fixed with WARNING."""
         import logging
+
         from utils.ai_chapter_analyzer import detect_silence_gaps
 
         # All gaps are tiny — p75 would be huge, but so are all gaps tiny.
