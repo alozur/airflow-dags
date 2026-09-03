@@ -123,6 +123,86 @@ def resolve_chapter_speakers(
 # ---------------------------------------------------------------------------
 
 
+def _first_raw_match_by_mention(raw_matches: list[dict], capped_mentions: list[str]) -> dict[str, dict]:
+    """Keep the FIRST raw entry per mention; ignore entries for mentions we
+    did not ask about (hallucinated or duplicated echoes).
+    """
+    raw_by_mention: dict[str, dict] = {}
+    for entry in raw_matches:
+        mention = entry.get("mention")
+        if mention in capped_mentions and mention not in raw_by_mention:
+            raw_by_mention[mention] = entry
+    return raw_by_mention
+
+
+def _parse_confidence(value) -> float | None:
+    """Parse a raw confidence value to ``float``.
+
+    Returns ``None`` on parse failure only — a structurally valid ``0.0``
+    is a real value, never collapsed with a missing/non-numeric confidence.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _accept_matches(
+    capped_mentions: list[str],
+    raw_by_mention: dict[str, dict],
+    roster_by_slug: dict[str, dict],
+) -> tuple[list[SpeakerMatch], dict[str, SpeakerMatch]]:
+    """Validate each raw match against the roster and the confidence gate.
+
+    Returns the accepted matches (in ``capped_mentions`` order) and the
+    ``by_mention`` lookup.
+    """
+    matches: list[SpeakerMatch] = []
+    by_mention: dict[str, SpeakerMatch] = {}
+    for mention in capped_mentions:
+        entry = raw_by_mention.get(mention)
+        if entry is None:
+            continue
+
+        slug = entry.get("participant_slug")
+        if not slug or slug not in roster_by_slug:
+            logger.debug(
+                "resolve_chapter_speakers: rejecting mention %r — slug %r not in roster",
+                mention,
+                slug,
+            )
+            continue
+
+        confidence = _parse_confidence(entry.get("confidence"))
+        if confidence is None:
+            logger.debug(
+                "resolve_chapter_speakers: rejecting mention %r — invalid confidence %r",
+                mention,
+                entry.get("confidence"),
+            )
+            continue
+
+        if confidence < CHAPTER_SPEAKER_MIN_CONFIDENCE:
+            logger.debug(
+                "resolve_chapter_speakers: rejecting mention %r — confidence %.2f < %.2f",
+                mention,
+                confidence,
+                CHAPTER_SPEAKER_MIN_CONFIDENCE,
+            )
+            continue
+
+        match = SpeakerMatch(
+            mention=mention,
+            participant_slug=slug,
+            display_name=roster_by_slug[slug].get("display_name", ""),
+            confidence=confidence,
+            evidence=entry.get("evidence", ""),
+        )
+        matches.append(match)
+        by_mention[mention] = match
+    return matches, by_mention
+
+
 def _resolve_inner(
     mentions: list[str],
     participants: list[dict],
@@ -162,58 +242,9 @@ def _resolve_inner(
 
     raw_matches = response["data"].get("matches") or []
 
-    # Keep the FIRST raw entry per mention; ignore entries for mentions we
-    # did not ask about (hallucinated or duplicated echoes).
-    raw_by_mention: dict[str, dict] = {}
-    for entry in raw_matches:
-        mention = entry.get("mention")
-        if mention in capped_mentions and mention not in raw_by_mention:
-            raw_by_mention[mention] = entry
+    raw_by_mention = _first_raw_match_by_mention(raw_matches, capped_mentions)
 
-    matches: list[SpeakerMatch] = []
-    by_mention: dict[str, SpeakerMatch] = {}
-    for mention in capped_mentions:
-        entry = raw_by_mention.get(mention)
-        if entry is None:
-            continue
-
-        slug = entry.get("participant_slug")
-        if not slug or slug not in roster_by_slug:
-            logger.debug(
-                "resolve_chapter_speakers: rejecting mention %r — slug %r not in roster",
-                mention,
-                slug,
-            )
-            continue
-
-        try:
-            confidence = float(entry.get("confidence"))
-        except (TypeError, ValueError):
-            logger.debug(
-                "resolve_chapter_speakers: rejecting mention %r — invalid confidence %r",
-                mention,
-                entry.get("confidence"),
-            )
-            continue
-
-        if confidence < CHAPTER_SPEAKER_MIN_CONFIDENCE:
-            logger.debug(
-                "resolve_chapter_speakers: rejecting mention %r — confidence %.2f < %.2f",
-                mention,
-                confidence,
-                CHAPTER_SPEAKER_MIN_CONFIDENCE,
-            )
-            continue
-
-        match = SpeakerMatch(
-            mention=mention,
-            participant_slug=slug,
-            display_name=roster_by_slug[slug].get("display_name", ""),
-            confidence=confidence,
-            evidence=entry.get("evidence", ""),
-        )
-        matches.append(match)
-        by_mention[mention] = match
+    matches, by_mention = _accept_matches(capped_mentions, raw_by_mention, roster_by_slug)
 
     if matches:
         logger.info(
