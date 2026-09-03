@@ -519,7 +519,7 @@ COMMENT ON COLUMN production.video_chapters.last_upload_error IS 'Last recorded 
 COMMENT ON VIEW production.uploadable_chapters IS 'Shows chapters eligible for YouTube upload (relevance_score >= 2)';
 COMMENT ON VIEW production.chapter_statistics IS 'Provides aggregate statistics about chapters by source video';
 
--- View: uploadable_turns (migration 040)
+-- View: uploadable_turns (migration 044)
 -- Shows speaker_turn_videos rows that are PREPARED and not yet uploaded.
 -- Cumulative lineage — this block must stay in lockstep with the LATEST view migration
 -- under congress_videos/sql/migrations/ (guarded by tests/congress_videos/sql/test_production_schema.py):
@@ -532,6 +532,9 @@ COMMENT ON VIEW production.chapter_statistics IS 'Provides aggregate statistics 
 --   040 NOT COALESCE(st.is_procedural, FALSE) exclusion + procedural_seconds floor
 --       adjustment — the published clip (span minus excised procedural spans),
 --       not the raw span, must clear 300s (issue #143)
+--   044 FIFO tie-break appended to the outer ORDER BY (materialized_at ASC,
+--       turn_id ASC) — the three editorial keys can tie completely, so LIMIT 1
+--       was returning an arbitrary row; the order is now total (issue #328)
 
 DROP VIEW IF EXISTS production.uploadable_turns;
 CREATE VIEW production.uploadable_turns AS
@@ -598,6 +601,18 @@ SELECT * FROM (
 -- span (issue #143).
 WHERE dedup.group_end_seconds - dedup.group_start_seconds - dedup.procedural_seconds >= 300
 ORDER BY COALESCE(dedup.interest_score, 1) DESC,  -- PRIMARY: interest score (NULL → INTEREST_NEUTRAL=1)
-         dedup.relevance_score DESC, dedup.session_date DESC;
+         dedup.relevance_score DESC,
+         dedup.session_date DESC,
+         -- FIFO tie-break (issue #328). Once the three editorial keys are exhausted
+         -- every remaining clip has already cleared the full eligibility gauntlet and
+         -- is equally publishable, so the honest default is first-prepared-first-
+         -- published: with N tied clips and a 1/day drain, every clip publishes within
+         -- N days. This ordering is DELIBERATE, not accidental — do not drop it.
+         dedup.materialized_at ASC,
+         -- Total-order backstop: NOW() is transaction-scoped, so clips materialized in
+         -- one batch share an identical materialized_at. turn_id is UNIQUE on
+         -- speaker_turn_videos (025) and the outer result holds one row per
+         -- output_path, so this key makes LIMIT 1 deterministic by contract.
+         dedup.turn_id ASC;
 
 COMMENT ON VIEW production.uploadable_turns IS 'Speaker turn videos eligible for YouTube upload — prepared_at IS NOT NULL (issue #146), NOT is_upload_abandoned (issue #141), NOT is_procedural (issue #143), and published clip duration (span minus excised procedural seconds) >= 300s (issue #234/#143)';
