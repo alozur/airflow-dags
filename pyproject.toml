@@ -114,7 +114,6 @@ indent-style = "space"
 "benchmarks/pyannote_diarization/candidate_intervals.py" = ["C901"]
 "benchmarks/pyannote_diarization/server.py" = ["C901", "SIM105", "SIM115"]
 "benchmarks/yamnet_applause/server.py" = ["C901", "N806", "SIM105", "SIM115"]
-"congress_videos/modules/chapter_speaker_resolution.py" = ["C901"]
 "congress_videos/modules/materialization_executor.py" = ["SIM105"]
 "congress_videos/modules/participants_enrichment.py" = ["C901", "SIM108"]
 "congress_videos/modules/speaker_normalization.py" = ["C901"]

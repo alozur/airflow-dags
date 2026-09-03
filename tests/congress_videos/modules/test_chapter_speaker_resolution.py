@@ -158,6 +158,28 @@ class TestConfidenceGate:
         assert result.primary is not None
         assert result.primary.participant_slug == "pedro-sanchez"
 
+    def test_confidence_0_0_parses_as_a_real_value_then_is_rejected(self):
+        """A structurally valid 0.0 confidence must parse (not fail parsing)
+        and then be rejected by the 0.80 gate — never collapsed with a
+        missing/non-numeric confidence (issue #272 slice 2, D1)."""
+        from congress_videos.modules.chapter_speaker_resolution import resolve_chapter_speakers
+
+        participants = _make_participants()
+        completion_fn = _stub_completion(
+            matches=[
+                {
+                    "mention": "Pedro Sanchez",
+                    "participant_slug": "pedro-sanchez",
+                    "confidence": 0.0,
+                    "evidence": "structurally valid zero, not a parse failure",
+                }
+            ],
+        )
+
+        result = resolve_chapter_speakers(["Pedro Sanchez"], participants, completion_fn=completion_fn)
+
+        assert result.primary is None
+
 
 # ---------------------------------------------------------------------------
 # Empty mentions / roster — no LLM call
@@ -297,3 +319,122 @@ class TestCompletionFailureNeverRaises:
 
         assert result.matches == ()
         assert result.primary is None
+
+
+# ---------------------------------------------------------------------------
+# _parse_confidence (issue #272 slice 2: extracted from _resolve_inner to
+# reduce cyclomatic complexity)
+# ---------------------------------------------------------------------------
+
+
+class TestParseConfidence:
+    """_parse_confidence(value) -> float | None; None on parse failure only."""
+
+    def test_float_zero_parses_to_float_zero(self):
+        """A structurally valid 0.0 must parse, never collapse with failure."""
+        from congress_videos.modules.chapter_speaker_resolution import _parse_confidence
+
+        result = _parse_confidence(0.0)
+
+        assert result == 0.0
+        assert result is not None
+
+    def test_string_zero_parses_to_float_zero(self):
+        """A numeric string '0.0' parses to the float 0.0."""
+        from congress_videos.modules.chapter_speaker_resolution import _parse_confidence
+
+        assert _parse_confidence("0.0") == 0.0
+
+    def test_none_value_returns_none(self):
+        """A missing confidence (None) returns the None sentinel."""
+        from congress_videos.modules.chapter_speaker_resolution import _parse_confidence
+
+        assert _parse_confidence(None) is None
+
+    def test_non_numeric_string_returns_none(self):
+        """A non-numeric string ('abc') returns the None sentinel."""
+        from congress_videos.modules.chapter_speaker_resolution import _parse_confidence
+
+        assert _parse_confidence("abc") is None
+
+
+# ---------------------------------------------------------------------------
+# _first_raw_match_by_mention (issue #272 slice 2)
+# ---------------------------------------------------------------------------
+
+
+class TestFirstRawMatchByMention:
+    """_first_raw_match_by_mention(raw_matches, capped_mentions) -> dict[str, dict]."""
+
+    def test_keeps_first_entry_per_mention(self):
+        """When the model echoes the same mention twice, the first entry wins."""
+        from congress_videos.modules.chapter_speaker_resolution import (
+            _first_raw_match_by_mention,
+        )
+
+        raw_matches = [
+            {"mention": "Pedro Sanchez", "participant_slug": "pedro-sanchez", "confidence": 0.9},
+            {"mention": "Pedro Sanchez", "participant_slug": "someone-else", "confidence": 0.5},
+        ]
+
+        result = _first_raw_match_by_mention(raw_matches, ["Pedro Sanchez"])
+
+        assert result["Pedro Sanchez"]["participant_slug"] == "pedro-sanchez"
+
+    def test_ignores_entries_for_mentions_not_asked_about(self):
+        """A hallucinated mention absent from capped_mentions is dropped."""
+        from congress_videos.modules.chapter_speaker_resolution import (
+            _first_raw_match_by_mention,
+        )
+
+        raw_matches = [
+            {"mention": "Alguien Inventado", "participant_slug": "x", "confidence": 0.9},
+        ]
+
+        result = _first_raw_match_by_mention(raw_matches, ["Pedro Sanchez"])
+
+        assert result == {}
+
+    def test_empty_raw_matches_returns_empty_dict(self):
+        """No raw matches at all -> empty dict."""
+        from congress_videos.modules.chapter_speaker_resolution import (
+            _first_raw_match_by_mention,
+        )
+
+        assert _first_raw_match_by_mention([], ["Pedro Sanchez"]) == {}
+
+
+# ---------------------------------------------------------------------------
+# _accept_matches (issue #272 slice 2) — mutation-kill on the confidence
+# sentinel guard (spec: "Confidence parsing preserves the 0.0-vs-parse-
+# failure distinction")
+# ---------------------------------------------------------------------------
+
+
+class TestAcceptMatchesConfidenceSentinel:
+    def test_zero_confidence_logs_below_threshold_never_invalid(self, caplog):
+        """A 0.0 confidence must be logged as 'below threshold', never as
+        'invalid confidence' — this kills a mutant that replaces the `is
+        None` sentinel guard with a truthiness check (`if not confidence`),
+        which would misclassify 0.0 as a parse failure."""
+        import logging
+
+        from congress_videos.modules.chapter_speaker_resolution import _accept_matches
+
+        roster_by_slug = {"pedro-sanchez": {"slug": "pedro-sanchez", "display_name": "Pedro Sánchez"}}
+        raw_by_mention = {
+            "Pedro Sanchez": {
+                "mention": "Pedro Sanchez",
+                "participant_slug": "pedro-sanchez",
+                "confidence": 0.0,
+                "evidence": "structurally valid zero",
+            }
+        }
+
+        with caplog.at_level(logging.DEBUG):
+            matches, by_mention = _accept_matches(["Pedro Sanchez"], raw_by_mention, roster_by_slug)
+
+        assert matches == []
+        assert by_mention == {}
+        assert "confidence 0.00 < 0.80" in caplog.text
+        assert "invalid confidence" not in caplog.text
