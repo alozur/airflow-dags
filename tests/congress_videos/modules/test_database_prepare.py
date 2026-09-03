@@ -98,7 +98,7 @@ class TestSelectUnpreparedTurns:
         assert 2 in params or "2" in query
 
     def test_default_limit_is_2(self):
-        """Default limit must be 2 (the nightly buffer size)."""
+        """Default limit must be 2 (the per-run buffer size)."""
         from congress_videos.modules.database import CongressionalVideoDB
 
         pg_mock, cursor = _make_conn(rows=[])

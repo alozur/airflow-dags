@@ -2510,7 +2510,7 @@ class TestTriggerThumbnailGenerationForwardsOutputPath:
 class TestPrepareThumbnailConfigSrtSidecar:
     """Upload path (issue #146 Fix C) no longer writes subtitles.srt for turns.
 
-    The nightly speaker_turn_prepare DAG now owns the turn subtitles.srt sidecar,
+    The speaker_turn_prepare DAG now owns the turn subtitles.srt sidecar,
     so _prepare_thumbnail_config must NOT write it at upload time. It still
     computes config['srt_fragment'] for the lapidary thumbnail quote.
     """

@@ -6,6 +6,7 @@ TDD cycle: RED tests written first; GREEN implementations follow.
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import subprocess
 from contextlib import ExitStack
@@ -87,7 +88,7 @@ class TestSpeakerTurnPrepareDagLoads:
             f"Import errors: {dagbag.import_errors}"
         )
 
-    def test_dag_schedule_is_0_2_daily(self):
+    def test_dag_schedule_is_none(self):
         """DAG schedule must be None (driven by chain trigger, not cron)."""
         from congress_videos.speaker_turn_prepare_dag import dag
 
@@ -1935,3 +1936,108 @@ class TestQaReresolutionNoSignalRegression:
         assert mock_crosscheck.call_count == 1
         mock_db.mark_turn_resolved.assert_called_once_with("/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1)
         mock_db.promote_turn_type_to_qa.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Module docstring <-> schedule consistency guard (issues #325, #328, #422, #428)
+# ---------------------------------------------------------------------------
+
+_CRON_RUN = re.compile(r"(?<![0-9*/,-])[0-9*/,-]+(?:[ \t]+[0-9*/,-]+){4}(?![0-9*/,-])")
+_PRESET = re.compile(r"@(?:once|hourly|daily|weekly|monthly|yearly|annually|continuous)\b")
+
+
+def _schedule_claim_tokens(text: str) -> list[str]:
+    """Return every cron-shaped run and Airflow preset macro stated in *text*."""
+    crons = [
+        m.group(0)
+        for m in _CRON_RUN.finditer(text)
+        if all(any(c.isdigit() or c == "*" for c in f) for f in m.group(0).split())
+    ]
+    return crons + [m.group(0) for m in _PRESET.finditer(text)]
+
+
+def _assert_no_schedule_claims_if_none(schedule_interval, doc: str) -> None:
+    """Assert *doc* states no schedule token, but only when *schedule_interval* is None.
+
+    A DAG with a real cron schedule is out of scope for this guard: it is free to
+    document its own cron. This is what keeps the guard inert on a DAG that legitimately
+    has a schedule, without needing a live DAG import to prove it.
+    """
+    if schedule_interval is not None:
+        return
+    hits = _schedule_claim_tokens(doc)
+    assert not hits, (
+        f"congress_videos/speaker_turn_prepare_dag.py declares schedule=None (line ~484) but its "
+        f"module docstring states schedule token(s) {hits!r}. A schedule=None DAG runs only when "
+        f"speaker_turn_videos triggers it, so a cron or preset in the docstring is a claim the code "
+        f"contradicts (the drift class behind issues #325/#328/#422/#428). Fix whichever is wrong: "
+        f"remove the token from the module docstring at the top of that file, or give the DAG a real "
+        f"cron in its schedule= argument in that same file (and then re-scope this guard)."
+    )
+
+
+class TestDocstringScheduleConsistency:
+    """The prepare DAG's module docstring must not claim a cron it does not have.
+
+    Documentation drift is the defect class behind issues #325 and #328, and #422
+    closed one instance of it in the uploader's docs; this guard closes the same
+    class for ``speaker_turn_prepare_dag``'s own module docstring (issue #428).
+    Scope is deliberately this one DAG: prose words such as "nightly" stay
+    untripwired by design, and this guard is never widened to the other five
+    ``schedule=None`` DAGs under ``congress_videos/`` or to ``docs/DAGS.md``.
+    """
+
+    def test_live_docstring_states_no_schedule(self):
+        """The live module docstring must not state a cron or preset token."""
+        import congress_videos.speaker_turn_prepare_dag as module
+        from congress_videos.speaker_turn_prepare_dag import dag
+
+        assert dag.schedule_interval is None, (
+            "speaker_turn_prepare_dag no longer declares schedule=None; re-scope this guard."
+        )
+        assert module.__doc__, "speaker_turn_prepare_dag lost its module docstring."
+        _assert_no_schedule_claims_if_none(dag.schedule_interval, module.__doc__)
+
+    def test_extractor_flags_the_pre_fix_docstring(self):
+        """Frozen pre-fix docstring text trips the extractor: the permanent discrimination proof."""
+        pre_fix = (
+            "Nightly preparation of up to N=2 unprepared TURN items. Generates all required\n"
+            "sidecars, validates video integrity with an ffmpeg decode check, then sets\n"
+            "prepared_at as the upload readiness gate.\n"
+            "\n"
+            "Schedule: 0 2 * * * UTC (off-peak; 02:00 avoids monitor scrape, reap, and upload\n"
+            "windows). The upload DAG runs at 0 19 * * *.\n"
+            "\n"
+            "Design constraints (non-negotiable):\n"
+            '- Strictly sequential: one PythonOperator, pool="nas_ffmpeg", pool_slots=1.\n'
+            "- No dynamic task mapping (.expand() is prohibited).\n"
+            "- prepared_at set ONLY after: all sidecars on disk AND ffmpeg decode check rc==0.\n"
+            "- Failures are self-healing: prepared_at stays NULL, retry next night.\n"
+        )
+
+        assert _schedule_claim_tokens(pre_fix) == ["0 2 * * *", "0 19 * * *"]
+
+    def test_extractor_accepts_the_corrected_docstring(self):
+        """Frozen corrected docstring text yields no schedule claim tokens."""
+        corrected = (
+            "Schedule: none (schedule=None). Every run is triggered by the "
+            "speaker_turn_videos chain via TriggerDagRunOperator."
+        )
+
+        assert _schedule_claim_tokens(corrected) == []
+
+    def test_extractor_flags_preset_macros(self):
+        """An Airflow preset macro is the same claim as a cron on a schedule=None DAG."""
+        assert _schedule_claim_tokens("Schedule: @daily.") == ["@daily"]
+
+    def test_extractor_ignores_clock_times_and_prose(self):
+        """Clock times and ordinary prose never form a 5-field cron-shaped run."""
+        prose = "Runs near 02:00 UTC. N=2 items. rc==0 on success."
+
+        assert _schedule_claim_tokens(prose) == []
+
+    def test_guard_is_inert_on_dag_with_real_cron_schedule(self):
+        """A DAG whose schedule_interval is not None is out of scope; the guard must not assert."""
+        doc_with_cron_token = "Schedule: 0 2 * * * UTC."
+
+        _assert_no_schedule_claims_if_none("0 2 * * *", doc_with_cron_token)

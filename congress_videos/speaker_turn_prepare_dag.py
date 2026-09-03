@@ -1,17 +1,17 @@
 """Speaker Turn Prepare DAG (issue #146).
 
-Nightly preparation of up to N=2 unprepared TURN items. Generates all required
+Prepares up to N=2 unprepared TURN items per run. Generates all required
 sidecars, validates video integrity with an ffmpeg decode check, then sets
 prepared_at as the upload readiness gate.
 
-Schedule: 0 2 * * * UTC (off-peak; 02:00 avoids monitor scrape, reap, and upload
-windows). The upload DAG runs at 0 19 * * *.
+Schedule: none (schedule=None). Every run is triggered by the
+speaker_turn_videos chain via TriggerDagRunOperator.
 
 Design constraints (non-negotiable):
 - Strictly sequential: one PythonOperator, pool="nas_ffmpeg", pool_slots=1.
 - No dynamic task mapping (.expand() is prohibited).
 - prepared_at set ONLY after: all sidecars on disk AND ffmpeg decode check rc==0.
-- Failures are self-healing: prepared_at stays NULL, retry next night.
+- Failures are self-healing: prepared_at stays NULL, retried on the next chain-triggered run.
 """
 
 import json
@@ -258,7 +258,7 @@ def _prepare_turns_callable() -> None:
     prepared_at semantics: video + srt + decode-check only.
 
     Any failure within a turn's steps leaves prepared_at NULL; the next
-    nightly run retries all steps from scratch.
+    chain-triggered run retries all steps from scratch.
     """
     db = CongressionalVideoDB()
     turns = db.select_unprepared_turns(limit=2)
@@ -440,7 +440,7 @@ def _prepare_turns_callable() -> None:
             if rc != 0:
                 logger.warning(
                     "_prepare_turns_callable: ffmpeg decode check failed for turn_id=%d "
-                    "(rc=%d) — prepared_at NOT set; will retry next night",
+                    "(rc=%d) — prepared_at NOT set; will retry on the next chain-triggered run",
                     turn_id,
                     rc,
                 )
@@ -453,7 +453,7 @@ def _prepare_turns_callable() -> None:
         except Exception as exc:
             logger.warning(
                 "_prepare_turns_callable: turn_id=%d preparation failed (%s) "
-                "— prepared_at NOT set; will retry next night",
+                "— prepared_at NOT set; will retry on the next chain-triggered run",
                 turn_id,
                 exc,
             )
@@ -469,7 +469,7 @@ default_args = {
     "depends_on_past": False,
     "email_on_failure": False,
     "email_on_retry": False,
-    "retries": 0,  # No retries — failures self-heal on next nightly run
+    "retries": 0,  # No retries — failures self-heal on the next chain-triggered run
     "retry_delay": timedelta(minutes=5),
 }
 
