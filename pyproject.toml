@@ -14,10 +14,10 @@ dependencies = [
     # _PIP_ADDITIONAL_REQUIREMENTS list in docker-compose.yml's x-airflow-common
     # block, plus a few transitive gaps (psycopg2, numpy) that were previously
     # only present in the conda env with no manifest capturing them.
-    # Pinned to match the production Docker runtime (Dockerfile: apache/airflow:2.10.2)
+    # Pinned to match the production Docker runtime (Dockerfile: apache/airflow:2.11.1)
     # so local `uv run pytest` exercises the same DAG/Operator API surface as prod,
     # instead of whatever latest-2.x resolves to.
-    "apache-airflow==2.10.2",
+    "apache-airflow==2.11.1",
     "apache-airflow-providers-postgres",
     "psycopg2-binary",
     "numpy",
