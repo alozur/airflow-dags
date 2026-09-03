@@ -1,7 +1,7 @@
 # Guía de Despliegue en NAS (Synology / QNAP)
 
-> Última actualización: 2026-05-23
-> Stack: Apache Airflow 2.10.2 · PostgreSQL 16 · Whisper ASR · Docker Compose
+> Última actualización: 2026-09-02
+> Stack: Apache Airflow 2.11.1 · PostgreSQL 16 · Whisper ASR · Docker Compose
 
 ---
 
@@ -68,7 +68,7 @@ El stack está compuesto por tres grupos de servicios Docker **independientes** 
 | Docker Engine | 20.10+ | última versión |
 | Docker Compose | v2 (`docker compose`) | v2.x |
 
-> **Nota sobre ARM:** La imagen base `apache/airflow:2.10.2` soporta ARM64 (Synology con procesadores ARM). `openai-whisper` también funciona en ARM. Verificar compatibilidad de `ffmpeg` en el NAS específico.
+> **Nota sobre ARM:** La imagen base `apache/airflow:2.11.1` soporta ARM64 (Synology con procesadores ARM). `openai-whisper` también funciona en ARM. Verificar compatibilidad de `ffmpeg` en el NAS específico.
 
 **Synology:** Activar Docker desde el Package Center. Requiere DSM 7+ y CPU x86-64 o serie Plus/Enterprise con ARM64.
 
@@ -220,20 +220,43 @@ POSTGRES_SCHEMA=production
 
 ## 6. Construcción de la imagen Docker
 
-La imagen `my-airflow:latest` se construye **localmente en el NAS** a partir del `Dockerfile` del repositorio.
+Las imágenes son **específicas por entorno** desde issue #255: `my-airflow:dev` (usada por `docker-compose.yml`) y `my-airflow:prod` (usada por `docker-compose.prod.yml`). Ya no existe una etiqueta `:latest` compartida — un contenedor de prod que se reinicie sin ninguna acción de despliegue siempre resuelve `my-airflow:prod`, nunca un build de dev no validado.
+
+Construir la imagen de **dev** localmente en el NAS a partir del `Dockerfile` del repositorio:
+
+> **El host del NAS no tiene `git`.** Solo los contenedores lo tienen (`init-dags` usa la
+> imagen `alpine/git`). Descargar el contexto de build como tarball con `curl`, que sí está
+> presente en `/usr/bin/curl`. El repositorio es público, así que no hace falta token.
 
 ```bash
-# Clonar el repositorio en el NAS (solo para construir la imagen)
-cd /tmp && git clone https://<GITHUB_USER>:<GITHUB_TOKEN>@github.com/<GITHUB_USER>/airflow-dags.git && \
-cd airflow-dags && docker build -t my-airflow:latest .
+# Fijar el commit exacto que se va a construir (nunca una rama móvil)
+SHA=<commit-sha-de-la-rama-del-PR>
+
+rm -rf /tmp/afb && mkdir -p /tmp/afb && cd /tmp/afb
+/usr/bin/curl -sL https://github.com/alozur/airflow-dags/archive/$SHA.tar.gz | /usr/bin/tar xz
+cd airflow-dags-$SHA
+/usr/local/bin/docker build -t my-airflow:dev .
 ```
 
-La imagen añade sobre `apache/airflow:2.10.2`:
+> **`ssh nas "<cadena>"` puede devolver exit 0 aunque un comando interno falle.** Abrir
+> siempre con `set -e` y comprobar el resultado de forma explícita (`docker images`), nunca
+> confiar en el código de salida del ssh. Es el mismo modo de fallo que enmascara un exit
+> code detrás de un `| tail`.
+
+Promover a **prod** es un `docker tag`, nunca un segundo build — la imagen es idéntica bit a bit (base + paquetes apt únicamente; el código de los DAGs llega vía el volumen `init-dags`, no la imagen), y evita drift de un `apt-get` re-ejecutado o un segundo build lento en el NAS:
+
+```bash
+docker tag my-airflow:dev my-airflow:prod
+```
+
+La imagen añade sobre `apache/airflow:2.11.1`:
 - `ffmpeg` — corte de vídeo y procesamiento de audio
 - `nodejs` + `npm` — soporte yt-dlp / descarga de YouTube
 - `git` — necesario para el DAG `git_sync_dag`
 
-Los paquetes Python (openai, yt-dlp, whisper, etc.) se instalan en el primer arranque vía `_PIP_ADDITIONAL_REQUIREMENTS`. Esto ralentiza el primer inicio (~5-10 min según velocidad de red), pero permite actualizar paquetes sin reconstruir la imagen.
+Los paquetes Python (openai, yt-dlp, whisper, etc.) se instalan en el primer arranque vía `_PIP_ADDITIONAL_REQUIREMENTS`. Esto ralentiza el primer inicio (~5-10 min según velocidad de red), pero permite actualizar paquetes sin reconstruir la imagen. Nótese que esta instalación pip **no está pineada** y se repite en cada arranque del contenedor — ver la nota de verificación post-despliegue en la sección 9.4.
+
+> **Rollback de emergencia:** tras el corte a etiquetas por entorno, la imagen `my-airflow` con la etiqueta huérfana previa (`latest`, build de Airflow 2.10.2) que queda en el NAS es el artefacto de rollback de coste cero. **No purgarla** hasta confirmar que tanto dev como prod están estables en 2.11.1 (ver sección 9.4).
 
 ---
 
@@ -306,6 +329,75 @@ docker logs airflow-scheduler-prod --tail=30
 ```
 
 El webserver tarda ~60 s en estar disponible (healthcheck con `start_period: 60s`).
+
+### 9.4 Runbook de seguridad para migraciones de la BD de metadatos (issue #255)
+
+Aplica a cualquier bump del núcleo de Airflow que implique una migración de esquema (p. ej. 2.10.2 → 2.11.1). El **superusuario de `postgres_shared` es `admin`, no `postgres`**.
+
+**Ventana recomendada: 14:00–20:00 UTC.** `postgres_shared` tiene `max_connections=100` compartidas entre seis stacks (focusgrove, habits, aurum, gym_app, n8n, airflow); tanto el `pg_dump` como el `recreate` del stack añaden presión de conexiones.
+
+#### Paso 1 — Backup verificado (obligatorio, antes de cualquier `up`)
+
+Por stack, antes de desplegar la nueva imagen en ese entorno:
+
+```bash
+ssh nas
+/usr/local/bin/docker exec postgres_shared pg_dump -U admin -Fc -d airflow_dev_db -f /tmp/airflow_dev_db_pre2111.dump
+/usr/local/bin/docker exec postgres_shared pg_restore --list /tmp/airflow_dev_db_pre2111.dump | head
+/usr/local/bin/docker cp postgres_shared:/tmp/airflow_dev_db_pre2111.dump /volume1/docker/backups/
+ls -l /volume1/docker/backups/airflow_dev_db_pre2111.dump   # debe ser distinto de cero
+```
+
+(sustituir `airflow_dev_db` por `airflow_db` para prod). **Gate obligatorio: NO continuar a `up` — y sobre todo NO ejecutar ningún `DROP DATABASE`** — hasta que el fichero tenga tamaño no-cero **y** `pg_restore --list` complete sin error.
+
+#### Paso 2 — Orden de despliegue (no negociable — construir la imagen ANTES de mergear)
+
+Un cambio en `docker-compose.yml`/`docker-compose.prod.yml` **no** llega al NAS por `git_sync` (ver sección 12.1) — requiere pegar el compose actualizado en Portainer y redeploy manual, o `docker compose up` por CLI. Si ese redeploy referencia `my-airflow:dev` y la imagen todavía no existe, el stack cae. El orden siguiente es seguro tanto si Portainer está en modo *Repository* (auto-redeploy) como en modo *paste* (manual):
+
+```
+Dev:  1. docker build -t my-airflow:dev .         (desde la rama del PR, en el NAS)
+      2. Paso 1 de este runbook (pg_dump airflow_dev_db + pg_restore --list)
+      3. merge del PR a dev
+      4. docker compose -f docker-compose.yml --env-file .env up -d
+      5. Checks de la sección "Paso 3" de abajo + `airflow dags list-import-errors` vacío
+
+Prod: 1. docker tag my-airflow:dev my-airflow:prod   (promoción, sin rebuild)
+      2. Paso 1 de este runbook (pg_dump airflow_db)
+      3. merge de dev a main
+      4. docker compose -f docker-compose.prod.yml --env-file .env up -d
+      5. Checks de la sección "Paso 3" de abajo + 0 errores de importación
+```
+
+`git_sync_dag` tiene `schedule=None` (`utils/git_sync_dag.py:32`) — nunca se dispara por cron. El vector real de refresco de código es `init-dags`, que hace `git reset --hard origin/<rama>` en cada `up` — código y reinstalación de `_PIP_ADDITIONAL_REQUIREMENTS` llegan juntos en el mismo `up`.
+
+#### Paso 3 — Verificación post-`up` (exit 0 NO es evidencia suficiente)
+
+**Hallazgo crítico:** el comando de `airflow-init` (`docker-compose.yml:202-209` / equivalente en prod) es `bash -c` **sin `set -e`** — dos comandos consecutivos (`airflow db init` y `airflow db migrate`) en el mismo script. Si `airflow db init` falla, el script sigue y solo el exit status de `airflow db migrate` se propaga. Un `airflow-init` con exit 0 **no prueba** que ambos pasos fueron limpios. Ejecutar explícitamente:
+
+```bash
+docker inspect --format '{{.State.ExitCode}}' airflow-init-dev      # debe ser 0
+docker logs airflow-init-dev 2>&1 | grep -iE 'error|traceback'      # debe estar vacío
+docker exec airflow-scheduler-dev airflow db check-migrations -t 0
+docker exec airflow-scheduler-dev airflow version                   # debe leer 2.11.1
+```
+
+(sustituir `-dev` por `-prod` para el stack de producción). El check de `airflow version` **no es cosmético**: `_PIP_ADDITIONAL_REQUIREMENTS` reinstala paquetes Python **sin pinear** en cada arranque del contenedor, y en teoría podría arrastrar el núcleo de Airflow fuera del pin del `Dockerfile`. Es el único check que confirma que el núcleo en ejecución es el que el `Dockerfile` fijó.
+
+#### Rollback
+
+**Camino autoritativo: restaurar desde el `pg_dump` + revertir la etiqueta de imagen** — no `airflow db downgrade`.
+
+```
+1. docker compose down
+2. DROP DATABASE <airflow_dev_db|airflow_db>; CREATE DATABASE <...>;
+3. pg_restore -U admin -d <airflow_dev_db|airflow_db> /volume1/docker/backups/<dump-verificado>
+4. git revert <commit(s) de este cambio> en el repo del NAS (o checkout de la rama previa)
+5. docker compose up -d
+```
+
+Tras revertir el compose, la imagen resuelta vuelve a ser `my-airflow` con la etiqueta previa a este cambio (`latest`, build de Airflow 2.10.2) — **sigue existiendo en el NAS**, así que el rollback no requiere rebuild. No purgarla hasta que prod esté verificado estable en 2.11.1.
+
+`airflow db downgrade` se documenta como **oportunista únicamente, no como camino primario**: debe ejecutarse desde la imagen 2.11 de la que se está haciendo rollback (trampa de orden), y las revisiones de downgrade de Alembic están mucho menos probadas que las de upgrade — no puede recuperar de una migración parcialmente aplicada. El `pg_dump` verificado en el Paso 1 es en lo que se apoya este plan.
 
 ---
 
@@ -477,7 +569,7 @@ docker exec airflow-webserver-prod env | grep FERNET
 Generar una clave nueva:
 
 ```bash
-docker run --rm apache/airflow:2.10.2 \
+docker run --rm apache/airflow:2.11.1 \
   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
@@ -558,10 +650,15 @@ Airflow tiene RBAC activado por defecto. Crear usuarios con el rol mínimo neces
 
 ### Actualizaciones de seguridad
 
+Seguir el orden de la sección 9.4 (backup verificado antes de `up`, dev antes de prod). Para una actualización periódica sin cambio de esquema:
+
 ```bash
-# Actualizar imagen base periódicamente
-docker pull apache/airflow:2.10.2 && \
-cd /tmp/airflow-dags && git pull && docker build -t my-airflow:latest . && \
+# Actualizar imagen base periódicamente (dev primero)
+docker pull apache/airflow:2.11.1 && \
+cd /tmp/airflow-dags && git pull && docker build -t my-airflow:dev . && \
+cd /volume1/docker/airflow && docker compose -f docker-compose.yml up -d
+# Verificar dev (sección 9.4, Paso 3), luego promover a prod:
+docker tag my-airflow:dev my-airflow:prod && \
 cd /volume1/docker/airflow && docker compose -f docker-compose.prod.yml up -d
 ```
 

@@ -8,7 +8,7 @@ This document outlines the complete technology stack used in the Airflow DAGs pr
 
 | Category | Technology | Version | Purpose | Rationale |
 |----------|------------|---------|---------|-----------|
-| **Workflow Orchestration** | Apache Airflow | 2.7.x (Docker: 2.10.2) | DAG scheduling and execution | Industry standard for workflow orchestration |
+| **Workflow Orchestration** | Apache Airflow | 2.11.1 | DAG scheduling and execution | Industry standard for workflow orchestration |
 | **Database** | PostgreSQL | 16 | Data warehouse and Airflow metadata | Robust, open-source, excellent JSON support |
 | **Language** | Python | 3.11+ | DAG development and task logic | Airflow's native language, rich ecosystem |
 | **Environment Manager** | Conda | Latest | Python environment isolation | Reliable environment management |
@@ -27,7 +27,7 @@ This document outlines the complete technology stack used in the Airflow DAGs pr
 ## Core Infrastructure
 
 ### Apache Airflow
-- **Version:** 2.7.x (development), 2.10.2 (Docker image - backward compatible)
+- **Version:** 2.11.1 (pinned identically in `pyproject.toml` and the Docker image)
 - **Executor:** LocalExecutor
 - **Database Backend:** PostgreSQL (shared instance)
 - **Deployment:** Docker Compose
@@ -70,7 +70,7 @@ AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 30
 ```bash
 conda create -n airflow python=3.11
 conda activate airflow
-pip install apache-airflow==2.7.3
+pip install apache-airflow==2.11.1
 pip install apache-airflow-providers-postgres
 pip install requests beautifulsoup4 lxml urllib3
 pip install openai  # For AI-enhanced projects
@@ -436,7 +436,7 @@ MAX_ACTIVE_RUNS_PER_DAG: 1  # Max concurrent DAG runs
 | Component | Development | Docker/Production |
 |-----------|-------------|-------------------|
 | Python | 3.11+ | 3.11+ |
-| Airflow | 2.7.x | 2.10.2 (compatible) |
+| Airflow | 2.11.1 | 2.11.1 |
 | PostgreSQL | 16 | 16 |
 | Docker | Latest | Latest |
 | Docker Compose | Latest | 3.8 spec |
@@ -455,7 +455,7 @@ MAX_ACTIVE_RUNS_PER_DAG: 1  # Max concurrent DAG runs
 
 ### Technology Evaluation Criteria
 When considering new technologies:
-1. **Airflow Compatibility:** Must work with Airflow 2.7+
+1. **Airflow Compatibility:** Must work with Airflow 2.11.1
 2. **Docker Support:** Easy containerization
 3. **Documentation:** Good docs and community support
 4. **Performance:** Minimal overhead
@@ -464,7 +464,7 @@ When considering new technologies:
 ---
 
 **Last Updated:** 2025-10-02
-**Airflow Version:** 2.7.x (2.10.2 in Docker)
+**Airflow Version:** 2.11.1
 **Python Version:** 3.11+
 **PostgreSQL Version:** 16
 **Deployment:** Docker Compose with LocalExecutor
