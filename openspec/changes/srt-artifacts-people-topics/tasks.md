@@ -36,38 +36,38 @@ Requirement legend (spec code → title), referenced as `[code]` on each task:
 
 ## Phase 1: PR1 — Shorts SRT sidecar (Closes #431)
 
-- [ ] 1.1 RED: `tests/congress_videos/config/test_paths.py` — assert `get_chapter_short_srt_path(...)` returns `{shorts_dir}/{clip_id}.srt`, sibling of the `.mp4` path. `[R2]`
-- [ ] 1.2 GREEN: `congress_videos/config/paths.py` — implement `get_chapter_short_srt_path`. `[R2]`
-- [ ] 1.3 RED: `tests/congress_videos/test_srt_helpers.py::TestWriteShortSrtSidecar::test_writes_srt_next_to_clip_mp4`. `[R2]`
-- [ ] 1.4 GREEN: `congress_videos/srt_helpers.py` — `write_short_srt_sidecar` happy path: `find_srt_for_chapter(canonical_dir=chapter dir)` → `_parse_srt_blocks` → write (D1). `[R2]`
-- [ ] 1.5 RED: `test_timestamps_are_retimed_to_clip_origin` — first block starts at `00:00:00,000`. `[R3]`
-- [ ] 1.6 GREEN: re-time via `_window_srt_blocks` to clip origin (D2). `[R3]`
-- [ ] 1.7 RED: `test_existing_non_empty_srt_is_reused_not_rewritten` (sentinel bytes unchanged + `caplog` INFO has the path). `[R4]`
-- [ ] 1.8 GREEN: reuse branch — existing non-empty `.srt` short-circuits, no rewrite. `[R4]`
-- [ ] 1.9 RED: `test_null_pretrim_offsets_fall_back_to_full_chapter_span` (parametrized: both `None`, start-only `None`, end-only `None`, non-numeric). `[R3]`
-- [ ] 1.10 GREEN: window `[chap_start+pretrim_start, chap_start+pretrim_end]`; **either** offset `NULL`/non-numeric → full chapter span (D3). `[R3]`
-- [ ] 1.11 RED: `test_window_outside_chapter_span_falls_back_with_warning` (F2 guard). `[R3]`
-- [ ] 1.12 GREEN: validity guard — inverted/disjoint window falls back to full chapter span + WARNING (D3). `[R3]`
-- [ ] 1.13 RED: `test_zero_blocks_writes_no_file_and_warns`. `[R5]`
-- [ ] 1.14 GREEN: zero-blocks branch — `None`, no file created or truncated, WARNING. `[R5]`
-- [ ] 1.15 RED: `test_missing_source_srt_returns_none_and_warns`. `[R5]`
-- [ ] 1.16 GREEN: no-source-SRT branch — `None`, WARNING. `[R5]`
-- [ ] 1.17 RED: `test_unreadable_source_srt_returns_none_and_writes_no_file` (`mocker.patch("builtins.open", side_effect=OSError)`). `[R5]`
-- [ ] 1.18 GREEN: confirm `_parse_srt_blocks` OSError path falls into the zero-blocks branch (existing helper — no new code beyond wiring; test locks the contract). `[R5]`
-- [ ] 1.19 RED: `test_unsafe_clip_id_refuses` (parametrized: `"../../etc/passwd"`, `"a/b"`, `""`). Threat matrix control.
-- [ ] 1.20 GREEN: `_SAFE_CLIP_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")` full-match gate inside `write_short_srt_sidecar` (D12). Threat matrix control.
-- [ ] 1.21 RED: `test_oserror_on_write_returns_none_and_leaves_no_tmp` (`mocker.patch("os.replace", side_effect=OSError)`). `[R5]`
-- [ ] 1.22 GREEN: `tmp_path.write_text` + `os.replace`; on `OSError` unlink tmp, return `None`, WARNING with `exc_info=True`. `[R5]`
-- [ ] 1.23 RED: `tests/congress_videos/modules/test_database_chapters.py` — `db.get_chapter_srt_context(chapter_id)` returns `{video_id, start_time, end_time, session_date}` or `None` when the chapter is missing.
-- [ ] 1.24 GREEN: `congress_videos/modules/database.py` — implement `get_chapter_srt_context` (LEFT JOIN `youtube_source_videos`, mirrors `get_chapter_metadata`).
-- [ ] 1.25 RED: `tests/congress_videos/test_reap_processor_dag.py::test_sensor_still_downloads_mp4_when_sidecar_raises` — patch `write_short_srt_sidecar` to raise; assert `poke(...) is True` **and** `insert_video_short_clip` was called. `[R2]`
-- [ ] 1.26 GREEN: `congress_videos/reap_processor_dag.py` — hook `write_short_srt_sidecar` into `ReapJobSensor.poke` in a `try/except` right after MP4 download + `insert_video_short_clip`, reading `ti.xcom_pull("claimed_clip")` for pre-trim offsets (D4) and `db.get_chapter_srt_context` for chapter bounds; `except Exception` → WARNING, continue to the next clip. `[R2]` `[R6]`
-- [ ] 1.27 DOCS: `docs/ARCHITECTURE.md` NAS layout (lines 73-78) — add `.../shorts/{clip_id}.mp4 + {clip_id}.srt`, note the short SRT is a chapter/pre-trim-window approximation. *(cut candidate 1 if over budget)*
-- [ ] 1.28 DOCS: `docs/PIPELINE.md` shorts pipeline (lines 88-94) — state the sensor writes `{clip_id}.srt` beside the MP4, best-effort, never failing the run.
-- [ ] 1.29 VERIFY: `uv run pytest -n auto tests/congress_videos/test_srt_helpers.py tests/congress_videos/config/test_paths.py tests/congress_videos/test_reap_processor_dag.py tests/congress_videos/modules/test_database_chapters.py`.
-- [ ] 1.30 VERIFY: `uv run ruff check` and `uv run ruff format --check` on all touched files (baseline drift gate — keep new code clean).
-- [ ] 1.31 VERIFY: `uv run python congress_videos/reap_processor_dag.py` (DAG import check).
-- [ ] 1.32 VERIFY: `uv run pytest -n auto` (full suite green) and `bash scripts/test-airflow-e2e.sh` (gated on `congress_videos/**`).
+- [x] 1.1 RED: `tests/congress_videos/config/test_paths.py` — assert `get_chapter_short_srt_path(...)` returns `{shorts_dir}/{clip_id}.srt`, sibling of the `.mp4` path. `[R2]`
+- [x] 1.2 GREEN: `congress_videos/config/paths.py` — implement `get_chapter_short_srt_path`. `[R2]`
+- [x] 1.3 RED: `tests/congress_videos/test_srt_helpers.py::TestWriteShortSrtSidecar::test_writes_srt_next_to_clip_mp4`. `[R2]`
+- [x] 1.4 GREEN: `congress_videos/srt_helpers.py` — `write_short_srt_sidecar` happy path: `find_srt_for_chapter(canonical_dir=chapter dir)` → `_parse_srt_blocks` → write (D1). `[R2]`
+- [x] 1.5 RED: `test_timestamps_are_retimed_to_clip_origin` — first block starts at `00:00:00,000`. `[R3]`
+- [x] 1.6 GREEN: re-time via `_window_srt_blocks` to clip origin (D2). `[R3]`
+- [x] 1.7 RED: `test_existing_non_empty_srt_is_reused_not_rewritten` (sentinel bytes unchanged + `caplog` INFO has the path). `[R4]`
+- [x] 1.8 GREEN: reuse branch — existing non-empty `.srt` short-circuits, no rewrite. `[R4]`
+- [x] 1.9 RED: `test_null_pretrim_offsets_fall_back_to_full_chapter_span` (parametrized: both `None`, start-only `None`, end-only `None`, non-numeric). `[R3]`
+- [x] 1.10 GREEN: window `[chap_start+pretrim_start, chap_start+pretrim_end]`; **either** offset `NULL`/non-numeric → full chapter span (D3). `[R3]`
+- [x] 1.11 RED: `test_window_outside_chapter_span_falls_back_with_warning` (F2 guard). `[R3]`
+- [x] 1.12 GREEN: validity guard — inverted/disjoint window falls back to full chapter span + WARNING (D3). `[R3]`
+- [x] 1.13 RED: `test_zero_blocks_writes_no_file_and_warns`. `[R5]`
+- [x] 1.14 GREEN: zero-blocks branch — `None`, no file created or truncated, WARNING. `[R5]`
+- [x] 1.15 RED: `test_missing_source_srt_returns_none_and_warns`. `[R5]`
+- [x] 1.16 GREEN: no-source-SRT branch — `None`, WARNING. `[R5]`
+- [x] 1.17 RED: `test_unreadable_source_srt_returns_none_and_writes_no_file` (`mocker.patch("builtins.open", side_effect=OSError)`). `[R5]`
+- [x] 1.18 GREEN: confirm `_parse_srt_blocks` OSError path falls into the zero-blocks branch (existing helper — no new code beyond wiring; test locks the contract). `[R5]`
+- [x] 1.19 RED: `test_unsafe_clip_id_refuses` (parametrized: `"../../etc/passwd"`, `"a/b"`, `""`). Threat matrix control.
+- [x] 1.20 GREEN: `_SAFE_CLIP_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")` full-match gate inside `write_short_srt_sidecar` (D12). Threat matrix control.
+- [x] 1.21 RED: `test_oserror_on_write_returns_none_and_leaves_no_tmp` (`mocker.patch("os.replace", side_effect=OSError)`). `[R5]`
+- [x] 1.22 GREEN: `tmp_path.write_text` + `os.replace`; on `OSError` unlink tmp, return `None`, WARNING with `exc_info=True`. `[R5]`
+- [x] 1.23 RED: `tests/congress_videos/modules/test_database_chapters.py` — `db.get_chapter_srt_context(chapter_id)` returns `{video_id, start_time, end_time, session_date}` or `None` when the chapter is missing.
+- [x] 1.24 GREEN: `congress_videos/modules/database.py` — implement `get_chapter_srt_context` (LEFT JOIN `youtube_source_videos`, mirrors `get_chapter_metadata`).
+- [x] 1.25 RED: `tests/congress_videos/test_reap_processor_dag.py::test_sensor_still_downloads_mp4_when_sidecar_raises` — patch `write_short_srt_sidecar` to raise; assert `poke(...) is True` **and** `insert_video_short_clip` was called. `[R2]`
+- [x] 1.26 GREEN: `congress_videos/reap_processor_dag.py` — hook `write_short_srt_sidecar` into `ReapJobSensor.poke` in a `try/except` right after MP4 download + `insert_video_short_clip`, reading `ti.xcom_pull("claimed_clip")` for pre-trim offsets (D4) and `db.get_chapter_srt_context` for chapter bounds; `except Exception` → WARNING, continue to the next clip. `[R2]` `[R6]`
+- [ ] 1.27 DOCS: `docs/ARCHITECTURE.md` NAS layout (lines 73-78) — add `.../shorts/{clip_id}.mp4 + {clip_id}.srt`, note the short SRT is a chapter/pre-trim-window approximation. *(cut candidate 1 if over budget)* — **CUT applied**: PR1's authored diff was ~709 changed lines even after this cut and the clip_id-parametrize cut, both applied per this table; deferred to the release PR per task 4.6.
+- [x] 1.28 DOCS: `docs/PIPELINE.md` shorts pipeline (lines 88-94) — state the sensor writes `{clip_id}.srt` beside the MP4, best-effort, never failing the run.
+- [x] 1.29 VERIFY: `uv run pytest -n auto tests/congress_videos/test_srt_helpers.py tests/congress_videos/config/test_paths.py tests/congress_videos/test_reap_processor_dag.py tests/congress_videos/modules/test_database_chapters.py`.
+- [x] 1.30 VERIFY: `uv run ruff check` and `uv run ruff format --check` on all touched files (baseline drift gate — keep new code clean).
+- [x] 1.31 VERIFY: `uv run python congress_videos/reap_processor_dag.py` (DAG import check).
+- [x] 1.32 VERIFY: `uv run pytest -n auto` (full suite green) and `bash scripts/test-airflow-e2e.sh` (gated on `congress_videos/**`).
 
 ## Phase 2: PR2 — Migration 045 + mentioned-people resolver
 
