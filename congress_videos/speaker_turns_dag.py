@@ -37,7 +37,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
@@ -95,43 +95,42 @@ def select_chapters(limit: int = DEFAULT_LIMIT, chapter_ids: list[int] | None = 
     vc_table = pg.get_qualified_table("video_chapters")
     turns_table = pg.get_qualified_table("speaker_turns")
     cols = "chapter_id, video_id, session_date, start_time, end_time"
-    with pg.get_connection() as conn:
-        with conn.cursor() as cur:
-            if chapter_ids:
-                cur.execute(
-                    f"SELECT {cols} FROM {view} WHERE chapter_id = ANY(%s) ORDER BY chapter_id",
-                    (list(chapter_ids),),
-                )
-            else:
-                # Two-bucket order (issue #300). FALSE < TRUE in Postgres, so
-                # `(created_at < cutoff) ASC` puts the recent bucket first. The
-                # CASE key only discriminates inside the old bucket (it is NULL
-                # for recent rows, which key 1 has already segregated).
-                # RECENT_CHAPTER_WINDOW_DAYS is a module int constant, int()-coerced
-                # here: not user input, not an injection seam. `limit` stays bound.
-                recent_cutoff = f"NOW() - INTERVAL '{int(RECENT_CHAPTER_WINDOW_DAYS)} days'"
-                cur.execute(
-                    f"SELECT {cols} FROM {view} vc"
-                    f" WHERE EXISTS ("
-                    f"SELECT 1 FROM {vc_table} v"
-                    f" WHERE v.chapter_id = vc.chapter_id"
-                    f" AND v.turns_detected_at IS NULL"
-                    f")"
-                    f" AND NOT EXISTS ("
-                    f"SELECT 1 FROM {turns_table} st"
-                    f" WHERE st.chapter_id = vc.chapter_id"
-                    f")"
-                    f" ORDER BY"
-                    f" (vc.created_at < {recent_cutoff}) ASC,"
-                    f" CASE WHEN vc.created_at < {recent_cutoff}"
-                    f" THEN vc.session_date END DESC NULLS LAST,"
-                    f" vc.relevance_score DESC,"
-                    f" vc.chapter_id ASC"
-                    f" LIMIT %s",
-                    (limit,),
-                )
-            # PostgresConnection uses RealDictCursor: rows are dict-like.
-            return [dict(row) for row in cur.fetchall()]
+    with pg.get_connection() as conn, conn.cursor() as cur:
+        if chapter_ids:
+            cur.execute(
+                f"SELECT {cols} FROM {view} WHERE chapter_id = ANY(%s) ORDER BY chapter_id",
+                (list(chapter_ids),),
+            )
+        else:
+            # Two-bucket order (issue #300). FALSE < TRUE in Postgres, so
+            # `(created_at < cutoff) ASC` puts the recent bucket first. The
+            # CASE key only discriminates inside the old bucket (it is NULL
+            # for recent rows, which key 1 has already segregated).
+            # RECENT_CHAPTER_WINDOW_DAYS is a module int constant, int()-coerced
+            # here: not user input, not an injection seam. `limit` stays bound.
+            recent_cutoff = f"NOW() - INTERVAL '{int(RECENT_CHAPTER_WINDOW_DAYS)} days'"
+            cur.execute(
+                f"SELECT {cols} FROM {view} vc"
+                f" WHERE EXISTS ("
+                f"SELECT 1 FROM {vc_table} v"
+                f" WHERE v.chapter_id = vc.chapter_id"
+                f" AND v.turns_detected_at IS NULL"
+                f")"
+                f" AND NOT EXISTS ("
+                f"SELECT 1 FROM {turns_table} st"
+                f" WHERE st.chapter_id = vc.chapter_id"
+                f")"
+                f" ORDER BY"
+                f" (vc.created_at < {recent_cutoff}) ASC,"
+                f" CASE WHEN vc.created_at < {recent_cutoff}"
+                f" THEN vc.session_date END DESC NULLS LAST,"
+                f" vc.relevance_score DESC,"
+                f" vc.chapter_id ASC"
+                f" LIMIT %s",
+                (limit,),
+            )
+        # PostgresConnection uses RealDictCursor: rows are dict-like.
+        return [dict(row) for row in cur.fetchall()]
 
 
 def run_chapter_turns(
@@ -212,14 +211,13 @@ def _persist_chapter_turns(pg, chapter_id: int, turns: list, *, turns_table: str
     held during detection (issue #200). ``_upsert_turns`` never commits on its
     own (see its docstring); this helper owns the transaction boundary.
     """
-    with pg.get_connection() as conn:
-        with conn.cursor() as cur:
-            _upsert_turns(cur, chapter_id, turns, table=turns_table)
-            cur.execute(
-                f"UPDATE {vc_table} SET turns_detected_at = NOW() WHERE chapter_id = %s AND turns_detected_at IS NULL",
-                (chapter_id,),
-            )
-            conn.commit()  # durable per chapter — a later failure must not undo this
+    with pg.get_connection() as conn, conn.cursor() as cur:
+        _upsert_turns(cur, chapter_id, turns, table=turns_table)
+        cur.execute(
+            f"UPDATE {vc_table} SET turns_detected_at = NOW() WHERE chapter_id = %s AND turns_detected_at IS NULL",
+            (chapter_id,),
+        )
+        conn.commit()  # durable per chapter — a later failure must not undo this
 
 
 def _select_task(**context) -> list[dict]:

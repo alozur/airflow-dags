@@ -46,7 +46,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
@@ -151,46 +151,45 @@ def _select_task(**context) -> list[dict]:
     base = f"SELECT {cols} FROM {turns_table} st JOIN {chapters_table} vc ON vc.chapter_id = st.chapter_id"
     pending_predicate = f"NOT EXISTS (SELECT 1 FROM {stv_table} v WHERE v.turn_id = st.turn_id)"
 
-    with pg.get_connection() as conn:
-        with conn.cursor() as cur:
-            scoped = chapter_id is not None or video_id is not None
-            if chapter_id is not None:
-                cur.execute(
-                    f"{base} WHERE st.chapter_id = %s ORDER BY st.turn_id",
-                    (chapter_id,),
-                )
-                turns = [dict(row) for row in cur.fetchall()]
-            elif video_id is not None:
-                cur.execute(
-                    f"{base} WHERE vc.video_id = %s ORDER BY st.turn_id",
-                    (str(video_id),),
-                )
-                turns = [dict(row) for row in cur.fetchall()]
-            elif "limit" in conf:
-                cur.execute(
-                    f"{base} WHERE {pending_predicate} ORDER BY st.turn_id LIMIT %s",
-                    (conf.get("limit"),),
-                )
-                turns = [dict(row) for row in cur.fetchall()]
-            else:
-                turns = _select_automatic_chapter(
-                    cur,
-                    turns_table,
-                    stv_table,
-                    base,
-                    pending_predicate,
-                )
+    with pg.get_connection() as conn, conn.cursor() as cur:
+        scoped = chapter_id is not None or video_id is not None
+        if chapter_id is not None:
+            cur.execute(
+                f"{base} WHERE st.chapter_id = %s ORDER BY st.turn_id",
+                (chapter_id,),
+            )
+            turns = [dict(row) for row in cur.fetchall()]
+        elif video_id is not None:
+            cur.execute(
+                f"{base} WHERE vc.video_id = %s ORDER BY st.turn_id",
+                (str(video_id),),
+            )
+            turns = [dict(row) for row in cur.fetchall()]
+        elif "limit" in conf:
+            cur.execute(
+                f"{base} WHERE {pending_predicate} ORDER BY st.turn_id LIMIT %s",
+                (conf.get("limit"),),
+            )
+            turns = [dict(row) for row in cur.fetchall()]
+        else:
+            turns = _select_automatic_chapter(
+                cur,
+                turns_table,
+                stv_table,
+                base,
+                pending_predicate,
+            )
 
-            # Scoped runs select the full chapter/video on purpose, so they
-            # still need the post-hoc filter. The explicit-limit and
-            # automatic branches already filtered in SQL.
-            if scoped and turns:
-                cur.execute(
-                    f"SELECT turn_id FROM {stv_table} WHERE turn_id = ANY(%s)",
-                    ([t["turn_id"] for t in turns],),
-                )
-                already_done = {row["turn_id"] for row in cur.fetchall()}
-                turns = [t for t in turns if t["turn_id"] not in already_done]
+        # Scoped runs select the full chapter/video on purpose, so they
+        # still need the post-hoc filter. The explicit-limit and
+        # automatic branches already filtered in SQL.
+        if scoped and turns:
+            cur.execute(
+                f"SELECT turn_id FROM {stv_table} WHERE turn_id = ANY(%s)",
+                ([t["turn_id"] for t in turns],),
+            )
+            already_done = {row["turn_id"] for row in cur.fetchall()}
+            turns = [t for t in turns if t["turn_id"] not in already_done]
 
     logger.info("speaker_turn_videos: selected %d turn(s) for materialization", len(turns))
     context["ti"].xcom_push(key="turns", value=turns)

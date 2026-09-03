@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -130,20 +130,19 @@ def select_turns(
     # video_id lives on video_chapters, not speaker_turns; join to resolve it.
     cols = "st.turn_id, st.chapter_id, vc.video_id, st.start_seconds, st.end_seconds"
     base = f"SELECT {cols} FROM {table} st JOIN {chapters_table} vc ON vc.chapter_id = st.chapter_id"
-    with pg.get_connection() as conn:
-        with conn.cursor() as cur:
-            if turn_ids:
-                cur.execute(
-                    f"{base} WHERE st.turn_id = ANY(%s) ORDER BY st.turn_id",
-                    (list(turn_ids),),
-                )
-            else:
-                cur.execute(
-                    f"{base} ORDER BY st.turn_id LIMIT %s",
-                    (limit,),
-                )
-            # PostgresConnection uses RealDictCursor: rows are dict-like.
-            return [dict(row) for row in cur.fetchall()]
+    with pg.get_connection() as conn, conn.cursor() as cur:
+        if turn_ids:
+            cur.execute(
+                f"{base} WHERE st.turn_id = ANY(%s) ORDER BY st.turn_id",
+                (list(turn_ids),),
+            )
+        else:
+            cur.execute(
+                f"{base} ORDER BY st.turn_id LIMIT %s",
+                (limit,),
+            )
+        # PostgresConnection uses RealDictCursor: rows are dict-like.
+        return [dict(row) for row in cur.fetchall()]
 
 
 def run_turn_proposals(
