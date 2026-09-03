@@ -145,6 +145,26 @@ def parse_committed_entries(pyproject_text: str) -> dict[str, list[str]]:
     return {path: sorted(codes) for path, codes in per_file_ignores.items() if path != PERMANENT_INIT_PY_KEY}
 
 
+def find_growth(committed: dict[str, list[str]], regenerated: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Diff regenerated entries against the committed baseline (REMOVE-ONLY verdict).
+
+    Shrinkage in any shape — a path dropped entirely, or a path keeping fewer
+    codes than before — is always fine and never reported. Only a path or
+    code the committed baseline never covered counts as growth: a brand new
+    path reports its whole code list, an existing path reports only the
+    codes it didn't already have. The permanent `__init__.py` entry is
+    skipped on the regenerated side; it is never part of baseline growth.
+    """
+    growth: dict[str, list[str]] = {}
+    for path, codes in regenerated.items():
+        if path == PERMANENT_INIT_PY_KEY:
+            continue
+        new_codes = sorted(set(codes) - set(committed.get(path, ())))
+        if new_codes:
+            growth[path] = new_codes
+    return growth
+
+
 def load_diagnostics(stream) -> list[dict]:
     raw = stream.read()
     if not raw.strip():
@@ -171,6 +191,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Exit non-zero and print a unified diff if the generated region would change (drift detection).",
     )
+    mode.add_argument(
+        "--check-remove-only",
+        action="store_true",
+        help=(
+            "Exit non-zero only if regenerated diagnostics carry a path or code the committed "
+            "baseline doesn't cover (REMOVE-ONLY drift gate, issue #269/#416). Shrinkage never fails."
+        ),
+    )
     parser.add_argument(
         "--base-sha",
         default=DEFAULT_BASE_SHA,
@@ -192,17 +220,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         diagnostics = load_diagnostics(sys.stdin)
         entries = build_entries(diagnostics)
-        new_block = render_block(entries, args.base_sha, args.ruff_version)
 
         pyproject_text = args.pyproject.read_text(encoding="utf-8")
 
         if args.write:
+            new_block = render_block(entries, args.base_sha, args.ruff_version)
             updated = replace_region(pyproject_text, new_block)
             args.pyproject.write_text(updated, encoding="utf-8")
             print(f"Wrote {len(entries)} generated entries to {args.pyproject}")
             return 0
 
         if args.check:
+            new_block = render_block(entries, args.base_sha, args.ruff_version)
             current_region = extract_region(pyproject_text)
             if current_region.rstrip("\n") == new_block.rstrip("\n"):
                 print("No drift: baseline is up to date.")
@@ -216,6 +245,26 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.writelines(diff)
             return 1
 
+        if args.check_remove_only:
+            committed = parse_committed_entries(pyproject_text)
+            growth = find_growth(committed, entries)
+            if not growth:
+                print(
+                    f"No baseline growth: {len(entries)} regenerated entries are all covered by the committed baseline."
+                )
+                return 0
+            print(
+                f"Baseline growth: {len(growth)} path(s) carry lint violations not covered by the committed baseline."
+            )
+            for path in sorted(growth):
+                codes = growth[path]
+                reason = "path not in baseline" if path not in committed else "new code on an existing baseline path"
+                print(f"  {path}: {', '.join(codes)}  ({reason})")
+            print("Fix the violations, or add an inline `# noqa: CODE - reason` for a deliberate exception.")
+            print("NEVER regenerate the baseline to turn this green — it is REMOVE-ONLY (issue #269).")
+            return 1
+
+        new_block = render_block(entries, args.base_sha, args.ruff_version)
         sys.stdout.write(new_block)
         return 0
     except (BaselineFormatError, DiagnosticsInputError, ValueError) as exc:
