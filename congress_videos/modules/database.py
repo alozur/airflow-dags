@@ -127,16 +127,15 @@ class CongressionalVideoDB:
             youtube_video_id: The YouTube video ID returned by the upload task.
         """
         thumbnails_table = self.pg_conn.get_qualified_table("video_thumbnails")
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {thumbnails_table}
                     SET youtube_video_id = %s
                     WHERE chapter_id = %s
                     """,
-                    (youtube_video_id, chapter_id),
-                )
+                (youtube_video_id, chapter_id),
+            )
         logger.info(
             "update_thumbnail_youtube_video_id: chapter_id=%d -> youtube_video_id=%r",
             chapter_id,
@@ -224,7 +223,7 @@ class CongressionalVideoDB:
         # and discard the videos that did succeed. get_connection() owns the full
         # connection lifecycle (commit/rollback/close); `with conn` adds the inner
         # transaction scope.
-        with self.pg_conn.get_connection() as conn:
+        with self.pg_conn.get_connection() as conn:  # noqa: SIM117 - nesting documents the two-level lifecycle: outer connection (commit/rollback/close), inner `with conn` transaction/SAVEPOINT scope
             with conn:
                 with conn.cursor() as cur:
                     for video_data in scored_chapters_data["videos"]:
@@ -414,22 +413,21 @@ class CongressionalVideoDB:
         """
         uploadable_chapters_view = self.pg_conn.get_qualified_table("uploadable_chapters")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                query = f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            query = f"""
                     SELECT * FROM {uploadable_chapters_view}
                     WHERE relevance_score >= %s
                     ORDER BY relevance_score DESC, created_at DESC
                 """
-                if limit:
-                    query += f" LIMIT {limit}"
+            if limit:
+                query += f" LIMIT {limit}"
 
-                cur.execute(query, (min_relevance_score,))
-                chapters = cur.fetchall()
-                logger.info(
-                    f"Retrieved {len(chapters)} uploadable chapters (min_score={min_relevance_score}, limit={limit})"
-                )
-                return chapters
+            cur.execute(query, (min_relevance_score,))
+            chapters = cur.fetchall()
+            logger.info(
+                f"Retrieved {len(chapters)} uploadable chapters (min_score={min_relevance_score}, limit={limit})"
+            )
+            return chapters
 
     def mark_chapter_uploaded(self, chapter_id: int, youtube_video_id: str):
         """
@@ -441,10 +439,9 @@ class CongressionalVideoDB:
         """
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {chapters_table} SET
                         is_uploaded_to_youtube = TRUE,
                         youtube_video_id = %s,
@@ -452,9 +449,9 @@ class CongressionalVideoDB:
                         updated_at = CURRENT_TIMESTAMP
                     WHERE chapter_id = %s
                 """,
-                    (youtube_video_id, chapter_id),
-                )
-                logger.info(f"Marked chapter {chapter_id} as uploaded to YouTube: {youtube_video_id}")
+                (youtube_video_id, chapter_id),
+            )
+            logger.info(f"Marked chapter {chapter_id} as uploaded to YouTube: {youtube_video_id}")
 
     def record_chapter_upload_failure(self, chapter_id: int, error_message: str | None = None) -> None:
         """
@@ -471,10 +468,9 @@ class CongressionalVideoDB:
         """
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {chapters_table} SET
                         upload_attempts = upload_attempts + 1,
                         last_upload_error = %s,
@@ -483,16 +479,16 @@ class CongressionalVideoDB:
                     WHERE chapter_id = %s
                     RETURNING upload_attempts, is_upload_abandoned
                 """,
-                    (error_message, chapter_id),
+                (error_message, chapter_id),
+            )
+            result = cur.fetchone()
+            logger.info(
+                f"Recorded upload failure for chapter {chapter_id} (threshold={CHAPTER_UPLOAD_ABANDON_THRESHOLD})"
+            )
+            if result and result.get("upload_attempts") == CHAPTER_UPLOAD_ABANDON_THRESHOLD:
+                logger.warning(
+                    f"Chapter {chapter_id} abandoned after {CHAPTER_UPLOAD_ABANDON_THRESHOLD} failed uploads"
                 )
-                result = cur.fetchone()
-                logger.info(
-                    f"Recorded upload failure for chapter {chapter_id} (threshold={CHAPTER_UPLOAD_ABANDON_THRESHOLD})"
-                )
-                if result and result.get("upload_attempts") == CHAPTER_UPLOAD_ABANDON_THRESHOLD:
-                    logger.warning(
-                        f"Chapter {chapter_id} abandoned after {CHAPTER_UPLOAD_ABANDON_THRESHOLD} failed uploads"
-                    )
 
     # ==================== Video Shorts (Reap Pipeline) ====================
 
@@ -516,9 +512,8 @@ class CongressionalVideoDB:
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
         shorts_table = self.pg_conn.get_qualified_table("video_shorts")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                query = f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            query = f"""
                     SELECT vc.*
                     FROM {chapters_table} vc
                     WHERE vc.is_uploaded_to_youtube = TRUE
@@ -535,17 +530,16 @@ class CongressionalVideoDB:
                       )
                     ORDER BY vc.relevance_score DESC, vc.created_at DESC
                 """
-                params: list = [min_relevance_score]
-                if limit is not None:
-                    query += " LIMIT %s"
-                    params.append(limit)
-                cur.execute(query, params)
-                chapters = cur.fetchall()
-                logger.info(
-                    f"Found {len(chapters)} chapters eligible for Shorts "
-                    f"(min_score={min_relevance_score}, limit={limit})"
-                )
-                return chapters
+            params: list = [min_relevance_score]
+            if limit is not None:
+                query += " LIMIT %s"
+                params.append(limit)
+            cur.execute(query, params)
+            chapters = cur.fetchall()
+            logger.info(
+                f"Found {len(chapters)} chapters eligible for Shorts (min_score={min_relevance_score}, limit={limit})"
+            )
+            return chapters
 
     def insert_video_short(
         self,
@@ -580,10 +574,9 @@ class CongressionalVideoDB:
         """
         shorts_table = self.pg_conn.get_qualified_table("video_shorts")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     INSERT INTO {shorts_table}
                     (chapter_id, reap_project_id, reap_status,
                      pretrim_start_secs, pretrim_end_secs, pretrim_used_srt,
@@ -591,23 +584,23 @@ class CongressionalVideoDB:
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """,
-                    (
-                        chapter_id,
-                        reap_project_id,
-                        reap_status,
-                        pretrim_start_secs,
-                        pretrim_end_secs,
-                        pretrim_used_srt,
-                        staged_clip_path,
-                        scoring_reasoning,
-                    ),
-                )
-                row_id = cur.fetchone()["id"]
-                logger.info(
-                    f"Inserted video_short row {row_id} "
-                    f"for chapter {chapter_id}, status={reap_status}, project={reap_project_id}"
-                )
-                return row_id
+                (
+                    chapter_id,
+                    reap_project_id,
+                    reap_status,
+                    pretrim_start_secs,
+                    pretrim_end_secs,
+                    pretrim_used_srt,
+                    staged_clip_path,
+                    scoring_reasoning,
+                ),
+            )
+            row_id = cur.fetchone()["id"]
+            logger.info(
+                f"Inserted video_short row {row_id} "
+                f"for chapter {chapter_id}, status={reap_status}, project={reap_project_id}"
+            )
+            return row_id
 
     def insert_video_short_clip(
         self,
@@ -639,31 +632,30 @@ class CongressionalVideoDB:
         """
         shorts_table = self.pg_conn.get_qualified_table("video_shorts")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     INSERT INTO {shorts_table}
                     (chapter_id, reap_project_id, reap_clip_id,
                      reap_virality_score, reap_clip_url, local_file_path, reap_status)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """,
-                    (
-                        chapter_id,
-                        reap_project_id,
-                        reap_clip_id,
-                        reap_virality_score,
-                        reap_clip_url,
-                        local_file_path,
-                        reap_status,
-                    ),
-                )
-                row_id = cur.fetchone()["id"]
-                logger.info(
-                    f"Inserted video_short clip row {row_id}: clip_id={reap_clip_id}, virality={reap_virality_score}"
-                )
-                return row_id
+                (
+                    chapter_id,
+                    reap_project_id,
+                    reap_clip_id,
+                    reap_virality_score,
+                    reap_clip_url,
+                    local_file_path,
+                    reap_status,
+                ),
+            )
+            row_id = cur.fetchone()["id"]
+            logger.info(
+                f"Inserted video_short clip row {row_id}: clip_id={reap_clip_id}, virality={reap_virality_score}"
+            )
+            return row_id
 
     def update_video_short_status(self, reap_project_id: str, status: str) -> None:
         """
@@ -678,18 +670,17 @@ class CongressionalVideoDB:
         """
         shorts_table = self.pg_conn.get_qualified_table("video_shorts")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {shorts_table} SET
                         reap_status = %s,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE reap_project_id = %s
                 """,
-                    (status, reap_project_id),
-                )
-                logger.info(f"Updated video_shorts status to '{status}' for project {reap_project_id}")
+                (status, reap_project_id),
+            )
+            logger.info(f"Updated video_shorts status to '{status}' for project {reap_project_id}")
 
     def get_source_video_id_for_chapter(self, chapter_id: int) -> str | None:
         """Return the source YouTube video_id for a chapter row.
@@ -702,14 +693,13 @@ class CongressionalVideoDB:
             ``video_id``; ``None`` otherwise (no row or NULL value).
         """
         table = self.pg_conn.get_qualified_table("video_chapters")
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"SELECT video_id FROM {table} WHERE chapter_id = %s",
-                    (chapter_id,),
-                )
-                row = cur.fetchone()
-                return row["video_id"] if row and row["video_id"] else None
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT video_id FROM {table} WHERE chapter_id = %s",
+                (chapter_id,),
+            )
+            row = cur.fetchone()
+            return row["video_id"] if row and row["video_id"] else None
 
     def claim_pending_clip(self) -> dict | None:
         """
@@ -728,9 +718,8 @@ class CongressionalVideoDB:
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
         videos_table = self.pg_conn.get_qualified_table("youtube_source_videos")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(f"""
                     UPDATE {shorts_table} SET reap_status = 'processing', updated_at = CURRENT_TIMESTAMP
                     WHERE id = (
                         SELECT vs.id
@@ -754,12 +743,12 @@ class CongressionalVideoDB:
                     )
                     RETURNING *
                 """)
-                row = cur.fetchone()
-                if row is None:
-                    logger.info("claim_pending_clip: no pending clips in queue")
-                    return None
-                logger.info(f"Claimed pending clip: short_id={row['id']}, chapter_id={row['chapter_id']}")
-                return dict(row)
+            row = cur.fetchone()
+            if row is None:
+                logger.info("claim_pending_clip: no pending clips in queue")
+                return None
+            logger.info(f"Claimed pending clip: short_id={row['id']}, chapter_id={row['chapter_id']}")
+            return dict(row)
 
     def update_video_short_project(self, short_id: int, reap_project_id: str) -> None:
         """
@@ -773,33 +762,31 @@ class CongressionalVideoDB:
         """
         shorts_table = self.pg_conn.get_qualified_table("video_shorts")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {shorts_table} SET
                         reap_project_id = %s,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s
                 """,
-                    (reap_project_id, short_id),
-                )
-                logger.info(f"Updated video_short {short_id}: reap_project_id={reap_project_id}")
+                (reap_project_id, short_id),
+            )
+            logger.info(f"Updated video_short {short_id}: reap_project_id={reap_project_id}")
 
     def update_video_short_status_by_id(self, short_id: int, status: str) -> None:
         """Update reap_status for a single video_shorts row by primary key."""
         shorts_table = self.pg_conn.get_qualified_table("video_shorts")
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {shorts_table}
                     SET reap_status = %s, updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s
                 """,
-                    (status, short_id),
-                )
-                logger.info(f"Updated video_short {short_id}: reap_status={status}")
+                (status, short_id),
+            )
+            logger.info(f"Updated video_short {short_id}: reap_status={status}")
 
     def get_pending_shorts(self, limit: int = 2, min_virality_score: float = 0.0) -> list[dict]:
         """
@@ -852,14 +839,13 @@ class CongressionalVideoDB:
 
         min_virality_score = min_virality_score if min_virality_score is not None else 0.0
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                # updated_at doubles as an implicit uploaded_at proxy here: only
-                # mark_short_uploaded() touches it, and it always sets
-                # is_uploaded = TRUE in the same UPDATE, so DESC-ordering
-                # uploaded rows by updated_at reconstructs upload recency.
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            # updated_at doubles as an implicit uploaded_at proxy here: only
+            # mark_short_uploaded() touches it, and it always sets
+            # is_uploaded = TRUE in the same UPDATE, so DESC-ordering
+            # uploaded rows by updated_at reconstructs upload recency.
+            cur.execute(
+                f"""
                     SELECT vc.video_id, vs.updated_at
                     FROM {shorts_table} vs
                     JOIN {chapters_table} vc ON vc.chapter_id = vs.chapter_id
@@ -867,35 +853,35 @@ class CongressionalVideoDB:
                     ORDER BY vs.updated_at DESC
                     LIMIT %s
                 """,
-                    (SHORTS_UPLOAD_HISTORY_LIMIT,),
-                )
-                upload_history = cur.fetchall()
+                (SHORTS_UPLOAD_HISTORY_LIMIT,),
+            )
+            upload_history = cur.fetchall()
 
-                cur.execute(
-                    pending_shorts_candidate_sql(shorts_table, chapters_table),
-                    (SHORTS_TIER1_PER_CHAPTER_LIMIT, min_virality_score, SHORTS_PENDING_CANDIDATE_LIMIT),
-                )
-                candidates = cur.fetchall()
+            cur.execute(
+                pending_shorts_candidate_sql(shorts_table, chapters_table),
+                (SHORTS_TIER1_PER_CHAPTER_LIMIT, min_virality_score, SHORTS_PENDING_CANDIDATE_LIMIT),
+            )
+            candidates = cur.fetchall()
 
-                eligible = filter_shorts_by_source_cooldown(candidates, upload_history)
-                blocked = len(candidates) - len(eligible)
-                if blocked > 0:
-                    logger.info(
-                        f"Source-video cool-down blocked {blocked} of {len(candidates)} "
-                        f"pending shorts (cooldown={SHORTS_SOURCE_VIDEO_COOLDOWN} uploads)"
-                    )
-                if candidates and not eligible:
-                    logger.info(
-                        f"All {len(candidates)} pending shorts are cooling down "
-                        f"(source-video cool-down={SHORTS_SOURCE_VIDEO_COOLDOWN}); "
-                        "uploading nothing this run"
-                    )
-
-                shorts = eligible[:limit]
+            eligible = filter_shorts_by_source_cooldown(candidates, upload_history)
+            blocked = len(candidates) - len(eligible)
+            if blocked > 0:
                 logger.info(
-                    f"Found {len(shorts)} pending shorts for upload (min_virality={min_virality_score}, limit={limit})"
+                    f"Source-video cool-down blocked {blocked} of {len(candidates)} "
+                    f"pending shorts (cooldown={SHORTS_SOURCE_VIDEO_COOLDOWN} uploads)"
                 )
-                return shorts
+            if candidates and not eligible:
+                logger.info(
+                    f"All {len(candidates)} pending shorts are cooling down "
+                    f"(source-video cool-down={SHORTS_SOURCE_VIDEO_COOLDOWN}); "
+                    "uploading nothing this run"
+                )
+
+            shorts = eligible[:limit]
+            logger.info(
+                f"Found {len(shorts)} pending shorts for upload (min_virality={min_virality_score}, limit={limit})"
+            )
+            return shorts
 
     def mark_short_uploaded(self, reap_clip_id: str, youtube_video_id: str) -> None:
         """
@@ -907,19 +893,18 @@ class CongressionalVideoDB:
         """
         shorts_table = self.pg_conn.get_qualified_table("video_shorts")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {shorts_table} SET
                         is_uploaded = TRUE,
                         youtube_video_id = %s,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE reap_clip_id = %s
                 """,
-                    (youtube_video_id, reap_clip_id),
-                )
-                logger.info(f"Marked short clip {reap_clip_id} as uploaded to YouTube: {youtube_video_id}")
+                (youtube_video_id, reap_clip_id),
+            )
+            logger.info(f"Marked short clip {reap_clip_id} as uploaded to YouTube: {youtube_video_id}")
 
     def record_short_upload_failure(self, reap_clip_id: str, error_message: str | None = None) -> None:
         """
@@ -936,10 +921,9 @@ class CongressionalVideoDB:
         """
         shorts_table = self.pg_conn.get_qualified_table("video_shorts")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {shorts_table} SET
                         upload_attempts = upload_attempts + 1,
                         last_upload_error = %s,
@@ -948,28 +932,26 @@ class CongressionalVideoDB:
                     WHERE reap_clip_id = %s
                     RETURNING upload_attempts, is_upload_abandoned
                 """,
-                    (error_message, reap_clip_id),
+                (error_message, reap_clip_id),
+            )
+            result = cur.fetchone()
+            logger.info(
+                f"Recorded upload failure for short clip {reap_clip_id} (threshold={SHORTS_UPLOAD_ABANDON_THRESHOLD})"
+            )
+            if result and result.get("upload_attempts") == SHORTS_UPLOAD_ABANDON_THRESHOLD:
+                logger.warning(
+                    f"Short clip {reap_clip_id} abandoned after {SHORTS_UPLOAD_ABANDON_THRESHOLD} failed uploads"
                 )
-                result = cur.fetchone()
-                logger.info(
-                    f"Recorded upload failure for short clip {reap_clip_id} "
-                    f"(threshold={SHORTS_UPLOAD_ABANDON_THRESHOLD})"
-                )
-                if result and result.get("upload_attempts") == SHORTS_UPLOAD_ABANDON_THRESHOLD:
-                    logger.warning(
-                        f"Short clip {reap_clip_id} abandoned after {SHORTS_UPLOAD_ABANDON_THRESHOLD} failed uploads"
-                    )
 
     def _count_records(self, table_or_view: str, where_clause: str = "", params: tuple = ()) -> int:
         table = self.pg_conn.get_qualified_table(table_or_view)
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                query = f"SELECT COUNT(*) AS count FROM {table}"
-                if where_clause:
-                    query += f" WHERE {where_clause}"
-                cur.execute(query, params)
-                result = cur.fetchone()
-                return result["count"] if result else 0
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            query = f"SELECT COUNT(*) AS count FROM {table}"
+            if where_clause:
+                query += f" WHERE {where_clause}"
+            cur.execute(query, params)
+            result = cur.fetchone()
+            return result["count"] if result else 0
 
     def get_uploadable_turns(self, limit: int = 1) -> list[dict]:
         """Get speaker turn videos eligible for YouTube upload.
@@ -982,15 +964,14 @@ class CongressionalVideoDB:
         """
         uploadable_turns_view = self.pg_conn.get_qualified_table("uploadable_turns")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"SELECT * FROM {uploadable_turns_view} LIMIT %s",
-                    (limit,),
-                )
-                turns = cur.fetchall()
-                logger.info(f"Retrieved {len(turns)} uploadable turns (limit={limit})")
-                return turns
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT * FROM {uploadable_turns_view} LIMIT %s",
+                (limit,),
+            )
+            turns = cur.fetchall()
+            logger.info(f"Retrieved {len(turns)} uploadable turns (limit={limit})")
+            return turns
 
     def mark_turns_uploaded(self, turn_id: int, youtube_video_id: str) -> None:
         """Mark a speaker turn video as uploaded to YouTube.
@@ -1004,10 +985,9 @@ class CongressionalVideoDB:
         """
         stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {stv_table} SET
                         is_uploaded_to_youtube = TRUE,
                         youtube_video_id = %s,
@@ -1016,9 +996,9 @@ class CongressionalVideoDB:
                         SELECT output_path FROM {stv_table} WHERE turn_id = %s
                     )
                     """,
-                    (youtube_video_id, turn_id),
-                )
-                logger.info(f"Marked turn {turn_id} as uploaded to YouTube: {youtube_video_id}")
+                (youtube_video_id, turn_id),
+            )
+            logger.info(f"Marked turn {turn_id} as uploaded to YouTube: {youtube_video_id}")
 
     def mark_turns_uploaded_by_output_path(self, output_path: str, youtube_video_id: str) -> int:
         """Mark ALL speaker turn video rows sharing output_path as uploaded.
@@ -1044,25 +1024,24 @@ class CongressionalVideoDB:
 
         stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {stv_table} SET
                         is_uploaded_to_youtube = TRUE,
                         youtube_video_id = %s,
                         youtube_upload_date = NOW()
                     WHERE output_path = %s
                     """,
-                    (youtube_video_id, output_path),
-                )
-                logger.info(
-                    "mark_turns_uploaded_by_output_path: output_path=%r marked uploaded to YouTube: %s (%d rows)",
-                    output_path,
-                    youtube_video_id,
-                    cur.rowcount,
-                )
-                return cur.rowcount
+                (youtube_video_id, output_path),
+            )
+            logger.info(
+                "mark_turns_uploaded_by_output_path: output_path=%r marked uploaded to YouTube: %s (%d rows)",
+                output_path,
+                youtube_video_id,
+                cur.rowcount,
+            )
+            return cur.rowcount
 
     def mark_turn_thumbnail_republish_needed(
         self,
@@ -1093,25 +1072,24 @@ class CongressionalVideoDB:
             )
         )
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {stv_table} SET
                         thumbnail_republish_needed_at  = NOW(),
                         thumbnail_republished_at       = NULL,
                         last_thumbnail_republish_error = %s
                     {where_clause}
                     """,
-                    (error_message, where_param),
-                )
-                logger.info(
-                    "mark_turn_thumbnail_republish_needed: output_path=%r turn_id=%r marked for republish (%d rows)",
-                    output_path,
-                    turn_id,
-                    cur.rowcount,
-                )
-                return cur.rowcount
+                (error_message, where_param),
+            )
+            logger.info(
+                "mark_turn_thumbnail_republish_needed: output_path=%r turn_id=%r marked for republish (%d rows)",
+                output_path,
+                turn_id,
+                cur.rowcount,
+            )
+            return cur.rowcount
 
     # ================ Thumbnail Republish Healer (issue #331, WU2a) ================
     #
@@ -1142,10 +1120,9 @@ class CongressionalVideoDB:
         """
         stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     SELECT * FROM (
                         SELECT DISTINCT ON (output_path)
                             turn_id,
@@ -1168,15 +1145,15 @@ class CongressionalVideoDB:
                              dedup.output_path                    ASC
                     LIMIT %s
                     """,
-                    (limit,),
-                )
-                rows = cur.fetchall()
-                logger.info(
-                    "select_turns_needing_thumbnail_republish: %d candidates (limit=%d)",
-                    len(rows),
-                    limit,
-                )
-                return rows
+                (limit,),
+            )
+            rows = cur.fetchall()
+            logger.info(
+                "select_turns_needing_thumbnail_republish: %d candidates (limit=%d)",
+                len(rows),
+                limit,
+            )
+            return rows
 
     def mark_turn_thumbnail_republished(self, output_path: str) -> int:
         """Record a successful republish. Sets exactly two columns.
@@ -1193,23 +1170,22 @@ class CongressionalVideoDB:
         """
         stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {stv_table} SET
                         thumbnail_republished_at       = NOW(),
                         last_thumbnail_republish_error = NULL
                     WHERE output_path = %s
                     """,
-                    (output_path,),
-                )
-                logger.info(
-                    "mark_turn_thumbnail_republished: output_path=%r healed (%d rows)",
-                    output_path,
-                    cur.rowcount,
-                )
-                return cur.rowcount
+                (output_path,),
+            )
+            logger.info(
+                "mark_turn_thumbnail_republished: output_path=%r healed (%d rows)",
+                output_path,
+                cur.rowcount,
+            )
+            return cur.rowcount
 
     def record_turn_thumbnail_republish_failure(
         self,
@@ -1238,10 +1214,9 @@ class CongressionalVideoDB:
         """
         stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {stv_table} SET
                         thumbnail_republish_attempts   = COALESCE(thumbnail_republish_attempts, 0) + 1,
                         last_thumbnail_republish_error = %s,
@@ -1252,23 +1227,22 @@ class CongressionalVideoDB:
                     WHERE output_path = %s
                     RETURNING thumbnail_republish_attempts, thumbnail_republish_abandoned
                     """,
-                    (error_message, abandon, output_path),
+                (error_message, abandon, output_path),
+            )
+            result = cur.fetchone()
+            if result and result.get("thumbnail_republish_abandoned"):
+                logger.warning(
+                    "record_turn_thumbnail_republish_failure: output_path=%r abandoned after %s attempts (forced=%s)",
+                    output_path,
+                    result.get("thumbnail_republish_attempts"),
+                    abandon,
                 )
-                result = cur.fetchone()
-                if result and result.get("thumbnail_republish_abandoned"):
-                    logger.warning(
-                        "record_turn_thumbnail_republish_failure: output_path=%r "
-                        "abandoned after %s attempts (forced=%s)",
-                        output_path,
-                        result.get("thumbnail_republish_attempts"),
-                        abandon,
-                    )
-                else:
-                    logger.info(
-                        "record_turn_thumbnail_republish_failure: output_path=%r still eligible after this failure",
-                        output_path,
-                    )
-                return result
+            else:
+                logger.info(
+                    "record_turn_thumbnail_republish_failure: output_path=%r still eligible after this failure",
+                    output_path,
+                )
+            return result
 
     def select_unprepared_turns(self, limit: int = 2) -> list[dict]:
         """Select speaker turns that have not been prepared yet.
@@ -1288,10 +1262,9 @@ class CongressionalVideoDB:
         vc_table = self.pg_conn.get_qualified_table("video_chapters")
         ysv_table = self.pg_conn.get_qualified_table("youtube_source_videos")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     SELECT * FROM (
                         SELECT DISTINCT ON (stv.output_path)
                             stv.turn_id, stv.output_path, st.chapter_id, st.resolved_name,
@@ -1322,15 +1295,15 @@ class CongressionalVideoDB:
                              dedup.relevance_score DESC, dedup.session_date DESC
                     LIMIT %s
                     """,
-                    (limit,),
-                )
-                turns = cur.fetchall()
-                logger.info(
-                    "select_unprepared_turns: %d unprepared turns (limit=%d)",
-                    len(turns),
-                    limit,
-                )
-                return turns
+                (limit,),
+            )
+            turns = cur.fetchall()
+            logger.info(
+                "select_unprepared_turns: %d unprepared turns (limit=%d)",
+                len(turns),
+                limit,
+            )
+            return turns
 
     def mark_turn_prepared(self, turn_id: int) -> None:
         """Set prepared_at = now() for all speaker_turn_videos rows sharing this
@@ -1353,23 +1326,22 @@ class CongressionalVideoDB:
         """
         stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {stv_table}
                     SET prepared_at = NOW()
                     WHERE output_path = (
                         SELECT output_path FROM {stv_table} WHERE turn_id = %s
                     )
                     """,
-                    (turn_id,),
-                )
-                logger.info(
-                    "mark_turn_prepared: turn_id=%s marked prepared (%s sibling rows sharing output_path)",
-                    turn_id,
-                    cur.rowcount,
-                )
+                (turn_id,),
+            )
+            logger.info(
+                "mark_turn_prepared: turn_id=%s marked prepared (%s sibling rows sharing output_path)",
+                turn_id,
+                cur.rowcount,
+            )
 
     def mark_turn_resolved(
         self,
@@ -1404,10 +1376,9 @@ class CongressionalVideoDB:
 
         group_size = self._count_records("speaker_turn_videos", "output_path = %s", (output_path,))
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {stv_table}
                     SET resolved_participant_slug = %s,
                         speaker_resolution_confidence = %s,
@@ -1423,20 +1394,20 @@ class CongressionalVideoDB:
                           )
                     )
                     """,
-                    (slug, confidence, method, output_path, representative_turn_id),
-                )
-                logger.info(
-                    "mark_turn_resolved: output_path=%s representative_turn_id=%s → "
-                    "slug=%r confidence=%.2f method=%s (%d/%d sibling rows updated; "
-                    "label-mismatched siblings withheld)",
-                    output_path,
-                    representative_turn_id,
-                    slug,
-                    confidence,
-                    method,
-                    cur.rowcount,
-                    group_size,
-                )
+                (slug, confidence, method, output_path, representative_turn_id),
+            )
+            logger.info(
+                "mark_turn_resolved: output_path=%s representative_turn_id=%s → "
+                "slug=%r confidence=%.2f method=%s (%d/%d sibling rows updated; "
+                "label-mismatched siblings withheld)",
+                output_path,
+                representative_turn_id,
+                slug,
+                confidence,
+                method,
+                cur.rowcount,
+                group_size,
+            )
 
     def promote_turn_type_to_qa(self, output_path: str) -> int:
         """Promote-only monologue->qa write-back after speaker resolution.
@@ -1458,23 +1429,22 @@ class CongressionalVideoDB:
         """
         stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {stv_table}
                     SET turn_type = 'qa'
                     WHERE output_path = %s
                       AND turn_type = 'monologue'
                     """,
-                    (output_path,),
-                )
-                logger.info(
-                    "promote_turn_type_to_qa: output_path=%s (rowcount=%d)",
-                    output_path,
-                    cur.rowcount,
-                )
-                return cur.rowcount
+                (output_path,),
+            )
+            logger.info(
+                "promote_turn_type_to_qa: output_path=%s (rowcount=%d)",
+                output_path,
+                cur.rowcount,
+            )
+            return cur.rowcount
 
     def mark_chapter_resolved(self, chapter_id: int, slug: str) -> None:
         """Never-override write-back of a resolved chapter speaker slug (issue #263).
@@ -1490,24 +1460,23 @@ class CongressionalVideoDB:
         """
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {chapters_table}
                     SET resolved_participant_slug = %s,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE chapter_id = %s
                       AND resolved_participant_slug IS NULL
                     """,
-                    (slug, chapter_id),
-                )
-                logger.info(
-                    "mark_chapter_resolved: chapter_id=%s → slug=%r (rowcount=%d)",
-                    chapter_id,
-                    slug,
-                    cur.rowcount,
-                )
+                (slug, chapter_id),
+            )
+            logger.info(
+                "mark_chapter_resolved: chapter_id=%s → slug=%r (rowcount=%d)",
+                chapter_id,
+                slug,
+                cur.rowcount,
+            )
 
     def count_pending_uploadable_turns(self) -> int:
         """Returns the count of speaker turn videos pending upload."""
@@ -1529,17 +1498,16 @@ class CongressionalVideoDB:
         (issue #244) — counting rows would over-count uploaded videos.
         """
         table = self.pg_conn.get_qualified_table("speaker_turn_videos")
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     SELECT COUNT(DISTINCT output_path) AS count
                     FROM {table}
                     WHERE youtube_upload_date >= CURRENT_DATE
                     """
-                )
-                result = cur.fetchone()
-                count = result["count"] if result else 0
+            )
+            result = cur.fetchone()
+            count = result["count"] if result else 0
         logger.info(f"Turn video(s) uploaded today: {count}")
         return count
 
@@ -1567,10 +1535,9 @@ class CongressionalVideoDB:
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
         stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     SELECT
                         'chapter' AS item_type,
                         chapter_id AS id,
@@ -1605,16 +1572,16 @@ class CongressionalVideoDB:
                       AND youtube_upload_date BETWEEN NOW() - INTERVAL '%s hours'
                                                   AND NOW() - INTERVAL '%s hours'
                     """,
-                    (max_h, min_h, max_h, min_h),
-                )
-                rows = cur.fetchall()
-                logger.info(
-                    "select_unverified_uploads: %d candidates (min_h=%d, max_h=%d)",
-                    len(rows),
-                    min_h,
-                    max_h,
-                )
-                return rows
+                (max_h, min_h, max_h, min_h),
+            )
+            rows = cur.fetchall()
+            logger.info(
+                "select_unverified_uploads: %d candidates (min_h=%d, max_h=%d)",
+                len(rows),
+                min_h,
+                max_h,
+            )
+            return rows
 
     def mark_upload_verified(self, item_type: str, id_or_output_path) -> None:
         """Set upload_verified_at = NOW() for a verified upload.
@@ -1630,29 +1597,27 @@ class CongressionalVideoDB:
         """
         if item_type == "chapter":
             chapters_table = self.pg_conn.get_qualified_table("video_chapters")
-            with self.pg_conn.get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"""
+            with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f"""
                         UPDATE {chapters_table}
                         SET upload_verified_at = NOW()
                         WHERE chapter_id = %s
                         """,
-                        (id_or_output_path,),
-                    )
+                    (id_or_output_path,),
+                )
             logger.info("mark_upload_verified: chapter_id=%s verified", id_or_output_path)
         elif item_type == "turn":
             stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
-            with self.pg_conn.get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"""
+            with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f"""
                         UPDATE {stv_table}
                         SET upload_verified_at = NOW()
                         WHERE output_path = %s
                         """,
-                        (id_or_output_path,),
-                    )
+                    (id_or_output_path,),
+                )
             logger.info(
                 "mark_upload_verified: output_path=%r all siblings verified",
                 id_or_output_path,
@@ -1684,10 +1649,9 @@ class CongressionalVideoDB:
         """
         if item_type == "chapter":
             chapters_table = self.pg_conn.get_qualified_table("video_chapters")
-            with self.pg_conn.get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"""
+            with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f"""
                         UPDATE {chapters_table} SET
                             upload_attempts = upload_attempts + 1,
                             last_upload_error = %s,
@@ -1697,27 +1661,26 @@ class CongressionalVideoDB:
                         WHERE chapter_id = %s
                         RETURNING upload_attempts, is_upload_abandoned
                         """,
-                        (error_message, id_or_output_path),
+                    (error_message, id_or_output_path),
+                )
+                result = cur.fetchone()
+                if result and result.get("upload_attempts") == CHAPTER_UPLOAD_ABANDON_THRESHOLD:
+                    logger.warning(
+                        "record_upload_verification_failure: chapter_id=%s abandoned after %d failures",
+                        id_or_output_path,
+                        CHAPTER_UPLOAD_ABANDON_THRESHOLD,
                     )
-                    result = cur.fetchone()
-                    if result and result.get("upload_attempts") == CHAPTER_UPLOAD_ABANDON_THRESHOLD:
-                        logger.warning(
-                            "record_upload_verification_failure: chapter_id=%s abandoned after %d failures",
-                            id_or_output_path,
-                            CHAPTER_UPLOAD_ABANDON_THRESHOLD,
-                        )
-                    else:
-                        logger.info(
-                            "record_upload_verification_failure: chapter_id=%s re-queued",
-                            id_or_output_path,
-                        )
+                else:
+                    logger.info(
+                        "record_upload_verification_failure: chapter_id=%s re-queued",
+                        id_or_output_path,
+                    )
 
         elif item_type == "turn":
             stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
-            with self.pg_conn.get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"""
+            with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f"""
                         UPDATE {stv_table} SET
                             upload_attempts = upload_attempts + 1,
                             last_upload_error = %s,
@@ -1727,20 +1690,20 @@ class CongressionalVideoDB:
                         WHERE output_path = %s
                         RETURNING upload_attempts, is_upload_abandoned
                         """,
-                        (error_message, id_or_output_path),
+                    (error_message, id_or_output_path),
+                )
+                result = cur.fetchone()
+                if result and result.get("upload_attempts") == CHAPTER_UPLOAD_ABANDON_THRESHOLD:
+                    logger.warning(
+                        "record_upload_verification_failure: output_path=%r group abandoned after %d failures",
+                        id_or_output_path,
+                        CHAPTER_UPLOAD_ABANDON_THRESHOLD,
                     )
-                    result = cur.fetchone()
-                    if result and result.get("upload_attempts") == CHAPTER_UPLOAD_ABANDON_THRESHOLD:
-                        logger.warning(
-                            "record_upload_verification_failure: output_path=%r group abandoned after %d failures",
-                            id_or_output_path,
-                            CHAPTER_UPLOAD_ABANDON_THRESHOLD,
-                        )
-                    else:
-                        logger.info(
-                            "record_upload_verification_failure: output_path=%r group re-queued",
-                            id_or_output_path,
-                        )
+                else:
+                    logger.info(
+                        "record_upload_verification_failure: output_path=%r group re-queued",
+                        id_or_output_path,
+                    )
         else:
             raise ValueError(f"record_upload_verification_failure: unknown item_type={item_type!r}")
 
@@ -1755,13 +1718,12 @@ class CongressionalVideoDB:
         if not chapter_ids:
             return {}
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"SELECT chapter_id, title FROM {chapters_table} WHERE chapter_id = ANY(%s)",
-                    (chapter_ids,),
-                )
-                return {row["chapter_id"]: row["title"] for row in cur.fetchall()}
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT chapter_id, title FROM {chapters_table} WHERE chapter_id = ANY(%s)",
+                (chapter_ids,),
+            )
+            return {row["chapter_id"]: row["title"] for row in cur.fetchall()}
 
     def get_chapter_metadata(self, chapter_id: int) -> dict | None:
         """Returns full chapter metadata for AI-generated YouTube Shorts title/description.
@@ -1772,10 +1734,9 @@ class CongressionalVideoDB:
         """
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
         youtube_source_videos_table = self.pg_conn.get_qualified_table("youtube_source_videos")
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""SELECT vc.chapter_id, vc.title, vc.description, vc.speakers,
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT vc.chapter_id, vc.title, vc.description, vc.speakers,
                                vc.key_speakers, vc.topics, vc.scoring_reasoning,
                                vc.relevance_score, vc.youtube_video_id,
                                ysv.video_title AS source_video_title,
@@ -1785,10 +1746,10 @@ class CongressionalVideoDB:
                         FROM {chapters_table} vc
                         LEFT JOIN {youtube_source_videos_table} ysv ON ysv.video_id = vc.video_id
                         WHERE vc.chapter_id = %s""",
-                    (chapter_id,),
-                )
-                row = cur.fetchone()
-                return dict(row) if row else None
+                (chapter_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
 
     def record_source_integrity_failure(self, video_id: str, retry_after_hours: int = 12) -> None:
         """Early-upsert an integrity failure for a source video.
@@ -1813,11 +1774,9 @@ class CongressionalVideoDB:
         tbl = self.pg_conn.get_qualified_table("youtube_source_videos")
         video_url = f"https://www.youtube.com/watch?v={video_id}"
 
-        with self.pg_conn.get_connection() as conn:
-            with conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"""
+        with self.pg_conn.get_connection() as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                         INSERT INTO {tbl} (video_id, video_url, is_processed, download_retry_after)
                         VALUES (%s, %s, FALSE, NOW() + (%s || ' hours')::interval)
                         ON CONFLICT (video_id) DO UPDATE SET
@@ -1826,8 +1785,8 @@ class CongressionalVideoDB:
                                 EXCLUDED.download_retry_after),
                             updated_at = CURRENT_TIMESTAMP
                         """,
-                        (video_id, video_url, str(retry_after_hours)),
-                    )
+                (video_id, video_url, str(retry_after_hours)),
+            )
 
     def update_chapter_speakers(
         self,
@@ -1854,11 +1813,10 @@ class CongressionalVideoDB:
         """
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                if resolved_participant_slug is not None:
-                    cur.execute(
-                        f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            if resolved_participant_slug is not None:
+                cur.execute(
+                    f"""
                         UPDATE {chapters_table}
                         SET speakers = %s,
                             key_speakers = %s,
@@ -1867,11 +1825,11 @@ class CongressionalVideoDB:
                             updated_at = CURRENT_TIMESTAMP
                         WHERE chapter_id = %s
                         """,
-                        (speakers, key_speakers, json.dumps(timeline), resolved_participant_slug, chapter_id),
-                    )
-                else:
-                    cur.execute(
-                        f"""
+                    (speakers, key_speakers, json.dumps(timeline), resolved_participant_slug, chapter_id),
+                )
+            else:
+                cur.execute(
+                    f"""
                         UPDATE {chapters_table}
                         SET speakers = %s,
                             key_speakers = %s,
@@ -1879,16 +1837,16 @@ class CongressionalVideoDB:
                             updated_at = CURRENT_TIMESTAMP
                         WHERE chapter_id = %s
                         """,
-                        (speakers, key_speakers, json.dumps(timeline), chapter_id),
-                    )
-                logger.info(
-                    "update_chapter_speakers: updated chapter %d (%d speakers, %d key_speakers, %d timeline entries%s)",
-                    chapter_id,
-                    len(speakers),
-                    len(key_speakers),
-                    len(timeline),
-                    f", slug={resolved_participant_slug!r}" if resolved_participant_slug else "",
+                    (speakers, key_speakers, json.dumps(timeline), chapter_id),
                 )
+            logger.info(
+                "update_chapter_speakers: updated chapter %d (%d speakers, %d key_speakers, %d timeline entries%s)",
+                chapter_id,
+                len(speakers),
+                len(key_speakers),
+                len(timeline),
+                f", slug={resolved_participant_slug!r}" if resolved_participant_slug else "",
+            )
 
     def get_processed_video_ids(self, video_ids: list[str]) -> set[str]:
         """Return the subset of video_ids that should be skipped for download.
@@ -1905,18 +1863,17 @@ class CongressionalVideoDB:
 
         youtube_videos_table = self.pg_conn.get_qualified_table("youtube_source_videos")
 
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     SELECT video_id
                     FROM {youtube_videos_table}
                     WHERE video_id = ANY(%s)
                       AND (is_processed = TRUE OR download_retry_after > NOW())
                     """,
-                    (video_ids,),
-                )
-                return {row["video_id"] for row in cur.fetchall()}
+                (video_ids,),
+            )
+            return {row["video_id"] for row in cur.fetchall()}
 
     # ==================== Video Analytics ====================
 
@@ -1936,10 +1893,9 @@ class CongressionalVideoDB:
             List of row dicts: {chapter_id, youtube_video_id, youtube_upload_date}
         """
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     SELECT chapter_id, youtube_video_id, youtube_upload_date
                     FROM {chapters_table}
                     WHERE youtube_video_id IS NOT NULL
@@ -1947,13 +1903,13 @@ class CongressionalVideoDB:
                       AND youtube_upload_date >= NOW() - INTERVAL '90 days'
                     ORDER BY youtube_upload_date DESC
                     """,
-                )
-                rows = cur.fetchall()
-                logger.info(
-                    "get_pending_analytics_checkpoints: %d candidate chapters found",
-                    len(rows),
-                )
-                return list(rows)
+            )
+            rows = cur.fetchall()
+            logger.info(
+                "get_pending_analytics_checkpoints: %d candidate chapters found",
+                len(rows),
+            )
+            return list(rows)
 
     def get_collected_analytics_pairs(self, youtube_video_ids: list[str]) -> set[tuple[str, str]]:
         """Return already-collected (youtube_video_id, checkpoint) pairs.
@@ -1973,23 +1929,22 @@ class CongressionalVideoDB:
             return set()
 
         snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     SELECT youtube_video_id, checkpoint
                     FROM {snapshots_table}
                     WHERE youtube_video_id = ANY(%s)
                     """,
-                    (youtube_video_ids,),
-                )
-                rows = cur.fetchall()
-                logger.info(
-                    "get_collected_analytics_pairs: %d already-collected pairs for %d video ids",
-                    len(rows),
-                    len(youtube_video_ids),
-                )
-                return {(row["youtube_video_id"], row["checkpoint"]) for row in rows}
+                (youtube_video_ids,),
+            )
+            rows = cur.fetchall()
+            logger.info(
+                "get_collected_analytics_pairs: %d already-collected pairs for %d video ids",
+                len(rows),
+                len(youtube_video_ids),
+            )
+            return {(row["youtube_video_id"], row["checkpoint"]) for row in rows}
 
     def record_analytics_snapshot(
         self,
@@ -2013,23 +1968,22 @@ class CongressionalVideoDB:
                 subscribersGained, subscribersLost).
         """
         snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     INSERT INTO {snapshots_table}
                         (chapter_id, youtube_video_id, checkpoint, metrics)
                     VALUES (%s, %s, %s, %s::jsonb)
                     ON CONFLICT (youtube_video_id, checkpoint) DO NOTHING
                     """,
-                    (chapter_id, youtube_video_id, checkpoint, json.dumps(metrics)),
-                )
-                logger.info(
-                    "record_analytics_snapshot: chapter_id=%d yt_id=%s checkpoint=%s",
-                    chapter_id,
-                    youtube_video_id,
-                    checkpoint,
-                )
+                (chapter_id, youtube_video_id, checkpoint, json.dumps(metrics)),
+            )
+            logger.info(
+                "record_analytics_snapshot: chapter_id=%d yt_id=%s checkpoint=%s",
+                chapter_id,
+                youtube_video_id,
+                checkpoint,
+            )
 
     # ---- Checkpoint actions (issue #102) ----
 
@@ -2052,10 +2006,9 @@ class CongressionalVideoDB:
         snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
         source_videos_table = self.pg_conn.get_qualified_table("youtube_source_videos")
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     SELECT
                         s.snapshot_id, s.chapter_id, s.youtube_video_id,
                         s.checkpoint, s.metrics, s.collected_at,
@@ -2068,13 +2021,13 @@ class CongressionalVideoDB:
                     WHERE s.action_taken IS NULL
                     ORDER BY s.collected_at ASC
                     """,
-                )
-                rows = cur.fetchall()
-                logger.info(
-                    "get_unactioned_snapshots: %d candidate snapshots found",
-                    len(rows),
-                )
-                return list(rows)
+            )
+            rows = cur.fetchall()
+            logger.info(
+                "get_unactioned_snapshots: %d candidate snapshots found",
+                len(rows),
+            )
+            return list(rows)
 
     def get_checkpoint_view_medians(self) -> dict:
         """Return the channel's own historical median views per checkpoint.
@@ -2088,10 +2041,9 @@ class CongressionalVideoDB:
             Dict keyed by checkpoint: {checkpoint: {median_views, sample_size}}.
         """
         snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     SELECT
                         checkpoint,
                         percentile_cont(0.5) WITHIN GROUP (
@@ -2101,15 +2053,15 @@ class CongressionalVideoDB:
                     FROM {snapshots_table}
                     GROUP BY checkpoint
                     """,
-                )
-                rows = cur.fetchall()
-                return {
-                    row["checkpoint"]: {
-                        "median_views": row["median_views"],
-                        "sample_size": row["sample_size"],
-                    }
-                    for row in rows
+            )
+            rows = cur.fetchall()
+            return {
+                row["checkpoint"]: {
+                    "median_views": row["median_views"],
+                    "sample_size": row["sample_size"],
                 }
+                for row in rows
+            }
 
     def get_video_action_history(self, youtube_video_ids: list) -> dict:
         """Return consumed lifetime action-cap slots per video.
@@ -2137,10 +2089,9 @@ class CongressionalVideoDB:
             return history
 
         snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     SELECT youtube_video_id, checkpoint, action_taken
                     FROM {snapshots_table}
                     WHERE youtube_video_id = ANY(%s)
@@ -2150,9 +2101,9 @@ class CongressionalVideoDB:
                           'thumbnail_and_title_regenerated'
                       )
                     """,
-                    (youtube_video_ids,),
-                )
-                rows = cur.fetchall()
+                (youtube_video_ids,),
+            )
+            rows = cur.fetchall()
 
         for row in rows:
             yt_id = row["youtube_video_id"]
@@ -2180,18 +2131,17 @@ class CongressionalVideoDB:
             Row dict, or None if no chosen thumbnail exists yet.
         """
         thumbnails_table = self.pg_conn.get_qualified_table("video_thumbnails")
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     SELECT *
                     FROM {thumbnails_table}
                     WHERE chapter_id = %s AND is_chosen = TRUE
                     LIMIT 1
                     """,
-                    (chapter_id,),
-                )
-                return cur.fetchone()
+                (chapter_id,),
+            )
+            return cur.fetchone()
 
     def claim_snapshot_action(self, snapshot_id: int) -> bool:
         """Claim a snapshot row for automated action before any external call.
@@ -2205,23 +2155,22 @@ class CongressionalVideoDB:
             claimed (or otherwise no longer NULL).
         """
         snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {snapshots_table}
                     SET action_taken = 'in_progress'
                     WHERE snapshot_id = %s AND action_taken IS NULL
                     """,
-                    (snapshot_id,),
-                )
-                claimed = cur.rowcount == 1
-                logger.info(
-                    "claim_snapshot_action: snapshot_id=%d claimed=%s",
-                    snapshot_id,
-                    claimed,
-                )
-                return claimed
+                (snapshot_id,),
+            )
+            claimed = cur.rowcount == 1
+            logger.info(
+                "claim_snapshot_action: snapshot_id=%d claimed=%s",
+                snapshot_id,
+                claimed,
+            )
+            return claimed
 
     def mark_action_taken(self, snapshot_id: int, action: str, detail: dict) -> None:
         """Write the final action_taken literal and action_detail audit JSONB.
@@ -2234,18 +2183,17 @@ class CongressionalVideoDB:
             detail: Audit payload — see design's action_detail shape.
         """
         snapshots_table = self.pg_conn.get_qualified_table("video_analytics_snapshots")
-        with self.pg_conn.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
                     UPDATE {snapshots_table}
                     SET action_taken = %s, action_detail = %s::jsonb
                     WHERE snapshot_id = %s
                     """,
-                    (action, json.dumps(detail), snapshot_id),
-                )
-                logger.info(
-                    "mark_action_taken: snapshot_id=%d action=%s",
-                    snapshot_id,
-                    action,
-                )
+                (action, json.dumps(detail), snapshot_id),
+            )
+            logger.info(
+                "mark_action_taken: snapshot_id=%d action=%s",
+                snapshot_id,
+                action,
+            )
