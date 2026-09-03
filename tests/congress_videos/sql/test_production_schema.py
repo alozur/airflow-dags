@@ -576,10 +576,23 @@ class TestUploadableTurns044PublishOrder:
 
     def test_tiebreak_carries_fifo_intent_comment(self):
         """The materialized_at ASC clause must name its FIFO intent inline,
-        so a future reader does not mistake it for accidental ordering."""
-        block = TestProductionQualification._view_block().upper()
-        assert "FIFO" in block
-        assert "#328" in block
+        so a future reader does not mistake it for accidental ordering.
+
+        Scoped to the ORDER BY clause itself, NOT the whole view block: the
+        cumulative lineage header already reads "044 FIFO tie-break ... (issue
+        #328)", so a block-wide keyword scan would still pass with the inline
+        comment deleted — exactly the edit this test exists to catch.
+        """
+        block = TestProductionQualification._view_block()
+        marker = "ORDER BY COALESCE(dedup.interest_score"
+        assert marker in block, "outer ORDER BY not found in the uploadable_turns block"
+        order_by_clause = block[block.index(marker) :].upper()
+
+        assert "FIFO" in order_by_clause, (
+            "the materialized_at ASC tie-break must carry an inline comment naming its "
+            "FIFO intent, inside the ORDER BY clause itself — not only in the lineage header"
+        )
+        assert "#328" in order_by_clause, "the inline tie-break comment must cite issue #328"
 
     def test_migration_044_body_is_040_plus_tiebreak(self):
         """The transcription guard: migration 044's body must be migration
