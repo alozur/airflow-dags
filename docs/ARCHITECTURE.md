@@ -45,16 +45,17 @@ independientes de YouTube.
   |     --> score_chapter_relevance (GPT-4o-mini, score 0-5)
   |     --> save_chapters_to_db (PostgreSQL)
   |
-  +-- congress_youtube_chapter_uploader  (12:00 diario)
+  +-- congress_youtube_chapter_uploader  (19:00 UTC diario)
   |     ensure_data_directory
-  |     get_uploadable_chapters (DB view: relevance >= 2, not uploaded)
-  |     generate_youtube_metadata (GPT-3.5-turbo)
-  |     generate_thumbnail_text (GPT-3.5-turbo, 3-6 palabras, max 40 chars)
-  |     generate_thumbnails (Pillow 1280x720)
-  |     extract_chapter_videos (ffmpeg input-seek + re-encode libx264/aac, frame-accurate; original intacto)
+  |     check_upload_quota --> skip_if_quota_reached (corta si la cola esta vacia)
+  |     get_uploadable_item (vista uploadable_turns, LIMIT 1; siempre item_type="turn")
+  |     generate_youtube_metadata (titulo formato noticia + descripcion)
+  |     prepare_thumbnail_config --> generate_thumbnail (dispara generic_thumbnail_generator)
+  |     extract_chapter_videos (turno: reutiliza el MP4 ya materializado; rama ffmpeg inalcanzable)
   |     prepare_upload_config
   |     trigger_youtube_upload --> generic_youtube_uploader (polling)
-  |     mark_chapters_uploaded (PostgreSQL UPDATE)
+  |     [mark_chapters_uploaded, mark_turns_uploaded] (PostgreSQL UPDATE, en paralelo)
+  |     backfill_thumbnail_video_id --> check_upload_failures
   |
   +-- generic_youtube_uploader  (sin schedule, solo trigger)
   |     validate_config --> upload_videos (YouTube Data API v3, OAuth)
@@ -71,8 +72,8 @@ independientes de YouTube.
   NAS montado en /opt/airflow/data/congress_videos/:
     downloads/{date}/{video_id}/audio_chunks/  (audio WebM)
     downloads/{date}/{video_id}/srt_files/     (subtitulos SRT)
-    {video_id}/{chapter_id}/chapter_video.mp4
-    {video_id}/{chapter_id}/thumbnail.png
+    {channel_slug}/{source_video_id}/video_chapters/{chapter_id}/oradores/{output_turn_id}/{filename}
+      (layout canonico #133: video.mp4, thumbnail.png, subtitles.srt)
     assets/  (background, logo, fonts)
     congress_youtube_token.pickle
 
@@ -112,9 +113,14 @@ XCom keys principales en congress_youtube_channel_monitor:
   identified_chapters, interesting_chapters, scored_chapters, db_save_results
 
 XCom keys en congress_youtube_chapter_uploader:
-  data_directory_path, uploadable_chapters, youtube_metadata_results,
-  thumbnail_text_results, thumbnail_results, chapter_extraction_results,
-  upload_config, upload_results, chapter_upload_updates
+  data_directory_path, upload_quota, uploadable_item, youtube_metadata_results,
+  thumbnail_config, thumbnail_dag_run_id, thumbnail_result,
+  chapter_extraction_results, upload_config, upload_results,
+  chapter_upload_updates, turn_upload_updates
+
+  chapter_extraction_results y chapter_upload_updates son los nombres literales de
+  las claves y transportan turnos de orador desde #171: la clave XCom es identidad
+  persistida en Airflow y no se renombra. Ver "Nomenclatura" en DAGS.md.
 
 
 ---
