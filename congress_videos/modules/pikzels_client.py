@@ -100,7 +100,7 @@ class PikzelsClient:
         """
         self.api_key = api_key or os.getenv("PIKZELS_API_KEY")
         if not self.api_key:
-            raise EnvironmentError(
+            raise OSError(
                 "PIKZELS_API_KEY env var is not set and no api_key was passed"
             )
         if not self.api_key.startswith("pkz_"):

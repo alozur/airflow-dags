@@ -2,11 +2,12 @@
 """
 Database operations specific to congressional video management.
 """
-from utils.postgres_helpers import PostgresConnection
-from typing import Dict, List, Optional, Any
-from datetime import date
 import json
 import logging
+from datetime import date
+from typing import Any, Dict, List, Optional
+
+from utils.postgres_helpers import PostgresConnection
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +22,10 @@ SHORTS_TIER1_PER_CHAPTER_LIMIT = 3    # Tier-1 upload slots per source chapter
 
 
 def filter_shorts_by_source_cooldown(
-    candidates: List[Dict[str, Any]],
-    upload_history: List[Dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    upload_history: list[dict[str, Any]],
     cooldown: int = SHORTS_SOURCE_VIDEO_COOLDOWN,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Filter out candidate shorts whose source video is still within its
     per-source-video cool-down.
@@ -145,7 +146,7 @@ class CongressionalVideoDB:
 
     # ==================== YouTube Chapter Management ====================
 
-    def save_youtube_chapters_to_db(self, scored_chapters_data: Dict[str, Any], session_number: int = None, session_date: date = None) -> Dict[str, Any]:
+    def save_youtube_chapters_to_db(self, scored_chapters_data: dict[str, Any], session_number: int = None, session_date: date = None) -> dict[str, Any]:
         """
         Save scored YouTube video chapters to the database.
 
@@ -251,7 +252,7 @@ class CongressionalVideoDB:
                             continue
 
                         cur.execute("SAVEPOINT sp_video")
-                        video_chapters: List[Dict[str, Any]] = []
+                        video_chapters: list[dict[str, Any]] = []
                         try:
                             # Step 1: Upsert YouTube source video
                             video_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -391,7 +392,7 @@ class CongressionalVideoDB:
 
         return save_results
 
-    def get_uploadable_chapters(self, limit: int = None, min_relevance_score: int = 4) -> List[Dict]:
+    def get_uploadable_chapters(self, limit: int = None, min_relevance_score: int = 4) -> list[dict]:
         """
         Get chapters eligible for YouTube upload.
 
@@ -483,7 +484,7 @@ class CongressionalVideoDB:
 
     # ==================== Video Shorts (Reap Pipeline) ====================
 
-    def get_chapters_for_shorts(self, limit: int | None = None, min_relevance_score: int = 3) -> List[Dict]:
+    def get_chapters_for_shorts(self, limit: int | None = None, min_relevance_score: int = 3) -> list[dict]:
         """
         Get video chapters eligible for Reap Shorts processing.
 
@@ -761,7 +762,7 @@ class CongressionalVideoDB:
                 """, (status, short_id))
                 logger.info(f"Updated video_short {short_id}: reap_status={status}")
 
-    def get_pending_shorts(self, limit: int = 2, min_virality_score: float = 0.0) -> List[Dict]:
+    def get_pending_shorts(self, limit: int = 2, min_virality_score: float = 0.0) -> list[dict]:
         """
         Get downloaded Shorts clips that are ready for YouTube upload.
 
@@ -926,7 +927,7 @@ class CongressionalVideoDB:
                 result = cur.fetchone()
                 return result['count'] if result else 0
 
-    def get_uploadable_turns(self, limit: int = 1) -> List[Dict]:
+    def get_uploadable_turns(self, limit: int = 1) -> list[dict]:
         """Get speaker turn videos eligible for YouTube upload.
 
         Args:
@@ -1086,7 +1087,7 @@ class CongressionalVideoDB:
 
     def select_turns_needing_thumbnail_republish(
         self, limit: int = THUMBNAIL_REPUBLISH_CANDIDATE_LIMIT
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Return healer candidates, deduplicated one row per output_path.
 
         Wrapped-dedup shape (mirrors select_unverified_uploads, database.py
@@ -1234,7 +1235,7 @@ class CongressionalVideoDB:
                     )
                 return result
 
-    def select_unprepared_turns(self, limit: int = 2) -> List[Dict]:
+    def select_unprepared_turns(self, limit: int = 2) -> list[dict]:
         """Select speaker turns that have not been prepared yet.
 
         Returns turns where prepared_at IS NULL and is_uploaded_to_youtube = FALSE,
@@ -1512,7 +1513,7 @@ class CongressionalVideoDB:
 
     def select_unverified_uploads(
         self, min_h: int = 1, max_h: int = 48
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Return uploaded rows whose youtube_video_id has not yet been verified.
 
         Covers both video_chapters and speaker_turn_videos.  Rows are filtered
@@ -2138,14 +2139,12 @@ class CongressionalVideoDB:
             entry = history.setdefault(yt_id, {"thumbnail": 0, "title": 0})
 
             entry["thumbnail"] += 1
-            if action == "thumbnail_and_title_regenerated":
-                entry["title"] += 1
-            elif action == "in_progress" and checkpoint in TITLE_UPDATE_CHECKPOINTS:
+            if action == "thumbnail_and_title_regenerated" or action == "in_progress" and checkpoint in TITLE_UPDATE_CHECKPOINTS:
                 entry["title"] += 1
 
         return history
 
-    def get_chosen_thumbnail(self, chapter_id: int) -> Optional[dict]:
+    def get_chosen_thumbnail(self, chapter_id: int) -> dict | None:
         """Return the is_chosen=TRUE video_thumbnails row for a chapter.
 
         Includes the persisted archetype (migration 041) so a later

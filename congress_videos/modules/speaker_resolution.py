@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import unicodedata
-from typing import Callable
+from collections.abc import Callable
 
 from rapidfuzz import fuzz
 

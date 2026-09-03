@@ -4,6 +4,7 @@ Centralized environment variable loading for all projects.
 """
 import os
 
+
 def load_env_if_local():
     """Load .env file only if not running in Docker environment"""
     if not os.getenv('AIRFLOW__CORE__DAGS_FOLDER'):  # Common Docker env var

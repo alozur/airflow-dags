@@ -111,7 +111,7 @@ def _coerce_archetype(value: object) -> str:
 
 # Spanish stop-words that disqualify a candidate when they appear as the first token.
 _LAPIDARY_STOP_WORDS = frozenset(
-    "de que y o pero si en con por a el la los las un una".split()
+    ["de", "que", "y", "o", "pero", "si", "en", "con", "por", "a", "el", "la", "los", "las", "un", "una"]
 )
 
 # Clause boundary splitter for lapidary candidate extraction.
@@ -328,7 +328,7 @@ def _build_art_direction_prompt(
     return user_prompt
 
 
-def _call_art_direction_api(user_prompt: str) -> Optional[dict]:
+def _call_art_direction_api(user_prompt: str) -> dict | None:
     """Call generate_json_completion and return validated brief data, or None."""
     try:
         result = generate_json_completion(
@@ -643,7 +643,7 @@ def _build_title_prompt(
     return user_prompt
 
 
-def _request_title(user_prompt: str) -> Optional[str]:
+def _request_title(user_prompt: str) -> str | None:
     """Call generate_json_completion and return the stripped title, or None."""
     result = generate_json_completion(
         system_prompt=THUMBNAIL_TITLE_SYSTEM_PROMPT,

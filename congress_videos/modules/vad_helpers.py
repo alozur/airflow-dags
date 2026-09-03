@@ -21,18 +21,18 @@ Design notes:
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import tempfile
 import wave
 
 import numpy as np
-import logging
 
 from congress_videos.config.constants import (
     VAD_BACKEND,
-    VAD_END_MARGIN_SECS,
     VAD_ENABLED,
+    VAD_END_MARGIN_SECS,
     VAD_GAP_MERGE_SECS,
     VAD_MIN_CHAPTER_SECS,
     VAD_MIN_SUSTAINED_SECS,
@@ -40,8 +40,8 @@ from congress_videos.config.constants import (
     VAD_SAMPLE_RATE,
     VAD_TURN_TRIM_EPSILON_SECS,
 )
-from congress_videos.modules.video_editor import _get_source_duration
 from congress_videos.config.paths import get_download_video_path
+from congress_videos.modules.video_editor import _get_source_duration
 from congress_videos.modules.video_splitter import compute_ffmpeg_timeout
 from utils.time_utils import format_timestamp, parse_timestamp
 

@@ -20,8 +20,8 @@ import logging
 import os
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from congress_videos.config.ai_prompts import (
     TURN_NAME_RESOLUTION_SYSTEM_PROMPT,

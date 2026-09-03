@@ -10,8 +10,8 @@ import math
 import os
 import sys
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 MODEL_ID = "pyannote/speaker-diarization-community-1"
 

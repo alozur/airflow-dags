@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 CANDIDATE_LABEL = "NO_DIARIZED_SPEECH"
 SCOPE_NOTE = (
     "Raw diarization gaps are candidate cuts only; audio classification and validation are "

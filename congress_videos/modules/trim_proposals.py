@@ -16,8 +16,8 @@ records only; no media file is touched.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from congress_videos.modules.sidecar_api_error import SidecarApiError
 

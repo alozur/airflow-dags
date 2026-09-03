@@ -6,7 +6,7 @@ and to evaluate video interest scores for upload prioritization.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 from congress_videos.config.ai_prompts import (
     CHAPTER_RELEVANCE_SCORING_SYSTEM_PROMPT,
@@ -24,7 +24,6 @@ from utils.llm_cache import cached_json_completion
 from utils.llm_config import LLM_CHEAP, LLM_DEFAULT
 from utils.time_utils import format_youtube_timestamp, parse_timestamp
 
-
 _SPANISH_MONTHS = {
     1: "enero", 2: "febrero", 3: "marzo", 4: "abril",
     5: "mayo", 6: "junio", 7: "julio", 8: "agosto",
@@ -38,7 +37,7 @@ def _current_date_es() -> str:
     Returns a string like ``"junio 2026"`` regardless of the system locale.
     Falls back to ISO format ``"2026-06"`` if the month lookup unexpectedly fails.
     """
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     try:
         return f"{_SPANISH_MONTHS[now.month]} {now.year}"
     except KeyError:

@@ -85,7 +85,7 @@ def detect_silence_gaps(
     min_silence_seconds: int = 15,
     use_adaptive: bool = False,
     adaptive_percentile: float = 75.0,
-) -> List[Dict]:
+) -> list[dict]:
     """
     Detect silence gaps in SRT content by finding time gaps between subtitle entries.
 
@@ -206,7 +206,7 @@ def chunk_by_silence(
     max_chunk_duration_minutes: int = 30,
     use_adaptive: bool = False,
     adaptive_percentile: float = 75.0,
-) -> List[Dict]:
+) -> list[dict]:
     """
     Split SRT content into chunks based on silence gaps.
 
@@ -428,7 +428,7 @@ def analyze_chapters_with_ai(
     min_duration_minutes: int = 15,
     max_duration_minutes: int = 30,
     model: str = LLM_CHEAP
-) -> Dict:
+) -> dict:
     """
     Use AI to identify topic changes in transcription based on content similarity.
 

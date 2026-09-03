@@ -20,7 +20,6 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 
-
 # =============================================================================
 # ERROR CLASSIFICATION (issue #311)
 # =============================================================================
@@ -29,7 +28,7 @@ _PERMANENT_YOUTUBE_STATUSES = {400, 401, 403, 404, 451}
 _TRANSIENT_YOUTUBE_STATUSES = {408, 409, 429}
 
 
-def _error_detail_fields(exc: BaseException) -> Dict[str, Optional[str]]:
+def _error_detail_fields(exc: BaseException) -> dict[str, str | None]:
     """Extract reason/domain/location from an HttpError's ``error_details``.
 
     ``error_details`` defaults to ``""`` (googleapiclient/errors.py:45) and,
@@ -41,7 +40,7 @@ def _error_detail_fields(exc: BaseException) -> Dict[str, Optional[str]]:
     shape yields all-``None`` fields rather than crashing.
     """
     error_details = getattr(exc, "error_details", None)
-    detail: Optional[dict] = None
+    detail: dict | None = None
     if isinstance(error_details, list) and error_details and isinstance(error_details[0], dict):
         detail = error_details[0]
     elif isinstance(error_details, dict):
@@ -56,7 +55,7 @@ def _error_detail_fields(exc: BaseException) -> Dict[str, Optional[str]]:
     }
 
 
-def classify_youtube_error(exc: BaseException) -> Dict:
+def classify_youtube_error(exc: BaseException) -> dict:
     """Classify a YouTube Data API exception as permanent, transient or unknown.
 
     Returns ``{"permanent": True|False|None, "status": int|None,
@@ -87,7 +86,7 @@ def classify_youtube_error(exc: BaseException) -> Dict:
 
     status = exc.status_code
     if status in _PERMANENT_YOUTUBE_STATUSES:
-        permanent: Optional[bool] = True
+        permanent: bool | None = True
     elif status in _TRANSIENT_YOUTUBE_STATUSES or (status is not None and 500 <= status < 600):
         permanent = False
     else:
@@ -215,10 +214,10 @@ def upload_video_to_youtube(
     description: str,
     category_id: str = '22',
     privacy_status: str = 'private',
-    tags: Optional[List[str]] = None,
+    tags: list[str] | None = None,
     made_for_kids: bool = False,
-    thumbnail_file: Optional[str] = None,
-) -> Dict:
+    thumbnail_file: str | None = None,
+) -> dict:
     """
     Upload a single video to YouTube with optional custom thumbnail.
 
@@ -350,7 +349,7 @@ def upload_video_to_youtube(
         }
 
 
-def set_thumbnail_for_video(youtube, video_id: str, thumbnail_file: str) -> Dict:
+def set_thumbnail_for_video(youtube, video_id: str, thumbnail_file: str) -> dict:
     """
     Set a custom thumbnail for a YouTube video.
 
@@ -409,7 +408,7 @@ def set_thumbnail_for_video(youtube, video_id: str, thumbnail_file: str) -> Dict
         }
 
 
-def update_video_title(youtube, video_id: str, title: str | None) -> Dict:
+def update_video_title(youtube, video_id: str, title: str | None) -> dict:
     """
     Update a YouTube video's title without clobbering its other snippet
     fields (issue #102).
@@ -474,8 +473,8 @@ def update_video_title(youtube, video_id: str, title: str | None) -> Dict:
 
 def upload_multiple_videos(
     token_file: str,
-    videos: List[Dict],
-) -> Dict:
+    videos: list[dict],
+) -> dict:
     """
     Upload multiple videos to YouTube with optional custom thumbnails.
 
@@ -619,7 +618,7 @@ def validate_upload_config(conf):
         if 'title' not in video:
             raise ValueError(f"Video {idx}: missing required field 'title'")
 
-    logging.info(f"Configuration validated successfully")
+    logging.info("Configuration validated successfully")
     logging.info(f"Token file: {conf['token_file']}")
     logging.info(f"Number of videos to upload: {len(conf['videos'])}")
 
