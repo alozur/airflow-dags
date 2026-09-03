@@ -108,19 +108,21 @@ class TestVerifyAndRecordCallable:
                 raise RuntimeError("network error")
             return ("ok", "oembed_200")
 
-        with patch(
-            "congress_videos.post_upload_verification_dag.check_video_status",
-            side_effect=_flaky_check,
+        with (
+            patch(
+                "congress_videos.post_upload_verification_dag.check_video_status",
+                side_effect=_flaky_check,
+            ),
+            patch("congress_videos.post_upload_verification_dag.CongressionalVideoDB") as mock_db_cls,
         ):
-            with patch("congress_videos.post_upload_verification_dag.CongressionalVideoDB") as mock_db_cls:
-                mock_db = MagicMock()
-                mock_db_cls.return_value = mock_db
+            mock_db = MagicMock()
+            mock_db_cls.return_value = mock_db
 
-                callable_fn = self._get_callable()
-                callable_fn(ti=mock_task_instance)
+            callable_fn = self._get_callable()
+            callable_fn(ti=mock_task_instance)
 
-                # good_vid must still be processed — mark_upload_verified called once
-                mock_db.mark_upload_verified.assert_called_once_with("chapter", 2)
+            # good_vid must still be processed — mark_upload_verified called once
+            mock_db.mark_upload_verified.assert_called_once_with("chapter", 2)
 
     def test_api_cap_stops_data_api_calls_early(self, mock_task_instance):
         """When MAX_API_CALLS_PER_RUN=2, only 2 Data-API calls must be made for non-200 oembed."""
@@ -137,93 +139,103 @@ class TestVerifyAndRecordCallable:
             api_call_count["n"] += 1
             return ("ok", "api_ok")
 
-        with patch(
-            "congress_videos.post_upload_verification_dag.check_video_status",
-            side_effect=_capped_check,
+        with (
+            patch(
+                "congress_videos.post_upload_verification_dag.check_video_status",
+                side_effect=_capped_check,
+            ),
+            patch("congress_videos.post_upload_verification_dag.CongressionalVideoDB") as mock_db_cls,
         ):
-            with patch("congress_videos.post_upload_verification_dag.CongressionalVideoDB") as mock_db_cls:
-                mock_db = MagicMock()
-                mock_db_cls.return_value = mock_db
+            mock_db = MagicMock()
+            mock_db_cls.return_value = mock_db
 
-                with patch(
-                    "congress_videos.post_upload_verification_dag.MAX_API_CALLS_PER_RUN",
-                    2,
-                ):
-                    callable_fn = self._get_callable()
-                    callable_fn(ti=mock_task_instance)
+            with patch(
+                "congress_videos.post_upload_verification_dag.MAX_API_CALLS_PER_RUN",
+                2,
+            ):
+                callable_fn = self._get_callable()
+                callable_fn(ti=mock_task_instance)
 
-                # With cap=2, only 2 check_video_status calls should have been made
-                assert api_call_count["n"] == 2
+            # With cap=2, only 2 check_video_status calls should have been made
+            assert api_call_count["n"] == 2
 
     def test_verified_video_calls_mark_upload_verified(self, mock_task_instance):
         """ok status → mark_upload_verified must be called with correct args."""
         candidates = [{"item_type": "turn", "id": 10, "youtube_video_id": "turnvid", "output_path": "/p/t.mp4"}]
         mock_task_instance.xcom_push(key="candidates", value=candidates)
 
-        with patch(
-            "congress_videos.post_upload_verification_dag.check_video_status",
-            return_value=("ok", "oembed_200"),
+        with (
+            patch(
+                "congress_videos.post_upload_verification_dag.check_video_status",
+                return_value=("ok", "oembed_200"),
+            ),
+            patch("congress_videos.post_upload_verification_dag.CongressionalVideoDB") as mock_db_cls,
         ):
-            with patch("congress_videos.post_upload_verification_dag.CongressionalVideoDB") as mock_db_cls:
-                mock_db = MagicMock()
-                mock_db_cls.return_value = mock_db
+            mock_db = MagicMock()
+            mock_db_cls.return_value = mock_db
 
-                callable_fn = self._get_callable()
-                callable_fn(ti=mock_task_instance)
+            callable_fn = self._get_callable()
+            callable_fn(ti=mock_task_instance)
 
-                mock_db.mark_upload_verified.assert_called_once_with("turn", "/p/t.mp4")
+            mock_db.mark_upload_verified.assert_called_once_with("turn", "/p/t.mp4")
 
     def test_abandoned_video_calls_record_failure(self, mock_task_instance):
         """abandoned status → record_upload_verification_failure must be called."""
         candidates = [{"item_type": "chapter", "id": 99, "youtube_video_id": "gonevid", "output_path": None}]
         mock_task_instance.xcom_push(key="candidates", value=candidates)
 
-        with patch(
-            "congress_videos.post_upload_verification_dag.check_video_status",
-            return_value=("abandoned", "empty_items"),
+        with (
+            patch(
+                "congress_videos.post_upload_verification_dag.check_video_status",
+                return_value=("abandoned", "empty_items"),
+            ),
+            patch("congress_videos.post_upload_verification_dag.CongressionalVideoDB") as mock_db_cls,
         ):
-            with patch("congress_videos.post_upload_verification_dag.CongressionalVideoDB") as mock_db_cls:
-                mock_db = MagicMock()
-                mock_db_cls.return_value = mock_db
+            mock_db = MagicMock()
+            mock_db_cls.return_value = mock_db
 
-                callable_fn = self._get_callable()
-                callable_fn(ti=mock_task_instance)
+            callable_fn = self._get_callable()
+            callable_fn(ti=mock_task_instance)
 
-                mock_db.record_upload_verification_failure.assert_called_once()
-                call_args = mock_db.record_upload_verification_failure.call_args[0]
-                assert call_args[0] == "chapter"
-                assert call_args[1] == 99
+            mock_db.record_upload_verification_failure.assert_called_once()
+            call_args = mock_db.record_upload_verification_failure.call_args[0]
+            assert call_args[0] == "chapter"
+            assert call_args[1] == 99
 
     def test_processing_status_makes_no_db_write(self, mock_task_instance):
         """processing status → no DB write must be performed."""
         candidates = [{"item_type": "chapter", "id": 5, "youtube_video_id": "procvid", "output_path": None}]
         mock_task_instance.xcom_push(key="candidates", value=candidates)
 
-        with patch(
-            "congress_videos.post_upload_verification_dag.check_video_status",
-            return_value=("processing", "processingStatus=processing"),
+        with (
+            patch(
+                "congress_videos.post_upload_verification_dag.check_video_status",
+                return_value=("processing", "processingStatus=processing"),
+            ),
+            patch("congress_videos.post_upload_verification_dag.CongressionalVideoDB") as mock_db_cls,
         ):
-            with patch("congress_videos.post_upload_verification_dag.CongressionalVideoDB") as mock_db_cls:
-                mock_db = MagicMock()
-                mock_db_cls.return_value = mock_db
+            mock_db = MagicMock()
+            mock_db_cls.return_value = mock_db
 
-                callable_fn = self._get_callable()
-                callable_fn(ti=mock_task_instance)
+            callable_fn = self._get_callable()
+            callable_fn(ti=mock_task_instance)
 
-                mock_db.mark_upload_verified.assert_not_called()
-                mock_db.record_upload_verification_failure.assert_not_called()
+            mock_db.mark_upload_verified.assert_not_called()
+            mock_db.record_upload_verification_failure.assert_not_called()
 
     def test_empty_candidates_is_noop(self, mock_task_instance):
         """No candidates → no check_video_status calls and no DB writes."""
         mock_task_instance.xcom_pull.return_value = []
 
-        with patch("congress_videos.post_upload_verification_dag.check_video_status") as mock_check:
-            with patch("congress_videos.post_upload_verification_dag.CongressionalVideoDB") as mock_db_cls:
-                mock_db = MagicMock()
-                mock_db_cls.return_value = mock_db
+        with (
+            patch("congress_videos.post_upload_verification_dag.check_video_status") as mock_check,
+            patch("congress_videos.post_upload_verification_dag.CongressionalVideoDB") as mock_db_cls,
+        ):
+            mock_db = MagicMock()
+            mock_db_cls.return_value = mock_db
 
-                callable_fn = self._get_callable()
-                callable_fn(ti=mock_task_instance)
+            callable_fn = self._get_callable()
+            callable_fn(ti=mock_task_instance)
 
-                mock_check.assert_not_called()
-                mock_db.mark_upload_verified.assert_not_called()
+            mock_check.assert_not_called()
+            mock_db.mark_upload_verified.assert_not_called()
