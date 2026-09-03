@@ -70,7 +70,9 @@ split_srt_by_silence (silencios >= 15s, chunks 10-20 min)
 | public_interest_points | 0-1 | Potencial mediatico: 1 / sin interes general: 0 |
 | **relevance_score** | **0-5** | **Suma de los tres criterios** |
 
-Umbral para subida: `relevance_score >= 2` (vista `uploadable_chapters`).
+Umbral para subida: `relevance_score >= 2`. Ese gate vive hoy dentro del join de la vista
+`uploadable_turns` (sobre `video_chapters`), que es la que consume el uploader; no es un
+umbral suelto de `uploadable_chapters`.
 
 ### XCom keys producidas
 
@@ -86,60 +88,116 @@ Umbral para subida: `relevance_score >= 2` (vista `uploadable_chapters`).
 
 **Fichero:** congress_videos/youtube_upload_dag.py
 **DAG ID:** congress_youtube_chapter_uploader
-**Schedule:** `0 12 * * *` (12:00 hora Madrid, diario)
+<!-- Guarded por tests/congress_videos/test_youtube_upload_dag.py::TestDocsScheduleConsistency -->
+**Schedule:** `0 19 * * *` (19:00 UTC, diario)
 **Tags:** congress, youtube, chapters
 **start_date:** 2025-11-14 | catchup: False | Retries: 1
 
 ### Proposito
 
-Toma los capitulos con mayor puntuacion de la vista `uploadable_chapters`, genera
-metadatos con IA, crea miniaturas con Pillow, extrae fragmentos de video con ffmpeg y
-los sube a YouTube a traves del DAG generico.
+Publica un turno de orador al dia. Lee la vista `uploadable_turns` mediante
+`db.get_uploadable_turns(limit=1)`, genera metadatos con IA, delega la miniatura en
+`generic_thumbnail_generator` y sube el video a YouTube a traves del DAG generico.
+
+La unidad de publicacion es el turno de orador, no el capitulo tematico: la seleccion por
+capitulo se retiro en #171. La historia del cambio esta en [PIPELINE.md](PIPELINE.md); por
+que los nombres del codigo siguen diciendo "chapter", en
+[Nomenclatura](#nomenclatura-por-que-los-nombres-dicen-chapter) mas abajo.
+
+### Seleccion
+
+`uploadable_turns` deja como maximo una fila por `output_path` y la ordena internamente
+(migracion 044):
+
+```
+COALESCE(interest_score, 1) DESC
+relevance_score DESC
+session_date DESC
+materialized_at ASC   -- desempate FIFO (#328)
+turn_id ASC           -- backstop de orden total
+```
+
+`get_uploadable_turns` ejecuta `SELECT * FROM uploadable_turns LIMIT 1` sin ordenar por
+fuera, asi que ese ORDER BY interno es el que decide quien ocupa la unica plaza del dia.
 
 ### Parametros
 
 | Parametro | Default | Descripcion |
 |---|---|---|
-| max_chapters | 5 | Max capitulos a subir por ejecucion |
-| min_relevance_score | 2 | Puntuacion minima (escala 0-5) |
+| max_chapters | 1 | Heredado del flujo por capitulos; **el DAG no lo lee**. El tope real es la constante `DAILY_LONG_FORM_UPLOAD_LIMIT = 1` |
+| min_relevance_score | 2 | Umbral que usa `check_upload_quota` al contar capitulos pendientes (escala 0-5) |
 | isTesting | false | Hardcoded false para subidas publicas |
+| dry_run | false | Ejecuta el pipeline completo sin disparar la subida a YouTube |
 
-### Grafo de tareas (secuencial)
+### Grafo de tareas (14 tareas)
 
 ```
 ensure_data_directory (PythonOperator)
-  --> get_uploadable_chapters (PythonOperator)
-      --> generate_youtube_metadata (PythonOperator, GPT-3.5-turbo)
-          --> generate_thumbnail_text (PythonOperator, GPT-3.5-turbo, 3-6 palabras max 40 chars)
-              --> generate_thumbnails (PythonOperator, Pillow 1280x720)
-                  --> extract_chapter_videos (PythonOperator, ffmpeg input-seek + re-encode libx264/aac, frame-accurate; escribe chapter_video.mp4, original intacto)
-                      --> prepare_upload_config (PythonOperator)
-                          --> trigger_youtube_upload (trigger_dag_api + polling 10s)
-                              --> mark_chapters_uploaded (PythonOperator)
+  --> check_upload_quota (PythonOperator, cuenta subidas de hoy y cola pendiente)
+      --> skip_if_quota_reached (ShortCircuitOperator, corta el run si llega tarde,
+          si ya se subio el cupo del dia o si la cola esta vacia)
+          --> get_uploadable_item (PythonOperator, uploadable_turns LIMIT 1; siempre item_type="turn")
+              --> generate_youtube_metadata (PythonOperator, titulo formato noticia + descripcion)
+                  --> prepare_thumbnail_config (PythonOperator, resuelve orador y arma el config)
+                      --> generate_thumbnail (PythonOperator, dispara generic_thumbnail_generator y espera)
+                          --> extract_chapter_videos (PythonOperator)
+                              --> prepare_upload_config (PythonOperator)
+                                  --> trigger_youtube_upload (trigger_dag_api + polling 10s)
+                                      --> [mark_chapters_uploaded, mark_turns_uploaded]  (en paralelo)
+                                          --> backfill_thumbnail_video_id (PythonOperator)
+                                              --> check_upload_failures (PythonOperator, fail-loud)
 ```
+
+Dos tareas de esa cadena son ramas muertas para el flujo actual:
+
+- `extract_chapter_videos` no corta nada cuando `item_type == "turn"`: el MP4 del turno ya
+  esta materializado por el DAG `speaker_turn_videos`, asi que la tarea solo reutiliza su
+  `output_path`. La rama ffmpeg (`video_splitter.extract_chapters_from_video`) sigue en el
+  codigo pero no se alcanza en produccion.
+- `mark_chapters_uploaded` marca capitulos; quien marca de verdad es `mark_turns_uploaded`.
+  Ambas corren en paralelo, la primera sin filas que tocar.
+
+Ver [Nomenclatura](#nomenclatura-por-que-los-nombres-dicen-chapter).
 
 ### Ficheros generados
 
 ```
 /opt/airflow/data/congress_videos/
-  {video_id}/{chapter_id}/chapter_video.mp4   (ffmpeg -c copy, sin re-encode)
-  {video_id}/{chapter_id}/thumbnail.png       (Pillow 1280x720)
+  {channel_slug}/{source_video_id}/video_chapters/{chapter_id}/oradores/{output_turn_id}/{filename}
 ```
+
+El MP4 del turno lo escribe el DAG `speaker_turn_videos`, no este DAG. Aqui se anade la
+miniatura (`thumbnail.png`) en ese mismo directorio canonico (#133).
 
 ### Composicion de la miniatura
 
-- Fondo: imagen hemiciclo Congreso oscurecida al 70%
-- Borde dorado `#FFD700`, 8px
-- Texto central en MAYUSCULAS, 3-6 palabras, max 40 chars (hasta 5 intentos IA)
-- Numero de sesion en dorado en zona inferior
-- Logo circular en esquina superior izquierda (6% del ancho)
-- Fuentes: `LiberationSans-Bold` / `LiberationSans-Regular`
+Este DAG ya no compone la miniatura con Pillow. `generate_thumbnail` dispara
+`generic_thumbnail_generator` (API Pikzels, direccion de arte, foto del participante
+resuelta por slug y titulo por IA) y espera su resultado. La composicion se documenta en
+[PIPELINE.md](PIPELINE.md) y en `congress_videos/generic_thumbnail_generator_dag.py`.
 
 ### XCom keys
 
-`data_directory_path`, `uploadable_chapters`, `youtube_metadata_results`,
-`thumbnail_text_results`, `thumbnail_results`, `chapter_extraction_results`,
-`upload_config`, `upload_results`, `chapter_upload_updates`
+`data_directory_path`, `upload_quota`, `uploadable_item`, `youtube_metadata_results`,
+`thumbnail_config`, `thumbnail_dag_run_id`, `thumbnail_result`,
+`chapter_extraction_results`, `upload_config`, `upload_results`,
+`chapter_upload_updates`, `turn_upload_updates`
+
+### Nomenclatura: por que los nombres dicen "chapter"
+
+Los `task_id` `extract_chapter_videos` / `mark_chapters_uploaded` y las claves XCom
+`chapter_extraction_results` / `chapter_upload_updates` conservan el nombre "chapter" a
+proposito: son identificadores vivos y no se renombran porque el `task_id` y la clave XCom
+son identidad persistida en Airflow (historico de tareas y XCom). Desde #171 transportan
+turnos de orador; la rama de capitulo sigue presente en el codigo pero es inalcanzable en
+produccion, porque la seleccion solo devuelve `item_type="turn"`.
+
+Lo mismo vale para el propio DAG ID `congress_youtube_chapter_uploader`.
+
+Regla al leer o escribir estos documentos: los identificadores van entre backticks y los
+conceptos en palabras normales. Un `chapter_id` es una columna; un capitulo es el tramo
+tematico de la sesion. Confundirlos es justo lo que hizo que #325 y #328 se abrieran sobre
+un flujo que ya no existia.
 
 ---
 
@@ -226,8 +284,8 @@ GITHUB_USER, GITHUB_TOKEN, GITHUB_REPO, GIT_SYNC_BRANCH (default: dev)
 congress_youtube_channel_monitor (22:00)
   escribe en PostgreSQL: video_chapters con relevance_score 0-5
 
-congress_youtube_chapter_uploader (12:00 dia siguiente)
-  lee de PostgreSQL: vista uploadable_chapters (score >= 2, no subidos)
+congress_youtube_chapter_uploader (diario - horario en la seccion 2)
+  lee de PostgreSQL: vista uploadable_turns (un turno por run, no subido)
   trigger_dag_api --> generic_youtube_uploader (polling cada 10s)
   escribe en PostgreSQL: is_uploaded_to_youtube=TRUE, youtube_video_id
 
