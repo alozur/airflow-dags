@@ -188,6 +188,80 @@ class TestApiDiarizeFnErrorHandling:
             or "malformed" in str(exc_info.value).lower()
         )
 
+    def test_chunked_encoding_error_raises_sidecar_api_error(self, tmp_path):
+        from congress_videos.modules.sidecar_api_error import SidecarApiError
+        from congress_videos.modules.speaker_turns_api import (
+            DIARIZE_API_URL,
+            api_diarize_fn,
+        )
+
+        wav = tmp_path / "chapter.wav"
+        wav.write_bytes(b"RIFF")
+
+        def failing_poster(*a, **kw):
+            raise requests.exceptions.ChunkedEncodingError("Connection broken")
+
+        with pytest.raises(SidecarApiError) as exc_info:
+            api_diarize_fn(str(wav), chapter_offset=0.0, poster=failing_poster)
+
+        assert DIARIZE_API_URL in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, requests.exceptions.ChunkedEncodingError)
+
+    def test_content_decoding_error_raises_sidecar_api_error(self, tmp_path):
+        from congress_videos.modules.sidecar_api_error import SidecarApiError
+        from congress_videos.modules.speaker_turns_api import (
+            DIARIZE_API_URL,
+            api_diarize_fn,
+        )
+
+        wav = tmp_path / "chapter.wav"
+        wav.write_bytes(b"RIFF")
+
+        def failing_poster(*a, **kw):
+            raise requests.exceptions.ContentDecodingError("Failed to decode response")
+
+        with pytest.raises(SidecarApiError) as exc_info:
+            api_diarize_fn(str(wav), chapter_offset=0.0, poster=failing_poster)
+
+        assert DIARIZE_API_URL in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, requests.exceptions.ContentDecodingError)
+
+    def test_too_many_redirects_raises_sidecar_api_error(self, tmp_path):
+        from congress_videos.modules.sidecar_api_error import SidecarApiError
+        from congress_videos.modules.speaker_turns_api import (
+            DIARIZE_API_URL,
+            api_diarize_fn,
+        )
+
+        wav = tmp_path / "chapter.wav"
+        wav.write_bytes(b"RIFF")
+
+        def failing_poster(*a, **kw):
+            raise requests.exceptions.TooManyRedirects("Exceeded 30 redirects")
+
+        with pytest.raises(SidecarApiError) as exc_info:
+            api_diarize_fn(str(wav), chapter_offset=0.0, poster=failing_poster)
+
+        assert DIARIZE_API_URL in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, requests.exceptions.TooManyRedirects)
+
+    def test_timeout_message_excludes_generic_transport_wording(self, tmp_path):
+        from congress_videos.modules.sidecar_api_error import SidecarApiError
+        from congress_videos.modules.speaker_turns_api import api_diarize_fn
+
+        wav = tmp_path / "chapter.wav"
+        wav.write_bytes(b"RIFF")
+
+        def timeout_poster(*a, **kw):
+            raise requests.exceptions.Timeout("timed out")
+
+        with pytest.raises(SidecarApiError) as exc_info:
+            api_diarize_fn(str(wav), chapter_offset=0.0, poster=timeout_poster)
+
+        message = str(exc_info.value)
+        assert "timed out" in message
+        assert "request failed" not in message
+
 
 class TestUrlFromEnvVars:
     def test_url_uses_diarize_api_host_and_port_env_vars(self, monkeypatch):

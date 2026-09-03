@@ -63,8 +63,8 @@ def api_yamnet_fn(
         List of ``{start, end, max_score}`` dicts with absolute timestamps.
 
     Raises:
-        SidecarApiError: On connection refused, timeout, non-200 HTTP status,
-            or malformed JSON response.
+        SidecarApiError: On connection refused, timeout, other transport
+            failure, non-200 HTTP status, or malformed JSON response.
     """
     url = f"{YAMNET_API_URL}/detect"
     wav = Path(wav_path)
@@ -81,8 +81,8 @@ def api_yamnet_fn(
             )
     except requests.exceptions.Timeout as exc:
         raise SidecarApiError(f"yamnet-api timed out after {timeout}s at {YAMNET_API_URL}") from exc
-    except requests.exceptions.ConnectionError as exc:
-        raise SidecarApiError(f"yamnet-api unreachable at {YAMNET_API_URL}: {exc}") from exc
+    except requests.exceptions.RequestException as exc:
+        raise SidecarApiError(f"yamnet-api request failed at {YAMNET_API_URL}: {exc}") from exc
 
     if resp.status_code != 200:
         raise SidecarApiError(f"yamnet-api returned HTTP {resp.status_code} for {url}")

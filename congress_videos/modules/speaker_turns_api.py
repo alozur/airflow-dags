@@ -70,8 +70,8 @@ def api_diarize_fn(
         confirmed_block_duration_seconds}`` dicts.
 
     Raises:
-        SidecarApiError: On connection refused, timeout, non-200 HTTP status,
-            or malformed JSON response.
+        SidecarApiError: On connection refused, timeout, other transport
+            failure, non-200 HTTP status, or malformed JSON response.
     """
     url = f"{DIARIZE_API_URL}/diarize"
     wav = Path(wav_path)
@@ -88,8 +88,8 @@ def api_diarize_fn(
             )
     except requests.exceptions.Timeout as exc:
         raise SidecarApiError(f"diarize-api timed out after {timeout}s at {DIARIZE_API_URL}") from exc
-    except requests.exceptions.ConnectionError as exc:
-        raise SidecarApiError(f"diarize-api unreachable at {DIARIZE_API_URL}: {exc}") from exc
+    except requests.exceptions.RequestException as exc:
+        raise SidecarApiError(f"diarize-api request failed at {DIARIZE_API_URL}: {exc}") from exc
 
     if resp.status_code != 200:
         raise SidecarApiError(f"diarize-api returned HTTP {resp.status_code} for {url}")
