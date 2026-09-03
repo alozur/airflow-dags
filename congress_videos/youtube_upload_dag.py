@@ -309,7 +309,7 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
 
     # Resolve SRT fragment for lapidary quote extraction (issue #57).
     # Note (issue #146 Fix C): the turn subtitles.srt sidecar is now written
-    # exclusively by the nightly speaker_turn_prepare DAG. The upload path no
+    # exclusively by the speaker_turn_prepare DAG. The upload path no
     # longer writes it; srt_fragment below is still needed for the lapidary
     # thumbnail quote (chapter path) and is harmless for turns.
     video_id = chapter.get("video_id")

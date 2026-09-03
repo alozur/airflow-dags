@@ -197,6 +197,11 @@ XCom keys en congress_youtube_chapter_uploader:
 
   Vistas:
     uploadable_chapters  relevance_score >= 2 AND is_uploaded = FALSE
+                         lector: congress_videos/speaker_turns_dag.py::select_chapters()
+                         y congress_videos/scripts/check_pending_source_integrity.py
+    uploadable_turns     turnos con prepared_at set y sin is_uploaded_to_youtube
+                         lector: congress_videos/youtube_upload_dag.py via
+                         congress_videos/modules/database.py::get_uploadable_turns
     chapter_statistics   agregados por video fuente
     uploadable_videos    pipeline legado de video_topics
 
