@@ -9,8 +9,11 @@ drift.
 from __future__ import annotations
 
 import importlib.util
+import io
 import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GENERATOR_PATH = REPO_ROOT / "scripts" / "gen_ruff_baseline.py"
@@ -168,3 +171,162 @@ class TestMainCheckExitCode:
         exit_code = gen_ruff_baseline.main(["--check", "--pyproject", str(pyproject_path), "--base-sha", "deadbee"])
 
         assert exit_code == 0
+
+
+class TestParseCommittedEntries:
+    """`parse_committed_entries` reads the sentinel-delimited region back as TOML,
+    the inverse of `render_block`, so `find_growth` (PR2) has a committed baseline
+    to diff the regenerated entries against.
+    """
+
+    def test_parses_valid_multi_code_and_single_code_entries(self):
+        pyproject_text = (
+            "[tool.other]\nvalue = 1\n\n"
+            + gen_ruff_baseline.BEGIN_SENTINEL
+            + "\n"
+            + "[tool.ruff.lint.per-file-ignores]\n"
+            + '"__init__.py" = ["F401"]\n'
+            + '"utils/foo.py" = ["F401", "SIM117"]\n'
+            + '"utils/bar.py" = ["C901"]\n'
+            + gen_ruff_baseline.END_SENTINEL
+            + "\n"
+        )
+
+        entries = gen_ruff_baseline.parse_committed_entries(pyproject_text)
+
+        assert entries == {
+            "utils/foo.py": ["F401", "SIM117"],
+            "utils/bar.py": ["C901"],
+        }
+
+    def test_bare_init_py_glob_is_dropped(self):
+        pyproject_text = (
+            gen_ruff_baseline.BEGIN_SENTINEL
+            + "\n"
+            + "[tool.ruff.lint.per-file-ignores]\n"
+            + '"__init__.py" = ["F401"]\n'
+            + gen_ruff_baseline.END_SENTINEL
+            + "\n"
+        )
+
+        entries = gen_ruff_baseline.parse_committed_entries(pyproject_text)
+
+        assert entries == {}
+        assert "__init__.py" not in entries
+
+    def test_header_and_trailing_inline_comments_are_ignored(self):
+        pyproject_text = (
+            gen_ruff_baseline.BEGIN_SENTINEL
+            + "\n"
+            + "# Generated from dev tip deadbee with ruff 0.16.5 by scripts/gen_ruff_baseline.py.\n"
+            + "# some other header comment\n"
+            + "[tool.ruff.lint.per-file-ignores]\n"
+            + '"__init__.py" = ["F401"]  # permanent: re-exports\n'
+            + '"utils/foo.py" = ["F401"]  # inline note\n'
+            + gen_ruff_baseline.END_SENTINEL
+            + "\n"
+        )
+
+        entries = gen_ruff_baseline.parse_committed_entries(pyproject_text)
+
+        assert entries == {"utils/foo.py": ["F401"]}
+
+    def test_decoy_per_file_ignores_outside_sentinels_is_excluded(self):
+        pyproject_text = (
+            "[tool.ruff.lint.per-file-ignores]\n"
+            + '"decoy/outside.py" = ["E999"]\n\n'
+            + gen_ruff_baseline.BEGIN_SENTINEL
+            + "\n"
+            + "[tool.ruff.lint.per-file-ignores]\n"
+            + '"utils/foo.py" = ["F401"]\n'
+            + gen_ruff_baseline.END_SENTINEL
+            + "\n"
+        )
+
+        entries = gen_ruff_baseline.parse_committed_entries(pyproject_text)
+
+        assert entries == {"utils/foo.py": ["F401"]}
+        assert "decoy/outside.py" not in entries
+
+    def test_missing_sentinel_raises_baseline_format_error(self):
+        pyproject_text = "[tool.other]\nvalue = 1\n"
+
+        with pytest.raises(gen_ruff_baseline.BaselineFormatError):
+            gen_ruff_baseline.parse_committed_entries(pyproject_text)
+
+    def test_malformed_toml_in_region_raises_baseline_format_error(self):
+        pyproject_text = (
+            gen_ruff_baseline.BEGIN_SENTINEL + "\n" + "[[[ not valid toml\n" + gen_ruff_baseline.END_SENTINEL + "\n"
+        )
+
+        with pytest.raises(gen_ruff_baseline.BaselineFormatError):
+            gen_ruff_baseline.parse_committed_entries(pyproject_text)
+
+
+class TestLoadDiagnosticsHardening:
+    """`load_diagnostics` must fail loudly on malformed input instead of the
+    bare-`--write`-wipes-the-block footgun: silently treating garbage stdin
+    as "no diagnostics" used to regenerate an empty (wrong) baseline.
+    """
+
+    def test_empty_string_raises_diagnostics_input_error(self):
+        with pytest.raises(gen_ruff_baseline.DiagnosticsInputError):
+            gen_ruff_baseline.load_diagnostics(io.StringIO(""))
+
+    def test_whitespace_only_raises_diagnostics_input_error(self):
+        with pytest.raises(gen_ruff_baseline.DiagnosticsInputError):
+            gen_ruff_baseline.load_diagnostics(io.StringIO("   \n\t  "))
+
+    def test_empty_json_array_returns_empty_list(self):
+        result = gen_ruff_baseline.load_diagnostics(io.StringIO("[]"))
+
+        assert result == []
+
+    def test_malformed_json_raises_diagnostics_input_error(self):
+        with pytest.raises(gen_ruff_baseline.DiagnosticsInputError):
+            gen_ruff_baseline.load_diagnostics(io.StringIO("{not json"))
+
+    def test_non_list_json_raises_diagnostics_input_error(self):
+        with pytest.raises(gen_ruff_baseline.DiagnosticsInputError):
+            gen_ruff_baseline.load_diagnostics(io.StringIO('{"a": 1}'))
+
+    def test_diagnostic_with_null_code_raises_from_build_entries(self):
+        with pytest.raises(gen_ruff_baseline.DiagnosticsInputError):
+            gen_ruff_baseline.build_entries([{"filename": "utils/foo.py", "code": None}])
+
+
+class TestMainErrorHandling:
+    """Both error classes must print `gen_ruff_baseline: {exc}` to stderr and
+    return 2 in every mode, including `--write` — turning the bare-`--write`
+    footgun into a hard error instead of silently wiping the baseline block.
+    """
+
+    def test_write_with_blank_stdin_exits_2_and_leaves_pyproject_unchanged(self, tmp_path, monkeypatch):
+        pyproject_path = tmp_path / "pyproject.toml"
+        original_text = (
+            "[tool.other]\nvalue = 1\n\n"
+            + gen_ruff_baseline.BEGIN_SENTINEL
+            + "\n"
+            + "[tool.ruff.lint.per-file-ignores]\n"
+            + '"utils/foo.py" = ["F401"]\n'
+            + gen_ruff_baseline.END_SENTINEL
+            + "\n"
+        )
+        pyproject_path.write_text(original_text, encoding="utf-8")
+        monkeypatch.setattr(sys, "stdin", io.StringIO("   "))
+
+        exit_code = gen_ruff_baseline.main(["--write", "--pyproject", str(pyproject_path)])
+
+        assert exit_code == 2
+        assert pyproject_path.read_text(encoding="utf-8") == original_text
+
+    def test_error_message_is_printed_to_stderr(self, tmp_path, monkeypatch, capsys):
+        pyproject_path = tmp_path / "pyproject.toml"
+        pyproject_path.write_text("irrelevant", encoding="utf-8")
+        monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+
+        exit_code = gen_ruff_baseline.main(["--write", "--pyproject", str(pyproject_path)])
+
+        captured = capsys.readouterr()
+        assert exit_code == 2
+        assert "gen_ruff_baseline:" in captured.err
