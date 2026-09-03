@@ -89,7 +89,9 @@ en `uploadable_turns`.
 1. **`reap_clip_preparer`** (diario 15:00 UTC): selecciona capítulos elegibles,
    pre-recorta clips largos con IA + contexto SRT y los encola.
 2. **`reap_processor`** (14:30 y 17:30 UTC): reclama exactamente un clip por
-   run y lo procesa vía Reap a formato short.
+   run y lo procesa vía Reap a formato short. Al descargar cada clip, el
+   sensor escribe además `{clip_id}.srt` junto al `.mp4` (#431), best-effort:
+   cualquier fallo se registra y nunca hace fallar el run.
 3. **`reap_shorts_uploader`** (5 veces al día): sube un short por run con
    título generado por IA; tras 3 fallos el clip se marca abandonado.
 

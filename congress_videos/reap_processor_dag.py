@@ -19,6 +19,7 @@ from airflow.sensors.base import BaseSensorOperator
 from congress_videos.config.paths import get_chapter_short_file_path
 from congress_videos.modules.database import CongressionalVideoDB
 from congress_videos.reap_api import ReapApiClient, ReapCreditsExhausted
+from congress_videos.srt_helpers import write_short_srt_sidecar
 from utils.env_loader import load_env_if_local
 
 load_env_if_local()
@@ -51,6 +52,56 @@ default_args = {
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
 }
+
+
+def _get_chapter_srt_context_safe(db: CongressionalVideoDB, chapter_id) -> dict | None:
+    """``db.get_chapter_srt_context`` with a defensive try/except (issue #431).
+
+    Chapter bounds feed the short SRT sidecar window — best-effort, MUST NOT
+    affect the MP4 download path. Returns ``None`` on any failure.
+    """
+    try:
+        return db.get_chapter_srt_context(chapter_id)
+    except Exception:
+        logging.warning(
+            "ReapJobSensor: failed to fetch chapter SRT context for chapter %s",
+            chapter_id,
+            exc_info=True,
+        )
+        return None
+
+
+def _write_short_sidecar_best_effort(
+    source_video_id,
+    chapter_id,
+    clip_id,
+    chapter_ctx: dict | None,
+    pretrim_start_secs,
+    pretrim_end_secs,
+) -> None:
+    """Best-effort SRT sidecar write beside a downloaded Reap clip (issue #431).
+
+    ``write_short_srt_sidecar`` never raises by contract; this try/except is
+    belt-and-braces so no future edit to it can ever fail the sensor.
+    """
+    try:
+        write_short_srt_sidecar(
+            source_video_id,
+            chapter_id,
+            clip_id,
+            chapter_ctx["start_time"] if chapter_ctx else None,
+            chapter_ctx["end_time"] if chapter_ctx else None,
+            pretrim_start_secs=pretrim_start_secs,
+            pretrim_end_secs=pretrim_end_secs,
+            session_date=chapter_ctx["session_date"] if chapter_ctx else None,
+        )
+    except Exception:
+        logging.warning(
+            "ReapJobSensor: short SRT sidecar write failed for clip_id=%s chapter_id=%s",
+            clip_id,
+            chapter_id,
+            exc_info=True,
+        )
 
 
 class ReapJobSensor(BaseSensorOperator):
@@ -98,6 +149,13 @@ class ReapJobSensor(BaseSensorOperator):
 
             source_video_id = db.get_source_video_id_for_chapter(chapter_id)
 
+            # NEW (issue #431): chapter bounds for the short SRT sidecar window.
+            chapter_ctx = _get_chapter_srt_context_safe(db, chapter_id)
+
+            claimed_clip = ti.xcom_pull(key="claimed_clip") or {}
+            pretrim_start_secs = claimed_clip.get("pretrim_start_secs")
+            pretrim_end_secs = claimed_clip.get("pretrim_end_secs")
+
             for clip in clips:
                 clip_id = clip["clip_id"]
                 clip_url = clip["clip_url"]
@@ -132,6 +190,11 @@ class ReapJobSensor(BaseSensorOperator):
                     reap_virality_score=virality,
                     reap_clip_url=clip_url,
                     local_file_path=str(dest_path),
+                )
+
+                # NEW (issue #431): best-effort SRT sidecar beside the downloaded clip.
+                _write_short_sidecar_best_effort(
+                    source_video_id, chapter_id, clip_id, chapter_ctx, pretrim_start_secs, pretrim_end_secs
                 )
 
             return True
