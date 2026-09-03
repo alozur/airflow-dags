@@ -34,9 +34,10 @@ def _run_ffprobe(file_path: str) -> bool:
         True if the probe is clean; False on any error or exception.
     """
     import subprocess
+
     try:
         result = subprocess.run(
-            ['ffprobe', '-v', 'error', '-i', file_path],
+            ["ffprobe", "-v", "error", "-i", file_path],
             capture_output=True,
             text=True,
             timeout=60,
@@ -67,26 +68,26 @@ def check_source_video_integrity(downloaded_videos: dict) -> dict:
         The same dict shape with added ``integrity_ok`` per video and
         ``failed_video_ids`` at the top level.
     """
-    videos = downloaded_videos.get('videos', [])
+    videos = downloaded_videos.get("videos", [])
     failed: list[str] = []
     result_videos: list[dict] = []
 
     for v in videos:
-        video_id = v.get('video_id', '')
-        file_path = v.get('file_path')
+        video_id = v.get("video_id", "")
+        file_path = v.get("file_path")
 
         if not file_path:
             # No file path means the download itself failed — treat as failed probe.
-            result_videos.append({**v, 'integrity_ok': False})
+            result_videos.append({**v, "integrity_ok": False})
             failed.append(video_id)
             continue
 
         ok = _run_ffprobe(file_path)
-        result_videos.append({**v, 'integrity_ok': ok})
+        result_videos.append({**v, "integrity_ok": ok})
         if not ok:
             failed.append(video_id)
 
-    return {**downloaded_videos, 'videos': result_videos, 'failed_video_ids': failed}
+    return {**downloaded_videos, "videos": result_videos, "failed_video_ids": failed}
 
 
 def _chunk_text(chunk: dict) -> str:
@@ -143,26 +144,28 @@ def create_test_video_data(test_video_url: str = "https://www.youtube.com/watch?
     # Supports formats: youtube.com/watch?v=ID, youtu.be/ID
     import re
 
-    video_id_match = re.search(r'(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})', test_video_url)
+    video_id_match = re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})", test_video_url)
     if video_id_match:
         test_video_id = video_id_match.group(1)
     else:
         # Fallback to default if URL parsing fails
         logging.warning(f"Could not extract video ID from URL: {test_video_url}, using default")
-        test_video_id = 'ZBU0bVpYXM4'
-        test_video_url = f'https://www.youtube.com/watch?v={test_video_id}'
+        test_video_id = "ZBU0bVpYXM4"
+        test_video_url = f"https://www.youtube.com/watch?v={test_video_id}"
 
     # Match the structure returned by filter_plenary_session_videos
     mock_plenary_videos = {
-        'total_matches': 1,
-        'videos': [{
-            'video_id': test_video_id,
-            'title': 'Test Video - Sesión Plenaria',
-            'url': test_video_url,
-            'published_at': '2025-01-01T10:00:00Z',  # Mock date
-            'is_live': False,
-            'is_upcoming': False
-        }]
+        "total_matches": 1,
+        "videos": [
+            {
+                "video_id": test_video_id,
+                "title": "Test Video - Sesión Plenaria",
+                "url": test_video_url,
+                "published_at": "2025-01-01T10:00:00Z",  # Mock date
+                "is_live": False,
+                "is_upcoming": False,
+            }
+        ],
     }
 
     logging.info(f"Created test video data for video ID: {test_video_id}")
@@ -188,22 +191,19 @@ def download_video_from_youtube(video_details, target_date: str, guard_enabled: 
         - total_downloaded: Number of videos downloaded
         - videos: List with video_id, file_path, file_size_mb, duration
     """
-    if not video_details or not video_details.get('videos'):
+    if not video_details or not video_details.get("videos"):
         logging.warning("No video details to download")
-        return {'total_downloaded': 0, 'videos': []}
+        return {"total_downloaded": 0, "videos": []}
 
     downloaded_videos = []
 
-    for video in video_details['videos']:
-        video_id = video['video_id']
-        youtube_url = video.get('youtube_url')
+    for video in video_details["videos"]:
+        video_id = video["video_id"]
+        youtube_url = video.get("youtube_url")
 
         if not youtube_url:
             logging.warning(f"No YouTube URL for {video_id}")
-            downloaded_videos.append({
-                'video_id': video_id,
-                'error': 'No YouTube URL available'
-            })
+            downloaded_videos.append({"video_id": video_id, "error": "No YouTube URL available"})
             continue
 
         try:
@@ -221,41 +221,36 @@ def download_video_from_youtube(video_details, target_date: str, guard_enabled: 
                 guard_live_status=guard_enabled,
             )
 
-            if result['success']:
+            if result["success"]:
                 download_data = {
-                    'video_id': video_id,
-                    'video_title': video.get('title'),
-                    'target_date': target_date,
-                    'youtube_url': youtube_url,
-                    'file_path': result['file_path'],
-                    'file_size_mb': result['file_size_mb'],
-                    'duration': result['duration'],
-                    'download_title': result['title']
+                    "video_id": video_id,
+                    "video_title": video.get("title"),
+                    "target_date": target_date,
+                    "youtube_url": youtube_url,
+                    "file_path": result["file_path"],
+                    "file_size_mb": result["file_size_mb"],
+                    "duration": result["duration"],
+                    "download_title": result["title"],
                 }
                 logging.info(f"✅ Video downloaded: {result['file_path']} ({result['file_size_mb']} MB)")
                 downloaded_videos.append(download_data)
             else:
                 logging.error(f"Failed to download video {video_id}: {result.get('error')}")
-                downloaded_videos.append({
-                    'video_id': video_id,
-                    'video_title': video.get('title'),
-                    'youtube_url': youtube_url,
-                    'error': result.get('error')
-                })
+                downloaded_videos.append(
+                    {
+                        "video_id": video_id,
+                        "video_title": video.get("title"),
+                        "youtube_url": youtube_url,
+                        "error": result.get("error"),
+                    }
+                )
 
         except Exception as e:
             logging.error(f"Error downloading video {video_id}: {e}")
-            downloaded_videos.append({
-                'video_id': video_id,
-                'youtube_url': youtube_url,
-                'error': str(e)
-            })
+            downloaded_videos.append({"video_id": video_id, "youtube_url": youtube_url, "error": str(e)})
 
     logging.info(f"Total videos downloaded: {len([v for v in downloaded_videos if 'file_path' in v])}")
-    return {
-        'total_downloaded': len([v for v in downloaded_videos if 'file_path' in v]),
-        'videos': downloaded_videos
-    }
+    return {"total_downloaded": len([v for v in downloaded_videos if "file_path" in v]), "videos": downloaded_videos}
 
 
 def try_download_subtitles_from_youtube(video_details, target_date: str):
@@ -276,23 +271,19 @@ def try_download_subtitles_from_youtube(video_details, target_date: str):
     """
     from utils.youtube_downloader import download_youtube_subtitles
 
-    if not video_details or not video_details.get('videos'):
+    if not video_details or not video_details.get("videos"):
         logging.warning("No video details to download subtitles")
-        return {'total_downloaded': 0, 'videos': []}
+        return {"total_downloaded": 0, "videos": []}
 
     subtitle_results = []
 
-    for video in video_details['videos']:
-        video_id = video['video_id']
-        youtube_url = video.get('youtube_url')
+    for video in video_details["videos"]:
+        video_id = video["video_id"]
+        youtube_url = video.get("youtube_url")
 
         if not youtube_url:
             logging.warning(f"No YouTube URL for {video_id}")
-            subtitle_results.append({
-                'video_id': video_id,
-                'has_subtitles': False,
-                'error': 'No YouTube URL available'
-            })
+            subtitle_results.append({"video_id": video_id, "has_subtitles": False, "error": "No YouTube URL available"})
             continue
 
         try:
@@ -306,49 +297,52 @@ def try_download_subtitles_from_youtube(video_details, target_date: str):
             result = download_youtube_subtitles(
                 youtube_url=youtube_url,
                 output_dir=video_download_dir,
-                languages=['es', 'es-ES', 'en', 'auto']  # Prefer Spanish, fallback to English or auto
+                languages=["es", "es-ES", "en", "auto"],  # Prefer Spanish, fallback to English or auto
             )
 
-            if result['success']:
-                subtitle_results.append({
-                    'video_id': video_id,
-                    'video_title': video.get('title'),
-                    'target_date': target_date,
-                    'youtube_url': youtube_url,
-                    'has_subtitles': True,
-                    'merged_srt_path': result['merged_srt_path'],
-                    'subtitle_files': result['subtitle_files'],
-                    'downloaded_from_youtube': True  # Flag to skip transcription
-                })
+            if result["success"]:
+                subtitle_results.append(
+                    {
+                        "video_id": video_id,
+                        "video_title": video.get("title"),
+                        "target_date": target_date,
+                        "youtube_url": youtube_url,
+                        "has_subtitles": True,
+                        "merged_srt_path": result["merged_srt_path"],
+                        "subtitle_files": result["subtitle_files"],
+                        "downloaded_from_youtube": True,  # Flag to skip transcription
+                    }
+                )
                 logging.info(f"✅ Downloaded subtitles for {video_id} from YouTube!")
             else:
-                subtitle_results.append({
-                    'video_id': video_id,
-                    'video_title': video.get('title'),
-                    'youtube_url': youtube_url,
-                    'has_subtitles': False,
-                    'error': result.get('error'),
-                    'downloaded_from_youtube': False  # Will need transcription
-                })
+                subtitle_results.append(
+                    {
+                        "video_id": video_id,
+                        "video_title": video.get("title"),
+                        "youtube_url": youtube_url,
+                        "has_subtitles": False,
+                        "error": result.get("error"),
+                        "downloaded_from_youtube": False,  # Will need transcription
+                    }
+                )
                 logging.info(f"No subtitles available for {video_id}, will need transcription")
 
         except Exception as e:
             logging.error(f"Error downloading subtitles for {video_id}: {e}")
-            subtitle_results.append({
-                'video_id': video_id,
-                'youtube_url': youtube_url,
-                'has_subtitles': False,
-                'error': str(e),
-                'downloaded_from_youtube': False
-            })
+            subtitle_results.append(
+                {
+                    "video_id": video_id,
+                    "youtube_url": youtube_url,
+                    "has_subtitles": False,
+                    "error": str(e),
+                    "downloaded_from_youtube": False,
+                }
+            )
 
-    successful_count = len([v for v in subtitle_results if v.get('has_subtitles')])
+    successful_count = len([v for v in subtitle_results if v.get("has_subtitles")])
     logging.info(f"Total videos with subtitles downloaded: {successful_count}/{len(subtitle_results)}")
 
-    return {
-        'total_downloaded': successful_count,
-        'videos': subtitle_results
-    }
+    return {"total_downloaded": successful_count, "videos": subtitle_results}
 
 
 def extract_audio_from_youtube(video_details, target_date: str, chunk_duration_minutes: int = None):
@@ -368,22 +362,19 @@ def extract_audio_from_youtube(video_details, target_date: str, chunk_duration_m
         - total_extracted: Number of audio files extracted
         - videos: List with video_id, audio_file_path OR chunks info, file_size_mb
     """
-    if not video_details or not video_details.get('videos'):
+    if not video_details or not video_details.get("videos"):
         logging.warning("No video details to extract audio")
-        return {'total_extracted': 0, 'videos': []}
+        return {"total_extracted": 0, "videos": []}
 
     extracted_audios = []
 
-    for video in video_details['videos']:
-        video_id = video['video_id']
-        youtube_url = video.get('youtube_url')
+    for video in video_details["videos"]:
+        video_id = video["video_id"]
+        youtube_url = video.get("youtube_url")
 
         if not youtube_url:
             logging.warning(f"No YouTube URL for {video_id}")
-            extracted_audios.append({
-                'video_id': video_id,
-                'error': 'No YouTube URL available'
-            })
+            extracted_audios.append({"video_id": video_id, "error": "No YouTube URL available"})
             continue
 
         try:
@@ -401,31 +392,33 @@ def extract_audio_from_youtube(video_details, target_date: str, chunk_duration_m
                     youtube_url=youtube_url,
                     output_dir=video_download_dir,
                     chunk_duration_minutes=chunk_duration_minutes,
-                    audio_format="webm"
+                    audio_format="webm",
                 )
 
-                if result['success']:
+                if result["success"]:
                     audio_data = {
-                        'video_id': video_id,
-                        'video_title': video.get('title'),
-                        'target_date': target_date,
-                        'youtube_url': youtube_url,
-                        'chunked': True,
-                        'total_chunks': result['total_chunks'],
-                        'total_duration': result['total_duration'],
-                        'chunks': result['chunks'],
-                        'file_size_mb': sum(c['file_size_mb'] for c in result['chunks'])
+                        "video_id": video_id,
+                        "video_title": video.get("title"),
+                        "target_date": target_date,
+                        "youtube_url": youtube_url,
+                        "chunked": True,
+                        "total_chunks": result["total_chunks"],
+                        "total_duration": result["total_duration"],
+                        "chunks": result["chunks"],
+                        "file_size_mb": sum(c["file_size_mb"] for c in result["chunks"]),
                     }
                     logging.info(f"✅ Audio extracted in {result['total_chunks']} chunks")
                     extracted_audios.append(audio_data)
                 else:
                     logging.error(f"Failed to extract audio chunks {video_id}: {result.get('error')}")
-                    extracted_audios.append({
-                        'video_id': video_id,
-                        'video_title': video.get('title'),
-                        'youtube_url': youtube_url,
-                        'error': result.get('error')
-                    })
+                    extracted_audios.append(
+                        {
+                            "video_id": video_id,
+                            "video_title": video.get("title"),
+                            "youtube_url": youtube_url,
+                            "error": result.get("error"),
+                        }
+                    )
             else:
                 logging.info(f"Extracting audio from YouTube: {youtube_url}")
 
@@ -434,44 +427,39 @@ def extract_audio_from_youtube(video_details, target_date: str, chunk_duration_m
                     youtube_url=youtube_url,
                     output_dir=video_download_dir,
                     convert_to_mp3=False,  # Don't convert to MP3
-                    audio_format="webm"  # Use webm (lighter format)
+                    audio_format="webm",  # Use webm (lighter format)
                 )
 
-                if result['success']:
+                if result["success"]:
                     audio_data = {
-                        'video_id': video_id,
-                        'video_title': video.get('title'),
-                        'target_date': target_date,
-                        'youtube_url': youtube_url,
-                        'chunked': False,
-                        'audio_file_path': result['file_path'],
-                        'file_size_mb': result['file_size_mb'],
-                        'duration': result['duration']
+                        "video_id": video_id,
+                        "video_title": video.get("title"),
+                        "target_date": target_date,
+                        "youtube_url": youtube_url,
+                        "chunked": False,
+                        "audio_file_path": result["file_path"],
+                        "file_size_mb": result["file_size_mb"],
+                        "duration": result["duration"],
                     }
                     logging.info(f"✅ Audio extracted: {result['file_path']} ({result['file_size_mb']} MB)")
                     extracted_audios.append(audio_data)
                 else:
                     logging.error(f"Failed to extract audio {video_id}: {result.get('error')}")
-                    extracted_audios.append({
-                        'video_id': video_id,
-                        'video_title': video.get('title'),
-                        'youtube_url': youtube_url,
-                        'error': result.get('error')
-                    })
+                    extracted_audios.append(
+                        {
+                            "video_id": video_id,
+                            "video_title": video.get("title"),
+                            "youtube_url": youtube_url,
+                            "error": result.get("error"),
+                        }
+                    )
 
         except Exception as e:
             logging.error(f"Error extracting audio {video_id}: {e}")
-            extracted_audios.append({
-                'video_id': video_id,
-                'youtube_url': youtube_url,
-                'error': str(e)
-            })
+            extracted_audios.append({"video_id": video_id, "youtube_url": youtube_url, "error": str(e)})
 
     logging.info(f"Total audio files extracted: {len([v for v in extracted_audios if 'audio_file_path' in v])}")
-    return {
-        'total_extracted': len([v for v in extracted_audios if 'audio_file_path' in v]),
-        'videos': extracted_audios
-    }
+    return {"total_extracted": len([v for v in extracted_audios if "audio_file_path" in v]), "videos": extracted_audios}
 
 
 def transcribe_audio_with_whisper(extracted_audio, language: str = "es", timeout: int = 3600):
@@ -493,91 +481,76 @@ def transcribe_audio_with_whisper(extracted_audio, language: str = "es", timeout
     """
     from utils.whisper_helpers import check_whisper_api_health, transcribe_audio_chunks, transcribe_audio_file
 
-    if not extracted_audio or not extracted_audio.get('videos'):
+    if not extracted_audio or not extracted_audio.get("videos"):
         logging.warning("No extracted audio to transcribe")
-        return {'total_transcribed': 0, 'videos': []}
+        return {"total_transcribed": 0, "videos": []}
 
     # Check if Whisper API is available
     if not check_whisper_api_health():
         logging.error("Whisper API is not available. Aborting transcription.")
-        return {
-            'total_transcribed': 0,
-            'videos': [],
-            'error': 'Whisper API unavailable'
-        }
+        return {"total_transcribed": 0, "videos": [], "error": "Whisper API unavailable"}
 
     transcribed_videos = []
 
-    for video in extracted_audio['videos']:
-        video_id = video['video_id']
-        is_chunked = video.get('chunked', False)
+    for video in extracted_audio["videos"]:
+        video_id = video["video_id"]
+        is_chunked = video.get("chunked", False)
 
         try:
             if is_chunked:
                 # Transcribe audio chunks
-                chunks = video.get('chunks', [])
+                chunks = video.get("chunks", [])
                 logging.info(f"Transcribing {len(chunks)} audio chunks for video {video_id}")
 
-                transcription_result = transcribe_audio_chunks(
-                    audio_chunks=chunks,
-                    language=language,
-                    timeout=timeout
-                )
+                transcription_result = transcribe_audio_chunks(audio_chunks=chunks, language=language, timeout=timeout)
 
-                transcribed_videos.append({
-                    'video_id': video_id,
-                    'video_title': video.get('video_title'),
-                    'chunked': True,
-                    'total_chunks': transcription_result['total_chunks'],
-                    'successful_transcriptions': transcription_result['successful_transcriptions'],
-                    'chunks': transcription_result['chunks']
-                })
+                transcribed_videos.append(
+                    {
+                        "video_id": video_id,
+                        "video_title": video.get("video_title"),
+                        "chunked": True,
+                        "total_chunks": transcription_result["total_chunks"],
+                        "successful_transcriptions": transcription_result["successful_transcriptions"],
+                        "chunks": transcription_result["chunks"],
+                    }
+                )
 
             else:
                 # Transcribe single audio file
-                audio_file_path = video.get('audio_file_path')
+                audio_file_path = video.get("audio_file_path")
 
                 if not audio_file_path:
                     logging.warning(f"No audio file path for video {video_id}")
-                    transcribed_videos.append({
-                        'video_id': video_id,
-                        'error': 'No audio file path'
-                    })
+                    transcribed_videos.append({"video_id": video_id, "error": "No audio file path"})
                     continue
 
                 logging.info(f"Transcribing audio file for video {video_id}")
 
                 transcription_result = transcribe_audio_file(
-                    audio_file_path=audio_file_path,
-                    language=language,
-                    timeout=timeout
+                    audio_file_path=audio_file_path, language=language, timeout=timeout
                 )
 
-                transcribed_videos.append({
-                    'video_id': video_id,
-                    'video_title': video.get('video_title'),
-                    'chunked': False,
-                    'audio_file_path': audio_file_path,
-                    'transcription': transcription_result.get('text', ''),
-                    'transcription_success': transcription_result.get('success', False),
-                    'transcription_duration': transcription_result.get('duration'),
-                    'error': transcription_result.get('error')
-                })
+                transcribed_videos.append(
+                    {
+                        "video_id": video_id,
+                        "video_title": video.get("video_title"),
+                        "chunked": False,
+                        "audio_file_path": audio_file_path,
+                        "transcription": transcription_result.get("text", ""),
+                        "transcription_success": transcription_result.get("success", False),
+                        "transcription_duration": transcription_result.get("duration"),
+                        "error": transcription_result.get("error"),
+                    }
+                )
 
         except Exception as e:
             logging.error(f"Error transcribing video {video_id}: {e}")
-            transcribed_videos.append({
-                'video_id': video_id,
-                'error': str(e)
-            })
+            transcribed_videos.append({"video_id": video_id, "error": str(e)})
 
-    successful_count = len([v for v in transcribed_videos if not v.get('error')])
+    successful_count = len([v for v in transcribed_videos if not v.get("error")])
     logging.info(f"Total videos transcribed: {successful_count}/{len(transcribed_videos)}")
 
-    return {
-        'total_transcribed': successful_count,
-        'videos': transcribed_videos
-    }
+    return {"total_transcribed": successful_count, "videos": transcribed_videos}
 
 
 def merge_transcription_srt_files(transcriptions, target_date: str):
@@ -605,15 +578,15 @@ def merge_transcription_srt_files(transcriptions, target_date: str):
     from congress_videos.config.paths import get_download_video_path
     from utils.whisper_helpers import merge_srt_files
 
-    if not transcriptions or not transcriptions.get('videos'):
+    if not transcriptions or not transcriptions.get("videos"):
         logging.warning("No transcriptions to merge")
-        return {'total_merged': 0, 'videos': []}
+        return {"total_merged": 0, "videos": []}
 
     merged_videos = []
 
-    for video in transcriptions['videos']:
-        video_id = video['video_id']
-        is_chunked = video.get('chunked', False)
+    for video in transcriptions["videos"]:
+        video_id = video["video_id"]
+        is_chunked = video.get("chunked", False)
 
         # Only process chunked videos (single files don't need merging)
         if not is_chunked:
@@ -627,10 +600,7 @@ def merge_transcription_srt_files(transcriptions, target_date: str):
 
             if not srt_dir.exists():
                 logging.warning(f"SRT directory not found: {srt_dir}")
-                merged_videos.append({
-                    'video_id': video_id,
-                    'error': 'SRT directory not found'
-                })
+                merged_videos.append({"video_id": video_id, "error": "SRT directory not found"})
                 continue
 
             # Get all SRT files (sorted by name to maintain order)
@@ -638,52 +608,47 @@ def merge_transcription_srt_files(transcriptions, target_date: str):
 
             if not srt_files:
                 logging.warning(f"No SRT files found in {srt_dir}")
-                merged_videos.append({
-                    'video_id': video_id,
-                    'error': 'No SRT files found'
-                })
+                merged_videos.append({"video_id": video_id, "error": "No SRT files found"})
                 continue
 
             logging.info(f"Merging {len(srt_files)} SRT files for video {video_id}")
 
             # Merge SRT files
             merged_output_path = srt_dir / f"{video_id}_merged.srt"
-            result = merge_srt_files(
-                srt_files=[str(f) for f in srt_files],
-                output_path=str(merged_output_path)
-            )
+            result = merge_srt_files(srt_files=[str(f) for f in srt_files], output_path=str(merged_output_path))
 
-            if result['success']:
-                merged_videos.append({
-                    'video_id': video_id,
-                    'video_title': video.get('video_title'),
-                    'merged_srt_path': result['output_path'],
-                    'total_entries': result['total_entries'],
-                    'source_files': len(srt_files)
-                })
+            if result["success"]:
+                merged_videos.append(
+                    {
+                        "video_id": video_id,
+                        "video_title": video.get("video_title"),
+                        "merged_srt_path": result["output_path"],
+                        "total_entries": result["total_entries"],
+                        "source_files": len(srt_files),
+                    }
+                )
             else:
-                merged_videos.append({
-                    'video_id': video_id,
-                    'error': result.get('error')
-                })
+                merged_videos.append({"video_id": video_id, "error": result.get("error")})
 
         except Exception as e:
             logging.error(f"Error merging SRT files for video {video_id}: {e}")
-            merged_videos.append({
-                'video_id': video_id,
-                'error': str(e)
-            })
+            merged_videos.append({"video_id": video_id, "error": str(e)})
 
-    successful_count = len([v for v in merged_videos if not v.get('error')])
+    successful_count = len([v for v in merged_videos if not v.get("error")])
     logging.info(f"Total videos with merged SRT files: {successful_count}/{len(merged_videos)}")
 
-    return {
-        'total_merged': successful_count,
-        'videos': merged_videos
-    }
+    return {"total_merged": successful_count, "videos": merged_videos}
 
 
-def split_srt_by_silence(srt_data, target_date: str, min_silence_seconds: int = 15, min_chunk_duration_minutes: int = 20, max_chunk_duration_minutes: int = 30, use_adaptive: bool = False, adaptive_percentile: float = 75.0):
+def split_srt_by_silence(
+    srt_data,
+    target_date: str,
+    min_silence_seconds: int = 15,
+    min_chunk_duration_minutes: int = 20,
+    max_chunk_duration_minutes: int = 30,
+    use_adaptive: bool = False,
+    adaptive_percentile: float = 75.0,
+):
     """
     TASK 1: Split SRT content into chunks based on silence gaps.
 
@@ -712,17 +677,17 @@ def split_srt_by_silence(srt_data, target_date: str, min_silence_seconds: int = 
     from congress_videos.config.paths import get_download_video_path
     from utils.ai_chapter_analyzer import chunk_by_silence
 
-    if not srt_data or not srt_data.get('videos'):
+    if not srt_data or not srt_data.get("videos"):
         logging.warning("No SRT data to split into chunks")
-        return {'total_videos': 0, 'videos': []}
+        return {"total_videos": 0, "videos": []}
 
     chunked_videos = []
 
-    for srt_video in srt_data['videos']:
-        video_id = srt_video['video_id']
+    for srt_video in srt_data["videos"]:
+        video_id = srt_video["video_id"]
 
         # Get merged SRT path
-        merged_srt_path = srt_video.get('merged_srt_path')
+        merged_srt_path = srt_video.get("merged_srt_path")
 
         if not merged_srt_path:
             # Try to construct path
@@ -732,26 +697,20 @@ def split_srt_by_silence(srt_data, target_date: str, min_silence_seconds: int = 
             if potential_path.exists():
                 merged_srt_path = str(potential_path)
 
-        if not merged_srt_path or srt_video.get('error'):
+        if not merged_srt_path or srt_video.get("error"):
             logging.warning(f"Skipping video {video_id}: no merged SRT file")
-            chunked_videos.append({
-                'video_id': video_id,
-                'error': 'No merged SRT file available'
-            })
+            chunked_videos.append({"video_id": video_id, "error": "No merged SRT file available"})
             continue
 
         try:
             # Read the merged SRT file
-            srt_content = Path(merged_srt_path).read_text(encoding='utf-8')
+            srt_content = Path(merged_srt_path).read_text(encoding="utf-8")
             logging.info(f"Loaded SRT file for video {video_id}: {len(srt_content)} characters")
 
             # Debug: Check if content is actually loaded
             if not srt_content or len(srt_content) == 0:
                 logging.error(f"SRT file is empty for video {video_id}!")
-                chunked_videos.append({
-                    'video_id': video_id,
-                    'error': 'SRT file is empty'
-                })
+                chunked_videos.append({"video_id": video_id, "error": "SRT file is empty"})
                 continue
 
             # Log first 500 chars for debugging
@@ -777,37 +736,34 @@ def split_srt_by_silence(srt_data, target_date: str, min_silence_seconds: int = 
             srt_dir.mkdir(parents=True, exist_ok=True)
             for chunk in chunks:
                 slice_path = srt_dir / f"{video_id}_chunk_{chunk['chunk_number']}.srt"
-                slice_path.write_text(chunk.get('content', ''), encoding='utf-8')
-                chunk.pop('content', None)
-                chunk['srt_file_path'] = str(slice_path)
+                slice_path.write_text(chunk.get("content", ""), encoding="utf-8")
+                chunk.pop("content", None)
+                chunk["srt_file_path"] = str(slice_path)
 
-            chunked_videos.append({
-                'video_id': video_id,
-                'video_title': srt_video.get('video_title'),
-                'total_chunks': len(chunks),
-                'chunks': chunks,  # chunk_number, start_time, end_time, duration, srt_file_path
-                'merged_srt_path': merged_srt_path
-            })
+            chunked_videos.append(
+                {
+                    "video_id": video_id,
+                    "video_title": srt_video.get("video_title"),
+                    "total_chunks": len(chunks),
+                    "chunks": chunks,  # chunk_number, start_time, end_time, duration, srt_file_path
+                    "merged_srt_path": merged_srt_path,
+                }
+            )
 
         except Exception as e:
             logging.error(f"Error splitting video {video_id}: {e}", exc_info=True)
-            chunked_videos.append({
-                'video_id': video_id,
-                'error': str(e)
-            })
+            chunked_videos.append({"video_id": video_id, "error": str(e)})
 
-    successful_count = len([v for v in chunked_videos if not v.get('error')])
+    successful_count = len([v for v in chunked_videos if not v.get("error")])
     logging.info(f"SRT splitting complete: {successful_count}/{len(chunked_videos)} videos processed")
 
-    result = {
-        'total_videos': successful_count,
-        'videos': chunked_videos
-    }
+    result = {"total_videos": successful_count, "videos": chunked_videos}
 
     # #7: the XCom payload now carries only paths + metadata. Guard against any
     # regression that would push multi-MB content back inline.
     import json as _json
-    payload_size = len(_json.dumps(result).encode('utf-8'))
+
+    payload_size = len(_json.dumps(result).encode("utf-8"))
     if payload_size >= 1_000_000:
         raise ValueError(
             f"split_srt_by_silence XCom payload is {payload_size} bytes (>=1MB); "
@@ -847,13 +803,13 @@ def summarize_one_chunk(chunk_ref: dict) -> dict:
     )
 
     base = {
-        "chunk_number": chunk_ref['chunk_number'],
-        "start_time": chunk_ref['start_time'],
-        "end_time": chunk_ref['end_time'],
-        "duration_seconds": chunk_ref.get('duration_seconds'),
-        "duration_minutes": chunk_ref.get('duration_minutes'),
-        "video_id": chunk_ref.get('video_id'),
-        "video_title": chunk_ref.get('video_title'),
+        "chunk_number": chunk_ref["chunk_number"],
+        "start_time": chunk_ref["start_time"],
+        "end_time": chunk_ref["end_time"],
+        "duration_seconds": chunk_ref.get("duration_seconds"),
+        "duration_minutes": chunk_ref.get("duration_minutes"),
+        "video_id": chunk_ref.get("video_id"),
+        "video_title": chunk_ref.get("video_title"),
     }
 
     try:
@@ -866,19 +822,19 @@ def summarize_one_chunk(chunk_ref: dict) -> dict:
         completion = cached_json_completion(
             system_prompt=CHUNK_SUMMARY_SYSTEM_PROMPT,
             user_prompt=CHUNK_SUMMARY_USER_PROMPT_TEMPLATE.format(
-                chunk_number=chunk_ref['chunk_number'],
-                start_time=chunk_ref['start_time'],
-                end_time=chunk_ref['end_time'],
-                duration_minutes=chunk_ref['duration_minutes'],
+                chunk_number=chunk_ref["chunk_number"],
+                start_time=chunk_ref["start_time"],
+                end_time=chunk_ref["end_time"],
+                duration_minutes=chunk_ref["duration_minutes"],
                 chunk_content=chunk_srt[:15000],  # Limit to 15k chars
             ),
             model=LLM_CHEAP,
         )
 
-        if completion.get('error'):
-            raise RuntimeError(completion['error'])
+        if completion.get("error"):
+            raise RuntimeError(completion["error"])
 
-        summary_data = completion['data'] or {}
+        summary_data = completion["data"] or {}
 
         logging.info(
             f"  ✅ Chunk {chunk_ref['chunk_number']}: "
@@ -888,21 +844,17 @@ def summarize_one_chunk(chunk_ref: dict) -> dict:
 
         return {
             **base,
-            "speakers": summary_data.get('speakers', []),
-            "topics": summary_data.get('topics', []),
-            "timeline": summary_data.get('timeline', []),
-            "summary": summary_data.get('summary', ''),
+            "speakers": summary_data.get("speakers", []),
+            "topics": summary_data.get("topics", []),
+            "timeline": summary_data.get("timeline", []),
+            "summary": summary_data.get("summary", ""),
         }
 
     except json.JSONDecodeError as e:
-        logging.error(
-            f"Failed to parse JSON for chunk {chunk_ref.get('chunk_number')}: {e}"
-        )
+        logging.error(f"Failed to parse JSON for chunk {chunk_ref.get('chunk_number')}: {e}")
         return {**base, "error": f"JSON parse error: {str(e)}"}
     except Exception as e:  # noqa: BLE001 — capture so mapped task isolates failures
-        logging.error(
-            f"Failed to summarize chunk {chunk_ref.get('chunk_number')}: {e}"
-        )
+        logging.error(f"Failed to summarize chunk {chunk_ref.get('chunk_number')}: {e}")
         return {**base, "error": str(e)}
 
 
@@ -925,17 +877,17 @@ def flatten_chunks_for_mapping(chunked_srt_data: dict | None) -> list[dict]:
         A flat list of chunk-ref dicts. Empty when there is nothing to map
         (Airflow then creates zero mapped instances).
     """
-    if not chunked_srt_data or not chunked_srt_data.get('videos'):
+    if not chunked_srt_data or not chunked_srt_data.get("videos"):
         return []
 
     refs: list[dict] = []
-    for video_data in chunked_srt_data['videos']:
-        if video_data.get('error'):
+    for video_data in chunked_srt_data["videos"]:
+        if video_data.get("error"):
             continue
-        video_id = video_data.get('video_id')
-        video_title = video_data.get('video_title')
-        for chunk in video_data.get('chunks', []):
-            refs.append({**chunk, 'video_id': video_id, 'video_title': video_title})
+        video_id = video_data.get("video_id")
+        video_title = video_data.get("video_title")
+        for chunk in video_data.get("chunks", []):
+            refs.append({**chunk, "video_id": video_id, "video_title": video_title})
     return refs
 
 
@@ -958,26 +910,26 @@ def regroup_summarized_chunks(mapped_results: list[dict]) -> dict:
     by_video: dict[str, dict] = {}
     order: list[str] = []
     for result in mapped_results or []:
-        video_id = result.get('video_id')
+        video_id = result.get("video_id")
         if video_id not in by_video:
             by_video[video_id] = {
-                'video_id': video_id,
-                'video_title': result.get('video_title'),
-                'summarized_chunks': [],
+                "video_id": video_id,
+                "video_title": result.get("video_title"),
+                "summarized_chunks": [],
             }
             order.append(video_id)
         # Drop the routing tags so the summarized chunk matches the serial shape.
-        chunk = {k: v for k, v in result.items() if k not in ('video_id', 'video_title')}
-        by_video[video_id]['summarized_chunks'].append(chunk)
+        chunk = {k: v for k, v in result.items() if k not in ("video_id", "video_title")}
+        by_video[video_id]["summarized_chunks"].append(chunk)
 
     videos = []
     for video_id in order:
         entry = by_video[video_id]
-        entry['summarized_chunks'] = aggregate_chunk_summaries(entry['summarized_chunks'])
-        entry['total_chunks'] = len(entry['summarized_chunks'])
+        entry["summarized_chunks"] = aggregate_chunk_summaries(entry["summarized_chunks"])
+        entry["total_chunks"] = len(entry["summarized_chunks"])
         videos.append(entry)
 
-    return {'total_videos': len(videos), 'videos': videos}
+    return {"total_videos": len(videos), "videos": videos}
 
 
 def aggregate_chunk_summaries(results: list[dict]) -> list[dict]:
@@ -996,7 +948,7 @@ def aggregate_chunk_summaries(results: list[dict]) -> list[dict]:
     """
     if not results:
         return []
-    return sorted(results, key=lambda c: c.get('chunk_number', 0))
+    return sorted(results, key=lambda c: c.get("chunk_number", 0))
 
 
 def summarize_silence_chunks(chunked_srt_data, target_date: str):
@@ -1017,22 +969,19 @@ def summarize_silence_chunks(chunked_srt_data, target_date: str):
         - total_videos: Number of videos processed
         - videos: List with video_id, summarized_chunks (speakers, topics, timeline)
     """
-    if not chunked_srt_data or not chunked_srt_data.get('videos'):
+    if not chunked_srt_data or not chunked_srt_data.get("videos"):
         logging.warning("No chunked SRT data to summarize")
-        return {'total_videos': 0, 'videos': []}
+        return {"total_videos": 0, "videos": []}
 
     summarized_videos = []
 
-    for video_data in chunked_srt_data['videos']:
-        video_id = video_data['video_id']
-        chunks = video_data.get('chunks', [])
+    for video_data in chunked_srt_data["videos"]:
+        video_id = video_data["video_id"]
+        chunks = video_data.get("chunks", [])
 
-        if not chunks or video_data.get('error'):
+        if not chunks or video_data.get("error"):
             logging.warning(f"Skipping video {video_id}: no chunks available")
-            summarized_videos.append({
-                'video_id': video_id,
-                'error': video_data.get('error', 'No chunks available')
-            })
+            summarized_videos.append({"video_id": video_id, "error": video_data.get("error", "No chunks available")})
             continue
 
         try:
@@ -1040,33 +989,27 @@ def summarize_silence_chunks(chunked_srt_data, target_date: str):
             # Per-chunk work is delegated to summarize_one_chunk (the same
             # callable Airflow dynamic task mapping expands over, #9). Here it
             # runs serially to preserve the single-task XCom shape.
-            summarized_chunks = aggregate_chunk_summaries(
-                [summarize_one_chunk(chunk) for chunk in chunks]
-            )
+            summarized_chunks = aggregate_chunk_summaries([summarize_one_chunk(chunk) for chunk in chunks])
 
-            summarized_videos.append({
-                'video_id': video_id,
-                'video_title': video_data.get('video_title'),
-                'total_chunks': len(summarized_chunks),
-                'summarized_chunks': summarized_chunks
-            })
+            summarized_videos.append(
+                {
+                    "video_id": video_id,
+                    "video_title": video_data.get("video_title"),
+                    "total_chunks": len(summarized_chunks),
+                    "summarized_chunks": summarized_chunks,
+                }
+            )
 
             logging.info(f"✅ Summarized {len(summarized_chunks)} chunks for video {video_id}")
 
         except Exception as e:
             logging.error(f"Error summarizing video {video_id}: {e}", exc_info=True)
-            summarized_videos.append({
-                'video_id': video_id,
-                'error': str(e)
-            })
+            summarized_videos.append({"video_id": video_id, "error": str(e)})
 
-    successful_count = len([v for v in summarized_videos if not v.get('error')])
+    successful_count = len([v for v in summarized_videos if not v.get("error")])
     logging.info(f"Chunk summarization complete: {successful_count}/{len(summarized_videos)} videos processed")
 
-    return {
-        'total_videos': successful_count,
-        'videos': summarized_videos
-    }
+    return {"total_videos": successful_count, "videos": summarized_videos}
 
 
 def _validate_chapter_ranges(chapters: list[dict], chunk_number: int = 0) -> list[dict]:
@@ -1086,8 +1029,8 @@ def _validate_chapter_ranges(chapters: list[dict], chunk_number: int = 0) -> lis
     """
     valid: list[dict] = []
     for chapter in chapters:
-        start_str = chapter.get('start_time', '')
-        end_str = chapter.get('end_time', '')
+        start_str = chapter.get("start_time", "")
+        end_str = chapter.get("end_time", "")
         try:
             start_secs = parse_timestamp(start_str)
             end_secs = parse_timestamp(end_str)
@@ -1135,13 +1078,13 @@ def _dedup_overlapping_chapters(chapters: list[dict]) -> list[dict]:
     # Sort by start_time as float seconds for reliable ordering.
     def _start_secs(ch: dict) -> float:
         try:
-            return parse_timestamp(ch.get('start_time', '00:00:00'))
+            return parse_timestamp(ch.get("start_time", "00:00:00"))
         except ValueError:
             return 0.0
 
     def _end_secs(ch: dict) -> float:
         try:
-            return parse_timestamp(ch.get('end_time', '00:00:00'))
+            return parse_timestamp(ch.get("end_time", "00:00:00"))
         except ValueError:
             return 0.0
 
@@ -1180,19 +1123,21 @@ def _dedup_overlapping_chapters(chapters: list[dict]) -> list[dict]:
                 # Discard the narrower (shorter-duration) chapter.
                 if dur_a >= dur_b:
                     logging.warning(
-                        "  ⚠️ Dedup: discarding chapter '%s' (%.0fs) — overlaps '%s' "
-                        "(%.0fs) by %.0f%% of shorter",
-                        sorted_chapters[j].get('title', '?'), dur_b,
-                        sorted_chapters[i].get('title', '?'), dur_a,
+                        "  ⚠️ Dedup: discarding chapter '%s' (%.0fs) — overlaps '%s' (%.0fs) by %.0f%% of shorter",
+                        sorted_chapters[j].get("title", "?"),
+                        dur_b,
+                        sorted_chapters[i].get("title", "?"),
+                        dur_a,
                         overlap / min_dur * 100,
                     )
                     keep[j] = False
                 else:
                     logging.warning(
-                        "  ⚠️ Dedup: discarding chapter '%s' (%.0fs) — overlaps '%s' "
-                        "(%.0fs) by %.0f%% of shorter",
-                        sorted_chapters[i].get('title', '?'), dur_a,
-                        sorted_chapters[j].get('title', '?'), dur_b,
+                        "  ⚠️ Dedup: discarding chapter '%s' (%.0fs) — overlaps '%s' (%.0fs) by %.0f%% of shorter",
+                        sorted_chapters[i].get("title", "?"),
+                        dur_a,
+                        sorted_chapters[j].get("title", "?"),
+                        dur_b,
                         overlap / min_dur * 100,
                     )
                     keep[i] = False
@@ -1223,7 +1168,7 @@ def _filter_timeline_by_range(timeline, start_time, end_time) -> list[dict]:
     for moment in timeline:
         if not isinstance(moment, dict):
             continue
-        ts = moment.get('time')
+        ts = moment.get("time")
         if not ts:
             continue
         try:
@@ -1251,37 +1196,37 @@ def _build_fallback_chunk_entry(chunk_number: int, summary_chunk: dict) -> dict:
     Raises:
         ValueError: If ``summary_chunk`` is missing ``start_time`` or ``end_time``.
     """
-    if 'start_time' not in summary_chunk:
+    if "start_time" not in summary_chunk:
         raise ValueError(f"chunk {chunk_number} missing start_time")
-    if 'end_time' not in summary_chunk:
+    if "end_time" not in summary_chunk:
         raise ValueError(f"chunk {chunk_number} missing end_time")
 
-    title = summary_chunk.get('summary', f"Chunk {chunk_number}")
+    title = summary_chunk.get("summary", f"Chunk {chunk_number}")
     if title:
         title = title[:100]
     else:
         title = f"Chunk {chunk_number}"
 
     fallback_chapter = {
-        'title': title,
-        'start_time': summary_chunk['start_time'],
-        'end_time': summary_chunk['end_time'],
-        'duration_minutes': summary_chunk.get('duration_minutes', 0),
+        "title": title,
+        "start_time": summary_chunk["start_time"],
+        "end_time": summary_chunk["end_time"],
+        "duration_minutes": summary_chunk.get("duration_minutes", 0),
         # Fallback covers the whole chunk, so the full chunk timeline applies.
-        'timeline': summary_chunk.get('timeline', []),
-        'skipped_ai_analysis': True,
-        'fallback': True,
-        'source': 'fallback',
+        "timeline": summary_chunk.get("timeline", []),
+        "skipped_ai_analysis": True,
+        "fallback": True,
+        "source": "fallback",
     }
 
     return {
-        'chunk_number': chunk_number,
-        'start_time': summary_chunk['start_time'],
-        'end_time': summary_chunk['end_time'],
-        'duration_minutes': summary_chunk.get('duration_minutes', 0),
-        'total_interesting_chapters': 1,
-        'interesting_chapters': [fallback_chapter],
-        'skipped_ai_analysis': True,
+        "chunk_number": chunk_number,
+        "start_time": summary_chunk["start_time"],
+        "end_time": summary_chunk["end_time"],
+        "duration_minutes": summary_chunk.get("duration_minutes", 0),
+        "total_interesting_chapters": 1,
+        "interesting_chapters": [fallback_chapter],
+        "skipped_ai_analysis": True,
     }
 
 
@@ -1295,7 +1240,7 @@ def _build_srt_chunk_index(srt_chunks: list[dict]) -> dict:
     """
     index: dict = {}
     for chunk in srt_chunks:
-        number = chunk.get('chunk_number')
+        number = chunk.get("chunk_number")
         if number is None:
             continue
         if number in index:
@@ -1345,16 +1290,16 @@ def _analyze_single_chunk(
         # Prepare chunk summary text for AI
         summary_text = f"Chunk {chunk_number} ({summary_chunk['start_time']} - {summary_chunk['end_time']}) - Duration: {chunk_duration:.1f} minutes\n\n"
 
-        if summary_chunk.get('speakers'):
+        if summary_chunk.get("speakers"):
             summary_text += "Speakers:\n"
-            for speaker in summary_chunk['speakers']:
+            for speaker in summary_chunk["speakers"]:
                 summary_text += f"  - {speaker.get('name', 'Unknown')} ({speaker.get('role', '')})\n"
             summary_text += "\n"
 
-        if summary_chunk.get('topics'):
+        if summary_chunk.get("topics"):
             summary_text += f"Topics: {', '.join(summary_chunk['topics'])}\n\n"
 
-        if summary_chunk.get('summary'):
+        if summary_chunk.get("summary"):
             summary_text += f"Summary: {summary_chunk['summary']}\n"
 
         # #2/#3: per-window LLM call routed through the idempotent
@@ -1369,10 +1314,10 @@ def _analyze_single_chunk(
                 ),
                 model=LLM_CHEAP,
             )
-            if completion.get('error'):
-                raise RuntimeError(completion['error'])
-            chapter_data = completion['data'] or {}
-            return chapter_data.get('interesting_chapters', [])
+            if completion.get("error"):
+                raise RuntimeError(completion["error"])
+            chapter_data = completion["data"] or {}
+            return chapter_data.get("interesting_chapters", [])
 
         # #1/#8: oversized SRT → map-reduce over overlapping windows
         # so the LLM never decides blind on a truncated view. Below
@@ -1386,47 +1331,42 @@ def _analyze_single_chunk(
             from congress_videos.modules.youtube.map_reduce_chapters import (
                 map_reduce_identify_chapters,
             )
-            interesting_chapters = map_reduce_identify_chapters(
-                srt_content, identify_fn=_identify_window
-            )
+
+            interesting_chapters = map_reduce_identify_chapters(srt_content, identify_fn=_identify_window)
         else:
             interesting_chapters = _identify_window(srt_content)
 
         # --- #4: Deterministic fallback for empty LLM result --------
         if not interesting_chapters:
-            logging.warning(
-                f"  ⚠️ Chunk {chunk_number}: LLM returned empty chapter list "
-                "— using whole-chunk fallback."
-            )
+            logging.warning(f"  ⚠️ Chunk {chunk_number}: LLM returned empty chapter list — using whole-chunk fallback.")
             return _build_fallback_chunk_entry(chunk_number, summary_chunk)
 
         # --- #5: Discard chapters with start >= end -----------------
         range_valid = _validate_chapter_ranges(interesting_chapters, chunk_number)
         if not range_valid:
             logging.warning(
-                f"  ⚠️ Chunk {chunk_number}: all chapters failed range validation "
-                "— using whole-chunk fallback."
+                f"  ⚠️ Chunk {chunk_number}: all chapters failed range validation — using whole-chunk fallback."
             )
             return _build_fallback_chunk_entry(chunk_number, summary_chunk)
 
         # Validate that all chapters are within 15-45 minute range
         valid_chapters = []
         for chapter in range_valid:
-            duration = chapter.get('duration_minutes', 0)
+            duration = chapter.get("duration_minutes", 0)
             if min_chapter_duration <= duration <= max_optimal_duration:
                 # Add skipped_ai_analysis flag to each chapter
-                chapter['skipped_ai_analysis'] = False  # AI was used to analyze and create this chapter
+                chapter["skipped_ai_analysis"] = False  # AI was used to analyze and create this chapter
                 # Scope the chunk-level timeline down to this sub-chapter's
                 # [start, end] span (absolute timestamps on both sides).
-                chapter['timeline'] = _filter_timeline_by_range(
-                    summary_chunk.get('timeline', []),
-                    chapter.get('start_time'),
-                    chapter.get('end_time'),
+                chapter["timeline"] = _filter_timeline_by_range(
+                    summary_chunk.get("timeline", []),
+                    chapter.get("start_time"),
+                    chapter.get("end_time"),
                 )
                 # Flatten structured speaker objects to list[str] so
                 # video_chapters.speakers TEXT[] stays byte-compatible.
                 # Also tolerates legacy flat-string form (backward compat).
-                chapter['speakers'] = _flatten_speakers(chapter.get('speakers', []))
+                chapter["speakers"] = _flatten_speakers(chapter.get("speakers", []))
                 valid_chapters.append(chapter)
             else:
                 logging.warning(
@@ -1447,33 +1387,27 @@ def _analyze_single_chunk(
             logging.info(f"  ✅ Chunk {chunk_number}: Split into {len(valid_chapters)} chapters")
 
         return {
-            'chunk_number': chunk_number,
-            'start_time': summary_chunk['start_time'],
-            'end_time': summary_chunk['end_time'],
-            'duration_minutes': summary_chunk['duration_minutes'],
-            'total_interesting_chapters': len(valid_chapters),
-            'interesting_chapters': valid_chapters,
-            'skipped_ai_analysis': False,  # AI was used (but may have returned 1 chapter)
-            'is_single_chapter': is_single_chapter  # Flag to indicate if chunk was kept whole
+            "chunk_number": chunk_number,
+            "start_time": summary_chunk["start_time"],
+            "end_time": summary_chunk["end_time"],
+            "duration_minutes": summary_chunk["duration_minutes"],
+            "total_interesting_chapters": len(valid_chapters),
+            "interesting_chapters": valid_chapters,
+            "skipped_ai_analysis": False,  # AI was used (but may have returned 1 chapter)
+            "is_single_chapter": is_single_chapter,  # Flag to indicate if chunk was kept whole
         }
 
     except json.JSONDecodeError as e:
-        logging.warning(
-            f"  ⚠️ Chunk {chunk_number}: JSON parse error — using whole-chunk fallback. "
-            f"Error: {e}"
-        )
+        logging.warning(f"  ⚠️ Chunk {chunk_number}: JSON parse error — using whole-chunk fallback. Error: {e}")
         return _build_fallback_chunk_entry(chunk_number, summary_chunk)
     except Exception as e:
-        logging.warning(
-            f"  ⚠️ Chunk {chunk_number}: AI analysis failed — using whole-chunk fallback. "
-            f"Error: {e}"
-        )
+        logging.warning(f"  ⚠️ Chunk {chunk_number}: AI analysis failed — using whole-chunk fallback. Error: {e}")
         return _build_fallback_chunk_entry(chunk_number, summary_chunk)
 
 
-def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date: str,
-                                 min_chapter_duration: int = 15,
-                                 max_optimal_duration: int = 120):
+def identify_interesting_chapters(
+    chunk_summaries, chunked_srt_data, target_date: str, min_chapter_duration: int = 15, max_optimal_duration: int = 120
+):
     """
     TASK 3: Identify interesting chapters within EACH chunk.
 
@@ -1503,50 +1437,48 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
         - total_videos: Number of videos analyzed
         - videos: List with video_id, chunks_with_chapters (interesting chapters found in each chunk)
     """
-    if not chunk_summaries or not chunk_summaries.get('videos'):
+    if not chunk_summaries or not chunk_summaries.get("videos"):
         logging.warning("No chunk summaries to analyze")
-        return {'total_videos': 0, 'videos': []}
+        return {"total_videos": 0, "videos": []}
 
     analyzed_videos = []
 
-    for video_data in chunk_summaries['videos']:
-        video_id = video_data['video_id']
-        summarized_chunks = video_data.get('summarized_chunks', [])
+    for video_data in chunk_summaries["videos"]:
+        video_id = video_data["video_id"]
+        summarized_chunks = video_data.get("summarized_chunks", [])
 
-        if not summarized_chunks or video_data.get('error'):
+        if not summarized_chunks or video_data.get("error"):
             logging.warning(f"Skipping video {video_id}: no summarized chunks")
-            analyzed_videos.append({
-                'video_id': video_id,
-                'error': video_data.get('error', 'No summarized chunks available')
-            })
+            analyzed_videos.append(
+                {"video_id": video_id, "error": video_data.get("error", "No summarized chunks available")}
+            )
             continue
 
         # Find matching chunked SRT data for this video
         srt_chunks = []
-        if chunked_srt_data and chunked_srt_data.get('videos'):
-            for srt_video in chunked_srt_data['videos']:
-                if srt_video.get('video_id') == video_id:
-                    srt_chunks = srt_video.get('chunks', [])
+        if chunked_srt_data and chunked_srt_data.get("videos"):
+            for srt_video in chunked_srt_data["videos"]:
+                if srt_video.get("video_id") == video_id:
+                    srt_chunks = srt_video.get("chunks", [])
                     break
 
         if not srt_chunks:
             logging.warning(f"No SRT chunks found for video {video_id}")
-            analyzed_videos.append({
-                'video_id': video_id,
-                'error': 'No SRT chunks available'
-            })
+            analyzed_videos.append({"video_id": video_id, "error": "No SRT chunks available"})
             continue
 
         try:
-            logging.info(f"Analyzing {len(summarized_chunks)} chunks for video {video_id} to identify interesting chapters...")
+            logging.info(
+                f"Analyzing {len(summarized_chunks)} chunks for video {video_id} to identify interesting chapters..."
+            )
             chunks_with_chapters = []
             # #210: index once per video instead of a linear scan per chunk.
             srt_chunk_index = _build_srt_chunk_index(srt_chunks)
 
             # Analyze each chunk individually
             for summary_chunk in summarized_chunks:
-                chunk_number = summary_chunk['chunk_number']
-                chunk_duration = summary_chunk.get('duration_minutes', 0)
+                chunk_number = summary_chunk["chunk_number"]
+                chunk_duration = summary_chunk.get("duration_minutes", 0)
 
                 # Find matching SRT content for this chunk
                 # #7: read text via the back-compat shim (path-only XCom).
@@ -1554,10 +1486,7 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
 
                 if not srt_content:
                     logging.warning(f"No SRT content found for chunk {chunk_number}")
-                    chunks_with_chapters.append({
-                        'chunk_number': chunk_number,
-                        'error': 'No SRT content available'
-                    })
+                    chunks_with_chapters.append({"chunk_number": chunk_number, "error": "No SRT content available"})
                     continue
 
                 # DURATION CHECK: Determine if AI analysis is needed
@@ -1568,32 +1497,38 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
                 if chunk_duration <= max_optimal_duration:
                     # Chunk is in optimal range (< 15 min OR 15-45 min)
                     reason = "too short" if chunk_duration < min_chapter_duration else "optimal duration"
-                    logging.info(f"  ⚡ Chunk {chunk_number} is {chunk_duration:.1f} minutes ({reason}). Returning whole chunk without AI analysis.")
+                    logging.info(
+                        f"  ⚡ Chunk {chunk_number} is {chunk_duration:.1f} minutes ({reason}). Returning whole chunk without AI analysis."
+                    )
 
                     # Return the entire chunk as a single "interesting chapter"
                     whole_chunk_chapter = {
-                        'title': summary_chunk.get('summary', f"Chunk {chunk_number}")[:100],  # Use summary as title (truncated)
-                        'description': summary_chunk.get('summary', 'Chunk returned as-is'),
-                        'start_time': summary_chunk['start_time'],
-                        'end_time': summary_chunk['end_time'],
-                        'duration_minutes': chunk_duration,
-                        'speakers': [s.get('name', 'Unknown') for s in summary_chunk.get('speakers', [])],
-                        'topics': summary_chunk.get('topics', []),
+                        "title": summary_chunk.get("summary", f"Chunk {chunk_number}")[
+                            :100
+                        ],  # Use summary as title (truncated)
+                        "description": summary_chunk.get("summary", "Chunk returned as-is"),
+                        "start_time": summary_chunk["start_time"],
+                        "end_time": summary_chunk["end_time"],
+                        "duration_minutes": chunk_duration,
+                        "speakers": [s.get("name", "Unknown") for s in summary_chunk.get("speakers", [])],
+                        "topics": summary_chunk.get("topics", []),
                         # Whole chunk == whole chapter, so the full chunk timeline applies.
-                        'timeline': summary_chunk.get('timeline', []),
-                        'skipped_ai_analysis': True,  # Flag to indicate this wasn't analyzed by AI
-                        'reason': reason
+                        "timeline": summary_chunk.get("timeline", []),
+                        "skipped_ai_analysis": True,  # Flag to indicate this wasn't analyzed by AI
+                        "reason": reason,
                     }
 
-                    chunks_with_chapters.append({
-                        'chunk_number': chunk_number,
-                        'start_time': summary_chunk['start_time'],
-                        'end_time': summary_chunk['end_time'],
-                        'duration_minutes': chunk_duration,
-                        'total_interesting_chapters': 1,
-                        'interesting_chapters': [whole_chunk_chapter],
-                        'skipped_ai_analysis': True
-                    })
+                    chunks_with_chapters.append(
+                        {
+                            "chunk_number": chunk_number,
+                            "start_time": summary_chunk["start_time"],
+                            "end_time": summary_chunk["end_time"],
+                            "duration_minutes": chunk_duration,
+                            "total_interesting_chapters": 1,
+                            "interesting_chapters": [whole_chunk_chapter],
+                            "skipped_ai_analysis": True,
+                        }
+                    )
 
                     continue
 
@@ -1611,35 +1546,31 @@ def identify_interesting_chapters(chunk_summaries, chunked_srt_data, target_date
 
             # Count total interesting chapters found
             total_chapters_found = sum(
-                c.get('total_interesting_chapters', 0)
-                for c in chunks_with_chapters
-                if not c.get('error')
+                c.get("total_interesting_chapters", 0) for c in chunks_with_chapters if not c.get("error")
             )
 
-            analyzed_videos.append({
-                'video_id': video_id,
-                'video_title': video_data.get('video_title'),
-                'total_chunks_analyzed': len(chunks_with_chapters),
-                'total_interesting_chapters_found': total_chapters_found,
-                'chunks_with_chapters': chunks_with_chapters
-            })
+            analyzed_videos.append(
+                {
+                    "video_id": video_id,
+                    "video_title": video_data.get("video_title"),
+                    "total_chunks_analyzed": len(chunks_with_chapters),
+                    "total_interesting_chapters_found": total_chapters_found,
+                    "chunks_with_chapters": chunks_with_chapters,
+                }
+            )
 
-            logging.info(f"✅ Video {video_id}: Found {total_chapters_found} interesting chapters across {len(chunks_with_chapters)} chunks")
+            logging.info(
+                f"✅ Video {video_id}: Found {total_chapters_found} interesting chapters across {len(chunks_with_chapters)} chunks"
+            )
 
         except Exception as e:
             logging.error(f"Error analyzing video {video_id}: {e}", exc_info=True)
-            analyzed_videos.append({
-                'video_id': video_id,
-                'error': str(e)
-            })
+            analyzed_videos.append({"video_id": video_id, "error": str(e)})
 
-    successful_count = len([v for v in analyzed_videos if not v.get('error')])
+    successful_count = len([v for v in analyzed_videos if not v.get("error")])
     logging.info(f"Chapter identification complete: {successful_count}/{len(analyzed_videos)} videos analyzed")
 
-    return {
-        'total_videos': successful_count,
-        'videos': analyzed_videos
-    }
+    return {"total_videos": successful_count, "videos": analyzed_videos}
 
 
 def merge_interesting_chapters(identified_chapters, target_date: str):
@@ -1658,22 +1589,19 @@ def merge_interesting_chapters(identified_chapters, target_date: str):
         - total_videos: Number of videos processed
         - videos: List with video_id, final_chapters (consolidated list)
     """
-    if not identified_chapters or not identified_chapters.get('videos'):
+    if not identified_chapters or not identified_chapters.get("videos"):
         logging.warning("No identified chapters to merge")
-        return {'total_videos': 0, 'videos': []}
+        return {"total_videos": 0, "videos": []}
 
     merged_videos = []
 
-    for video_data in identified_chapters['videos']:
-        video_id = video_data['video_id']
-        chunks_with_chapters = video_data.get('chunks_with_chapters', [])
+    for video_data in identified_chapters["videos"]:
+        video_id = video_data["video_id"]
+        chunks_with_chapters = video_data.get("chunks_with_chapters", [])
 
-        if not chunks_with_chapters or video_data.get('error'):
+        if not chunks_with_chapters or video_data.get("error"):
             logging.warning(f"Skipping video {video_id}: no chapters to merge")
-            merged_videos.append({
-                'video_id': video_id,
-                'error': video_data.get('error', 'No chapters available')
-            })
+            merged_videos.append({"video_id": video_id, "error": video_data.get("error", "No chapters available")})
             continue
 
         try:
@@ -1681,24 +1609,26 @@ def merge_interesting_chapters(identified_chapters, target_date: str):
             all_chapters = []
 
             for chunk_data in chunks_with_chapters:
-                if chunk_data.get('error'):
+                if chunk_data.get("error"):
                     continue
 
-                chunk_number = chunk_data['chunk_number']
-                interesting_chapters = chunk_data.get('interesting_chapters', [])
+                chunk_number = chunk_data["chunk_number"]
+                interesting_chapters = chunk_data.get("interesting_chapters", [])
 
                 for chapter in interesting_chapters:
-                    all_chapters.append({
-                        'source_chunk': chunk_number,
-                        'title': chapter.get('title', ''),
-                        'description': chapter.get('description', ''),
-                        'start_time': chapter.get('start_time', ''),
-                        'end_time': chapter.get('end_time', ''),
-                        'duration_minutes': chapter.get('duration_minutes', 0),
-                        'speakers': chapter.get('speakers', []),
-                        'topics': chapter.get('topics', []),
-                        'timeline': chapter.get('timeline', [])
-                    })
+                    all_chapters.append(
+                        {
+                            "source_chunk": chunk_number,
+                            "title": chapter.get("title", ""),
+                            "description": chapter.get("description", ""),
+                            "start_time": chapter.get("start_time", ""),
+                            "end_time": chapter.get("end_time", ""),
+                            "duration_minutes": chapter.get("duration_minutes", 0),
+                            "speakers": chapter.get("speakers", []),
+                            "topics": chapter.get("topics", []),
+                            "timeline": chapter.get("timeline", []),
+                        }
+                    )
 
             # --- #5: Final range validation pass at merge stage ----------------
             all_chapters = _validate_chapter_ranges(all_chapters)
@@ -1707,28 +1637,24 @@ def merge_interesting_chapters(identified_chapters, target_date: str):
             all_chapters = _dedup_overlapping_chapters(all_chapters)
 
             # Sort by start_time (float-safe via parse_timestamp)
-            all_chapters.sort(key=lambda x: parse_timestamp(x['start_time']) if x.get('start_time') else 0.0)
+            all_chapters.sort(key=lambda x: parse_timestamp(x["start_time"]) if x.get("start_time") else 0.0)
 
             logging.info(f"Collected {len(all_chapters)} interesting chapters for video {video_id}")
 
-            merged_videos.append({
-                'video_id': video_id,
-                'video_title': video_data.get('video_title'),
-                'total_chapters': len(all_chapters),
-                'final_chapters': all_chapters
-            })
+            merged_videos.append(
+                {
+                    "video_id": video_id,
+                    "video_title": video_data.get("video_title"),
+                    "total_chapters": len(all_chapters),
+                    "final_chapters": all_chapters,
+                }
+            )
 
         except Exception as e:
             logging.error(f"Error merging chapters for video {video_id}: {e}", exc_info=True)
-            merged_videos.append({
-                'video_id': video_id,
-                'error': str(e)
-            })
+            merged_videos.append({"video_id": video_id, "error": str(e)})
 
-    successful_count = len([v for v in merged_videos if not v.get('error')])
+    successful_count = len([v for v in merged_videos if not v.get("error")])
     logging.info(f"Chapter merging complete: {successful_count}/{len(merged_videos)} videos processed")
 
-    return {
-        'total_videos': successful_count,
-        'videos': merged_videos
-    }
+    return {"total_videos": successful_count, "videos": merged_videos}

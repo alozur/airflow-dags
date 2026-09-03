@@ -17,14 +17,16 @@ import re
 # Canonical placeholder set (casefolded, exact)
 # ---------------------------------------------------------------------------
 
-PLACEHOLDER_SPEAKERS: frozenset[str] = frozenset({
-    "desconocido",
-    "unknown",
-    "interviniente no especificado",
-    "(no especificado)",
-    "no especificado",
-    "",
-})
+PLACEHOLDER_SPEAKERS: frozenset[str] = frozenset(
+    {
+        "desconocido",
+        "unknown",
+        "interviniente no especificado",
+        "(no especificado)",
+        "no especificado",
+        "",
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Role-keyword heuristic
@@ -58,7 +60,9 @@ _ROLE_KEYWORDS = (
 # Compiled pattern: role-keyword covers the ENTIRE string with only
 # lowercase/article suffixes (role-only, no proper name following).
 _ROLE_ONLY_RE = re.compile(
-    r"^(?:" + r"|".join(_ROLE_KEYWORDS) + r")(?:\s+(?:del?\s+[a-záéíóúàèìòùüñ]\w*|los?\s+[a-záéíóúàèìòùüñ]\w*|las?\s+[a-záéíóúàèìòùüñ]\w*|[a-záéíóúàèìòùüñ]\w*))*$",
+    r"^(?:"
+    + r"|".join(_ROLE_KEYWORDS)
+    + r")(?:\s+(?:del?\s+[a-záéíóúàèìòùüñ]\w*|los?\s+[a-záéíóúàèìòùüñ]\w*|las?\s+[a-záéíóúàèìòùüñ]\w*|[a-záéíóúàèìòùüñ]\w*))*$",
     re.IGNORECASE,
 )
 
@@ -105,7 +109,7 @@ def is_placeholder(s: str) -> bool:
     # suffix to avoid "del" (lowercase d) being mistaken for a proper name.
     prefix_m = _ROLE_PREFIX_RE.match(stripped)
     if prefix_m:
-        suffix = stripped[prefix_m.end():]
+        suffix = stripped[prefix_m.end() :]
         if suffix and suffix[0] in _UPPERCASE_CHARS:
             return False
 

@@ -44,60 +44,74 @@ def mark_chapter_uploads(db, upload_results: dict | None) -> dict:
             try:
                 db.mark_chapter_uploaded(chapter_id, youtube_video_id)
                 updated_count += 1
-                details.append({
-                    "chapter_id": chapter_id,
-                    "youtube_video_id": youtube_video_id,
-                    "status": "updated",
-                })
+                details.append(
+                    {
+                        "chapter_id": chapter_id,
+                        "youtube_video_id": youtube_video_id,
+                        "status": "updated",
+                    }
+                )
                 logger.info("Marked chapter %s as uploaded: %s", chapter_id, youtube_video_id)
             except Exception as e:
                 failed_count += 1
-                details.append({
-                    "chapter_id": chapter_id,
-                    "status": "failed",
-                    "error": str(e),
-                })
+                details.append(
+                    {
+                        "chapter_id": chapter_id,
+                        "status": "failed",
+                        "error": str(e),
+                    }
+                )
                 logger.error("Failed to mark chapter %s: %s", chapter_id, e)
         elif not success:
             if chapter_id:
                 try:
                     db.record_chapter_upload_failure(chapter_id, upload_detail.get("error"))
                     recorded_failures += 1
-                    details.append({
-                        "chapter_id": chapter_id,
-                        "status": "failure_recorded",
-                    })
+                    details.append(
+                        {
+                            "chapter_id": chapter_id,
+                            "status": "failure_recorded",
+                        }
+                    )
                     logger.info("Recorded upload failure for chapter %s", chapter_id)
                 except Exception as e:
                     failed_count += 1
-                    details.append({
-                        "chapter_id": chapter_id,
-                        "status": "failed",
-                        "error": str(e),
-                    })
+                    details.append(
+                        {
+                            "chapter_id": chapter_id,
+                            "status": "failed",
+                            "error": str(e),
+                        }
+                    )
                     logger.error(
                         "Failed to RECORD upload failure for chapter %s in the "
                         "database (this attempt's failure count is now uncounted): %s",
-                        chapter_id, e,
+                        chapter_id,
+                        e,
                     )
             else:
                 logger.warning("Skipping failed upload with no chapter_id")
-                details.append({
-                    "chapter_id": chapter_id,
-                    "status": "skipped",
-                    "reason": "upload_failed_no_chapter_id",
-                })
+                details.append(
+                    {
+                        "chapter_id": chapter_id,
+                        "status": "skipped",
+                        "reason": "upload_failed_no_chapter_id",
+                    }
+                )
         elif success and (not chapter_id or not youtube_video_id):
             logger.warning(
-                "Upload succeeded but missing fields: chapter_id=%s, youtube_video_id=%s. "
-                "Full upload_detail: %s",
-                chapter_id, youtube_video_id, upload_detail,
+                "Upload succeeded but missing fields: chapter_id=%s, youtube_video_id=%s. Full upload_detail: %s",
+                chapter_id,
+                youtube_video_id,
+                upload_detail,
             )
-            details.append({
-                "chapter_id": chapter_id,
-                "status": "skipped",
-                "reason": f"missing_fields: chapter_id={chapter_id}, youtube_video_id={youtube_video_id}",
-            })
+            details.append(
+                {
+                    "chapter_id": chapter_id,
+                    "status": "skipped",
+                    "reason": f"missing_fields: chapter_id={chapter_id}, youtube_video_id={youtube_video_id}",
+                }
+            )
 
     result = {
         "updated_chapters": updated_count,
@@ -107,7 +121,9 @@ def mark_chapter_uploads(db, upload_results: dict | None) -> dict:
     }
     logger.info(
         "Updated %d chapters, %d failed, %d failures recorded",
-        updated_count, failed_count, recorded_failures,
+        updated_count,
+        failed_count,
+        recorded_failures,
     )
     return result
 
@@ -147,62 +163,75 @@ def mark_turn_uploads(db, upload_results: dict | None) -> dict:
             try:
                 db.mark_turns_uploaded(turn_id=turn_id, youtube_video_id=youtube_video_id)
                 updated_count += 1
-                details.append({
-                    "turn_id": turn_id,
-                    "youtube_video_id": youtube_video_id,
-                    "status": "updated",
-                    "matched_by": "turn_id",
-                })
+                details.append(
+                    {
+                        "turn_id": turn_id,
+                        "youtube_video_id": youtube_video_id,
+                        "status": "updated",
+                        "matched_by": "turn_id",
+                    }
+                )
                 logger.info("Marked turn %s as uploaded: %s", turn_id, youtube_video_id)
             except Exception as e:
                 failed_count += 1
-                details.append({
-                    "turn_id": turn_id,
-                    "status": "failed",
-                    "error": str(e),
-                })
+                details.append(
+                    {
+                        "turn_id": turn_id,
+                        "status": "failed",
+                        "error": str(e),
+                    }
+                )
                 logger.error("Failed to mark turn %s: %s", turn_id, e)
         elif success and youtube_video_id and output_path:
             try:
                 rows_matched = db.mark_turns_uploaded_by_output_path(output_path, youtube_video_id)
                 if rows_matched:
                     updated_count += 1
-                    details.append({
-                        "turn_id": turn_id,
-                        "youtube_video_id": youtube_video_id,
-                        "status": "updated",
-                        "matched_by": "output_path",
-                        "output_path": output_path,
-                    })
+                    details.append(
+                        {
+                            "turn_id": turn_id,
+                            "youtube_video_id": youtube_video_id,
+                            "status": "updated",
+                            "matched_by": "output_path",
+                            "output_path": output_path,
+                        }
+                    )
                     logger.info(
                         "Marked turn(s) at output_path=%r as uploaded: %s",
-                        output_path, youtube_video_id,
+                        output_path,
+                        youtube_video_id,
                     )
                 else:
-                    details.append({
-                        "turn_id": turn_id,
-                        "status": "skipped",
-                        "reason": "output_path_not_found",
-                        "matched_by": "output_path",
-                        "output_path": output_path,
-                    })
+                    details.append(
+                        {
+                            "turn_id": turn_id,
+                            "status": "skipped",
+                            "reason": "output_path_not_found",
+                            "matched_by": "output_path",
+                            "output_path": output_path,
+                        }
+                    )
                     logger.warning("No turn rows matched output_path=%r", output_path)
             except Exception as e:
                 failed_count += 1
-                details.append({
-                    "turn_id": turn_id,
-                    "status": "failed",
-                    "error": str(e),
-                    "matched_by": "output_path",
-                    "output_path": output_path,
-                })
+                details.append(
+                    {
+                        "turn_id": turn_id,
+                        "status": "failed",
+                        "error": str(e),
+                        "matched_by": "output_path",
+                        "output_path": output_path,
+                    }
+                )
                 logger.error("Failed to mark turn(s) at output_path=%r: %s", output_path, e)
         else:
-            details.append({
-                "turn_id": turn_id,
-                "status": "skipped",
-                "reason": "upload_failed_or_missing_fields",
-            })
+            details.append(
+                {
+                    "turn_id": turn_id,
+                    "status": "skipped",
+                    "reason": "upload_failed_or_missing_fields",
+                }
+            )
 
         # Independent of the two success branches above. Identity check, not
         # truthiness -- thumbnail_success is FOUR-valued; only literal False
@@ -215,23 +244,29 @@ def mark_turn_uploads(db, upload_results: dict | None) -> dict:
                     error_message=upload_detail.get("thumbnail_error"),
                 )
                 thumbnail_markers += 1
-                details.append({
-                    "turn_id": turn_id,
-                    "output_path": output_path,
-                    "status": "thumbnail_republish_marked",
-                    "rows": rows,
-                })
+                details.append(
+                    {
+                        "turn_id": turn_id,
+                        "output_path": output_path,
+                        "status": "thumbnail_republish_marked",
+                        "rows": rows,
+                    }
+                )
             except Exception as e:
                 thumbnail_marker_failures += 1
-                details.append({
-                    "turn_id": turn_id,
-                    "output_path": output_path,
-                    "status": "thumbnail_marker_failed",
-                    "error": str(e),
-                })
+                details.append(
+                    {
+                        "turn_id": turn_id,
+                        "output_path": output_path,
+                        "status": "thumbnail_marker_failed",
+                        "error": str(e),
+                    }
+                )
                 logger.error(
-                    "Failed to RECORD thumbnail republish marker for turn %s "
-                    "(output_path=%r); now unrecorded: %s", turn_id, output_path, e,
+                    "Failed to RECORD thumbnail republish marker for turn %s (output_path=%r); now unrecorded: %s",
+                    turn_id,
+                    output_path,
+                    e,
                 )
 
     result = {

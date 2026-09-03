@@ -103,8 +103,7 @@ def fetch_congreso_cod_parlamentario() -> dict[str, str]:
     if response.status_code == 403:
         snippet = (response.text or "")[:200]
         raise RuntimeError(
-            f"searchDiputados 403: {url} — possible WAF block or endpoint change."
-            f" Response body snippet: {snippet!r}"
+            f"searchDiputados 403: {url} — possible WAF block or endpoint change. Response body snippet: {snippet!r}"
         )
 
     response.raise_for_status()
@@ -189,9 +188,7 @@ def fill_congreso_photo_fallback() -> dict:
         cod = cod_map.get(key)
 
         if not cod:
-            logger.warning(
-                "fill_congreso_photo_fallback: no codParlamentario for %r — skipping", key
-            )
+            logger.warning("fill_congreso_photo_fallback: no codParlamentario for %r — skipping", key)
             skipped_no_cod += 1
             continue
 
@@ -307,9 +304,9 @@ def enrich_missing_photos() -> dict:
         key = row["normalized_name"]
 
         matches = [
-            b for b in bindings
-            if token_sort_ratio(normalize_member_name(b["label"]), key) / 100.0
-            >= WIKIDATA_FUZZY_THRESHOLD
+            b
+            for b in bindings
+            if token_sort_ratio(normalize_member_name(b["label"]), key) / 100.0 >= WIKIDATA_FUZZY_THRESHOLD
         ]
 
         if len(matches) == 0:
@@ -335,9 +332,11 @@ def enrich_missing_photos() -> dict:
         enriched += 1
 
     logger.info(
-        "enrich_missing_photos: enriched=%d skipped_ambiguous=%d "
-        "skipped_no_match=%d skipped_no_image=%d",
-        enriched, skipped_ambiguous, skipped_no_match, skipped_no_image,
+        "enrich_missing_photos: enriched=%d skipped_ambiguous=%d skipped_no_match=%d skipped_no_image=%d",
+        enriched,
+        skipped_ambiguous,
+        skipped_no_match,
+        skipped_no_image,
     )
     return {
         "enriched": enriched,

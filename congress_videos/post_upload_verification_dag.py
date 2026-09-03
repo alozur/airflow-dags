@@ -100,8 +100,7 @@ def _verify_and_record(ti, **context) -> dict:
         youtube_service = get_authenticated_youtube_service(_TOKEN_FILE)
     except Exception as exc:
         logging.warning(
-            "post_upload_verification: could not build YouTube service: %s — "
-            "will treat all non-200 oembed as unknown",
+            "post_upload_verification: could not build YouTube service: %s — will treat all non-200 oembed as unknown",
             exc,
         )
         youtube_service = None
@@ -254,7 +253,6 @@ with DAG(
     catchup=False,
     tags=["congress", "youtube", "verification"],
 ) as dag:
-
     # t0: Skip stale data_interval_end replays
     t0_guard = ShortCircuitOperator(
         task_id="staleness_guard",

@@ -113,9 +113,7 @@ def _run_evaluate_candidates(ti):
         median_views = median_info.get("median_views") or 0
         sample_size = median_info.get("sample_size") or 0
         views = (candidate.get("metrics") or {}).get("views") or 0
-        prior_actions = history.get(
-            candidate["youtube_video_id"], {"thumbnail": 0, "title": 0}
-        )
+        prior_actions = history.get(candidate["youtube_video_id"], {"thumbnail": 0, "title": 0})
 
         decision = evaluate_action(
             views=views,
@@ -124,16 +122,17 @@ def _run_evaluate_candidates(ti):
             checkpoint=checkpoint,
             prior_actions=prior_actions,
         )
-        decisions.append({
-            **candidate,
-            "decision": decision,
-            "views": views,
-            "median_views": float(median_views) if median_views else 0.0,
-            "sample_size": sample_size,
-        })
+        decisions.append(
+            {
+                **candidate,
+                "decision": decision,
+                "views": views,
+                "median_views": float(median_views) if median_views else 0.0,
+                "sample_size": sample_size,
+            }
+        )
         logging.info(
-            "video_analytics_actions: snapshot_id=%s yt_id=%s checkpoint=%s "
-            "decision=%s views=%s median=%s sample=%s",
+            "video_analytics_actions: snapshot_id=%s yt_id=%s checkpoint=%s decision=%s views=%s median=%s sample=%s",
             candidate.get("snapshot_id"),
             candidate.get("youtube_video_id"),
             checkpoint,
@@ -354,8 +353,7 @@ def _apply_one_action(db, row: dict, run_id: str) -> dict:
         )
     except Exception as exc:
         logging.warning(
-            "video_analytics_actions: could not trigger thumbnail DAG for "
-            "snapshot_id=%s: %s",
+            "video_analytics_actions: could not trigger thumbnail DAG for snapshot_id=%s: %s",
             snapshot_id,
             exc,
         )
@@ -390,9 +388,7 @@ def _apply_one_action(db, row: dict, run_id: str) -> dict:
 
     youtube = get_authenticated_youtube_service(_UPLOAD_TOKEN_FILE)
 
-    thumb_publish = set_thumbnail_for_video(
-        youtube, row["youtube_video_id"], thumb_result["output_path"]
-    )
+    thumb_publish = set_thumbnail_for_video(youtube, row["youtube_video_id"], thumb_result["output_path"])
     detail["new"]["local_path"] = thumb_result.get("output_path")
     detail["new"]["title"] = thumb_result.get("title")
     detail["youtube"] = {"thumbnail": thumb_publish}
@@ -413,9 +409,7 @@ def _apply_one_action(db, row: dict, run_id: str) -> dict:
 
     if is_title_checkpoint:
         try:
-            title_publish = update_video_title(
-                youtube, row["youtube_video_id"], thumb_result.get("title")
-            )
+            title_publish = update_video_title(youtube, row["youtube_video_id"], thumb_result.get("title"))
         except ValueError as exc:
             # Issue #317: update_video_title raises pre-API on a blank title.
             # Convert to the SAME recorded-failure shape every other publish
@@ -444,15 +438,8 @@ def _apply_one_action(db, row: dict, run_id: str) -> dict:
     new_chosen = db.get_chosen_thumbnail(row["chapter_id"]) or {}
     detail["new"]["archetype"] = new_chosen.get("archetype")
     detail["collisions"] = {
-        "archetype": (
-            prior["archetype"] is not None
-            and new_chosen.get("archetype") == prior["archetype"]
-        ),
-        "title": (
-            is_title_checkpoint
-            and prior["title"] is not None
-            and thumb_result.get("title") == prior["title"]
-        ),
+        "archetype": (prior["archetype"] is not None and new_chosen.get("archetype") == prior["archetype"]),
+        "title": (is_title_checkpoint and prior["title"] is not None and thumb_result.get("title") == prior["title"]),
     }
 
     final_action = row["decision"]
@@ -495,8 +482,7 @@ def _action_failure_problems(results: list) -> list:
         )
     if other_labels:
         problems.append(
-            f"{len(other_labels)} analytics action(s) failed transiently or unclassified: "
-            f"{', '.join(other_labels)}."
+            f"{len(other_labels)} analytics action(s) failed transiently or unclassified: {', '.join(other_labels)}."
         )
     return problems
 
@@ -557,7 +543,6 @@ with DAG(
     max_active_runs=1,
     tags=["congress", "youtube", "analytics", "actions"],
 ) as dag:
-
     t0_select = PythonOperator(
         task_id="select_candidates",
         python_callable=_run_select_candidates,

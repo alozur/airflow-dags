@@ -151,7 +151,6 @@ with DAG(
     tags=["video", "editor", "generic"],
     description="Burn drawtext overlays into a source video using ffmpeg.",
 ) as dag:
-
     t_validate = PythonOperator(
         task_id="validate_input",
         python_callable=_task_validate_input,

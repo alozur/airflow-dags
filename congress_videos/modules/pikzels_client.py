@@ -100,9 +100,7 @@ class PikzelsClient:
         """
         self.api_key = api_key or os.getenv("PIKZELS_API_KEY")
         if not self.api_key:
-            raise OSError(
-                "PIKZELS_API_KEY env var is not set and no api_key was passed"
-            )
+            raise OSError("PIKZELS_API_KEY env var is not set and no api_key was passed")
         if not self.api_key.startswith("pkz_"):
             raise ValueError("Pikzels API keys must start with 'pkz_'")
         self.timeout = timeout
@@ -138,9 +136,7 @@ class PikzelsClient:
 
         for attempt in range(self.max_retries + 1):
             try:
-                response = self._session.request(
-                    method, url, json=payload, timeout=self.timeout
-                )
+                response = self._session.request(method, url, json=payload, timeout=self.timeout)
             except (requests.Timeout, requests.ConnectionError) as exc:
                 # Network-level errors are retryable.
                 if attempt == self.max_retries:
@@ -162,8 +158,7 @@ class PikzelsClient:
             err = PikzelsError(
                 code=error.get("code", "UNKNOWN"),
                 message=error.get("message", response.text[:200]),
-                request_id=body.get("request_id")
-                or response.headers.get("X-Request-Id"),
+                request_id=body.get("request_id") or response.headers.get("X-Request-Id"),
                 status=response.status_code,
             )
 
@@ -381,6 +376,4 @@ def _check_model_support(
         ValueError: When a support image is given with an incompatible model.
     """
     if (support_image_url or support_image_base64) and model not in SUPPORT_IMAGE_MODELS:
-        raise ValueError(
-            f"Support images require {' or '.join(SUPPORT_IMAGE_MODELS)}; got {model}"
-        )
+        raise ValueError(f"Support images require {' or '.join(SUPPORT_IMAGE_MODELS)}; got {model}")

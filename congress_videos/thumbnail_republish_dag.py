@@ -76,8 +76,7 @@ def _staleness_guard(**context) -> bool:
         staleness = now - data_interval_end
         if staleness > timedelta(minutes=STALE_RUN_TOLERANCE_MINUTES):
             logging.info(
-                "thumbnail_republish: skipping stale run: data_interval_end=%s "
-                "is %s behind now=%s (tolerance=%dm)",
+                "thumbnail_republish: skipping stale run: data_interval_end=%s is %s behind now=%s (tolerance=%dm)",
                 data_interval_end,
                 staleness,
                 now,
@@ -145,8 +144,12 @@ def _heal_thumbnails(ti, **context) -> dict:
             exc,
         )
         result = {
-            "healed": 0, "retried": 0, "abandoned": 0,
-            "skipped": len(candidates), "errors": 0, "calls_made": 0,
+            "healed": 0,
+            "retried": 0,
+            "abandoned": 0,
+            "skipped": len(candidates),
+            "errors": 0,
+            "calls_made": 0,
         }
         ti.xcom_push(key="republish_summary", value=result)
         return result
@@ -173,12 +176,11 @@ def _heal_thumbnails(ti, **context) -> dict:
             continue
 
         try:
+
             def _set_thumbnail_fn(thumbnail_path, _yt=youtube_service, _vid=youtube_video_id):
                 return set_thumbnail_for_video(_yt, _vid, thumbnail_path)
 
-            status, detail = attempt_thumbnail_republish(
-                output_path, set_thumbnail_fn=_set_thumbnail_fn
-            )
+            status, detail = attempt_thumbnail_republish(output_path, set_thumbnail_fn=_set_thumbnail_fn)
             calls_made += 1
         except Exception as exc:
             logging.error(
@@ -255,7 +257,6 @@ with DAG(
     catchup=False,
     tags=["congress", "youtube", "thumbnail"],
 ) as dag:
-
     # t0: Skip stale data_interval_end replays
     t0_guard = ShortCircuitOperator(
         task_id="staleness_guard",

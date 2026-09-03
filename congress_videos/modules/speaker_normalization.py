@@ -92,6 +92,7 @@ class NormalizationResult:
 # Private helpers
 # ---------------------------------------------------------------------------
 
+
 def _dedupe_raw_names(
     speakers: list[str],
     key_speakers: list[str],
@@ -105,11 +106,7 @@ def _dedupe_raw_names(
     """
     seen: list[str] = []
     seen_set: set[str] = set()
-    for name in (
-        list(speakers)
-        + list(key_speakers)
-        + [e.get("speaker", "") for e in timeline]
-    ):
+    for name in list(speakers) + list(key_speakers) + [e.get("speaker", "") for e in timeline]:
         if name and name not in seen_set:
             seen.append(name)
             seen_set.add(name)
@@ -129,21 +126,22 @@ def _dedupe_dirty_speakers(
     """
     seen: list[str] = []
     seen_set: set[str] = set()
-    for name in (
-        list(speakers)
-        + list(key_speakers)
-        + [e.get("speaker", "") for e in timeline]
-    ):
+    for name in list(speakers) + list(key_speakers) + [e.get("speaker", "") for e in timeline]:
         if name and not is_placeholder(name) and name not in seen_set:
             seen.append(name)
             seen_set.add(name)
     return seen
 
 
-def _upsert_cache_row(cursor, chapter_id: int, dirty_speaker: str, status: str,
-                      canonical_speaker: str | None = None,
-                      participant_normalized_name: str | None = None,
-                      confidence_score: float | None = None) -> None:
+def _upsert_cache_row(
+    cursor,
+    chapter_id: int,
+    dirty_speaker: str,
+    status: str,
+    canonical_speaker: str | None = None,
+    participant_normalized_name: str | None = None,
+    confidence_score: float | None = None,
+) -> None:
     """INSERT or UPDATE a speaker_normalization_cache row."""
     cursor.execute(
         f"""
@@ -158,8 +156,7 @@ def _upsert_cache_row(cursor, chapter_id: int, dirty_speaker: str, status: str,
             confidence_score            = EXCLUDED.confidence_score,
             updated_at                  = NOW()
         """,
-        (chapter_id, dirty_speaker, canonical_speaker,
-         participant_normalized_name, status, confidence_score),
+        (chapter_id, dirty_speaker, canonical_speaker, participant_normalized_name, status, confidence_score),
     )
 
 
@@ -189,6 +186,7 @@ def _apply_corrections_to_timeline(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def normalize_chapter_speakers(
     chapter_id: int,
@@ -254,31 +252,36 @@ def normalize_chapter_speakers(
                 if role_name == raw:
                     continue
                 _upsert_cache_row(
-                    cursor, chapter_id, raw,
+                    cursor,
+                    chapter_id,
+                    raw,
                     status="matched",
                     canonical_speaker=role_name,
                     participant_normalized_name=slug.replace("-", " ") if is_participant else None,
                     confidence_score=1.0,
                 )
-                result.cache_rows.append({
-                    "dirty_speaker": raw,
-                    "status": "matched",
-                    "canonical_speaker": role_name,
-                    "confidence_score": 1.0,
-                })
+                result.cache_rows.append(
+                    {
+                        "dirty_speaker": raw,
+                        "status": "matched",
+                        "canonical_speaker": role_name,
+                        "confidence_score": 1.0,
+                    }
+                )
                 result.corrections[raw] = role_name
                 if result.resolved_participant_slug is None and is_participant:
                     result.resolved_participant_slug = slug
                 logger.info(
                     "normalize_chapter_speakers: role-resolved %r -> %r (chapter %d)",
-                    raw, role_name, chapter_id,
+                    raw,
+                    role_name,
+                    chapter_id,
                 )
 
         # Step 1: roster-validated resolver over the placeholder-filtered dirty
         # names, EXCLUDING anything Step 0 already corrected (Step-0-wins).
         dirty_names = [
-            n for n in _dedupe_dirty_speakers(speakers, key_speakers, timeline)
-            if n not in result.corrections
+            n for n in _dedupe_dirty_speakers(speakers, key_speakers, timeline) if n not in result.corrections
         ]
         if dirty_names:
             try:
@@ -287,37 +290,41 @@ def normalize_chapter_speakers(
                 logger.warning(
                     "normalize_chapter_speakers: participant roster fetch failed "
                     "(chapter %d): %s — degrading to no Step 1 corrections",
-                    chapter_id, exc,
+                    chapter_id,
+                    exc,
                 )
                 participants = []
 
-            resolution = resolve_chapter_speakers(
-                dirty_names[:MAX_MENTIONS_PER_CALL], participants
-            )
+            resolution = resolve_chapter_speakers(dirty_names[:MAX_MENTIONS_PER_CALL], participants)
             for dirty in dirty_names:
                 match = resolution.by_mention.get(dirty)
                 if match is None:
                     logger.debug(
                         "normalize_chapter_speakers: no resolver match for %r (chapter %d)",
-                        dirty, chapter_id,
+                        dirty,
+                        chapter_id,
                     )
                     _upsert_cache_row(cursor, chapter_id, dirty, "no_match")
                     result.cache_rows.append({"dirty_speaker": dirty, "status": "no_match"})
                     continue
 
                 _upsert_cache_row(
-                    cursor, chapter_id, dirty,
+                    cursor,
+                    chapter_id,
+                    dirty,
                     status="matched",
                     canonical_speaker=match.display_name,
                     participant_normalized_name=match.participant_slug.replace("-", " "),
                     confidence_score=match.confidence,
                 )
-                result.cache_rows.append({
-                    "dirty_speaker": dirty,
-                    "status": "matched",
-                    "canonical_speaker": match.display_name,
-                    "confidence_score": match.confidence,
-                })
+                result.cache_rows.append(
+                    {
+                        "dirty_speaker": dirty,
+                        "status": "matched",
+                        "canonical_speaker": match.display_name,
+                        "confidence_score": match.confidence,
+                    }
+                )
                 result.corrections[dirty] = match.display_name
                 # Slug = the first accepted match, in dirty_names (input) order.
                 # Step 0's slug, when already set, is never overwritten here.
@@ -325,7 +332,10 @@ def normalize_chapter_speakers(
                     result.resolved_participant_slug = match.participant_slug
                 logger.info(
                     "normalize_chapter_speakers: matched %r -> %r (chapter %d, confidence=%.2f)",
-                    dirty, match.display_name, chapter_id, match.confidence,
+                    dirty,
+                    match.display_name,
+                    chapter_id,
+                    match.confidence,
                 )
 
         # Step 3: bulk UPDATE video_chapters if any corrections were recorded
@@ -345,8 +355,13 @@ def normalize_chapter_speakers(
                         updated_at   = CURRENT_TIMESTAMP
                     WHERE chapter_id = %s
                     """,
-                    (new_speakers, new_key_speakers, json.dumps(new_timeline),
-                     result.resolved_participant_slug, chapter_id),
+                    (
+                        new_speakers,
+                        new_key_speakers,
+                        json.dumps(new_timeline),
+                        result.resolved_participant_slug,
+                        chapter_id,
+                    ),
                 )
             else:
                 cursor.execute(
@@ -363,9 +378,9 @@ def normalize_chapter_speakers(
             result.updated = True
             logger.info(
                 "normalize_chapter_speakers: updated %d speaker(s) in chapter %d%s",
-                len(result.corrections), chapter_id,
-                f" (slug={result.resolved_participant_slug!r})"
-                if result.resolved_participant_slug else "",
+                len(result.corrections),
+                chapter_id,
+                f" (slug={result.resolved_participant_slug!r})" if result.resolved_participant_slug else "",
             )
 
     return result

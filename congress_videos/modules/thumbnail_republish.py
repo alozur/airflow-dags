@@ -21,6 +21,7 @@ crashes that walk. This file therefore names neither. It has zero
 import-time side effects (no DB connection, no token resolution, no
 filesystem probe) beyond the module-level constants and logger below.
 """
+
 from __future__ import annotations
 
 import logging
@@ -48,9 +49,7 @@ CANDIDATE_LIMIT: int = THUMBNAIL_REPUBLISH_CANDIDATE_LIMIT
 # the 30 used for the hourly post_upload_verification workflow, because this
 # healer runs once a day (DD6) -- 30 minutes would skip legitimate runs
 # merely delayed by NAS I/O contention.
-STALE_RUN_TOLERANCE_MINUTES: int = int(
-    os.getenv("THUMBNAIL_REPUBLISH_STALE_TOLERANCE_MINUTES", "180")
-)
+STALE_RUN_TOLERANCE_MINUTES: int = int(os.getenv("THUMBNAIL_REPUBLISH_STALE_TOLERANCE_MINUTES", "180"))
 
 THUMBNAIL_FILENAME: str = "thumbnail.png"
 
@@ -64,6 +63,7 @@ MISSING_FILE_ERROR_PREFIX: str = "Thumbnail file not found:"
 # ---------------------------------------------------------------------------
 # State machine
 # ---------------------------------------------------------------------------
+
 
 def thumbnail_path_for(output_path: str) -> str:
     """Return the sidecar thumbnail path for a turn's output video.
@@ -142,7 +142,8 @@ def attempt_thumbnail_republish(
     except Exception as exc:
         logger.warning(
             "thumbnail_republish: set_thumbnail_fn raised for %s: %s",
-            output_path, exc,
+            output_path,
+            exc,
         )
         return "retry", str(exc)
 

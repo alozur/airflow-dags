@@ -58,9 +58,7 @@ TOKEN_SCOPES: dict[str, tuple[str, ...]] = {
         "https://www.googleapis.com/auth/youtube",
         "https://www.googleapis.com/auth/youtube.force-ssl",
     ),
-    "analytics": (
-        "https://www.googleapis.com/auth/yt-analytics.readonly",
-    ),
+    "analytics": ("https://www.googleapis.com/auth/yt-analytics.readonly",),
 }
 
 # Valid token purposes.
@@ -69,16 +67,12 @@ PURPOSES: tuple[str, ...] = tuple(TOKEN_SCOPES)
 
 def _validate_channel(channel: str) -> None:
     if channel not in CHANNELS:
-        raise ValueError(
-            f"Unknown channel '{channel}'. Registered channels: {sorted(CHANNELS)}"
-        )
+        raise ValueError(f"Unknown channel '{channel}'. Registered channels: {sorted(CHANNELS)}")
 
 
 def _validate_purpose(purpose: str) -> None:
     if purpose not in TOKEN_SCOPES:
-        raise ValueError(
-            f"Unknown token purpose '{purpose}'. Valid purposes: {sorted(TOKEN_SCOPES)}"
-        )
+        raise ValueError(f"Unknown token purpose '{purpose}'. Valid purposes: {sorted(TOKEN_SCOPES)}")
 
 
 def get_token_scopes(purpose: str) -> tuple[str, ...]:

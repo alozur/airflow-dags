@@ -178,11 +178,9 @@ def window_srt(
     while start_block < n_blocks:
         # Greedily accumulate whole blocks until adding the next would exceed
         # window_chars (but always include at least one block).
-        end_block = _accumulate_window_end_block(
-            block_lengths, start_block, n_blocks, window_chars, separator
-        )
+        end_block = _accumulate_window_end_block(block_lengths, start_block, n_blocks, window_chars, separator)
 
-        win_blocks = blocks[start_block:end_block + 1]
+        win_blocks = blocks[start_block : end_block + 1]
         text = separator.join(win_blocks)
         char_start = sum(block_lengths[:start_block]) + len(separator) * start_block
         windows.append(
@@ -201,14 +199,15 @@ def window_srt(
         # Step the next window back by ~overlap_chars worth of whole blocks so
         # adjacent windows share content around the seam.
         next_start = end_block + 1
-        next_start = _step_back_for_overlap(
-            block_lengths, start_block, next_start, overlap_chars, separator
-        )
+        next_start = _step_back_for_overlap(block_lengths, start_block, next_start, overlap_chars, separator)
         start_block = next_start
 
     logger.info(
         "window_srt: split %d chars into %d windows (window_chars=%d, overlap_pct=%.2f)",
-        len(stripped), len(windows), window_chars, overlap_pct,
+        len(stripped),
+        len(windows),
+        window_chars,
+        overlap_pct,
     )
     return windows
 
@@ -236,7 +235,8 @@ def map_chapters(
         except Exception:  # noqa: BLE001 — one bad window must not sink the rest
             logger.warning(
                 "map_chapters: window %d failed identification; treating as empty",
-                window.index, exc_info=True,
+                window.index,
+                exc_info=True,
             )
             chapters = []
         results.append(list(chapters))
@@ -360,7 +360,8 @@ def map_reduce_identify_chapters(
 
     logger.info(
         "map_reduce_identify_chapters: %d chars → %d windows",
-        len(srt_content), len(windows),
+        len(srt_content),
+        len(windows),
     )
     window_results = map_chapters(windows, identify_fn)
     return reduce_chapters(window_results)

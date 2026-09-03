@@ -211,16 +211,23 @@ def extract_audio_wav(
     if duration_secs is not None:
         cmd += ["-t", str(duration_secs)]
     cmd += [
-        "-i", video_path,
-        "-ac", "1",
-        "-ar", str(sample_rate),
-        "-f", "wav",
+        "-i",
+        video_path,
+        "-ac",
+        "1",
+        "-ar",
+        str(sample_rate),
+        "-f",
+        "wav",
         wav_path,
     ]
     timeout = compute_ffmpeg_timeout(duration_secs or 0)
     log.info(
         "vad.extract_audio_wav.start video_path=%s wav_path=%s start_secs=%s duration_secs=%s",
-        video_path, wav_path, start_secs, duration_secs,
+        video_path,
+        wav_path,
+        start_secs,
+        duration_secs,
     )
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
@@ -245,7 +252,8 @@ def _webrtc_segments(audio_path: str, sample_rate: int) -> list[tuple[float, flo
         if wav.getframerate() != sample_rate:
             log.warning(
                 "vad.webrtc.sample_rate_mismatch expected=%s actual=%s",
-                sample_rate, wav.getframerate(),
+                sample_rate,
+                wav.getframerate(),
             )
             return []
         n_frames = wav.getnframes()
@@ -259,7 +267,7 @@ def _webrtc_segments(audio_path: str, sample_rate: int) -> list[tuple[float, flo
     segments: list[tuple[float, float]] = []
     seg_start: float | None = None
     for i in range(0, len(samples) - frame_len, frame_len):
-        frame = samples[i:i + frame_len].tobytes()
+        frame = samples[i : i + frame_len].tobytes()
         t = i / sample_rate
         is_voiced = vad.is_speech(frame, sample_rate)
         if is_voiced and seg_start is None:
@@ -363,7 +371,10 @@ def detect_speech_bounds(
     )
     log.info(
         "vad.detect_speech_bounds.done backend=%s segments=%s speech_start=%s speech_end=%s",
-        backend, len(segments), start, end,
+        backend,
+        len(segments),
+        start,
+        end,
     )
     return start, end
 
@@ -439,7 +450,9 @@ def _trim_one_chapter(
     except Exception as exc:  # noqa: BLE001 — VAD is best-effort, never fail the task
         log.warning(
             "vad.trim_chapter.failed start_time=%s end_time=%s error=%s",
-            start_raw, end_raw, exc,
+            start_raw,
+            end_raw,
+            exc,
         )
         return
     finally:
@@ -448,11 +461,7 @@ def _trim_one_chapter(
 
     # Candidate boundaries: start can only rise, end can only fall (strict clamp).
     new_start = chapter_start + start_offset if start_offset is not None else chapter_start
-    new_end = (
-        min(chapter_start + end_offset, chapter_end)
-        if end_offset is not None
-        else chapter_end
-    )
+    new_end = min(chapter_start + end_offset, chapter_end) if end_offset is not None else chapter_end
 
     # --- end edge: apply only if it REDUCES and the chapter stays usable ---
     if end_offset is not None:
@@ -460,14 +469,19 @@ def _trim_one_chapter(
             new_end_srt = format_timestamp(new_end, with_ms=True)
             log.info(
                 "vad.trim_chapter.end_lowered old_end=%s new_end=%s end_offset=%s",
-                end_raw, new_end_srt, end_offset,
+                end_raw,
+                new_end_srt,
+                end_offset,
             )
             chapter["end_time"] = new_end_srt
         else:
             new_end = chapter_end  # rejected → end stays original for the start guard
             log.warning(
                 "vad.trim_chapter.end_kept end_time=%s candidate_end=%s new_start=%s min_chapter_secs=%s",
-                end_raw, min(chapter_start + end_offset, chapter_end), new_start, min_chapter_secs,
+                end_raw,
+                min(chapter_start + end_offset, chapter_end),
+                new_start,
+                min_chapter_secs,
             )
 
     # --- start edge: apply only if it RISES and the chapter stays usable ---
@@ -476,13 +490,18 @@ def _trim_one_chapter(
             new_start_srt = format_timestamp(new_start, with_ms=True)
             log.info(
                 "vad.trim_chapter.start_raised old_start=%s new_start=%s start_offset=%s",
-                start_raw, new_start_srt, start_offset,
+                start_raw,
+                new_start_srt,
+                start_offset,
             )
             chapter["start_time"] = new_start_srt
         elif new_start > chapter_start:
             log.warning(
                 "vad.trim_chapter.start_kept start_time=%s new_start=%s new_end=%s min_chapter_secs=%s",
-                start_raw, new_start, new_end, min_chapter_secs,
+                start_raw,
+                new_start,
+                new_end,
+                min_chapter_secs,
             )
 
 
@@ -546,7 +565,9 @@ def trim_chapter_silence_with_vad(
         if not source_video:
             log.warning(
                 "vad.trim.video_not_found video_id=%s target_date=%s chapters=%s",
-                video_id, target_date, len(chapters),
+                video_id,
+                target_date,
+                len(chapters),
             )
             continue  # best-effort: keep all chapters of this video unchanged
 
@@ -639,7 +660,9 @@ def trim_turn_silence_with_vad(
         if trim_start < VAD_TURN_TRIM_EPSILON_SECS and trim_end < VAD_TURN_TRIM_EPSILON_SECS:
             log.info(
                 "vad.trim_turn.skipped reason=below_eps trim_start=%.3f trim_end=%.3f video_path=%s",
-                trim_start, trim_end, video_path,
+                trim_start,
+                trim_end,
+                video_path,
             )
             return (0.0, 0.0)
 
@@ -657,7 +680,11 @@ def trim_turn_silence_with_vad(
             log.info(
                 "vad.trim_turn.skipped reason=span_guard trim_start=%.3f trim_end=%.3f"
                 " new_start=%.3f new_end=%.3f video_path=%s",
-                trim_start, trim_end, new_start_abs, new_end_abs, video_path,
+                trim_start,
+                trim_end,
+                new_start_abs,
+                new_end_abs,
+                video_path,
             )
             return (0.0, 0.0)
 
@@ -675,6 +702,7 @@ def trim_turn_silence_with_vad(
 
         # Step 8: Run ffmpeg with input-side seek (-ss/-to before -i) and stream copy.
         from congress_videos.modules.video_splitter import compute_ffmpeg_timeout
+
         timeout = compute_ffmpeg_timeout(0)
         cmd = ["ffmpeg", "-y", "-ss", str(ss)]
         if to is not None:
@@ -685,7 +713,9 @@ def trim_turn_silence_with_vad(
         if result.returncode != 0:
             log.warning(
                 "vad.trim_turn.ffmpeg_failed rc=%d video_path=%s stderr=%s",
-                result.returncode, video_path, result.stderr[:200],
+                result.returncode,
+                video_path,
+                result.stderr[:200],
             )
             return (0.0, 0.0)
 
@@ -694,9 +724,9 @@ def trim_turn_silence_with_vad(
         tmp_video = None  # replaced — no cleanup needed
 
         log.info(
-            "vad.trim_turn.applied trim_start=%.3f trim_end=%.3f"
-            " new_duration=%.3f video_path=%s",
-            trim_start, trim_end,
+            "vad.trim_turn.applied trim_start=%.3f trim_end=%.3f new_duration=%.3f video_path=%s",
+            trim_start,
+            trim_end,
             (to - ss) if to is not None else 0.0,
             video_path,
         )
@@ -705,7 +735,8 @@ def trim_turn_silence_with_vad(
     except Exception as exc:  # noqa: BLE001 — VAD trim is best-effort, never block preparation
         log.warning(
             "vad.trim_turn.skipped reason=error video_path=%s error=%s",
-            video_path, exc,
+            video_path,
+            exc,
         )
         return (0.0, 0.0)
     finally:

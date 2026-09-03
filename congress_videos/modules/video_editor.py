@@ -127,10 +127,7 @@ def build_drawtext_filter(overlays: list[dict], domain_cfg: dict) -> str:
     for overlay in overlays:
         tipo = overlay["tipo"]
         if tipo not in tipos_cfg:
-            raise KeyError(
-                f"Unknown tipo {tipo!r}. "
-                f"Available tipos: {list(tipos_cfg.keys())}"
-            )
+            raise KeyError(f"Unknown tipo {tipo!r}. Available tipos: {list(tipos_cfg.keys())}")
         style = tipos_cfg[tipo]
 
         # Build combined text (titulo + optional descripcion)
@@ -184,12 +181,18 @@ def build_ffmpeg_drawtext_cmd(src: str, out: str, filter_str: str) -> list[str]:
     return [
         "ffmpeg",
         "-y",
-        "-i", src,
-        "-vf", filter_str,
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "20",
-        "-c:a", "copy",
+        "-i",
+        src,
+        "-vf",
+        filter_str,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-c:a",
+        "copy",
         out,
     ]
 
@@ -251,6 +254,7 @@ def _default_output_path(source_path: str) -> str:
 def _load_font(path: str, size: int):
     """Load a TrueType font; fall back to Pillow default on failure."""
     from PIL import ImageFont
+
     try:
         return ImageFont.truetype(path, size)
     except Exception:
@@ -300,11 +304,17 @@ def _render_speaker_id(overlay: dict, style: dict, W: int, H: int):
     draw.rectangle([bx, by, bx + 10, by + bh], fill=style["accent_color"])
 
     _draw_text_block(
-        draw, tx=bx + 22, box_y=by, box_h=bh,
-        title=overlay["titulo"], sub=overlay.get("descripcion"),
+        draw,
+        tx=bx + 22,
+        box_y=by,
+        box_h=bh,
+        title=overlay["titulo"],
+        sub=overlay.get("descripcion"),
         font_t=_load_font(style["fontfile"], style["fontsize_title"]),
         font_s=_load_font(style["fontfile_sub"], style["fontsize_sub"]),
-        title_color=style["title_color"], sub_color=style["sub_color"], gap=10,
+        title_color=style["title_color"],
+        sub_color=style["sub_color"],
+        gap=10,
     )
     return img
 
@@ -342,7 +352,9 @@ def _render_cita_destacada(overlay: dict, style: dict, W: int, H: int):
     if overlay.get("descripcion"):
         draw.text(
             (tx, by + 5 + pad + th_title + 10 - bbox_s[1]),
-            overlay["descripcion"], font=font_s, fill=style["sub_color"],
+            overlay["descripcion"],
+            font=font_s,
+            fill=style["sub_color"],
         )
     return img
 
@@ -374,10 +386,17 @@ def _render_urgente(overlay: dict, style: dict, W: int, H: int):
     draw.text((bx + 14, label_ty), label_text, font=font_label, fill=style["label_color"])
 
     _draw_text_block(
-        draw, tx=bx + label_w + 18, box_y=by, box_h=bh,
-        title=overlay["titulo"], sub=overlay.get("descripcion"),
-        font_t=font_t, font_s=font_s,
-        title_color=style["title_color"], sub_color=style["sub_color"], gap=4,
+        draw,
+        tx=bx + label_w + 18,
+        box_y=by,
+        box_h=bh,
+        title=overlay["titulo"],
+        sub=overlay.get("descripcion"),
+        font_t=font_t,
+        font_s=font_s,
+        title_color=style["title_color"],
+        sub_color=style["sub_color"],
+        gap=4,
     )
     draw.rectangle([bx, by + bh - 4, bx + bw, by + bh], fill=style["accent_color"])
     return img
@@ -420,7 +439,9 @@ def _render_dato_contexto(overlay: dict, style: dict, W: int, H: int):
     if overlay.get("descripcion"):
         draw.text(
             (tx, ty + th_header + 8 + th_title + 8 - sbbox[1]),
-            overlay["descripcion"], font=font_s, fill=style["sub_color"],
+            overlay["descripcion"],
+            font=font_s,
+            fill=style["sub_color"],
         )
     return img
 
@@ -442,11 +463,17 @@ def _render_extracto_sesion(overlay: dict, style: dict, W: int, H: int):
     draw.rectangle([bx, by, bx + 10, by + bh], fill=style["accent_color"])
 
     _draw_text_block(
-        draw, tx=bx + 22, box_y=by, box_h=bh,
-        title=overlay["titulo"], sub=overlay.get("descripcion"),
+        draw,
+        tx=bx + 22,
+        box_y=by,
+        box_h=bh,
+        title=overlay["titulo"],
+        sub=overlay.get("descripcion"),
         font_t=_load_font(style["fontfile"], style["fontsize_title"]),
         font_s=_load_font(style["fontfile_sub"], style["fontsize_sub"]),
-        title_color=style["title_color"], sub_color=style["sub_color"], gap=10,
+        title_color=style["title_color"],
+        sub_color=style["sub_color"],
+        gap=10,
     )
     return img
 
@@ -518,18 +545,21 @@ def build_ffmpeg_pillow_cmd(
         input_label = f"{idx + 1}:v"
         is_last = idx == len(png_slots) - 1
         out_label = "" if is_last else f"[v{idx}]"
-        parts.append(
-            f"[{prev}][{input_label}]overlay=0:0:enable='between(t,{t_start},{t_end})'{out_label}"
-        )
+        parts.append(f"[{prev}][{input_label}]overlay=0:0:enable='between(t,{t_start},{t_end})'{out_label}")
         prev = f"v{idx}"
 
     filter_complex = ";".join(parts)
     cmd += [
-        "-filter_complex", filter_complex,
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "20",
-        "-c:a", "copy",
+        "-filter_complex",
+        filter_complex,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-c:a",
+        "copy",
         out,
     ]
     return cmd
@@ -549,10 +579,15 @@ def _get_source_dimensions(source_path: str) -> tuple[int, int] | None:
     try:
         result = subprocess.run(
             [
-                "ffprobe", "-v", "quiet",
-                "-show_entries", "stream=width,height",
-                "-of", "csv=p=0",
-                "-select_streams", "v:0",
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "csv=p=0",
+                "-select_streams",
+                "v:0",
                 source_path,
             ],
             capture_output=True,
@@ -597,13 +632,9 @@ def _validate_source_selection(conf: dict) -> None:
     has_source_path = "source_path" in conf
     has_id_pair = "video_id" in conf and "chapter_id" in conf
     if has_source_path and has_id_pair:
-        raise ValueError(
-            "Provide either 'source_path' OR ('video_id' + 'chapter_id'), not both."
-        )
+        raise ValueError("Provide either 'source_path' OR ('video_id' + 'chapter_id'), not both.")
     if not has_source_path and not has_id_pair:
-        raise ValueError(
-            "One of 'source_path' or ('video_id' + 'chapter_id') is required."
-        )
+        raise ValueError("One of 'source_path' or ('video_id' + 'chapter_id') is required.")
 
 
 def _validate_overlay(overlay: dict, index: int, tipos_cfg: dict) -> None:
@@ -617,34 +648,24 @@ def _validate_overlay(overlay: dict, index: int, tipos_cfg: dict) -> None:
     # Required overlay keys
     for key in _REQUIRED_OVERLAY_KEYS:
         if key not in overlay:
-            raise ValueError(
-                f"Overlay[{index}] is missing required field: '{key}'"
-            )
+            raise ValueError(f"Overlay[{index}] is missing required field: '{key}'")
 
     # Time ordering
     t_start = _parse_time(overlay["tiempo_inicio"])
     t_end = _parse_time(overlay["tiempo_fin"])
     if t_end <= t_start:
-        raise ValueError(
-            f"Overlay[{index}]: 'tiempo_fin' ({t_end}) must be greater than "
-            f"'tiempo_inicio' ({t_start})"
-        )
+        raise ValueError(f"Overlay[{index}]: 'tiempo_fin' ({t_end}) must be greater than 'tiempo_inicio' ({t_start})")
 
     # Tipo must exist in domain config
     tipo = overlay["tipo"]
     if tipo not in tipos_cfg:
-        raise ValueError(
-            f"Overlay[{index}]: unknown tipo {tipo!r}. "
-            f"Available tipos: {list(tipos_cfg.keys())}"
-        )
+        raise ValueError(f"Overlay[{index}]: unknown tipo {tipo!r}. Available tipos: {list(tipos_cfg.keys())}")
 
     # Font file(s) must exist on disk; pillow tipos may have fontfile_sub too.
     for font_key in ("fontfile", "fontfile_sub"):
         font_path = tipos_cfg[tipo].get(font_key)
         if font_path and not os.path.exists(font_path):
-            raise FileNotFoundError(
-                f"Font file for tipo {tipo!r} ({font_key}) not found: {font_path}"
-            )
+            raise FileNotFoundError(f"Font file for tipo {tipo!r} ({font_key}) not found: {font_path}")
 
 
 def validate_editor_input(conf: dict) -> None:
@@ -695,9 +716,12 @@ def _get_source_duration(source_path: str) -> float | None:
         result = subprocess.run(
             [
                 "ffprobe",
-                "-v", "quiet",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
+                "-v",
+                "quiet",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
                 source_path,
             ],
             capture_output=True,
@@ -716,9 +740,7 @@ def _get_source_duration(source_path: str) -> float | None:
 # ---------------------------------------------------------------------------
 
 
-def _warn_overlays_exceeding_duration(
-    overlays: list[dict], duration: float | None, source_path: str
-) -> None:
+def _warn_overlays_exceeding_duration(overlays: list[dict], duration: float | None, source_path: str) -> None:
     """Log a warning for each overlay whose end time exceeds the source duration.
 
     ``duration`` uses an identity check (``is not None``) rather than
@@ -736,7 +758,9 @@ def _warn_overlays_exceeding_duration(
             if t_end > duration:
                 logger.warning(
                     "Overlay tiempo_fin=%.1f exceeds source duration=%.1f for %r.",
-                    t_end, duration, source_path,
+                    t_end,
+                    duration,
+                    source_path,
                 )
 
 
@@ -767,9 +791,7 @@ def _run_drawtext_overlay(
     logger.info("Running ffmpeg drawtext (timeout=%ds): %s", timeout, " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
-        raise RuntimeError(
-            f"ffmpeg failed (rc={result.returncode}): {result.stderr}"
-        )
+        raise RuntimeError(f"ffmpeg failed (rc={result.returncode}): {result.stderr}")
     logger.info("drawtext overlay applied: %r → %r", source_path, output_path)
     return {"success": True, "output_path": output_path}
 
@@ -823,9 +845,7 @@ def _run_pillow_overlay(
         logger.info("Running ffmpeg pillow composite (timeout=%ds): %s", timeout, " ".join(cmd))
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if result.returncode != 0:
-            raise RuntimeError(
-                f"ffmpeg failed (rc={result.returncode}): {result.stderr}"
-            )
+            raise RuntimeError(f"ffmpeg failed (rc={result.returncode}): {result.stderr}")
     finally:
         for tmp in tmp_files:
             try:

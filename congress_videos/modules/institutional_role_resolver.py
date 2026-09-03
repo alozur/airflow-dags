@@ -90,9 +90,7 @@ class Catalog:
 def normalize_role_label(label: str) -> str:
     """Return the catalog's mechanical, accent-insensitive role key."""
     decomposed = unicodedata.normalize("NFKD", label.strip())
-    without_accents = "".join(
-        character for character in decomposed if not unicodedata.combining(character)
-    )
+    without_accents = "".join(character for character in decomposed if not unicodedata.combining(character))
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", without_accents.casefold())).strip()
 
 
@@ -117,10 +115,7 @@ class CatalogLoader:
         if not isinstance(assignments, list):
             raise CatalogValidationError("assignments")
 
-        parsed_assignments = tuple(
-            self._parse_assignment(item, {role.key for role in roles})
-            for item in assignments
-        )
+        parsed_assignments = tuple(self._parse_assignment(item, {role.key for role in roles}) for item in assignments)
         return Catalog(1, roles, self._mark_duplicate_ids(parsed_assignments))
 
     def _load_roles(self, raw_roles: object) -> tuple[Role, ...]:
@@ -140,8 +135,7 @@ class CatalogLoader:
             if scope not in {"ministerial", "presidency_mesa", "parliamentary_group"}:
                 raise CatalogValidationError("scope")
             if not isinstance(aliases, list) or any(
-                not isinstance(alias, str) or not alias or alias != normalize_role_label(alias)
-                for alias in aliases
+                not isinstance(alias, str) or not alias or alias != normalize_role_label(alias) for alias in aliases
             ):
                 raise CatalogValidationError("aliases")
             labels = [key, *aliases]
@@ -162,15 +156,15 @@ class CatalogLoader:
 
         display_name = raw.get("display_name") if isinstance(raw.get("display_name"), str) else None
         diagnostic = (
-            "missing_assignment_id" if not identifier else
-            "undeclared_role" if role not in role_keys else
-            "missing_participant_slug" if not slug else
-            interval_error or
-            self._provenance_error(raw.get("provenance"))
+            "missing_assignment_id"
+            if not identifier
+            else "undeclared_role"
+            if role not in role_keys
+            else "missing_participant_slug"
+            if not slug
+            else interval_error or self._provenance_error(raw.get("provenance"))
         )
-        return Assignment(
-            identifier, role, slug, starts_on, ends_on, open_ended, diagnostic, display_name
-        )
+        return Assignment(identifier, role, slug, starts_on, ends_on, open_ended, diagnostic, display_name)
 
     @staticmethod
     def _parse_interval(raw: object) -> tuple[date | None, date | None, bool, str | None]:
@@ -203,9 +197,7 @@ class CatalogLoader:
 
     @staticmethod
     def _mark_duplicate_ids(assignments: tuple[Assignment, ...]) -> tuple[Assignment, ...]:
-        identifier_counts = Counter(
-            assignment.identifier for assignment in assignments if assignment.identifier
-        )
+        identifier_counts = Counter(assignment.identifier for assignment in assignments if assignment.identifier)
         duplicates = {identifier for identifier, count in identifier_counts.items() if count > 1}
         return tuple(
             Assignment(
@@ -215,9 +207,7 @@ class CatalogLoader:
                 assignment.validity_from,
                 assignment.validity_to,
                 assignment.is_open_ended,
-                assignment.diagnostic or (
-                    "duplicate_assignment_id" if assignment.identifier in duplicates else None
-                ),
+                assignment.diagnostic or ("duplicate_assignment_id" if assignment.identifier in duplicates else None),
                 assignment.display_name,
             )
             for assignment in assignments

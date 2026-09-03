@@ -133,9 +133,7 @@ def fetch_active_deputies() -> list[dict[str, Any]]:
         raise ValueError(f"Malformed JSON response from {url}") from exc
 
     if not payload:
-        raise ValueError(
-            f"Empty deputies payload from {url} — no active deputies is anomalous"
-        )
+        raise ValueError(f"Empty deputies payload from {url} — no active deputies is anomalous")
 
     return payload
 
@@ -213,8 +211,7 @@ def parse_deputies(raw: list[dict[str, Any]]) -> list[ParticipantRecord]:
 
     if not records:
         raise ValueError(
-            "All deputy entries were skipped (missing Nombre) — "
-            "possible upstream schema change, treating as anomalous"
+            "All deputy entries were skipped (missing Nombre) — possible upstream schema change, treating as anomalous"
         )
 
     return records

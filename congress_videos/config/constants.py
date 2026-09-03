@@ -72,9 +72,7 @@ CONGRESO_DEPUTIES_PORTLET_URL = (
     "&p_p_cacheability=cacheLevelPage"
 )
 # Browser-grade User-Agent required by the portlet WAF; do not use the requests default.
-CONGRESO_BROWSER_USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
-)
+CONGRESO_BROWSER_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
 WIKIDATA_SPARQL_URL = "https://query.wikidata.org/sparql"
 WIKIDATA_POSITION_QID = "Q18171345"  # member of the Congress of Deputies
 WIKIDATA_FUZZY_THRESHOLD = 0.90
@@ -95,9 +93,7 @@ CONGRESO_SEARCH_DIPUTADOS_URL = (
     "&p_p_resource_id=searchDiputados"
     "&p_p_cacheability=cacheLevelPage"
 )
-CONGRESO_PHOTO_URL_TEMPLATE = (
-    "https://www.congreso.es/docu/imgweb/diputados/{cod}_{leg}.jpg"
-)
+CONGRESO_PHOTO_URL_TEMPLATE = "https://www.congreso.es/docu/imgweb/diputados/{cod}_{leg}.jpg"
 
 # -------------------------
 # Global Settings
