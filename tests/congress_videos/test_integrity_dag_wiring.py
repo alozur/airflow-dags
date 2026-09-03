@@ -9,6 +9,8 @@ Scenarios (from spec — DAG Task Wiring for Integrity Gate):
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 
 class TestIntegrityTaskExistsInDAG:
     def test_dag_loads_without_import_errors(self):
@@ -90,3 +92,25 @@ class TestIntegrityTaskTopology:
             f"check_source_integrity trigger_rule must be 'none_failed_min_one_success', "
             f"got {t3c2_integrity.trigger_rule!r}"
         )
+
+
+class TestCheckSourceIntegrityCallable:
+    def test_calls_batch_method_once_instead_of_per_id(self, mocker):
+        """_check_source_integrity must call record_source_integrity_failures once
+        for the whole batch, not record_source_integrity_failure per id."""
+        from congress_videos.youtube_channel_monitor_dag import _check_source_integrity
+
+        mocker.patch(
+            "congress_videos.modules.youtube.check_source_video_integrity",
+            return_value={"total_downloaded": 3, "videos": [], "failed_video_ids": ["a", "b", "c"]},
+        )
+        mock_db_cls = mocker.patch("congress_videos.modules.database.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+
+        ti = MagicMock()
+        ti.xcom_pull.return_value = [{"video_id": "a"}, {"video_id": "b"}, {"video_id": "c"}]
+
+        _check_source_integrity(ti)
+
+        mock_db.record_source_integrity_failures.assert_called_once_with(["a", "b", "c"], retry_after_hours=12)
+        mock_db.record_source_integrity_failure.assert_not_called()

@@ -213,6 +213,55 @@ class TestGetUploadableChapters:
         sql = mock_cursor.execute.call_args[0][0]
         assert "LIMIT" not in sql
 
+    def test_limit_is_parameterized_not_interpolated(self, db):
+        """LIMIT is sent as a bound parameter, never string-interpolated."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_uploadable_chapters(limit=50)
+
+        sql, params = mock_cursor.execute.call_args[0]
+        assert "LIMIT %s" in sql
+        assert params[-1] == 50
+
+    def test_string_limit_is_cast_and_appended_to_params(self, db):
+        """A numeric string limit is cast to int and appended after the score param."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_uploadable_chapters(limit="7")
+
+        _, params = mock_cursor.execute.call_args[0]
+        assert params == (4, 7)
+
+    def test_non_integer_string_limit_raises_value_error_before_query(self, db):
+        """A non-numeric string limit raises ValueError before any query executes."""
+        instance, mock_cursor = db
+
+        with pytest.raises(ValueError):
+            instance.get_uploadable_chapters(limit="abc")
+
+        mock_cursor.execute.assert_not_called()
+
+    def test_non_coercible_limit_raises_type_error_before_query(self, db):
+        """A limit that cannot be coerced to int raises TypeError before any query executes."""
+        instance, mock_cursor = db
+
+        with pytest.raises(TypeError):
+            instance.get_uploadable_chapters(limit=object())
+
+        mock_cursor.execute.assert_not_called()
+
+    def test_zero_limit_is_falsy_and_omits_limit_clause(self, db):
+        """limit=0 is treated as falsy (no LIMIT), matching current behavior."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_uploadable_chapters(limit=0)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "LIMIT" not in sql
+
 
 # --------------------------------------------------------------------------- #
 # mark_chapter_uploaded
