@@ -22,6 +22,14 @@ Usage:
     uv run ruff check . --no-cache --output-format json \\
       --config 'lint.per-file-ignores = { "__init__.py" = ["F401"] }' \\
       | uv run python scripts/gen_ruff_baseline.py --check
+
+    # CI form (blocking, remove-only — see .github/workflows/lint.yml, issue #416):
+    # exits 0 on no drift or on any shrinkage (fewer codes, dropped path/entry);
+    # exits 1 only when a path or code the committed baseline never covered
+    # shows up. NEVER regenerate the baseline to turn this green.
+    uv run ruff check . --no-cache --output-format json \\
+      --config 'lint.per-file-ignores = { "__init__.py" = ["F401"] }' \\
+      | uv run python scripts/gen_ruff_baseline.py --check-remove-only
 """
 
 from __future__ import annotations
