@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from congress_videos.config.paths import DOWNLOADS_DIR, PROJECT_DATA_DIR, get_video_chapter_dir
-from utils.ai_helpers import generate_json_completion
+from utils.llm_cache import cached_json_completion
 from utils.llm_config import LLM_CHEAP
 from utils.time_utils import parse_timestamp
 
@@ -224,8 +224,48 @@ def _parse_srt_blocks(srt_path: str) -> list[dict]:
                 "start_secs": start_secs,
                 "end_secs": end_secs,
                 "text": " ".join(text_lines),
+                "timestamp_line": timestamp_line,
             }
         )
+
+    return result
+
+
+def _blocks_to_prompt_text(blocks: list[dict], max_chars: int | None = None) -> str:
+    """Build the AI prompt text directly from already-parsed SRT blocks.
+
+    Reproduces ``parse_srt_to_text``'s output format and truncation semantics
+    without re-reading or re-parsing the source file. Each block's raw
+    ``timestamp_line`` (carrying millisecond precision) is comma-stripped the
+    same way ``parse_srt_to_text`` strips it, so the result is byte-identical
+    to ``parse_srt_to_text(srt_path)`` for well-formed, millisecond-precision
+    SRT content — the float round-trip through ``start_secs``/``end_secs``
+    is deliberately avoided to prevent a millisecond carrying into the next
+    second. Pure; no I/O.
+
+    Args:
+        blocks: Parsed SRT blocks from ``_parse_srt_blocks``, each carrying
+            ``timestamp_line`` and ``text``.
+        max_chars: See ``parse_srt_to_text``.
+
+    Returns:
+        Text formatted identically to ``parse_srt_to_text``.
+    """
+    parts = [f"{_TIMESTAMP_STRIP_RE.sub('', b['timestamp_line'])}\n{b['text']}" for b in blocks]
+    result = "\n\n".join(parts)
+
+    if max_chars is not None:
+        return result[:max_chars]
+
+    if len(result) > _PRETRIM_PATHOLOGICAL_THRESHOLD:
+        logger.warning(
+            "_blocks_to_prompt_text: SRT text is %d chars (> %d); capping at "
+            "PRETRIM_MAX_CHARS=%d to avoid context overflow",
+            len(result),
+            _PRETRIM_PATHOLOGICAL_THRESHOLD,
+            PRETRIM_MAX_CHARS,
+        )
+        return result[:PRETRIM_MAX_CHARS]
 
     return result
 
@@ -564,14 +604,14 @@ def select_pretrim_window(
     Returns {"start_seconds": float, "end_seconds": float} or None on failure.
     Caller falls back to the full clip when None is returned.
     """
-    srt_text = parse_srt_to_text(srt_path, max_chars=PRETRIM_MAX_CHARS)
-    if not srt_text:
-        logger.warning("select_pretrim_window: empty SRT text from %s", srt_path)
-        return None
-
     blocks = _parse_srt_blocks(srt_path)
     if not blocks:
         logger.warning("select_pretrim_window: no SRT blocks parsed from %s", srt_path)
+        return None
+
+    srt_text = _blocks_to_prompt_text(blocks, max_chars=PRETRIM_MAX_CHARS)
+    if not srt_text:
+        logger.warning("select_pretrim_window: empty SRT text from %s", srt_path)
         return None
 
     system_prompt = (
@@ -590,7 +630,7 @@ def select_pretrim_window(
         f'Return JSON: {{"start_phrase": "<exact text from transcript>", "end_phrase": "<exact text from transcript>"}}'
     )
 
-    result = generate_json_completion(
+    result = cached_json_completion(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         model=LLM_CHEAP,
