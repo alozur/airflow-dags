@@ -3,6 +3,7 @@
 Reads the SQL file statically and asserts structural properties.
 No DB connection required (mirrors test_migration_035.py / 036.py pattern).
 """
+
 from __future__ import annotations
 
 import re
@@ -11,11 +12,7 @@ from pathlib import Path
 import pytest
 
 MIGRATION_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "congress_videos"
-    / "sql"
-    / "migrations"
-    / "037_upload_path_indexes.sql"
+    Path(__file__).resolve().parents[3] / "congress_videos" / "sql" / "migrations" / "037_upload_path_indexes.sql"
 )
 
 # (index_name, predicate_substring) — predicate matched verbatim against the
@@ -54,7 +51,6 @@ def _executable_sql() -> str:
 
 
 class TestMigration037FileExists:
-
     def test_migration_file_exists(self):
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
@@ -63,7 +59,6 @@ class TestMigration037FileExists:
 
 
 class TestMigration037Indexes:
-
     @pytest.mark.parametrize("index_name, predicate", INDEXES)
     def test_index_name_present(self, index_name, predicate):
         assert index_name in _sql()
@@ -102,7 +97,6 @@ class TestMigration037Indexes:
 
 
 class TestMigration037Hygiene:
-
     def test_no_schema_qualification(self):
         sql = _sql()
         assert not re.search(r"\bpublic\.\w+", sql), "Must not use public.-qualified names"

@@ -12,8 +12,8 @@ import pytest
 # save_srt_file — exception handler (fallback path, lines 95-102)
 # ---------------------------------------------------------------------------
 
-class TestSaveSrtFileExceptionFallback:
 
+class TestSaveSrtFileExceptionFallback:
     def test_fallback_when_srt_dir_creation_fails(self, tmp_path, mocker):
         """Exception in mkdir causes fallback to save next to audio file."""
         audio_file = tmp_path / "test.webm"
@@ -43,15 +43,13 @@ class TestSaveSrtFileExceptionFallback:
 # transcribe_audio_file_with_local_whisper (lines 131-187)
 # ---------------------------------------------------------------------------
 
-class TestTranscribeAudioFileWithLocalWhisper:
 
+class TestTranscribeAudioFileWithLocalWhisper:
     def test_missing_audio_file_returns_error(self, tmp_path):
         """Non-existent audio file returns error dict."""
         from utils.whisper_helpers import transcribe_audio_file_with_local_whisper
 
-        result = transcribe_audio_file_with_local_whisper(
-            str(tmp_path / "nonexistent.webm")
-        )
+        result = transcribe_audio_file_with_local_whisper(str(tmp_path / "nonexistent.webm"))
 
         assert result["success"] is False
         assert "not found" in result["error"].lower()
@@ -80,9 +78,7 @@ class TestTranscribeAudioFileWithLocalWhisper:
         fake_model = MagicMock()
         fake_model.transcribe.return_value = {
             "text": "Hello world",
-            "segments": [
-                {"start": 0.0, "end": 1.0, "text": "Hello world"}
-            ],
+            "segments": [{"start": 0.0, "end": 1.0, "text": "Hello world"}],
         }
         fake_whisper.load_model.return_value = fake_model
 
@@ -143,8 +139,8 @@ class TestTranscribeAudioFileWithLocalWhisper:
 # transcribe_audio_file — fallback paths (lines 225-311)
 # ---------------------------------------------------------------------------
 
-class TestTranscribeAudioFileFallback:
 
+class TestTranscribeAudioFileFallback:
     def test_use_local_whisper_false_uses_api_path(self, tmp_path, mocker):
         """use_local_whisper=False goes straight to Docker API path."""
         audio_file = tmp_path / "test.webm"
@@ -162,9 +158,7 @@ class TestTranscribeAudioFileFallback:
 
         from utils.whisper_helpers import transcribe_audio_file
 
-        result = transcribe_audio_file(
-            str(audio_file), use_local_whisper=False
-        )
+        result = transcribe_audio_file(str(audio_file), use_local_whisper=False)
 
         assert result["success"] is True
         mock_post.assert_called_once()
@@ -242,8 +236,8 @@ class TestTranscribeAudioFileFallback:
 # transcribe_audio_chunks (lines 333-383)
 # ---------------------------------------------------------------------------
 
-class TestTranscribeAudioChunks:
 
+class TestTranscribeAudioChunks:
     def test_empty_chunks_returns_zero(self):
         """Empty audio_chunks list returns zero results."""
         from utils.whisper_helpers import transcribe_audio_chunks
@@ -326,8 +320,8 @@ class TestTranscribeAudioChunks:
 # merge_srt_files — empty/malformed entry paths (lines 433, 437)
 # ---------------------------------------------------------------------------
 
-class TestMergeSrtFilesEdgeCases:
 
+class TestMergeSrtFilesEdgeCases:
     def test_srt_with_empty_entry_skipped(self, tmp_path):
         """Empty entries (blank lines) between valid SRT blocks are skipped."""
         srt1 = tmp_path / "chunk1.srt"
@@ -353,8 +347,8 @@ class TestMergeSrtFilesEdgeCases:
 # check_whisper_api_health (lines 482-505)
 # ---------------------------------------------------------------------------
 
-class TestCheckWhisperApiHealth:
 
+class TestCheckWhisperApiHealth:
     def test_returns_true_when_api_responds_200(self, mocker):
         """HTTP 200 returns True."""
         mock_response = MagicMock()

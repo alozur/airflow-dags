@@ -4,6 +4,7 @@ Covers the DAG-load smoke test and the per-turn orchestration
 (`run_turn_proposals`) with all I/O collaborators mocked — no Airflow
 execution, Docker, DB, or filesystem.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -68,12 +69,24 @@ class TestRunTurnProposals:
         monkeypatch.setattr(mod, "extract_audio_wav", lambda *a, **k: None)
 
         proposals = [
-            TrimProposal(turn_id=7, start_seconds=610.0, end_seconds=620.0,
-                         kind="silence", score=None, source="vad_webrtc",
-                         is_voice_free=True),
-            TrimProposal(turn_id=7, start_seconds=650.0, end_seconds=665.0,
-                         kind="applause", score=0.88, source="yamnet_tflite",
-                         is_voice_free=True),
+            TrimProposal(
+                turn_id=7,
+                start_seconds=610.0,
+                end_seconds=620.0,
+                kind="silence",
+                score=None,
+                source="vad_webrtc",
+                is_voice_free=True,
+            ),
+            TrimProposal(
+                turn_id=7,
+                start_seconds=650.0,
+                end_seconds=665.0,
+                kind="applause",
+                score=0.88,
+                source="yamnet_tflite",
+                is_voice_free=True,
+            ),
         ]
         generate = MagicMock(return_value=proposals)
         monkeypatch.setattr(mod, "generate_trim_proposals", generate)
@@ -88,9 +101,7 @@ class TestRunTurnProposals:
         generate.assert_called_once()
         # Default table name flows through when no qualified name is supplied;
         # _process_task passes pg.get_qualified_table(...) in prod.
-        upsert.assert_called_once_with(
-            cursor, proposals, table="speaker_turn_trim_proposals"
-        )
+        upsert.assert_called_once_with(cursor, proposals, table="speaker_turn_trim_proposals")
 
     def test_wav_is_cleaned_up_after_processing(self, monkeypatch, tmp_path):
         mod = _fresh()
@@ -105,6 +116,7 @@ class TestRunTurnProposals:
 
         # Patch the wav_path computation to return our tmp file
         import os as _os
+
         original_join = _os.path.join
 
         def patched_join(*parts):
@@ -147,8 +159,7 @@ class TestSelectTurns:
         # video_id comes from the JOIN to video_chapters; speaker_turns has no
         # video_id or session_date column, so neither is selected here.
         cur.fetchall.return_value = [
-            {"turn_id": 7, "chapter_id": 3, "video_id": "abc123",
-             "start_seconds": 600.0, "end_seconds": 700.0}
+            {"turn_id": 7, "chapter_id": 3, "video_id": "abc123", "start_seconds": 600.0, "end_seconds": 700.0}
         ]
         conn = MagicMock()
         conn.cursor.return_value.__enter__.return_value = cur
@@ -159,10 +170,15 @@ class TestSelectTurns:
 
         rows = mod.select_turns(limit=1)
 
-        assert rows == [{
-            "turn_id": 7, "chapter_id": 3, "video_id": "abc123",
-            "start_seconds": 600.0, "end_seconds": 700.0,
-        }]
+        assert rows == [
+            {
+                "turn_id": 7,
+                "chapter_id": 3,
+                "video_id": "abc123",
+                "start_seconds": 600.0,
+                "end_seconds": 700.0,
+            }
+        ]
         # Regression: video_id resolved via JOIN, session_date never selected.
         select_sql = cur.execute.call_args_list[0].args[0].lower()
         assert "join" in select_sql and "video_chapters" in select_sql
@@ -195,11 +211,7 @@ class TestProcessTask:
 
         monkeypatch.setattr(mod, "run_turn_proposals", fake_run)
 
-        summary = mod._process_task(
-            **self._ti_with([
-                {"turn_id": 1}, {"turn_id": 2}, {"turn_id": 3}
-            ])
-        )
+        summary = mod._process_task(**self._ti_with([{"turn_id": 1}, {"turn_id": 2}, {"turn_id": 3}]))
 
         assert summary == {"processed": 1, "skipped": 2, "proposals": 3}
         conn.commit.assert_called_once()
@@ -217,10 +229,12 @@ class TestProcessTaskFailFast:
         """check_yamnet_api_health raises SidecarApiError → _process_task raises;
         PostgresConnection is never constructed and run_turn_proposals is never called."""
         from congress_videos.modules.sidecar_api_error import SidecarApiError
+
         mod = _fresh()
 
         monkeypatch.setattr(
-            mod, "check_yamnet_api_health",
+            mod,
+            "check_yamnet_api_health",
             lambda **k: (_ for _ in ()).throw(SidecarApiError("yamnet-api unreachable")),
         )
         pg_ctor_mock = MagicMock()
@@ -238,6 +252,7 @@ class TestProcessTaskFailFast:
         """Probe ok, run_turn_proposals raises SidecarApiError for a turn →
         _process_task raises (not skips); conn.commit is never reached."""
         from congress_videos.modules.sidecar_api_error import SidecarApiError
+
         mod = _fresh()
         conn = MagicMock()
         conn.cursor.return_value.__enter__.return_value = MagicMock()

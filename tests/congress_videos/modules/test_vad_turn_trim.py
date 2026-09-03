@@ -3,6 +3,7 @@
 TDD cycle: RED tests written first; GREEN implementation follows.
 Covers all 9 spec scenarios for the turn VAD trim helper.
 """
+
 from __future__ import annotations
 
 import os
@@ -253,12 +254,8 @@ class TestTrimTurnSilenceWithVad:
         assert "-i" in cmd, "ffmpeg command must contain -i"
         ss_idx = cmd.index("-ss")
         i_idx = cmd.index("-i")
-        assert ss_idx < i_idx, (
-            f"-ss must come before -i in ffmpeg command; cmd={cmd}"
-        )
+        assert ss_idx < i_idx, f"-ss must come before -i in ffmpeg command; cmd={cmd}"
         # -to must also be before -i
         assert "-to" in cmd, "ffmpeg command must contain -to"
         to_idx = cmd.index("-to")
-        assert to_idx < i_idx, (
-            f"-to must come before -i; cmd={cmd}"
-        )
+        assert to_idx < i_idx, f"-to must come before -i; cmd={cmd}"

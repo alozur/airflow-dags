@@ -19,6 +19,7 @@ import pytest
 # Helpers / fixtures
 # --------------------------------------------------------------------------- #
 
+
 def _make_cursor() -> MagicMock:
     """A cursor mock usable as a context manager (`with conn.cursor() as cur`)."""
     cur = MagicMock(name="cursor")
@@ -88,8 +89,8 @@ def _video(video_id: str, n_chapters: int) -> dict:
 # 1. Happy path
 # --------------------------------------------------------------------------- #
 
-class TestHappyPath:
 
+class TestHappyPath:
     def test_single_video_two_chapters_saved(self):
         cur = _make_cursor()
         db, _conn = _make_db(cur)
@@ -132,7 +133,9 @@ class TestHappyPath:
 
         data = {"videos": [_video("vidA", 2)]}
         result = db.save_youtube_chapters_to_db(
-            scored_chapters_data=data, session_number=12, session_date=date(2026, 6, 12),
+            scored_chapters_data=data,
+            session_number=12,
+            session_date=date(2026, 6, 12),
         )
         video_result = result["videos"][0]
 
@@ -151,8 +154,8 @@ class TestHappyPath:
 # 2. Isolation on failure — one bad video must not poison the batch
 # --------------------------------------------------------------------------- #
 
-class TestIsolationOnFailure:
 
+class TestIsolationOnFailure:
     def test_first_video_fails_second_succeeds(self):
         cur = _make_cursor()
 
@@ -164,11 +167,7 @@ class TestIsolationOnFailure:
         def execute_side_effect(sql, params=None):
             if "youtube_source_videos" in sql and "INSERT INTO" in sql:
                 state["current_video"] = params[0]  # params order: (video_id, ...)
-            if (
-                "video_chapters" in sql
-                and "INSERT INTO" in sql
-                and state["current_video"] == "vid1"
-            ):
+            if "video_chapters" in sql and "INSERT INTO" in sql and state["current_video"] == "vid1":
                 raise Exception("simulated chapter insert failure for vid1")
             return None
 
@@ -216,13 +215,21 @@ class TestIsolationOnFailure:
         """Upstream-error skip path (no DB work attempted) also emits []."""
         cur = _make_cursor()
         db, _conn = _make_db(cur)
-        data = {"videos": [{
-            "video_id": "vidBroken", "video_title": "Broken",
-            "error": "upstream scoring failed", "scored_chapters": [],
-        }]}
+        data = {
+            "videos": [
+                {
+                    "video_id": "vidBroken",
+                    "video_title": "Broken",
+                    "error": "upstream scoring failed",
+                    "scored_chapters": [],
+                }
+            ]
+        }
 
         result = db.save_youtube_chapters_to_db(
-            scored_chapters_data=data, session_number=1, session_date=date(2026, 6, 12),
+            scored_chapters_data=data,
+            session_number=1,
+            session_date=date(2026, 6, 12),
         )
 
         assert result["videos"][0]["video_id"] == "vidBroken"
@@ -234,8 +241,8 @@ class TestIsolationOnFailure:
 # 3. Total failure raises (visible task failure)
 # --------------------------------------------------------------------------- #
 
-class TestTotalFailureRaises:
 
+class TestTotalFailureRaises:
     def test_all_videos_fail_raises_runtime_error(self):
         cur = _make_cursor()
 
@@ -264,8 +271,8 @@ class TestTotalFailureRaises:
 # 4. get_processed_video_ids
 # --------------------------------------------------------------------------- #
 
-class TestGetProcessedVideoIds:
 
+class TestGetProcessedVideoIds:
     def test_empty_input_returns_empty_set_no_query(self):
         cur = _make_cursor()
         db, _conn = _make_db(cur)
@@ -293,8 +300,8 @@ class TestGetProcessedVideoIds:
 # 5. Timeline persistence — JSONB column round-trips through the INSERT
 # --------------------------------------------------------------------------- #
 
-class TestTimelinePersistence:
 
+class TestTimelinePersistence:
     @staticmethod
     def _chapter_insert(cur: MagicMock):
         """Return (sql, params) of the video_chapters INSERT call."""

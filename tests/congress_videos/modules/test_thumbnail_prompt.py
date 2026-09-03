@@ -93,9 +93,7 @@ class TestBuildPikzelsPrompt:
 
         for layout in ("A", "B", "C"):
             result = build_pikzels_prompt(_BRIEF, layout)
-            assert "16:9 YouTube thumbnail" in result, (
-                f"Layout {layout} missing '16:9 YouTube thumbnail'"
-            )
+            assert "16:9 YouTube thumbnail" in result, f"Layout {layout} missing '16:9 YouTube thumbnail'"
 
     def test_no_http_in_output_even_when_brief_contains_http(self) -> None:
         """If any brief value contains 'http', the output must NOT contain 'http'."""
@@ -108,9 +106,7 @@ class TestBuildPikzelsPrompt:
             "mood": "tensión http://evil.com",
         }
         result = build_pikzels_prompt(brief_with_http, "A")
-        assert "http" not in result, (
-            "Output must not contain 'http' even when input brief values contain URLs"
-        )
+        assert "http" not in result, "Output must not contain 'http' even when input brief values contain URLs"
 
 
 # ---------------------------------------------------------------------------
@@ -276,9 +272,7 @@ class TestInputImmutability:
         original_copy = dict(brief)
         build_pikzels_prompt(brief, "A")
 
-        assert brief == original_copy, (
-            "build_pikzels_prompt must not mutate the input brief dict"
-        )
+        assert brief == original_copy, "build_pikzels_prompt must not mutate the input brief dict"
 
     def test_text_uppercasing_does_not_mutate_input(self) -> None:
         """Text uppercasing must produce a new string, not mutate brief['text']."""
@@ -293,9 +287,7 @@ class TestInputImmutability:
         }
         build_pikzels_prompt(brief, "B")
 
-        assert brief["text"] == original_text, (
-            "brief['text'] must remain unchanged after build_pikzels_prompt call"
-        )
+        assert brief["text"] == original_text, "brief['text'] must remain unchanged after build_pikzels_prompt call"
 
 
 # ---------------------------------------------------------------------------
@@ -330,9 +322,7 @@ class TestSafeZone:
 
         for layout in ("A", "B", "C"):
             result = build_pikzels_prompt(_BRIEF, layout)
-            assert "bottom-right corner" in result, (
-                f"Layout {layout} missing 'bottom-right corner' safe-zone substring"
-            )
+            assert "bottom-right corner" in result, f"Layout {layout} missing 'bottom-right corner' safe-zone substring"
 
     def test_logo_is_exempt_substring_all_layouts(self) -> None:
         """All layouts must state 'the logo is exempt' in the safe-zone line."""
@@ -340,9 +330,7 @@ class TestSafeZone:
 
         for layout in ("A", "B", "C"):
             result = build_pikzels_prompt(_BRIEF, layout)
-            assert "the logo is exempt" in result, (
-                f"Layout {layout} missing 'the logo is exempt' safe-zone substring"
-            )
+            assert "the logo is exempt" in result, f"Layout {layout} missing 'the logo is exempt' safe-zone substring"
 
     def test_logo_line_and_safe_zone_coexist_layout_c(self) -> None:
         """Layout C with a logo must contain both BOTTOM-RIGHT (logo) and SAFE ZONE lines."""
@@ -350,9 +338,5 @@ class TestSafeZone:
 
         brief = {**_BRIEF, "logo": "TVE"}
         result = build_pikzels_prompt(brief, "C")
-        assert "BOTTOM-RIGHT corner" in result, (
-            "Layout C with logo must still render _LOGO_LINE_C"
-        )
-        assert "SAFE ZONE" in result, (
-            "Layout C with logo must also contain the safe-zone line"
-        )
+        assert "BOTTOM-RIGHT corner" in result, "Layout C with logo must still render _LOGO_LINE_C"
+        assert "SAFE ZONE" in result, "Layout C with logo must also contain the safe-zone line"

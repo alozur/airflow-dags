@@ -1,4 +1,5 @@
 """Tests for SidecarApiError — the single structured failure type for both sidecar wrappers."""
+
 from __future__ import annotations
 
 import pytest

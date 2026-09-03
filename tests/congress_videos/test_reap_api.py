@@ -14,6 +14,7 @@ from congress_videos.reap_api import ReapApiClient, ReapCreditsExhausted
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_response(status_code: int = 200, json_data: dict | None = None, text: str = "") -> MagicMock:
     resp = MagicMock()
     resp.status_code = status_code
@@ -32,8 +33,8 @@ def _make_response(status_code: int = 200, json_data: dict | None = None, text: 
 # 7.1 — get_upload_url
 # ---------------------------------------------------------------------------
 
-class TestGetUploadUrl:
 
+class TestGetUploadUrl:
     def test_successful_response_returns_dict_with_id_and_upload_url(self, mocker):
         response_data = {"id": "upload-123", "uploadUrl": "https://s3.example.com/upload/123"}
         mocker.patch("requests.post", return_value=_make_response(200, response_data))
@@ -70,8 +71,8 @@ class TestGetUploadUrl:
 # 7.2 — _check_credits_error
 # ---------------------------------------------------------------------------
 
-class TestCheckCreditsError:
 
+class TestCheckCreditsError:
     def test_429_with_credit_keyword_raises_reap_credits_exhausted(self):
         resp = _make_response(429, json_data={"message": "credit limit exceeded"}, text="credit limit exceeded")
         client = ReapApiClient(api_key="key")
@@ -120,8 +121,8 @@ class TestCheckCreditsError:
 # 7.3 — get_project_clips pagination
 # ---------------------------------------------------------------------------
 
-class TestGetProjectClipsPagination:
 
+class TestGetProjectClipsPagination:
     def test_single_page_returns_all_clips(self, mocker):
         clips = [{"clipId": "c1"}, {"clipId": "c2"}]
         page_response = _make_response(200, {"clips": clips})
@@ -185,8 +186,8 @@ class TestGetProjectClipsPagination:
 # 7.9 — upload_file
 # ---------------------------------------------------------------------------
 
-class TestUploadFile:
 
+class TestUploadFile:
     def test_upload_file_no_auth_header_sent(self, mocker, tmp_path):
         video = tmp_path / "clip.mp4"
         video.write_bytes(b"\x00" * 16)
@@ -217,8 +218,8 @@ class TestUploadFile:
 # 7.10 — create_clips_job
 # ---------------------------------------------------------------------------
 
-class TestCreateClipsJob:
 
+class TestCreateClipsJob:
     def test_returns_dict_with_project_id(self, mocker):
         mocker.patch(
             "requests.post",
@@ -254,8 +255,8 @@ class TestCreateClipsJob:
 # 7.11 — get_project_status
 # ---------------------------------------------------------------------------
 
-class TestGetProjectStatus:
 
+class TestGetProjectStatus:
     def test_returns_status_field_from_response(self, mocker):
         mocker.patch(
             "requests.get",
@@ -284,8 +285,8 @@ class TestGetProjectStatus:
 # 7.12 — _normalize_clip
 # ---------------------------------------------------------------------------
 
-class TestNormalizeClip:
 
+class TestNormalizeClip:
     def test_aliased_fields_are_mapped_to_canonical_names(self):
         client = ReapApiClient(api_key="key")
         clip = {
@@ -329,8 +330,8 @@ class TestNormalizeClip:
 # 7.13 — download_clip
 # ---------------------------------------------------------------------------
 
-class TestDownloadClip:
 
+class TestDownloadClip:
     def test_download_clip_creates_dest_dirs_and_writes_file(self, mocker, tmp_path):
         dest = str(tmp_path / "subdir" / "clip.mp4")
 
@@ -343,6 +344,7 @@ class TestDownloadClip:
         client.download_clip("https://cdn.reap.video/clip.mp4", dest)
 
         import os
+
         assert os.path.exists(dest)
         with open(dest, "rb") as f:
             assert f.read() == b"chunk1chunk2"
@@ -366,16 +368,12 @@ class TestRequestTimeouts:
     """Every HTTP call must carry an explicit timeout (issue #201)."""
 
     def test_get_upload_url_passes_timeout(self, mocker):
-        mock_post = mocker.patch(
-            "requests.post", return_value=_make_response(200, {"uploadUrl": "u", "uploadId": "i"})
-        )
+        mock_post = mocker.patch("requests.post", return_value=_make_response(200, {"uploadUrl": "u", "uploadId": "i"}))
         ReapApiClient(api_key="k").get_upload_url("f.mp4")
         assert mock_post.call_args.kwargs["timeout"] == reap_api.API_TIMEOUT
 
     def test_get_project_status_passes_timeout(self, mocker):
-        mock_get = mocker.patch(
-            "requests.get", return_value=_make_response(200, {"status": "processing"})
-        )
+        mock_get = mocker.patch("requests.get", return_value=_make_response(200, {"status": "processing"}))
         ReapApiClient(api_key="k").get_project_status("p1")
         assert mock_get.call_args.kwargs["timeout"] == reap_api.API_TIMEOUT
 

@@ -31,7 +31,6 @@ def _load():
 
 
 class TestCheckpoints:
-
     def test_checkpoints_has_exactly_five_keys(self):
         cfg = _load()
         assert set(cfg.CHECKPOINTS.keys()) == {"24h", "48h", "7d", "30d", "90d"}
@@ -62,7 +61,6 @@ class TestCheckpoints:
 
 
 class TestMaxWindowHours:
-
     def test_max_window_hours_equals_2160(self):
         cfg = _load()
         assert cfg.MAX_WINDOW_HOURS == 2160
@@ -73,7 +71,6 @@ class TestMaxWindowHours:
 
 
 class TestMetricFields:
-
     # Every name here must be a metric the YouTube Analytics API accepts for a
     # per-video channel report; impressions/impressionClickThroughRate/
     # watchTimeMinutes are intentionally absent (unsupported by the API).
@@ -113,7 +110,6 @@ class TestMetricFields:
 
 
 class TestNoAirflowImports:
-
     def test_module_imports_without_airflow(self, monkeypatch):
         """analytics_config must not require Airflow to import."""
         # Block airflow from being importable; module must still load

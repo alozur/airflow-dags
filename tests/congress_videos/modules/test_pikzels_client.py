@@ -16,11 +16,12 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_session_response(status_code: int, json_data: dict | None = None, content: bytes = b"") -> MagicMock:
     """Build a fake requests.Response for Session.request mocking."""
     resp = MagicMock()
     resp.status_code = status_code
-    resp.content = content or (b'{}' if json_data is not None else b"")
+    resp.content = content or (b"{}" if json_data is not None else b"")
     resp.json.return_value = json_data or {}
     resp.text = ""
     resp.headers = {}
@@ -30,6 +31,7 @@ def _make_session_response(status_code: int, json_data: dict | None = None, cont
 # ---------------------------------------------------------------------------
 # T-01: Public surface — required symbols present, trimmed symbols absent
 # ---------------------------------------------------------------------------
+
 
 class TestPublicSurface:
     """Module exposes only the required symbols; trimmed methods are gone."""
@@ -48,26 +50,28 @@ class TestPublicSurface:
         """thumbnail_from_image must NOT be present in the module."""
         monkeypatch.setenv("PIKZELS_API_KEY", "pkz_test-not-real")
         import congress_videos.modules.pikzels_client as m
-        assert not hasattr(m, "thumbnail_from_image"), (
-            "thumbnail_from_image must be trimmed from this port"
-        )
+
+        assert not hasattr(m, "thumbnail_from_image"), "thumbnail_from_image must be trimmed from this port"
 
     def test_trimmed_edit_thumbnail_absent(self, monkeypatch):
         """edit_thumbnail must NOT be present."""
         monkeypatch.setenv("PIKZELS_API_KEY", "pkz_test-not-real")
         import congress_videos.modules.pikzels_client as m
+
         assert not hasattr(m, "edit_thumbnail")
 
     def test_trimmed_generate_titles_absent(self, monkeypatch):
         """generate_titles must NOT be present."""
         monkeypatch.setenv("PIKZELS_API_KEY", "pkz_test-not-real")
         import congress_videos.modules.pikzels_client as m
+
         assert not hasattr(m, "generate_titles")
 
 
 # ---------------------------------------------------------------------------
 # T-02: Missing PIKZELS_API_KEY raises EnvironmentError
 # ---------------------------------------------------------------------------
+
 
 class TestMissingApiKey:
     """Construction must raise EnvironmentError when PIKZELS_API_KEY is absent or empty."""
@@ -78,8 +82,10 @@ class TestMissingApiKey:
         # Re-import to bypass any module-level caching
         import importlib
         import sys
+
         sys.modules.pop("congress_videos.modules.pikzels_client", None)
         from congress_videos.modules.pikzels_client import PikzelsClient
+
         with pytest.raises((EnvironmentError, RuntimeError)) as exc_info:
             PikzelsClient()
         assert "PIKZELS_API_KEY" in str(exc_info.value)
@@ -88,8 +94,10 @@ class TestMissingApiKey:
         """Empty PIKZELS_API_KEY → EnvironmentError naming the variable."""
         monkeypatch.setenv("PIKZELS_API_KEY", "")
         import sys
+
         sys.modules.pop("congress_videos.modules.pikzels_client", None)
         from congress_videos.modules.pikzels_client import PikzelsClient
+
         with pytest.raises((EnvironmentError, RuntimeError)) as exc_info:
             PikzelsClient()
         assert "PIKZELS_API_KEY" in str(exc_info.value)
@@ -98,6 +106,7 @@ class TestMissingApiKey:
         """Valid pkz_ key → no exception."""
         monkeypatch.setenv("PIKZELS_API_KEY", "pkz_test-valid-key")
         from congress_videos.modules.pikzels_client import PikzelsClient
+
         client = PikzelsClient()
         assert client is not None
 
@@ -105,6 +114,7 @@ class TestMissingApiKey:
 # ---------------------------------------------------------------------------
 # T-03: _request retries on HTTP 503 (retryable 5xx)
 # ---------------------------------------------------------------------------
+
 
 class TestRequestRetry:
     """_request retries retryable codes and raises immediately on non-retryable."""
@@ -215,6 +225,7 @@ class TestRequestRetry:
 # T-04: thumbnail_from_text builds correct payload
 # ---------------------------------------------------------------------------
 
+
 class TestThumbnailFromText:
     """thumbnail_from_text sends the correct payload and returns the response dict."""
 
@@ -286,6 +297,7 @@ class TestThumbnailFromText:
 # T-05: score_thumbnail sends base64-encoded image, not a URL
 # ---------------------------------------------------------------------------
 
+
 class TestScoreThumbnail:
     """score_thumbnail sends the locally-downloaded image as base64, not a URL."""
 
@@ -339,6 +351,7 @@ class TestScoreThumbnail:
 # ---------------------------------------------------------------------------
 # T-06: download(url, dest_path) — GET, mkdir, write bytes
 # ---------------------------------------------------------------------------
+
 
 class TestDownload:
     """download issues a GET request, creates parent dirs, writes bytes."""
@@ -420,6 +433,7 @@ class TestDownload:
 # T-07: to_base64_data_url(image_bytes, mime_type) returns correct data URL
 # ---------------------------------------------------------------------------
 
+
 class TestToBase64DataUrl:
     """to_base64_data_url encodes bytes as a data URI."""
 
@@ -444,7 +458,7 @@ class TestToBase64DataUrl:
         # Strip "data:image/jpeg;base64,"
         prefix = "data:image/jpeg;base64,"
         assert result.startswith(prefix)
-        b64_part = result[len(prefix):]
+        b64_part = result[len(prefix) :]
         decoded = base64.b64decode(b64_part)
         assert decoded == payload
 
@@ -456,7 +470,7 @@ class TestToBase64DataUrl:
         assert result.startswith("data:image/png;base64,")
         # The base64 part of empty input is the empty string
         prefix = "data:image/png;base64,"
-        b64_part = result[len(prefix):]
+        b64_part = result[len(prefix) :]
         assert base64.b64decode(b64_part) == b""
 
     def test_jpeg_mime_type(self, monkeypatch):
@@ -591,7 +605,7 @@ class TestTriangulateToBase64DataUrl:
         result = to_base64_data_url(payload, "image/png")
 
         prefix = "data:image/png;base64,"
-        b64_part = result[len(prefix):]
+        b64_part = result[len(prefix) :]
         assert base64.b64decode(b64_part) == payload
 
     def test_webp_mime_type(self, monkeypatch):

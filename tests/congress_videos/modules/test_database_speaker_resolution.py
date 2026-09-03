@@ -8,6 +8,7 @@ required 5th positional ``representative_turn_id`` and its UPDATE WHERE
 clause became a subselect joining speaker_turns on speaker_label, instead
 of a bare ``output_path=%s`` filter.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -39,6 +40,7 @@ def _make_conn(rows=None):
 # mark_turn_resolved
 # ---------------------------------------------------------------------------
 
+
 class TestMarkTurnResolved:
     """mark_turn_resolved(output_path, slug, confidence, method, representative_turn_id)
     updates only the sibling rows sharing BOTH output_path and speaker_label (Gate A)."""
@@ -50,9 +52,7 @@ class TestMarkTurnResolved:
         pg_mock, cursor = _make_conn()
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
-            db.mark_turn_resolved(
-                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501
-            )
+            db.mark_turn_resolved("/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501)
 
         query = cursor.execute.call_args[0][0].upper()
         assert "RESOLVED_PARTICIPANT_SLUG" in query
@@ -64,9 +64,7 @@ class TestMarkTurnResolved:
         pg_mock, cursor = _make_conn()
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
-            db.mark_turn_resolved(
-                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501
-            )
+            db.mark_turn_resolved("/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501)
 
         query = cursor.execute.call_args[0][0].upper()
         assert "SPEAKER_RESOLUTION_CONFIDENCE" in query
@@ -78,9 +76,7 @@ class TestMarkTurnResolved:
         pg_mock, cursor = _make_conn()
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
-            db.mark_turn_resolved(
-                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501
-            )
+            db.mark_turn_resolved("/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501)
 
         query = cursor.execute.call_args[0][0].upper()
         assert "SPEAKER_RESOLUTION_METHOD" in query
@@ -92,9 +88,7 @@ class TestMarkTurnResolved:
         pg_mock, cursor = _make_conn()
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
-            db.mark_turn_resolved(
-                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501
-            )
+            db.mark_turn_resolved("/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501)
 
         query = cursor.execute.call_args[0][0].upper()
         assert "OUTPUT_PATH" in query and "WHERE" in query
@@ -108,9 +102,7 @@ class TestMarkTurnResolved:
         pg_mock, cursor = _make_conn()
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
-            db.mark_turn_resolved(
-                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501
-            )
+            db.mark_turn_resolved("/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501)
 
         query = cursor.execute.call_args[0][0].upper().replace("\n", " ")
         assert "TURN_ID IN" in query, f"WHERE must scope via a turn_id subselect; got: {query}"
@@ -144,9 +136,7 @@ class TestMarkTurnResolved:
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
             with pytest.raises(TypeError):
-                db.mark_turn_resolved(
-                    "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context"
-                )
+                db.mark_turn_resolved("/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context")
 
     def test_returns_none(self):
         """mark_turn_resolved must return None (void operation)."""
@@ -155,9 +145,7 @@ class TestMarkTurnResolved:
         pg_mock, cursor = _make_conn()
         with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
             db = CongressionalVideoDB()
-            result = db.mark_turn_resolved(
-                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501
-            )
+            result = db.mark_turn_resolved("/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501)
 
         assert result is None
 
@@ -165,6 +153,7 @@ class TestMarkTurnResolved:
 # ---------------------------------------------------------------------------
 # promote_turn_type_to_qa (issue #282 rule 4)
 # ---------------------------------------------------------------------------
+
 
 class TestPromoteTurnTypeToQa:
     """promote_turn_type_to_qa(output_path) — promote-only monologue->qa write-back."""
@@ -242,6 +231,7 @@ class TestPromoteTurnTypeToQa:
 # mark_chapter_resolved (issue #263)
 # ---------------------------------------------------------------------------
 
+
 class TestMarkChapterResolved:
     """mark_chapter_resolved(chapter_id, slug) never-override write-back."""
 
@@ -308,6 +298,7 @@ class TestMarkChapterResolved:
 # ---------------------------------------------------------------------------
 # select_unprepared_turns — resolution columns
 # ---------------------------------------------------------------------------
+
 
 class TestSelectUnpreparedTurnsResolutionColumns:
     """select_unprepared_turns must expose resolution columns for idempotency check."""

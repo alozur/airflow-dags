@@ -4,19 +4,17 @@ Pure YAML-parse + trigger-shape assertions — no GitHub Actions execution.
 Confirms the workflow is scheduled + manually dispatchable and stays
 informational (does not gate unrelated PRs via a required check on push).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import yaml
 
-WORKFLOW_PATH = (
-    Path(__file__).resolve().parents[2] / ".github" / "workflows" / "pip-audit.yml"
-)
+WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "pip-audit.yml"
 
 
 class TestPipAuditWorkflowExists:
-
     def test_workflow_file_exists(self):
         assert WORKFLOW_PATH.exists(), f"Missing workflow: {WORKFLOW_PATH}"
 
@@ -26,7 +24,6 @@ class TestPipAuditWorkflowExists:
 
 
 class TestPipAuditTriggers:
-
     @staticmethod
     def _triggers() -> dict:
         config = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
@@ -41,7 +38,6 @@ class TestPipAuditTriggers:
 
 
 class TestPipAuditDoesNotTouchLockfile:
-
     def test_no_uv_add_or_uv_lock_write_step(self):
         raw = WORKFLOW_PATH.read_text(encoding="utf-8")
         assert "uv add" not in raw

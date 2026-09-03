@@ -4,6 +4,7 @@ Covers DAG load hygiene, task graph shape, the staleness guard's 180m
 tolerance (DD6), per-candidate error isolation, and the
 MAX_THUMBNAIL_CALLS_PER_RUN cap.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone
@@ -139,16 +140,18 @@ class TestHealThumbnailsCallable:
         """No candidates -> no service build, no DB writes."""
         mock_task_instance.xcom_pull.return_value = []
 
-        with patch(
-            "utils.youtube_helpers.get_authenticated_youtube_service"
-        ) as mock_get_service:
+        with patch("utils.youtube_helpers.get_authenticated_youtube_service") as mock_get_service:
             callable_fn = self._get_callable()
             summary = callable_fn(ti=mock_task_instance)
 
             mock_get_service.assert_not_called()
             assert summary == {
-                "healed": 0, "retried": 0, "abandoned": 0,
-                "skipped": 0, "errors": 0, "calls_made": 0,
+                "healed": 0,
+                "retried": 0,
+                "abandoned": 0,
+                "skipped": 0,
+                "errors": 0,
+                "calls_made": 0,
             }
 
     def test_healed_candidate_calls_mark_republished(self, mock_task_instance):
@@ -163,9 +166,7 @@ class TestHealThumbnailsCallable:
                 "congress_videos.thumbnail_republish_dag.attempt_thumbnail_republish",
                 return_value=("healed", "success"),
             ):
-                with patch(
-                    "congress_videos.thumbnail_republish_dag.CongressionalVideoDB"
-                ) as mock_db_cls:
+                with patch("congress_videos.thumbnail_republish_dag.CongressionalVideoDB") as mock_db_cls:
                     mock_db = MagicMock()
                     mock_db_cls.return_value = mock_db
 
@@ -189,9 +190,7 @@ class TestHealThumbnailsCallable:
                 "congress_videos.thumbnail_republish_dag.attempt_thumbnail_republish",
                 return_value=("retry", "transient error"),
             ):
-                with patch(
-                    "congress_videos.thumbnail_republish_dag.CongressionalVideoDB"
-                ) as mock_db_cls:
+                with patch("congress_videos.thumbnail_republish_dag.CongressionalVideoDB") as mock_db_cls:
                     mock_db = MagicMock()
                     mock_db_cls.return_value = mock_db
 
@@ -215,9 +214,7 @@ class TestHealThumbnailsCallable:
                 "congress_videos.thumbnail_republish_dag.attempt_thumbnail_republish",
                 return_value=("abandon", "Thumbnail file not found: /p/thumbnail.png"),
             ):
-                with patch(
-                    "congress_videos.thumbnail_republish_dag.CongressionalVideoDB"
-                ) as mock_db_cls:
+                with patch("congress_videos.thumbnail_republish_dag.CongressionalVideoDB") as mock_db_cls:
                     mock_db = MagicMock()
                     mock_db_cls.return_value = mock_db
 
@@ -252,9 +249,7 @@ class TestHealThumbnailsCallable:
                 "congress_videos.thumbnail_republish_dag.attempt_thumbnail_republish",
                 side_effect=_flaky_attempt,
             ):
-                with patch(
-                    "congress_videos.thumbnail_republish_dag.CongressionalVideoDB"
-                ) as mock_db_cls:
+                with patch("congress_videos.thumbnail_republish_dag.CongressionalVideoDB") as mock_db_cls:
                     mock_db = MagicMock()
                     mock_db_cls.return_value = mock_db
 
@@ -267,10 +262,7 @@ class TestHealThumbnailsCallable:
 
     def test_cap_leaves_remainder_for_next_run(self, mock_task_instance):
         """With MAX_THUMBNAIL_CALLS_PER_RUN=2, only 2 candidates get attempted."""
-        candidates = [
-            {"output_path": f"/p/v{i}.mp4", "youtube_video_id": f"vid{i}"}
-            for i in range(1, 6)
-        ]
+        candidates = [{"output_path": f"/p/v{i}.mp4", "youtube_video_id": f"vid{i}"} for i in range(1, 6)]
         mock_task_instance.xcom_push(key="candidates", value=candidates)
 
         with patch(
@@ -281,9 +273,7 @@ class TestHealThumbnailsCallable:
                 "congress_videos.thumbnail_republish_dag.attempt_thumbnail_republish",
                 return_value=("healed", "success"),
             ) as mock_attempt:
-                with patch(
-                    "congress_videos.thumbnail_republish_dag.CongressionalVideoDB"
-                ) as mock_db_cls:
+                with patch("congress_videos.thumbnail_republish_dag.CongressionalVideoDB") as mock_db_cls:
                     mock_db = MagicMock()
                     mock_db_cls.return_value = mock_db
 
@@ -307,9 +297,7 @@ class TestHealThumbnailsCallable:
             "utils.youtube_helpers.get_authenticated_youtube_service",
             side_effect=FileNotFoundError("token missing"),
         ):
-            with patch(
-                "congress_videos.thumbnail_republish_dag.attempt_thumbnail_republish"
-            ) as mock_attempt:
+            with patch("congress_videos.thumbnail_republish_dag.attempt_thumbnail_republish") as mock_attempt:
                 callable_fn = self._get_callable()
                 summary = callable_fn(ti=mock_task_instance)
 
@@ -332,9 +320,7 @@ class TestHealThumbnailsCallable:
                 "congress_videos.thumbnail_republish_dag.attempt_thumbnail_republish",
                 return_value=("abandon", detail),
             ):
-                with patch(
-                    "congress_videos.thumbnail_republish_dag.CongressionalVideoDB"
-                ) as mock_db_cls:
+                with patch("congress_videos.thumbnail_republish_dag.CongressionalVideoDB") as mock_db_cls:
                     mock_db = MagicMock()
                     mock_db_cls.return_value = mock_db
 
@@ -356,19 +342,13 @@ class TestRunSelectCandidates:
         from congress_videos.modules.thumbnail_republish import CANDIDATE_LIMIT
         from congress_videos.thumbnail_republish_dag import _run_select_candidates
 
-        with patch(
-            "congress_videos.thumbnail_republish_dag.CongressionalVideoDB"
-        ) as mock_db_cls:
+        with patch("congress_videos.thumbnail_republish_dag.CongressionalVideoDB") as mock_db_cls:
             mock_db = MagicMock()
-            mock_db.select_turns_needing_thumbnail_republish.return_value = [
-                {"output_path": "/p/v1.mp4"}
-            ]
+            mock_db.select_turns_needing_thumbnail_republish.return_value = [{"output_path": "/p/v1.mp4"}]
             mock_db_cls.return_value = mock_db
 
             result = _run_select_candidates(ti=mock_task_instance)
 
-            mock_db.select_turns_needing_thumbnail_republish.assert_called_once_with(
-                limit=CANDIDATE_LIMIT
-            )
+            mock_db.select_turns_needing_thumbnail_republish.assert_called_once_with(limit=CANDIDATE_LIMIT)
             assert result == [{"output_path": "/p/v1.mp4"}]
             assert mock_task_instance.xcom_store["candidates"] == [{"output_path": "/p/v1.mp4"}]

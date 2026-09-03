@@ -18,16 +18,12 @@ MIGRATION_PATH = (
 
 
 class TestMigration017FileExists:
-
     def test_migration_file_exists(self):
         """Migration file must exist at the expected path."""
-        assert MIGRATION_PATH.exists(), (
-            f"Migration file not found: {MIGRATION_PATH}"
-        )
+        assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
 
 class TestMigration017TableStructure:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")

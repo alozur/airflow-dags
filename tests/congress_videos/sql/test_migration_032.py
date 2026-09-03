@@ -3,6 +3,7 @@
 Reads the SQL file statically and asserts structural properties.
 No DB connection required (mirrors test_migration_030.py pattern).
 """
+
 from __future__ import annotations
 
 import re
@@ -11,23 +12,17 @@ from pathlib import Path
 import pytest
 
 MIGRATION_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "congress_videos"
-    / "sql"
-    / "migrations"
-    / "032_add_upload_verification.sql"
+    Path(__file__).resolve().parents[3] / "congress_videos" / "sql" / "migrations" / "032_add_upload_verification.sql"
 )
 
 
 class TestMigration032FileExists:
-
     def test_migration_file_exists(self):
         """Migration file must exist at the expected path."""
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
 
 class TestMigration032VideoChaptersColumn:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -44,7 +39,6 @@ class TestMigration032VideoChaptersColumn:
 
 
 class TestMigration032SpeakerTurnVideosColumns:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -77,7 +71,6 @@ class TestMigration032SpeakerTurnVideosColumns:
 
 
 class TestMigration032UploadableTurnsView:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -128,7 +121,6 @@ class TestMigration032UploadableTurnsView:
 
 
 class TestMigration032Hygiene:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -151,6 +143,4 @@ class TestMigration032Hygiene:
         add_col_count = sql.count("ADD COLUMN")
         add_col_safe_count = sql.count("ADD COLUMN IF NOT EXISTS")
         assert add_col_count > 0, "Must have at least one ADD COLUMN"
-        assert add_col_count == add_col_safe_count, (
-            "All ADD COLUMN statements must use IF NOT EXISTS for idempotency"
-        )
+        assert add_col_count == add_col_safe_count, "All ADD COLUMN statements must use IF NOT EXISTS for idempotency"

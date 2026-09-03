@@ -19,12 +19,12 @@ from utils.time_utils import parse_timestamp
 # trim_chapter_silence_with_vad — synthetic chapters, mocked VAD/ffmpeg/locator
 # ---------------------------------------------------------------------------
 
+
 def _scored(chapters: list[dict], video_id: str = "vid-1") -> dict:
     return {"videos": [{"video_id": video_id, "scored_chapters": chapters}]}
 
 
 class TestTrimChapterSilenceWithVad:
-
     def _patch_pipeline(self, mocker, *, bounds, video="/data/vid-1/source.mp4"):
         """Mock the locator, ffmpeg slice extract, and bounds detection.
 
@@ -90,9 +90,7 @@ class TestTrimChapterSilenceWithVad:
         self._patch_pipeline(mocker, bounds=(98.0, None))
         scored = _scored([{"start_time": "00:00:00,000", "end_time": "00:01:40,000"}])
 
-        result = trim_chapter_silence_with_vad(
-            scored, target_date="2025-10-08", min_chapter_secs=5.0
-        )
+        result = trim_chapter_silence_with_vad(scored, target_date="2025-10-08", min_chapter_secs=5.0)
 
         assert result["videos"][0]["scored_chapters"][0]["start_time"] == "00:00:00,000"
 
@@ -108,7 +106,7 @@ class TestTrimChapterSilenceWithVad:
 
         chapter = result["videos"][0]["scored_chapters"][0]
         assert chapter["start_time"] == "00:10:00,000"  # start unchanged (None)
-        assert chapter["end_time"] == "00:24:00,000"     # 600 + 840 = 1440s
+        assert chapter["end_time"] == "00:24:00,000"  # 600 + 840 = 1440s
 
     def test_voice_to_end_clamp_keeps_end_unchanged(self, mocker):
         """end_offset beyond the slice → min() clamps to the original end → no change."""
@@ -152,7 +150,7 @@ class TestTrimChapterSilenceWithVad:
 
         chapter = result["videos"][0]["scored_chapters"][0]
         assert chapter["start_time"] == "00:10:48,000"  # 648s
-        assert chapter["end_time"] == "00:24:00,000"     # 1440s
+        assert chapter["end_time"] == "00:24:00,000"  # 1440s
 
     def test_end_trim_breaking_min_duration_kept(self, mocker):
         """end trim that would leave < min_chapter_secs → end kept original."""
@@ -160,9 +158,7 @@ class TestTrimChapterSilenceWithVad:
         self._patch_pipeline(mocker, bounds=(None, 3.0))
         scored = _scored([{"start_time": "00:00:00,000", "end_time": "00:01:40,000"}])
 
-        result = trim_chapter_silence_with_vad(
-            scored, target_date="2025-10-08", min_chapter_secs=5.0
-        )
+        result = trim_chapter_silence_with_vad(scored, target_date="2025-10-08", min_chapter_secs=5.0)
 
         assert result["videos"][0]["scored_chapters"][0]["end_time"] == "00:01:40,000"
 
@@ -182,10 +178,12 @@ class TestTrimChapterSilenceWithVad:
     def test_one_vad_pass_per_chapter(self, mocker):
         """detect_speech_bounds is called exactly ONCE per chapter (NFR8)."""
         detect = self._patch_pipeline(mocker, bounds=(48.0, 840.0))
-        scored = _scored([
-            {"start_time": "00:10:00,000", "end_time": "00:25:00,000"},
-            {"start_time": "00:30:00,000", "end_time": "00:45:00,000"},
-        ])
+        scored = _scored(
+            [
+                {"start_time": "00:10:00,000", "end_time": "00:25:00,000"},
+                {"start_time": "00:30:00,000", "end_time": "00:45:00,000"},
+            ]
+        )
 
         trim_chapter_silence_with_vad(scored, target_date="2025-10-08")
 
@@ -198,10 +196,12 @@ class TestTrimChapterSilenceWithVad:
             return_value=None,
         )
         detect = mocker.patch("congress_videos.modules.vad_helpers.detect_speech_bounds")
-        scored = _scored([
-            {"start_time": "00:10:00,000", "end_time": "00:25:00,000"},
-            {"start_time": "00:30:00,000", "end_time": "00:40:00,000"},
-        ])
+        scored = _scored(
+            [
+                {"start_time": "00:10:00,000", "end_time": "00:25:00,000"},
+                {"start_time": "00:30:00,000", "end_time": "00:40:00,000"},
+            ]
+        )
 
         result = trim_chapter_silence_with_vad(scored, target_date="2025-10-08")
 
@@ -241,9 +241,7 @@ class TestTrimChapterSilenceWithVad:
 
         # First run: 48s initial silence, end at 1440s.
         self._patch_pipeline(mocker, bounds=(48.0, 840.0))
-        first = trim_chapter_silence_with_vad(
-            copy.deepcopy(scored), target_date="2025-10-08"
-        )
+        first = trim_chapter_silence_with_vad(copy.deepcopy(scored), target_date="2025-10-08")
         chapter = first["videos"][0]["scored_chapters"][0]
         assert chapter["start_time"] == "00:10:48,000"
         assert chapter["end_time"] == "00:24:00,000"
@@ -259,6 +257,4 @@ class TestTrimChapterSilenceWithVad:
 
     def test_empty_input_returns_unchanged(self, mocker):
         assert trim_chapter_silence_with_vad({}, target_date="2025-10-08") == {}
-        assert trim_chapter_silence_with_vad(
-            {"videos": []}, target_date="2025-10-08"
-        ) == {"videos": []}
+        assert trim_chapter_silence_with_vad({"videos": []}, target_date="2025-10-08") == {"videos": []}

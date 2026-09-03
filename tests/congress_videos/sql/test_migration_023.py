@@ -13,23 +13,17 @@ import re
 from pathlib import Path
 
 MIGRATION_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "congress_videos"
-    / "sql"
-    / "migrations"
-    / "023_create_trim_proposals.sql"
+    Path(__file__).resolve().parents[3] / "congress_videos" / "sql" / "migrations" / "023_create_trim_proposals.sql"
 )
 
 
 class TestMigration023FileExists:
-
     def test_migration_file_exists(self):
         """Migration file must exist at the expected path."""
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
 
 class TestMigration023TableDefinition:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -62,16 +56,12 @@ class TestMigration023TableDefinition:
     def test_tipo_check_uses_in(self):
         """tipo column CHECK must use IN() to restrict values."""
         sql = self._sql()
-        assert re.search(r"tipo\s+IN\s*\(", sql) or re.search(
-            r"CHECK\s*\(.*tipo.*IN\s*\(", sql, re.DOTALL
-        )
+        assert re.search(r"tipo\s+IN\s*\(", sql) or re.search(r"CHECK\s*\(.*tipo.*IN\s*\(", sql, re.DOTALL)
 
     def test_unique_constraint_turn_start_tipo(self):
         """UNIQUE (turn_id, start_seconds, tipo) constraint must be present."""
         sql = self._sql().upper()
-        assert re.search(
-            r"UNIQUE\s*\(\s*TURN_ID\s*,\s*START_SECONDS\s*,\s*TIPO\s*\)", sql
-        )
+        assert re.search(r"UNIQUE\s*\(\s*TURN_ID\s*,\s*START_SECONDS\s*,\s*TIPO\s*\)", sql)
 
     def test_is_voice_free_column_with_default(self):
         """is_voice_free column must be BOOLEAN NOT NULL DEFAULT TRUE."""
@@ -89,14 +79,11 @@ class TestMigration023TableDefinition:
         lines = sql.splitlines()
         for line in lines:
             if "SCORE" in line and "NUMERIC" in line:
-                assert "NOT NULL" not in line, (
-                    "score column must be nullable (silence proposals have no score)"
-                )
+                assert "NOT NULL" not in line, "score column must be nullable (silence proposals have no score)"
                 break
 
 
 class TestMigration023Indexes:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -118,7 +105,6 @@ class TestMigration023Indexes:
 
 
 class TestMigration023DownMigration:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")

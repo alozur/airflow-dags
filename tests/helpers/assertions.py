@@ -9,8 +9,7 @@ def assert_success_result(result: dict[str, Any]) -> None:
     """Assert that a result dict represents a successful operation."""
     assert isinstance(result, dict), f"Expected dict, got {type(result).__name__}: {result!r}"
     assert result.get("success") is True, (
-        f"Expected success=True, got success={result.get('success')!r}. "
-        f"Error: {result.get('error')!r}"
+        f"Expected success=True, got success={result.get('success')!r}. Error: {result.get('error')!r}"
     )
     error = result.get("error")
     assert not error, f"Success result should have no error, got: {error!r}"
@@ -19,9 +18,7 @@ def assert_success_result(result: dict[str, Any]) -> None:
 def assert_error_result(result: dict[str, Any], error_substring: str | None = None) -> None:
     """Assert that a result dict represents a failed operation."""
     assert isinstance(result, dict), f"Expected dict, got {type(result).__name__}: {result!r}"
-    assert result.get("success") is False, (
-        f"Expected success=False, got success={result.get('success')!r}"
-    )
+    assert result.get("success") is False, f"Expected success=False, got success={result.get('success')!r}"
     error = result.get("error")
     assert error, f"Error result must have non-empty 'error', got: {error!r}"
     if error_substring is not None:
@@ -44,6 +41,4 @@ def assert_xcom_pushed(task_instance: Any, key: str, expected_value: Any = ...) 
     )
     if expected_value is not ...:
         actual = task_instance.xcom_store[key]
-        assert actual == expected_value, (
-            f"XCom {key!r}: expected {expected_value!r}, got {actual!r}"
-        )
+        assert actual == expected_value, f"XCom {key!r}: expected {expected_value!r}, got {actual!r}"

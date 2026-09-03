@@ -28,8 +28,8 @@ def mock_db():
 # mark_chapter_uploads
 # --------------------------------------------------------------------------- #
 
-class TestMarkChapterUploads:
 
+class TestMarkChapterUploads:
     def test_no_upload_results_returns_zero(self, mock_db):
         """Missing upload_results returns zero updated chapters."""
         result = mark_chapter_uploads(mock_db, None)
@@ -45,11 +45,7 @@ class TestMarkChapterUploads:
 
     def test_marks_successful_chapter_uploaded(self, mock_db):
         """Successful upload with chapter_id and youtube_video_id marks chapter uploaded."""
-        upload_results = {
-            "upload_details": [
-                {"chapter_id": "ch-01", "youtube_video_id": "yt-xyz", "success": True}
-            ]
-        }
+        upload_results = {"upload_details": [{"chapter_id": "ch-01", "youtube_video_id": "yt-xyz", "success": True}]}
 
         result = mark_chapter_uploads(mock_db, upload_results)
 
@@ -58,11 +54,7 @@ class TestMarkChapterUploads:
 
     def test_failed_upload_records_failure(self, mock_db):
         """Failed upload with a resolvable chapter_id records the failure via the DB."""
-        upload_results = {
-            "upload_details": [
-                {"chapter_id": "ch-02", "youtube_video_id": None, "success": False}
-            ]
-        }
+        upload_results = {"upload_details": [{"chapter_id": "ch-02", "youtube_video_id": None, "success": False}]}
 
         result = mark_chapter_uploads(mock_db, upload_results)
 
@@ -90,17 +82,14 @@ class TestMarkChapterUploads:
     def test_failed_upload_no_chapter_id_is_defensively_skipped(self, mock_db):
         """Failed upload with no resolvable chapter_id never calls the DB and never crashes."""
         upload_results = {
-            "upload_details": [
-                {"chapter_id": None, "youtube_video_id": None, "success": False, "error": "unknown"}
-            ]
+            "upload_details": [{"chapter_id": None, "youtube_video_id": None, "success": False, "error": "unknown"}]
         }
 
         result = mark_chapter_uploads(mock_db, upload_results)
 
         mock_db.record_chapter_upload_failure.assert_not_called()
         assert any(
-            d["status"] == "skipped" and d.get("reason") == "upload_failed_no_chapter_id"
-            for d in result["details"]
+            d["status"] == "skipped" and d.get("reason") == "upload_failed_no_chapter_id" for d in result["details"]
         )
 
     def test_two_failed_uploads_recorded_independently(self, mock_db):
@@ -139,11 +128,7 @@ class TestMarkChapterUploads:
 
     def test_successful_upload_missing_fields_recorded_as_skipped(self, mock_db):
         """Success=True but missing chapter_id or youtube_video_id is recorded as skipped."""
-        upload_results = {
-            "upload_details": [
-                {"chapter_id": None, "youtube_video_id": "yt-zzz", "success": True}
-            ]
-        }
+        upload_results = {"upload_details": [{"chapter_id": None, "youtube_video_id": "yt-zzz", "success": True}]}
 
         result = mark_chapter_uploads(mock_db, upload_results)
 
@@ -155,8 +140,8 @@ class TestMarkChapterUploads:
 # mark_turn_uploads
 # --------------------------------------------------------------------------- #
 
-class TestMarkTurnUploads:
 
+class TestMarkTurnUploads:
     def test_calls_mark_turns_uploaded_per_entry(self, mock_db):
         upload_results = {
             "upload_details": [
@@ -172,9 +157,7 @@ class TestMarkTurnUploads:
         mock_db.mark_turns_uploaded.assert_any_call(turn_id=2, youtube_video_id="xyz")
 
     def test_skips_failed_uploads(self, mock_db):
-        upload_results = {
-            "upload_details": [{"turn_id": 1, "youtube_video_id": None, "success": False}]
-        }
+        upload_results = {"upload_details": [{"turn_id": 1, "youtube_video_id": None, "success": False}]}
 
         mark_turn_uploads(mock_db, upload_results)
 
@@ -189,9 +172,7 @@ class TestMarkTurnUploads:
 
     def test_marked_turn_logs_info(self, mock_db, caplog):
         """A successfully marked turn emits a logger.info, not a bare print()."""
-        upload_results = {
-            "upload_details": [{"turn_id": 7, "youtube_video_id": "yt-info", "success": True}]
-        }
+        upload_results = {"upload_details": [{"turn_id": 7, "youtube_video_id": "yt-info", "success": True}]}
 
         with caplog.at_level(logging.INFO):
             mark_turn_uploads(mock_db, upload_results)
@@ -236,9 +217,7 @@ class TestMarkTurnUploads:
 
     def test_neither_key_is_skipped_without_db_call(self, mock_db):
         upload_results = {
-            "upload_details": [
-                {"turn_id": None, "youtube_video_id": "abc", "video_file": None, "success": True}
-            ]
+            "upload_details": [{"turn_id": None, "youtube_video_id": "abc", "video_file": None, "success": True}]
         }
 
         result = mark_turn_uploads(mock_db, upload_results)
@@ -284,9 +263,7 @@ class TestMarkTurnUploads:
         assert detail["status"] == "updated"
 
     def test_details_carry_matched_by_turn_id_on_primary_path(self, mock_db):
-        upload_results = {
-            "upload_details": [{"turn_id": 1, "youtube_video_id": "abc", "success": True}]
-        }
+        upload_results = {"upload_details": [{"turn_id": 1, "youtube_video_id": "abc", "success": True}]}
 
         result = mark_turn_uploads(mock_db, upload_results)
 
@@ -332,9 +309,7 @@ class TestMarkTurnUploads:
 
     def test_existing_skip_reason_string_unchanged_for_no_usable_key(self, mock_db):
         """The pre-existing skip reason string must stay 'upload_failed_or_missing_fields'."""
-        upload_results = {
-            "upload_details": [{"turn_id": None, "youtube_video_id": None, "success": False}]
-        }
+        upload_results = {"upload_details": [{"turn_id": None, "youtube_video_id": None, "success": False}]}
 
         result = mark_turn_uploads(mock_db, upload_results)
 
@@ -344,6 +319,7 @@ class TestMarkTurnUploads:
 # --------------------------------------------------------------------------- #
 # mark_turn_uploads — thumbnail republish marker branch (issue #331)
 # --------------------------------------------------------------------------- #
+
 
 class TestMarkTurnUploadsThumbnailRepublishMarker:
     """Independent `if`, not `elif` — fires on both dispatch paths. Identity
@@ -363,8 +339,11 @@ class TestMarkTurnUploadsThumbnailRepublishMarker:
 
     def test_marks_on_turn_id_branch_and_forwards_error(self, mock_db):
         detail = {
-            "turn_id": 1, "youtube_video_id": "abc", "success": True,
-            "thumbnail_success": False, "thumbnail_error": "quota exceeded",
+            "turn_id": 1,
+            "youtube_video_id": "abc",
+            "success": True,
+            "thumbnail_success": False,
+            "thumbnail_error": "quota exceeded",
         }
 
         result = mark_turn_uploads(mock_db, {"upload_details": [detail]})
@@ -379,8 +358,11 @@ class TestMarkTurnUploadsThumbnailRepublishMarker:
     def test_marks_on_output_path_fallback_branch(self, mock_db):
         mock_db.mark_turns_uploaded_by_output_path.return_value = 2
         detail = {
-            "turn_id": None, "youtube_video_id": "abc", "video_file": "/path/turn1.mp4",
-            "success": True, "thumbnail_success": False,
+            "turn_id": None,
+            "youtube_video_id": "abc",
+            "video_file": "/path/turn1.mp4",
+            "success": True,
+            "thumbnail_success": False,
         }
 
         result = mark_turn_uploads(mock_db, {"upload_details": [detail]})
@@ -392,7 +374,9 @@ class TestMarkTurnUploadsThumbnailRepublishMarker:
 
     def test_upload_itself_failed_never_marks_even_if_thumbnail_false(self, mock_db):
         detail = {
-            "turn_id": 1, "youtube_video_id": None, "success": False,
+            "turn_id": 1,
+            "youtube_video_id": None,
+            "success": False,
             "thumbnail_success": False,
         }
 
@@ -400,12 +384,12 @@ class TestMarkTurnUploadsThumbnailRepublishMarker:
 
         mock_db.mark_turn_thumbnail_republish_needed.assert_not_called()
 
-    def test_marker_write_failure_never_escapes_and_leaves_failed_updates_untouched(
-        self, mock_db
-    ):
+    def test_marker_write_failure_never_escapes_and_leaves_failed_updates_untouched(self, mock_db):
         mock_db.mark_turn_thumbnail_republish_needed.side_effect = Exception("db down")
         detail = {
-            "turn_id": 1, "youtube_video_id": "abc", "success": True,
+            "turn_id": 1,
+            "youtube_video_id": "abc",
+            "success": True,
             "thumbnail_success": False,
         }
 

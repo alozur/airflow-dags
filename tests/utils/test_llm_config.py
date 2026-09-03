@@ -23,7 +23,6 @@ def _reload_llm_config_after_test():
 
 
 class TestLlmDefault:
-
     def test_fallback_when_env_unset(self, monkeypatch):
         monkeypatch.delenv("LLM_DEFAULT", raising=False)
         monkeypatch.delenv("LLM_CHEAP", raising=False)
@@ -58,7 +57,6 @@ class TestLlmDefault:
 
 
 class TestLlmTimeouts:
-
     def test_fallbacks_when_env_unset(self, monkeypatch):
         monkeypatch.delenv("LLM_TIMEOUT_SECONDS", raising=False)
         monkeypatch.delenv("LLM_CONNECT_TIMEOUT_SECONDS", raising=False)

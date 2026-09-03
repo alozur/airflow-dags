@@ -21,14 +21,12 @@ MIGRATION_PATH = (
 
 
 class TestMigration025FileExists:
-
     def test_migration_file_exists(self):
         """Migration file must exist at the expected path."""
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
 
 class TestMigration025TableDefinition:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -41,16 +39,12 @@ class TestMigration025TableDefinition:
     def test_turn_id_column_integer_not_null(self):
         """turn_id column must be INTEGER NOT NULL."""
         sql = self._sql().upper()
-        assert re.search(r"TURN_ID\s+INTEGER\s+NOT\s+NULL", sql), (
-            "turn_id must be INTEGER NOT NULL"
-        )
+        assert re.search(r"TURN_ID\s+INTEGER\s+NOT\s+NULL", sql), "turn_id must be INTEGER NOT NULL"
 
     def test_output_path_column_text_not_null(self):
         """output_path column must be TEXT NOT NULL."""
         sql = self._sql().upper()
-        assert re.search(r"OUTPUT_PATH\s+TEXT\s+NOT\s+NULL", sql), (
-            "output_path must be TEXT NOT NULL"
-        )
+        assert re.search(r"OUTPUT_PATH\s+TEXT\s+NOT\s+NULL", sql), "output_path must be TEXT NOT NULL"
 
     def test_materialized_at_column_timestamptz_not_null_default_now(self):
         """materialized_at must be TIMESTAMPTZ NOT NULL DEFAULT NOW()."""
@@ -89,7 +83,6 @@ class TestMigration025TableDefinition:
 
 
 class TestMigration025DownBlock:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -105,8 +98,5 @@ class TestMigration025DownBlock:
         # Table name must appear in context of drop
         assert "SPEAKER_TURN_VIDEOS" in sql
         # At minimum a drop comment or statement must exist alongside the table name
-        drop_lines = [
-            line for line in sql.splitlines()
-            if "SPEAKER_TURN_VIDEOS" in line and "DROP" in line
-        ]
+        drop_lines = [line for line in sql.splitlines() if "SPEAKER_TURN_VIDEOS" in line and "DROP" in line]
         assert drop_lines, "DOWN block must drop speaker_turn_videos table"

@@ -30,6 +30,7 @@ from congress_videos.modules.materialization_executor import execute_plan
 _SRC = "/data/downloads/2026-01-01/vid1/source.mp4"
 _OUT = "/data/downloads/2026-01-01/vid1/turns/1/turn_video.mp4"
 
+
 # Common fixture: monkeypatch os.makedirs so tests never try to create /data
 def _patch_makedirs(monkeypatch):
     monkeypatch.setattr(
@@ -56,6 +57,7 @@ def _ki(start, end):
 # ---------------------------------------------------------------------------
 # 2.1 Single keep interval, non-AV1 → stream copy (-c copy)
 # ---------------------------------------------------------------------------
+
 
 class TestSingleIntervalStreamCopy:
     """Single keep interval + h264 source → build_ffmpeg_cut_cmd(reencode=False)."""
@@ -134,6 +136,7 @@ class TestSingleIntervalStreamCopy:
 # ---------------------------------------------------------------------------
 # 2.2 Single keep interval, AV1 source → re-encode (no -c copy)
 # ---------------------------------------------------------------------------
+
 
 class TestSingleIntervalAV1Reencode:
     """AV1 source → force_reencode=True → build_ffmpeg_cut_cmd(reencode=True)."""
@@ -222,6 +225,7 @@ class TestSingleIntervalNonH264Reencode:
 # ---------------------------------------------------------------------------
 # 2.3 Multi-interval (excision): N segments + 1 concat join
 # ---------------------------------------------------------------------------
+
 
 class TestMultiIntervalExcision:
     """Two keep intervals → 2 segment cuts (re-encode) + 1 concat join (-c copy)."""
@@ -323,6 +327,7 @@ class TestMultiIntervalExcision:
 # ---------------------------------------------------------------------------
 # 2.4 Temp files cleaned up on ffmpeg failure
 # ---------------------------------------------------------------------------
+
 
 class TestTempFileCleanup:
     """On ffmpeg failure (non-zero returncode), temp segment files must be deleted."""
@@ -435,6 +440,7 @@ class TestTempFileCleanup:
 # 2.5 Grouped short turns: single continuous interval, non-AV1 → stream copy
 # ---------------------------------------------------------------------------
 
+
 class TestGroupedContinuousInterval:
     """Single continuous interval (grouped short turns, needs_reencode=False) uses stream copy."""
 
@@ -499,6 +505,7 @@ class TestGroupedContinuousInterval:
 # ---------------------------------------------------------------------------
 # 2.5b Timeout computed from total kept duration
 # ---------------------------------------------------------------------------
+
 
 class TestTimeoutComputation:
     """Timeout passed to subprocess.run is derived from total kept duration."""

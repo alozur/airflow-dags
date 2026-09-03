@@ -22,7 +22,6 @@ MIGRATION_PATH = (
 
 
 class TestMigration018:
-
     def test_migration_file_exists(self):
         """Migration file must exist at the expected path."""
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"

@@ -36,8 +36,11 @@ def test_summary_keeps_only_timestamps_and_anonymous_speaker_labels():
 
 
 def test_full_runtime_estimate_scales_the_fixed_calibration_window():
-    assert estimate_full_runtime_seconds(
-        diarization_seconds=150.0,
-        sample_duration_seconds=600.0,
-        full_video_duration_seconds=3_600.0,
-    ) == 900.0
+    assert (
+        estimate_full_runtime_seconds(
+            diarization_seconds=150.0,
+            sample_duration_seconds=600.0,
+            full_video_duration_seconds=3_600.0,
+        )
+        == 900.0
+    )

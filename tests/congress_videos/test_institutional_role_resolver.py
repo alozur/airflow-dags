@@ -13,12 +13,7 @@ from congress_videos.modules.institutional_role_resolver import (
     CatalogValidationError,
 )
 
-CATALOG_PATH = (
-    Path(__file__).parents[2]
-    / "congress_videos"
-    / "catalogs"
-    / "institutional_roles.v1.json"
-)
+CATALOG_PATH = Path(__file__).parents[2] / "congress_videos" / "catalogs" / "institutional_roles.v1.json"
 
 
 def valid_catalog() -> dict:
@@ -60,10 +55,7 @@ def test_bundled_catalog_has_the_v1_contract():
     assert catalog.version == 1
     assert catalog.roles
     assert catalog.assignments
-    assert all(
-        role.scope in {"ministerial", "presidency_mesa", "parliamentary_group"}
-        for role in catalog.roles
-    )
+    assert all(role.scope in {"ministerial", "presidency_mesa", "parliamentary_group"} for role in catalog.roles)
     assert all(assignment.is_valid for assignment in catalog.assignments)
 
 
@@ -199,6 +191,7 @@ def test_loader_requires_complete_nondereferenced_provenance(tmp_path):
 # Point-in-time resolution
 # ---------------------------------------------------------------------------
 
+
 def bundled_catalog():
     return CatalogLoader(CATALOG_PATH).load()
 
@@ -206,9 +199,7 @@ def bundled_catalog():
 def test_resolve_matches_role_key_at_covering_date():
     catalog = bundled_catalog()
 
-    assert catalog.resolve("presidencia del gobierno", date(2024, 1, 1)) == (
-        "pedro-sanchez-perez-castejon"
-    )
+    assert catalog.resolve("presidencia del gobierno", date(2024, 1, 1)) == ("pedro-sanchez-perez-castejon")
 
 
 def test_resolve_matches_alias_case_and_accent_insensitively():
@@ -217,24 +208,16 @@ def test_resolve_matches_alias_case_and_accent_insensitively():
     # Aliases carry the actual office-holder's gender; matching ignores case,
     # accents, and surrounding whitespace.
     assert catalog.resolve("Ministro de Hacienda", date(2026, 6, 1)) == "arcadi-espana-garcia"
-    assert catalog.resolve("  la   MINISTRA  de Defensa ", date(2026, 6, 1)) == (
-        "margarita-robles-fernandez"
-    )
-    assert catalog.resolve("el PORTAVOZ de vox", date(2026, 6, 1)) == (
-        "maria-jose-rodriguez-de-millan-parro"
-    )
+    assert catalog.resolve("  la   MINISTRA  de Defensa ", date(2026, 6, 1)) == ("margarita-robles-fernandez")
+    assert catalog.resolve("el PORTAVOZ de vox", date(2026, 6, 1)) == ("maria-jose-rodriguez-de-millan-parro")
 
 
 def test_resolve_is_point_in_time_for_closed_and_open_assignments():
     catalog = bundled_catalog()
 
     # Batet held the presidency of Congress in the XIV Legislature; Armengol holds it now.
-    assert catalog.resolve("presidenta del congreso", date(2022, 1, 1)) == (
-        "meritxell-batet-lamana"
-    )
-    assert catalog.resolve("presidenta del congreso", date(2026, 1, 1)) == (
-        "francina-armengol-socias"
-    )
+    assert catalog.resolve("presidenta del congreso", date(2022, 1, 1)) == ("meritxell-batet-lamana")
+    assert catalog.resolve("presidenta del congreso", date(2026, 1, 1)) == ("francina-armengol-socias")
 
 
 def test_resolve_returns_none_before_validity_and_for_unknown_roles():

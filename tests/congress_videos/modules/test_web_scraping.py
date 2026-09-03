@@ -14,6 +14,7 @@ from congress_videos.modules.web_scraping import construct_session_link
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _parse_query_params(url: str) -> dict[str, str]:
     """Extract query params from a URL string into a dict."""
     _, _, query = url.partition("?")
@@ -29,8 +30,8 @@ def _parse_query_params(url: str) -> dict[str, str]:
 # construct_session_link — basic structure
 # ---------------------------------------------------------------------------
 
-class TestConstructSessionLinkStructure:
 
+class TestConstructSessionLinkStructure:
     def test_returns_string(self):
         result = construct_session_link("123", target_date="2025-10-08")
         assert isinstance(result, str)
@@ -67,8 +68,8 @@ class TestConstructSessionLinkStructure:
 # construct_session_link — with string date
 # ---------------------------------------------------------------------------
 
-class TestConstructSessionLinkWithStringDate:
 
+class TestConstructSessionLinkWithStringDate:
     def test_string_date_formats_as_dd_mm_yyyy(self):
         result = construct_session_link("1", target_date="2025-10-08")
         params = _parse_query_params(result)
@@ -84,11 +85,14 @@ class TestConstructSessionLinkWithStringDate:
         params = _parse_query_params(result)
         assert params["fechaSesion"] == "31/12/2024"
 
-    @pytest.mark.parametrize("date_str,expected", [
-        ("2025-03-15", "15/03/2025"),
-        ("2024-07-04", "04/07/2024"),
-        ("2026-11-30", "30/11/2026"),
-    ])
+    @pytest.mark.parametrize(
+        "date_str,expected",
+        [
+            ("2025-03-15", "15/03/2025"),
+            ("2024-07-04", "04/07/2024"),
+            ("2026-11-30", "30/11/2026"),
+        ],
+    )
     def test_various_string_dates(self, date_str: str, expected: str):
         result = construct_session_link("5", target_date=date_str)
         params = _parse_query_params(result)
@@ -99,8 +103,8 @@ class TestConstructSessionLinkWithStringDate:
 # construct_session_link — with datetime object
 # ---------------------------------------------------------------------------
 
-class TestConstructSessionLinkWithDatetimeObject:
 
+class TestConstructSessionLinkWithDatetimeObject:
     def test_datetime_object_formats_correctly(self):
         dt = datetime(2025, 10, 8)
         result = construct_session_link("1", target_date=dt)
@@ -124,8 +128,8 @@ class TestConstructSessionLinkWithDatetimeObject:
 # construct_session_link — without date (defaults to yesterday)
 # ---------------------------------------------------------------------------
 
-class TestConstructSessionLinkWithoutDate:
 
+class TestConstructSessionLinkWithoutDate:
     @freeze_time("2025-10-09")
     def test_no_date_defaults_to_yesterday(self):
         result = construct_session_link("1")
@@ -158,8 +162,8 @@ class TestConstructSessionLinkWithoutDate:
 # construct_session_link — cod_sesion variations
 # ---------------------------------------------------------------------------
 
-class TestConstructSessionLinkCodSesion:
 
+class TestConstructSessionLinkCodSesion:
     @pytest.mark.parametrize("cod_sesion", ["1", "42", "100", "PL_115_001"])
     def test_various_session_codes(self, cod_sesion: str):
         result = construct_session_link(cod_sesion, target_date="2025-10-08")

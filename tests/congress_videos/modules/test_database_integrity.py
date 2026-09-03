@@ -14,6 +14,7 @@ import pytest
 # Fixtures (mirrors test_database.py pattern)
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def set_pg_env(monkeypatch):
     """Provide minimal env vars so PostgresConnection.__init__ does not raise."""
@@ -42,6 +43,7 @@ def db(mocker):
     mocker.patch("psycopg2.connect", return_value=mock_conn)
 
     from congress_videos.modules.database import CongressionalVideoDB
+
     instance = CongressionalVideoDB()
     return instance, mock_cursor
 
@@ -50,8 +52,8 @@ def db(mocker):
 # B1: record_source_integrity_failure
 # ---------------------------------------------------------------------------
 
-class TestRecordSourceIntegrityFailure:
 
+class TestRecordSourceIntegrityFailure:
     def test_method_exists_on_db_class(self, db):
         """CongressionalVideoDB must have a record_source_integrity_failure method."""
         instance, _ = db
@@ -100,8 +102,7 @@ class TestRecordSourceIntegrityFailure:
             if "ON CONFLICT" in sql and "DO UPDATE" in sql:
                 update_set_portion = sql.split("DO UPDATE SET")[1] if "DO UPDATE SET" in sql else ""
                 assert "is_processed" not in update_set_portion, (
-                    "ON CONFLICT DO UPDATE must NOT include is_processed "
-                    "(would regress TRUE→FALSE)"
+                    "ON CONFLICT DO UPDATE must NOT include is_processed (would regress TRUE→FALSE)"
                 )
 
     def test_default_retry_hours_is_12(self, db):
@@ -113,9 +114,7 @@ class TestRecordSourceIntegrityFailure:
         sig = inspect.signature(CongressionalVideoDB.record_source_integrity_failure)
         param = sig.parameters.get("retry_after_hours")
         assert param is not None, "must have retry_after_hours parameter"
-        assert param.default == 12, (
-            f"retry_after_hours default must be 12, got {param.default!r}"
-        )
+        assert param.default == 12, f"retry_after_hours default must be 12, got {param.default!r}"
 
     def test_passes_video_id_and_hours_as_params(self, db):
         """Must pass video_id and retry hours as SQL parameters (not f-string injection)."""
@@ -130,17 +129,15 @@ class TestRecordSourceIntegrityFailure:
                 all_params.extend(args[1] if isinstance(args[1], (list, tuple)) else [args[1]])
 
         # video_id must appear in params
-        assert "safe_vid" in all_params, (
-            "video_id must be passed as a SQL parameter"
-        )
+        assert "safe_vid" in all_params, "video_id must be passed as a SQL parameter"
 
 
 # ---------------------------------------------------------------------------
 # B3: get_processed_video_ids retry-window exclusion
 # ---------------------------------------------------------------------------
 
-class TestGetProcessedVideoIdsRetryWindow:
 
+class TestGetProcessedVideoIdsRetryWindow:
     def test_video_in_retry_window_is_in_excluded_set(self, db):
         """Video with download_retry_after > NOW() and is_processed=FALSE must be
         returned in the excluded set (treated as deferred / skip-for-now)."""
@@ -150,9 +147,7 @@ class TestGetProcessedVideoIdsRetryWindow:
 
         result = instance.get_processed_video_ids(["deferred_vid"])
 
-        assert "deferred_vid" in result, (
-            "Video inside retry window must be excluded (returned in processed set)"
-        )
+        assert "deferred_vid" in result, "Video inside retry window must be excluded (returned in processed set)"
 
     def test_retry_window_predicate_in_sql(self, db):
         """The SQL query must include the retry-window predicate."""

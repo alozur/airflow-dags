@@ -99,9 +99,7 @@ def test_cli_rejects_non_candidate_labels_without_writing_output(tmp_path: Path)
     speech = tmp_path / "vad-speech-intervals.json"
     output = tmp_path / "vad-validated-candidates.json"
     candidates.write_text(
-        json.dumps(
-            {"intervals": [{"start_seconds": 1, "end_seconds": 2, "label": "APPLAUSE"}]}
-        ),
+        json.dumps({"intervals": [{"start_seconds": 1, "end_seconds": 2, "label": "APPLAUSE"}]}),
         encoding="utf-8",
     )
     speech.write_text(json.dumps({"intervals": []}), encoding="utf-8")

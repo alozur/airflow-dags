@@ -43,8 +43,8 @@ def srt_file(tmp_path) -> str:
 # _srt_timestamp_to_seconds
 # ---------------------------------------------------------------------------
 
-class TestSrtTimestampToSeconds:
 
+class TestSrtTimestampToSeconds:
     def test_zero(self):
         assert _srt_timestamp_to_seconds("00:00:00,000") == 0.0
 
@@ -62,8 +62,8 @@ class TestSrtTimestampToSeconds:
 # _parse_srt_blocks
 # ---------------------------------------------------------------------------
 
-class TestParseSrtBlocks:
 
+class TestParseSrtBlocks:
     def test_returns_correct_number_of_blocks(self, srt_file):
         blocks = _parse_srt_blocks(srt_file)
         assert len(blocks) == 4
@@ -86,8 +86,8 @@ class TestParseSrtBlocks:
 # _find_phrase_in_blocks
 # ---------------------------------------------------------------------------
 
-class TestFindPhraseInBlocks:
 
+class TestFindPhraseInBlocks:
     @pytest.fixture
     def blocks(self, srt_file):
         return _parse_srt_blocks(srt_file)
@@ -119,8 +119,8 @@ class TestFindPhraseInBlocks:
 # find_srt_for_chapter
 # ---------------------------------------------------------------------------
 
-class TestFindSrtForChapter:
 
+class TestFindSrtForChapter:
     def test_file_at_first_candidate_path_returns_that_path(self, mocker):
         expected_path = "/data/congress_videos/vid123/srt_files/vid123.srt"
 
@@ -177,8 +177,8 @@ class TestFindSrtForChapter:
 # select_pretrim_window
 # ---------------------------------------------------------------------------
 
-class TestSelectPretrimWindow:
 
+class TestSelectPretrimWindow:
     def _patch_ai(self, mocker, start_phrase: str, end_phrase: str):
         return mocker.patch(
             "congress_videos.srt_helpers.generate_json_completion",
@@ -198,8 +198,8 @@ class TestSelectPretrimWindow:
         result = select_pretrim_window(srt_file, target_secs=360)
 
         assert result is not None
-        assert result["start_seconds"] == pytest.approx(1.0)   # start of block 1
-        assert result["end_seconds"] == pytest.approx(85.0)    # end of block 4
+        assert result["start_seconds"] == pytest.approx(1.0)  # start of block 1
+        assert result["end_seconds"] == pytest.approx(85.0)  # end of block 4
 
     def test_seconds_come_from_srt_not_from_ai(self, mocker, srt_file):
         mock_ai = self._patch_ai(
@@ -293,8 +293,8 @@ class TestSelectPretrimWindow:
 # parse_srt_to_text
 # ---------------------------------------------------------------------------
 
-class TestParseSrtToText:
 
+class TestParseSrtToText:
     def test_basic_three_blocks_returns_text_with_timestamps(self, tmp_path):
         from congress_videos.srt_helpers import parse_srt_to_text
 
@@ -337,6 +337,7 @@ class TestParseSrtToText:
 # T2.1 — parse_srt_to_text: remove 8k pre-trim truncation (#3)
 # ---------------------------------------------------------------------------
 
+
 class TestParseSrtToTextBatch2:
     """Tests for T2.1: 8k default truncation replaced by full-text default."""
 
@@ -348,7 +349,7 @@ class TestParseSrtToTextBatch2:
             hrs = i // 3600
             secs = i % 60
             blocks.append(
-                f"{i+1}\n{hrs:02d}:{mins:02d}:{secs:02d},000 --> "
+                f"{i + 1}\n{hrs:02d}:{mins:02d}:{secs:02d},000 --> "
                 f"{hrs:02d}:{mins:02d}:{secs:02d},500\n"
                 f"{'Block content text here for block ' + str(i)}\n"
             )
@@ -377,10 +378,7 @@ class TestParseSrtToTextBatch2:
             mins = (i // 60) % 60
             secs = i % 60
             text = mid_marker if i == 200 else f"Regular text block {i}"
-            blocks.append(
-                f"{i+1}\n00:{mins:02d}:{secs:02d},000 --> 00:{mins:02d}:{secs:02d},500\n"
-                f"{text}\n"
-            )
+            blocks.append(f"{i + 1}\n00:{mins:02d}:{secs:02d},000 --> 00:{mins:02d}:{secs:02d},500\n{text}\n")
         path = tmp_path / "mid.srt"
         path.write_text("\n".join(blocks), encoding="utf-8")
 
@@ -416,6 +414,7 @@ class TestParseSrtToTextBatch2:
         # so we skip in that scenario rather than fail.
         if len(raw_result) <= _PRETRIM_PATHOLOGICAL_THRESHOLD:
             import pytest
+
             pytest.skip("Generated SRT too small to trigger pathological guard in this env")
 
         with caplog.at_level(logging.WARNING, logger="congress_videos.srt_helpers"):
@@ -438,29 +437,28 @@ class TestParseSrtToTextBatch2:
 # _serialize_srt_blocks
 # ---------------------------------------------------------------------------
 
-class TestSerializeSrtBlocks:
 
-    @pytest.mark.parametrize("blocks,expected", [
-        (
-            [],
-            "",
-        ),
-        (
-            [{"start_secs": 0.0, "end_secs": 59.999, "text": "Hola"}],
-            "1\n00:00:00,000 --> 00:00:59,999\nHola\n",
-        ),
-        (
-            [
-                {"start_secs": 3661.5, "end_secs": 3663.0, "text": "Hola"},
-                {"start_secs": 3663.5, "end_secs": 3665.0, "text": "Mundo"},
-            ],
+class TestSerializeSrtBlocks:
+    @pytest.mark.parametrize(
+        "blocks,expected",
+        [
             (
-                "1\n01:01:01,500 --> 01:01:03,000\nHola\n"
-                "\n"
-                "2\n01:01:03,500 --> 01:01:05,000\nMundo\n"
+                [],
+                "",
             ),
-        ),
-    ])
+            (
+                [{"start_secs": 0.0, "end_secs": 59.999, "text": "Hola"}],
+                "1\n00:00:00,000 --> 00:00:59,999\nHola\n",
+            ),
+            (
+                [
+                    {"start_secs": 3661.5, "end_secs": 3663.0, "text": "Hola"},
+                    {"start_secs": 3663.5, "end_secs": 3665.0, "text": "Mundo"},
+                ],
+                ("1\n01:01:01,500 --> 01:01:03,000\nHola\n\n2\n01:01:03,500 --> 01:01:05,000\nMundo\n"),
+            ),
+        ],
+    )
     def test_serialize_produces_valid_srt(self, blocks, expected):
         assert _serialize_srt_blocks(blocks) == expected
 
@@ -494,17 +492,15 @@ class TestSerializeSrtBlocks:
 # find_srt_for_chapter — canonical-first probe (new param)
 # ---------------------------------------------------------------------------
 
-class TestFindSrtForChapterCanonical:
 
+class TestFindSrtForChapterCanonical:
     def test_canonical_dir_set_and_file_exists_returns_canonical(self, tmp_path):
         canonical_dir = tmp_path / "oradores" / "abc"
         canonical_dir.mkdir(parents=True)
         srt = canonical_dir / "subtitles.srt"
         srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nHola\n", encoding="utf-8")
 
-        result = find_srt_for_chapter(
-            "vid123", 1, session_date=None, canonical_dir=str(canonical_dir)
-        )
+        result = find_srt_for_chapter("vid123", 1, session_date=None, canonical_dir=str(canonical_dir))
 
         assert result == str(srt)
 
@@ -523,9 +519,7 @@ class TestFindSrtForChapterCanonical:
         mocker.patch("os.path.isdir", return_value=False)
         mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", "/data/congress_videos")
 
-        result = find_srt_for_chapter(
-            "vid123", 1, session_date="2025-01-01", canonical_dir=str(canonical_dir)
-        )
+        result = find_srt_for_chapter("vid123", 1, session_date="2025-01-01", canonical_dir=str(canonical_dir))
 
         assert result == legacy_path
 
@@ -557,9 +551,9 @@ SAMPLE_SRT_MULTI = (
 
 
 class TestScoreTurnInterest:
-
     def test_happy_path(self):
         """Inject completion_fn returning '7' → expect 7."""
+
         def _fn(**kwargs):
             return {"content": "7", "error": None}
 
@@ -568,6 +562,7 @@ class TestScoreTurnInterest:
 
     def test_prose_response(self):
         """completion returns 'Score: 8/10' → expect 8 (re.search first digit group)."""
+
         def _fn(**kwargs):
             return {"content": "Score: 8/10", "error": None}
 
@@ -576,6 +571,7 @@ class TestScoreTurnInterest:
 
     def test_non_numeric_response(self):
         """completion returns 'abc' → expect None."""
+
         def _fn(**kwargs):
             return {"content": "abc", "error": None}
 
@@ -584,6 +580,7 @@ class TestScoreTurnInterest:
 
     def test_clamp_high(self):
         """completion returns '99' → expect 10 (clamped to INTEREST_SCALE_MAX)."""
+
         def _fn(**kwargs):
             return {"content": "99", "error": None}
 
@@ -592,6 +589,7 @@ class TestScoreTurnInterest:
 
     def test_clamp_low(self):
         """completion returns '-3' → expect 0 (clamped to INTEREST_SCALE_MIN)."""
+
         def _fn(**kwargs):
             return {"content": "-3", "error": None}
 
@@ -624,6 +622,7 @@ class TestScoreTurnInterest:
 
     def test_llm_returns_none_content(self):
         """completion returns {'content': None, 'error': 'timeout'} → expect None."""
+
         def _fn(**kwargs):
             return {"content": None, "error": "timeout"}
 
@@ -632,6 +631,7 @@ class TestScoreTurnInterest:
 
     def test_llm_raises_returns_none(self):
         """completion_fn raises RuntimeError → expect None (never raises)."""
+
         def _fn(**kwargs):
             raise RuntimeError("network error")
 
@@ -686,7 +686,6 @@ class TestScoreTurnInterest:
 
 
 class TestWindowSrtText:
-
     @pytest.fixture
     def srt_file_multi(self, tmp_path) -> str:
         path = tmp_path / "video_merged.srt"
@@ -738,7 +737,6 @@ class TestWindowSrtText:
 
 
 class TestMaterializeTaskScoring:
-
     def test_scorer_failure_does_not_crash_materialize(self, monkeypatch):
         """patch score_turn_interest to raise RuntimeError; _materialize_task returns summary dict
         without re-raising; no UPDATE with interest_score is executed."""
@@ -761,13 +759,17 @@ class TestMaterializeTaskScoring:
         )
         monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: "/data/src.mp4")
 
-        plan_mock = type("Plan", (), {
-            "turn_ids": (7,),
-            "keep_intervals": (type("KI", (), {"start": 600.0, "end": 700.0})(),),
-            "needs_reencode": False,
-            "output_turn_id": 7,
-            "chapter_id": 3,
-        })()
+        plan_mock = type(
+            "Plan",
+            (),
+            {
+                "turn_ids": (7,),
+                "keep_intervals": (type("KI", (), {"start": 600.0, "end": 700.0})(),),
+                "needs_reencode": False,
+                "output_turn_id": 7,
+                "chapter_id": 3,
+            },
+        )()
 
         monkeypatch.setattr(mod, "plan_turn_materialization", lambda turns, trims: [plan_mock])
         monkeypatch.setattr(mod, "execute_plan", lambda *a, **kw: None)
@@ -790,22 +792,32 @@ class TestMaterializeTaskScoring:
         monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
 
         ti = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
-        ti.xcom_pull.return_value = [{
-            "turn_id": 7, "chapter_id": 3, "video_id": "vid1",
-            "start_seconds": 600.0, "end_seconds": 700.0,
-        }]
+        ti.xcom_pull.return_value = [
+            {
+                "turn_id": 7,
+                "chapter_id": 3,
+                "video_id": "vid1",
+                "start_seconds": 600.0,
+                "end_seconds": 700.0,
+            }
+        ]
 
         # Must not raise
-        result = mod._materialize_task(ti=ti, dag_run=__import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(conf={}))
+        result = mod._materialize_task(
+            ti=ti, dag_run=__import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(conf={})
+        )
 
         assert isinstance(result, dict), "must return summary dict even on scorer failure"
-        update_calls = [c for c in execute_calls if "UPDATE" in str(c[0]).upper() and "interest_score" in str(c[0]).lower()]
+        update_calls = [
+            c for c in execute_calls if "UPDATE" in str(c[0]).upper() and "interest_score" in str(c[0]).lower()
+        ]
         assert len(update_calls) == 0, "interest_score UPDATE must not be committed when scorer raises"
 
 
 # ---------------------------------------------------------------------------
 # _window_srt_blocks — overlap filtering + clip-origin re-timing
 # ---------------------------------------------------------------------------
+
 
 class TestWindowSrtBlocks:
     """Pure unit tests for the _window_srt_blocks helper.
@@ -870,10 +882,12 @@ class TestFindSrtVideoIdGuard:
     @pytest.mark.parametrize("bad_id", ["../etc", "a/b", "", "abc 123", "id;rm"])
     def test_unsafe_video_id_returns_none(self, bad_id):
         from congress_videos.srt_helpers import find_srt_for_chapter
+
         assert find_srt_for_chapter(bad_id, 1) is None
 
     def test_safe_video_id_still_probes(self, tmp_path):
         from congress_videos import srt_helpers
+
         srt_dir = tmp_path / "vid_123" / "srt_files"
         srt_dir.mkdir(parents=True)
         srt_file = srt_dir / "vid_123.srt"
@@ -890,6 +904,7 @@ class TestFindSrtVideoIdGuard:
 # chapter_window_blocks (issue #322) — chapter-span filter, NOT re-timed
 # ---------------------------------------------------------------------------
 
+
 class TestChapterWindowBlocks:
     """Filters SRT blocks to a chapter's [start_time, end_time) span,
     absolute timestamps preserved (unlike _window_srt_blocks) — overlap
@@ -904,9 +919,7 @@ class TestChapterWindowBlocks:
         {"start_secs": 3000.0, "end_secs": 3005.0, "text": "after chapter"},
     ]
 
-    @pytest.mark.parametrize(
-        "start_time,end_time", [("00:10:00,000", "00:40:00,000"), (600.0, 2400.0)]
-    )
+    @pytest.mark.parametrize("start_time,end_time", [("00:10:00,000", "00:40:00,000"), (600.0, 2400.0)])
     def test_valid_span_returns_overlapping_blocks_absolute_timestamps(self, start_time, end_time):
         from congress_videos.srt_helpers import chapter_window_blocks
 
@@ -916,9 +929,7 @@ class TestChapterWindowBlocks:
         assert texts == ["chapter opening", "chapter middle", "straddles chapter end"]
         assert result[0]["start_secs"] == pytest.approx(600.0)  # NOT re-timed
 
-    @pytest.mark.parametrize(
-        "start_time,end_time", [("not-a-timestamp", "00:40:00,000"), ("00:10:00,000", None)]
-    )
+    @pytest.mark.parametrize("start_time,end_time", [("not-a-timestamp", "00:40:00,000"), ("00:10:00,000", None)])
     def test_unparseable_span_returns_empty_and_warns(self, start_time, end_time, caplog):
         from congress_videos.srt_helpers import chapter_window_blocks
 
@@ -1013,9 +1024,7 @@ class TestWriteChapterSrtSidecar:
         assert "dentro del capitulo" in first_content
 
         # Different span, outside the first window — proves overwrite, not append.
-        second_result = write_chapter_srt_sidecar(
-            self.VIDEO_ID, self.CHAPTER_ID, "00:01:00,000", "00:01:05,000"
-        )
+        second_result = write_chapter_srt_sidecar(self.VIDEO_ID, self.CHAPTER_ID, "00:01:00,000", "00:01:05,000")
         second_content = (target_dir / "subtitles.srt").read_text(encoding="utf-8")
 
         assert second_result == target_dir / "subtitles.srt"
@@ -1038,9 +1047,7 @@ class TestWriteChapterSrtSidecar:
         # Padded window for a 01:00:00 chapter is [3420s, 3785s] — no fixture
         # block (max 525s) overlaps it.
         with caplog.at_level(logging.WARNING):
-            result = write_chapter_srt_sidecar(
-                self.VIDEO_ID, self.CHAPTER_ID, "01:00:00,000", "01:00:05,000"
-            )
+            result = write_chapter_srt_sidecar(self.VIDEO_ID, self.CHAPTER_ID, "01:00:00,000", "01:00:05,000")
 
         assert result is None
         assert not target_dir.exists()
@@ -1062,9 +1069,7 @@ class TestWriteChapterSrtSidecar:
         assert result is None
         assert not target_dir.exists()
 
-    def test_oserror_during_write_is_swallowed_and_tmp_is_unlinked(
-        self, source_srt, target_dir, mocker, caplog
-    ):
+    def test_oserror_during_write_is_swallowed_and_tmp_is_unlinked(self, source_srt, target_dir, mocker, caplog):
         mocker.patch("os.replace", side_effect=OSError("disk full"))
 
         with caplog.at_level(logging.WARNING):

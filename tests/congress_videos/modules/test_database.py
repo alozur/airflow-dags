@@ -13,6 +13,7 @@ import pytest
 # Fixtures
 # --------------------------------------------------------------------------- #
 
+
 @pytest.fixture(autouse=True)
 def set_pg_env(monkeypatch):
     """Provide minimal env vars so PostgresConnection.__init__ does not raise."""
@@ -41,6 +42,7 @@ def db(mocker):
     mocker.patch("psycopg2.connect", return_value=mock_conn)
 
     from congress_videos.modules.database import CongressionalVideoDB
+
     instance = CongressionalVideoDB()
     return instance, mock_cursor
 
@@ -49,8 +51,8 @@ def db(mocker):
 # save_youtube_chapters_to_db
 # --------------------------------------------------------------------------- #
 
-class TestSaveYoutubeChaptersToDB:
 
+class TestSaveYoutubeChaptersToDB:
     def test_empty_input_returns_zero_counts(self, db):
         """Empty dict input returns all-zero result without touching DB."""
         instance, mock_cursor = db
@@ -97,8 +99,8 @@ class TestSaveYoutubeChaptersToDB:
         # Only chapter INSERTs call fetchone() with RETURNING chapter_id.
         call_count = [0]
         responses = [
-            {"chapter_id": 1},   # chapter 1 INSERT RETURNING
-            {"chapter_id": 2},   # chapter 2 INSERT RETURNING
+            {"chapter_id": 1},  # chapter 1 INSERT RETURNING
+            {"chapter_id": 2},  # chapter 2 INSERT RETURNING
         ]
 
         def _fetchone_side_effect():
@@ -171,8 +173,8 @@ class TestSaveYoutubeChaptersToDB:
 # get_uploadable_chapters
 # --------------------------------------------------------------------------- #
 
-class TestGetUploadableChapters:
 
+class TestGetUploadableChapters:
     def test_returns_chapters_with_default_score(self, db):
         """Default min_relevance_score=4 is passed to query params."""
         instance, mock_cursor = db
@@ -218,8 +220,8 @@ class TestGetUploadableChapters:
 # mark_chapter_uploaded
 # --------------------------------------------------------------------------- #
 
-class TestMarkChapterUploaded:
 
+class TestMarkChapterUploaded:
     def test_executes_update_with_correct_params(self, db):
         """UPDATE sets is_uploaded_to_youtube, youtube_video_id for chapter_id."""
         instance, mock_cursor = db
@@ -246,8 +248,8 @@ class TestMarkChapterUploaded:
 # record_chapter_upload_failure
 # --------------------------------------------------------------------------- #
 
-class TestRecordChapterUploadFailure:
 
+class TestRecordChapterUploadFailure:
     def test_normal_increment_updates_attempts_and_error(self, db):
         """Non-threshold-crossing failure increments upload_attempts, stores error."""
         instance, mock_cursor = db
@@ -314,8 +316,8 @@ class TestRecordChapterUploadFailure:
 # count_chapters_uploaded_today
 # --------------------------------------------------------------------------- #
 
-class TestCountChaptersUploadedToday:
 
+class TestCountChaptersUploadedToday:
     def test_returns_zero_when_no_uploads_today(self, db):
         """Returns 0 when no chapters have youtube_upload_date today."""
         instance, mock_cursor = db
@@ -359,8 +361,8 @@ class TestCountChaptersUploadedToday:
 # count_turns_uploaded_today
 # --------------------------------------------------------------------------- #
 
-class TestCountTurnsUploadedToday:
 
+class TestCountTurnsUploadedToday:
     def test_query_counts_distinct_output_path(self, db):
         """SQL uses COUNT(DISTINCT output_path), not COUNT(*) (issue #244)."""
         instance, mock_cursor = db
@@ -406,8 +408,8 @@ class TestCountTurnsUploadedToday:
 # count_pending_uploadable_chapters
 # --------------------------------------------------------------------------- #
 
-class TestCountPendingUploadableChapters:
 
+class TestCountPendingUploadableChapters:
     def test_returns_count_with_default_min_score(self, db):
         """Returns pending count using default min_relevance_score=2."""
         instance, mock_cursor = db
@@ -443,8 +445,8 @@ class TestCountPendingUploadableChapters:
 # get_chapter_metadata — session_number / session_date via LEFT JOIN (task 4.2)
 # --------------------------------------------------------------------------- #
 
-class TestGetChapterMetadataSessionData:
 
+class TestGetChapterMetadataSessionData:
     def test_sql_contains_left_join_and_session_columns(self, db):
         """The SQL issued by get_chapter_metadata must include LEFT JOIN and session columns."""
         instance, mock_cursor = db
@@ -521,8 +523,8 @@ class TestGetChapterMetadataSessionData:
 # get_processed_video_ids — idempotency pre-download lookup
 # --------------------------------------------------------------------------- #
 
-class TestGetProcessedVideoIds:
 
+class TestGetProcessedVideoIds:
     def test_empty_input_returns_empty_set_without_querying(self, db):
         """Empty input -> empty set and the DB is never touched."""
         instance, mock_cursor = db
@@ -574,15 +576,13 @@ class TestGetProcessedVideoIds:
 # update_thumbnail_youtube_video_id
 # --------------------------------------------------------------------------- #
 
-class TestUpdateThumbnailYoutubeVideoId:
 
+class TestUpdateThumbnailYoutubeVideoId:
     def test_executes_update_with_correct_params(self, db):
         """UPDATE video_thumbnails SET youtube_video_id uses correct param order."""
         instance, mock_cursor = db
 
-        instance.update_thumbnail_youtube_video_id(
-            chapter_id=42, youtube_video_id="abc123"
-        )
+        instance.update_thumbnail_youtube_video_id(chapter_id=42, youtube_video_id="abc123")
 
         mock_cursor.execute.assert_called_once()
         sql, params = mock_cursor.execute.call_args[0]
@@ -595,9 +595,7 @@ class TestUpdateThumbnailYoutubeVideoId:
         """Method has no return value (returns None)."""
         instance, mock_cursor = db
 
-        result = instance.update_thumbnail_youtube_video_id(
-            chapter_id=7, youtube_video_id="xyz789"
-        )
+        result = instance.update_thumbnail_youtube_video_id(chapter_id=7, youtube_video_id="xyz789")
 
         assert result is None
 
@@ -614,6 +612,7 @@ class TestUpdateThumbnailYoutubeVideoId:
 # --------------------------------------------------------------------------- #
 # select_unprepared_turns — window-aggregate columns (issue #151)
 # --------------------------------------------------------------------------- #
+
 
 class TestSelectUnpreparedTurnsQueryShape:
     """Assert that select_unprepared_turns emits SQL with the two new window-aggregate
@@ -634,9 +633,7 @@ class TestSelectUnpreparedTurnsQueryShape:
         assert "MIN(st.start_seconds) OVER" in sql, (
             "select_unprepared_turns must use MIN(st.start_seconds) OVER window aggregate"
         )
-        assert "group_start_seconds" in sql, (
-            "select_unprepared_turns must expose group_start_seconds column alias"
-        )
+        assert "group_start_seconds" in sql, "select_unprepared_turns must expose group_start_seconds column alias"
 
     def test_query_contains_group_end_seconds_window(self, db):
         """SQL must include MAX(st.end_seconds) OVER and alias group_end_seconds."""
@@ -649,17 +646,15 @@ class TestSelectUnpreparedTurnsQueryShape:
         assert "MAX(st.end_seconds) OVER" in sql, (
             "select_unprepared_turns must use MAX(st.end_seconds) OVER window aggregate"
         )
-        assert "group_end_seconds" in sql, (
-            "select_unprepared_turns must expose group_end_seconds column alias"
-        )
+        assert "group_end_seconds" in sql, "select_unprepared_turns must expose group_end_seconds column alias"
 
 
 # --------------------------------------------------------------------------- #
 # select_unprepared_turns — procedural-turn filter (issue #143)
 # --------------------------------------------------------------------------- #
 
-class TestSelectUnpreparedTurnsProceduralGate:
 
+class TestSelectUnpreparedTurnsProceduralGate:
     def test_query_excludes_procedural_turns(self, db):
         """SQL must add NOT st.is_procedural so a flagged turn's own row
         is never selected for representative attribution."""
@@ -669,9 +664,7 @@ class TestSelectUnpreparedTurnsProceduralGate:
         instance.select_unprepared_turns(limit=2)
 
         sql = mock_cursor.execute.call_args[0][0]
-        assert "NOT st.is_procedural" in sql, (
-            f"select_unprepared_turns must exclude is_procedural rows; got: {sql}"
-        )
+        assert "NOT st.is_procedural" in sql, f"select_unprepared_turns must exclude is_procedural rows; got: {sql}"
 
     def test_query_selects_keep_intervals_column(self, db):
         """SQL must select stv.keep_intervals so _write_turn_sidecars can
@@ -682,17 +675,15 @@ class TestSelectUnpreparedTurnsProceduralGate:
         instance.select_unprepared_turns(limit=2)
 
         sql = mock_cursor.execute.call_args[0][0]
-        assert "stv.keep_intervals" in sql, (
-            f"select_unprepared_turns must select stv.keep_intervals; got: {sql}"
-        )
+        assert "stv.keep_intervals" in sql, f"select_unprepared_turns must select stv.keep_intervals; got: {sql}"
 
 
 # --------------------------------------------------------------------------- #
 # select_unprepared_turns — chapter span columns (issue #322)
 # --------------------------------------------------------------------------- #
 
-class TestSelectUnpreparedTurnsChapterSpan:
 
+class TestSelectUnpreparedTurnsChapterSpan:
     def test_query_selects_chapter_start_time_column(self, db):
         """SQL must select vc.start_time so _chapter_span can anchor the
         evidence-gate region's backward clamp to the chapter's own start."""
@@ -702,9 +693,7 @@ class TestSelectUnpreparedTurnsChapterSpan:
         instance.select_unprepared_turns(limit=2)
 
         sql = mock_cursor.execute.call_args[0][0]
-        assert "vc.start_time" in sql, (
-            f"select_unprepared_turns must select vc.start_time; got: {sql}"
-        )
+        assert "vc.start_time" in sql, f"select_unprepared_turns must select vc.start_time; got: {sql}"
 
     def test_query_selects_chapter_end_time_column(self, db):
         """SQL must select vc.end_time so the chapter-wide prompt context
@@ -715,9 +704,7 @@ class TestSelectUnpreparedTurnsChapterSpan:
         instance.select_unprepared_turns(limit=2)
 
         sql = mock_cursor.execute.call_args[0][0]
-        assert "vc.end_time" in sql, (
-            f"select_unprepared_turns must select vc.end_time; got: {sql}"
-        )
+        assert "vc.end_time" in sql, f"select_unprepared_turns must select vc.end_time; got: {sql}"
 
     def test_query_selects_turn_type_column(self, db):
         """SQL must select stv.turn_type so resolve_speaker can gate the
@@ -728,6 +715,4 @@ class TestSelectUnpreparedTurnsChapterSpan:
         instance.select_unprepared_turns(limit=2)
 
         sql = mock_cursor.execute.call_args[0][0]
-        assert "stv.turn_type" in sql, (
-            f"select_unprepared_turns must select stv.turn_type; got: {sql}"
-        )
+        assert "stv.turn_type" in sql, f"select_unprepared_turns must select stv.turn_type; got: {sql}"

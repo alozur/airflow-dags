@@ -3,6 +3,7 @@
 Reads the SQL file statically and asserts structural properties.
 No DB connection required (mirrors test_migration_030.py pattern).
 """
+
 from __future__ import annotations
 
 import re
@@ -11,16 +12,11 @@ from pathlib import Path
 import pytest
 
 MIGRATION_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "congress_videos"
-    / "sql"
-    / "migrations"
-    / "031_add_turns_detected_at.sql"
+    Path(__file__).resolve().parents[3] / "congress_videos" / "sql" / "migrations" / "031_add_turns_detected_at.sql"
 )
 
 
 class TestMigration031:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")

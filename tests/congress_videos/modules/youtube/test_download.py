@@ -32,6 +32,7 @@ def _patch_completion(mocker, raw_content):
         return_value={"data": data, "raw_content": raw_content, "error": error},
     )
 
+
 def _make_video_details(*videos):
     """Build the structure download_video_from_youtube expects."""
     return {"videos": list(videos)}
@@ -45,8 +46,8 @@ def _make_video(video_id="vid001", youtube_url="https://www.youtube.com/watch?v=
 # create_test_video_data
 # ---------------------------------------------------------------------------
 
-class TestCreateTestVideoData:
 
+class TestCreateTestVideoData:
     def test_standard_watch_url_extracts_video_id(self):
         from congress_videos.modules.youtube.download import create_test_video_data
 
@@ -101,18 +102,17 @@ class TestCreateTestVideoData:
 # download_video_from_youtube
 # ---------------------------------------------------------------------------
 
-class TestDownloadVideoFromYoutube:
 
+class TestDownloadVideoFromYoutube:
     def _patch_downloader(self, mocker, return_value):
         return mocker.patch(
-            "congress_videos.modules.youtube.download.download_youtube_video_for_upload",
-            return_value=return_value
+            "congress_videos.modules.youtube.download.download_youtube_video_for_upload", return_value=return_value
         )
 
     def _patch_paths(self, mocker, tmp_path):
         mocker.patch(
             "congress_videos.modules.youtube.download.get_download_video_path",
-            return_value=str(tmp_path / "downloads" / "2025-01-01" / "vid001")
+            return_value=str(tmp_path / "downloads" / "2025-01-01" / "vid001"),
         )
         mocker.patch("congress_videos.modules.youtube.download.ensure_directory_exists")
 
@@ -145,13 +145,16 @@ class TestDownloadVideoFromYoutube:
 
     def test_successful_download_increments_total(self, mocker, tmp_path):
         self._patch_paths(mocker, tmp_path)
-        self._patch_downloader(mocker, {
-            "success": True,
-            "file_path": str(tmp_path / "video.mp4"),
-            "file_size_mb": 500,
-            "duration": 3600,
-            "title": "Test Video"
-        })
+        self._patch_downloader(
+            mocker,
+            {
+                "success": True,
+                "file_path": str(tmp_path / "video.mp4"),
+                "file_size_mb": 500,
+                "duration": 3600,
+                "title": "Test Video",
+            },
+        )
 
         from congress_videos.modules.youtube.download import download_video_from_youtube
 
@@ -163,10 +166,7 @@ class TestDownloadVideoFromYoutube:
 
     def test_failed_download_produces_error_entry(self, mocker, tmp_path):
         self._patch_paths(mocker, tmp_path)
-        self._patch_downloader(mocker, {
-            "success": False,
-            "error": "yt-dlp failed"
-        })
+        self._patch_downloader(mocker, {"success": False, "error": "yt-dlp failed"})
 
         from congress_videos.modules.youtube.download import download_video_from_youtube
 
@@ -180,7 +180,7 @@ class TestDownloadVideoFromYoutube:
         self._patch_paths(mocker, tmp_path)
         mocker.patch(
             "congress_videos.modules.youtube.download.download_youtube_video_for_upload",
-            side_effect=RuntimeError("unexpected crash")
+            side_effect=RuntimeError("unexpected crash"),
         )
 
         from congress_videos.modules.youtube.download import download_video_from_youtube
@@ -192,18 +192,18 @@ class TestDownloadVideoFromYoutube:
         assert "error" in result["videos"][0]
 
     def test_multiple_videos_counted_correctly(self, mocker, tmp_path):
-        mocker.patch(
-            "congress_videos.modules.youtube.download.get_download_video_path",
-            return_value=str(tmp_path)
-        )
+        mocker.patch("congress_videos.modules.youtube.download.get_download_video_path", return_value=str(tmp_path))
         mocker.patch("congress_videos.modules.youtube.download.ensure_directory_exists")
-        self._patch_downloader(mocker, {
-            "success": True,
-            "file_path": str(tmp_path / "video.mp4"),
-            "file_size_mb": 100,
-            "duration": 1800,
-            "title": "Test"
-        })
+        self._patch_downloader(
+            mocker,
+            {
+                "success": True,
+                "file_path": str(tmp_path / "video.mp4"),
+                "file_size_mb": 100,
+                "duration": 1800,
+                "title": "Test",
+            },
+        )
 
         from congress_videos.modules.youtube.download import download_video_from_youtube
 
@@ -220,13 +220,10 @@ class TestDownloadVideoFromYoutube:
 # extract_audio_from_youtube
 # ---------------------------------------------------------------------------
 
-class TestExtractAudioFromYoutube:
 
+class TestExtractAudioFromYoutube:
     def _patch_paths(self, mocker, tmp_path):
-        mocker.patch(
-            "congress_videos.modules.youtube.download.get_download_video_path",
-            return_value=str(tmp_path)
-        )
+        mocker.patch("congress_videos.modules.youtube.download.get_download_video_path", return_value=str(tmp_path))
         mocker.patch("congress_videos.modules.youtube.download.ensure_directory_exists")
 
     def test_empty_video_details_returns_zero_extracted(self):
@@ -262,8 +259,8 @@ class TestExtractAudioFromYoutube:
                 "success": True,
                 "file_path": str(tmp_path / "audio.webm"),
                 "file_size_mb": 50,
-                "duration": 3600
-            }
+                "duration": 3600,
+            },
         )
 
         from congress_videos.modules.youtube.download import extract_audio_from_youtube
@@ -282,12 +279,7 @@ class TestExtractAudioFromYoutube:
         ]
         mocker.patch(
             "congress_videos.modules.youtube.download.download_audio_in_chunks",
-            return_value={
-                "success": True,
-                "total_chunks": 2,
-                "total_duration": 3600,
-                "chunks": chunks
-            }
+            return_value={"success": True, "total_chunks": 2, "total_duration": 3600, "chunks": chunks},
         )
 
         from congress_videos.modules.youtube.download import extract_audio_from_youtube
@@ -302,7 +294,7 @@ class TestExtractAudioFromYoutube:
         self._patch_paths(mocker, tmp_path)
         mocker.patch(
             "congress_videos.modules.youtube.download.download_audio_only",
-            return_value={"success": False, "error": "download failed"}
+            return_value={"success": False, "error": "download failed"},
         )
 
         from congress_videos.modules.youtube.download import extract_audio_from_youtube
@@ -318,24 +310,15 @@ class TestExtractAudioFromYoutube:
 # transcribe_audio_with_whisper
 # ---------------------------------------------------------------------------
 
-class TestTranscribeAudioWithWhisper:
 
+class TestTranscribeAudioWithWhisper:
     def _patch_whisper(self, mocker, health=True, transcribe_result=None, chunks_result=None):
         # These are imported lazily inside transcribe_audio_with_whisper — patch at source
-        mocker.patch(
-            "utils.whisper_helpers.check_whisper_api_health",
-            return_value=health
-        )
+        mocker.patch("utils.whisper_helpers.check_whisper_api_health", return_value=health)
         if transcribe_result is not None:
-            mocker.patch(
-                "utils.whisper_helpers.transcribe_audio_file",
-                return_value=transcribe_result
-            )
+            mocker.patch("utils.whisper_helpers.transcribe_audio_file", return_value=transcribe_result)
         if chunks_result is not None:
-            mocker.patch(
-                "utils.whisper_helpers.transcribe_audio_chunks",
-                return_value=chunks_result
-            )
+            mocker.patch("utils.whisper_helpers.transcribe_audio_chunks", return_value=chunks_result)
 
     def test_empty_input_returns_zero_transcribed(self, mocker):
         self._patch_whisper(mocker, health=True)
@@ -372,17 +355,14 @@ class TestTranscribeAudioWithWhisper:
         self._patch_whisper(
             mocker,
             health=True,
-            transcribe_result={"success": True, "text": "Hola mundo", "duration": 10, "error": None}
+            transcribe_result={"success": True, "text": "Hola mundo", "duration": 10, "error": None},
         )
 
         from congress_videos.modules.youtube.download import transcribe_audio_with_whisper
 
-        extracted = {"videos": [{
-            "video_id": "v1",
-            "chunked": False,
-            "audio_file_path": audio_path,
-            "video_title": "Test"
-        }]}
+        extracted = {
+            "videos": [{"video_id": "v1", "chunked": False, "audio_file_path": audio_path, "video_title": "Test"}]
+        }
         result = transcribe_audio_with_whisper(extracted, "es")
 
         assert result["total_transcribed"] == 1
@@ -405,18 +385,22 @@ class TestTranscribeAudioWithWhisper:
             "chunks": [
                 {"chunk_index": 0, "text": "Primer bloque", "success": True},
                 {"chunk_index": 1, "text": "Segundo bloque", "success": True},
-            ]
+            ],
         }
         self._patch_whisper(mocker, health=True, chunks_result=chunks_result)
 
         from congress_videos.modules.youtube.download import transcribe_audio_with_whisper
 
-        extracted = {"videos": [{
-            "video_id": "v1",
-            "chunked": True,
-            "chunks": [{"chunk_index": 0}, {"chunk_index": 1}],
-            "video_title": "Test"
-        }]}
+        extracted = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "chunked": True,
+                    "chunks": [{"chunk_index": 0}, {"chunk_index": 1}],
+                    "video_title": "Test",
+                }
+            ]
+        }
         result = transcribe_audio_with_whisper(extracted, "es")
 
         assert result["videos"][0]["chunked"] is True
@@ -427,8 +411,8 @@ class TestTranscribeAudioWithWhisper:
 # merge_transcription_srt_files
 # ---------------------------------------------------------------------------
 
-class TestMergeTranscriptionSrtFiles:
 
+class TestMergeTranscriptionSrtFiles:
     def test_empty_transcriptions_returns_zero_merged(self):
         from congress_videos.modules.youtube.download import merge_transcription_srt_files
 
@@ -456,8 +440,7 @@ class TestMergeTranscriptionSrtFiles:
     def test_chunked_video_missing_srt_dir_produces_error(self, mocker, tmp_path):
         # get_download_video_path is imported lazily from congress_videos.config.paths
         mocker.patch(
-            "congress_videos.config.paths.get_download_video_path",
-            return_value=str(tmp_path / "nonexistent_video_dir")
+            "congress_videos.config.paths.get_download_video_path", return_value=str(tmp_path / "nonexistent_video_dir")
         )
 
         from congress_videos.modules.youtube.download import merge_transcription_srt_files
@@ -475,15 +458,12 @@ class TestMergeTranscriptionSrtFiles:
         (srt_dir / "chunk_002.srt").write_text("1\n00:00:05 --> 00:00:10\nMundo\n", encoding="utf-8")
 
         # get_download_video_path is imported lazily from congress_videos.config.paths
-        mocker.patch(
-            "congress_videos.config.paths.get_download_video_path",
-            return_value=str(video_dir)
-        )
+        mocker.patch("congress_videos.config.paths.get_download_video_path", return_value=str(video_dir))
         merged_path = str(srt_dir / "vid001_merged.srt")
         # merge_srt_files is imported lazily from utils.whisper_helpers
         mocker.patch(
             "utils.whisper_helpers.merge_srt_files",
-            return_value={"success": True, "output_path": merged_path, "total_entries": 2}
+            return_value={"success": True, "output_path": merged_path, "total_entries": 2},
         )
 
         from congress_videos.modules.youtube.download import merge_transcription_srt_files
@@ -499,8 +479,8 @@ class TestMergeTranscriptionSrtFiles:
 # split_srt_by_silence
 # ---------------------------------------------------------------------------
 
-class TestSplitSrtBySilence:
 
+class TestSplitSrtBySilence:
     def test_empty_srt_data_returns_zero_videos(self):
         from congress_videos.modules.youtube.download import split_srt_by_silence
 
@@ -536,20 +516,29 @@ class TestSplitSrtBySilence:
         srt_file = tmp_path / "vid001_merged.srt"
         srt_file.write_text(
             "00:00:00 --> 00:01:00\nContenido chunk uno\n\n00:30:00 --> 01:00:00\nContenido chunk dos\n",
-            encoding="utf-8"
+            encoding="utf-8",
         )
 
         chunks = [
-            {"chunk_number": 1, "start_time": "00:00:00", "end_time": "00:30:00",
-             "duration_minutes": 30, "duration_seconds": 1800, "content": "Bloque 1"},
-            {"chunk_number": 2, "start_time": "00:30:00", "end_time": "01:00:00",
-             "duration_minutes": 30, "duration_seconds": 1800, "content": "Bloque 2"},
+            {
+                "chunk_number": 1,
+                "start_time": "00:00:00",
+                "end_time": "00:30:00",
+                "duration_minutes": 30,
+                "duration_seconds": 1800,
+                "content": "Bloque 1",
+            },
+            {
+                "chunk_number": 2,
+                "start_time": "00:30:00",
+                "end_time": "01:00:00",
+                "duration_minutes": 30,
+                "duration_seconds": 1800,
+                "content": "Bloque 2",
+            },
         ]
         # chunk_by_silence is imported lazily inside the function — patch at source module
-        mocker.patch(
-            "utils.ai_chapter_analyzer.chunk_by_silence",
-            return_value=chunks
-        )
+        mocker.patch("utils.ai_chapter_analyzer.chunk_by_silence", return_value=chunks)
 
         from congress_videos.modules.youtube.download import split_srt_by_silence
 
@@ -566,8 +555,14 @@ class TestSplitSrtBySilence:
         srt_file.write_text("00:00:00 --> 00:01:00\nHola\n", encoding="utf-8")
 
         chunks = [
-            {"chunk_number": 1, "start_time": "00:00:00", "end_time": "00:30:00",
-             "duration_minutes": 30, "duration_seconds": 1800, "content": "Bloque 1"},
+            {
+                "chunk_number": 1,
+                "start_time": "00:00:00",
+                "end_time": "00:30:00",
+                "duration_minutes": 30,
+                "duration_seconds": 1800,
+                "content": "Bloque 1",
+            },
         ]
         mocker.patch("utils.ai_chapter_analyzer.chunk_by_silence", return_value=chunks)
 
@@ -580,6 +575,7 @@ class TestSplitSrtBySilence:
         assert "content" not in out_chunk, "inline content must be removed from XCom"
         assert "srt_file_path" in out_chunk
         from pathlib import Path
+
         slice_path = Path(out_chunk["srt_file_path"])
         assert slice_path.exists()
         assert slice_path.read_text(encoding="utf-8") == "Bloque 1"
@@ -591,8 +587,14 @@ class TestSplitSrtBySilence:
 
         # Even with a large slice, only the path travels in XCom.
         chunks = [
-            {"chunk_number": 1, "start_time": "00:00:00", "end_time": "00:30:00",
-             "duration_minutes": 30, "duration_seconds": 1800, "content": "x" * 500_000},
+            {
+                "chunk_number": 1,
+                "start_time": "00:00:00",
+                "end_time": "00:30:00",
+                "duration_minutes": 30,
+                "duration_seconds": 1800,
+                "content": "x" * 500_000,
+            },
         ]
         mocker.patch("utils.ai_chapter_analyzer.chunk_by_silence", return_value=chunks)
 
@@ -614,8 +616,14 @@ class TestSplitSrtBySilence:
         srt_file.write_text("00:00:00 --> 00:01:00\nHola\n", encoding="utf-8")
 
         chunks = [
-            {"chunk_number": 1, "start_time": "00:00:00", "end_time": "00:30:00",
-             "duration_minutes": 30, "duration_seconds": 1800, "content": "Bloque 1"},
+            {
+                "chunk_number": 1,
+                "start_time": "00:00:00",
+                "end_time": "00:30:00",
+                "duration_minutes": 30,
+                "duration_seconds": 1800,
+                "content": "Bloque 1",
+            },
         ]
         spy = mocker.patch.object(_aca, "chunk_by_silence", return_value=chunks)
 
@@ -635,6 +643,7 @@ class TestSplitSrtBySilence:
 # ---------------------------------------------------------------------------
 # _chunk_text shim (#7 back-compat: reads inline content OR srt_file_path)
 # ---------------------------------------------------------------------------
+
 
 class TestChunkText:
     def test_reads_inline_content_legacy(self):
@@ -683,8 +692,8 @@ class TestChunkText:
 # summarize_silence_chunks
 # ---------------------------------------------------------------------------
 
-class TestSummarizeSilenceChunks:
 
+class TestSummarizeSilenceChunks:
     def _make_chunk(self, number=1):
         return {
             "chunk_number": number,
@@ -692,7 +701,7 @@ class TestSummarizeSilenceChunks:
             "end_time": "00:30:00",
             "duration_seconds": 1800,
             "duration_minutes": 30,
-            "content": "Contenido de prueba del chunk"
+            "content": "Contenido de prueba del chunk",
         }
 
     def _make_openai_summary_response(self, mocker, json_content: str):
@@ -732,11 +741,9 @@ class TestSummarizeSilenceChunks:
 
         from congress_videos.modules.youtube.download import summarize_silence_chunks
 
-        data = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "chunks": [self._make_chunk(1), self._make_chunk(2)]
-        }]}
+        data = {
+            "videos": [{"video_id": "v1", "video_title": "Test", "chunks": [self._make_chunk(1), self._make_chunk(2)]}]
+        }
         result = summarize_silence_chunks(data, "2025-01-01")
 
         assert result["total_videos"] == 1
@@ -748,11 +755,7 @@ class TestSummarizeSilenceChunks:
 
         from congress_videos.modules.youtube.download import summarize_silence_chunks
 
-        data = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "chunks": [self._make_chunk(1)]
-        }]}
+        data = {"videos": [{"video_id": "v1", "video_title": "Test", "chunks": [self._make_chunk(1)]}]}
         result = summarize_silence_chunks(data, "2025-01-01")
 
         chunk = result["videos"][0]["summarized_chunks"][0]
@@ -774,11 +777,7 @@ class TestSummarizeSilenceChunks:
 
         from congress_videos.modules.youtube.download import summarize_silence_chunks
 
-        data = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "chunks": [self._make_chunk(1)]
-        }]}
+        data = {"videos": [{"video_id": "v1", "video_title": "Test", "chunks": [self._make_chunk(1)]}]}
         result = summarize_silence_chunks(data, "2025-01-01")
 
         chunk = result["videos"][0]["summarized_chunks"][0]
@@ -791,8 +790,8 @@ class TestSummarizeSilenceChunks:
 # _analyze_single_chunk
 # ---------------------------------------------------------------------------
 
-class TestBuildSrtChunkIndex:
 
+class TestBuildSrtChunkIndex:
     def test_indexes_by_chunk_number(self):
         from congress_videos.modules.youtube.download import _build_srt_chunk_index
 
@@ -846,7 +845,6 @@ class TestBuildSrtChunkIndex:
 
 
 class TestFindSrtChunk:
-
     def test_returns_text_for_indexed_chunk(self):
         from congress_videos.modules.youtube.download import _find_srt_chunk
 
@@ -861,7 +859,6 @@ class TestFindSrtChunk:
 
 
 class TestAnalyzeSingleChunk:
-
     def _summary_chunk(self):
         return {
             "start_time": "00:00:00",
@@ -884,8 +881,12 @@ class TestAnalyzeSingleChunk:
         from congress_videos.modules.youtube.download import _analyze_single_chunk
 
         entry = _analyze_single_chunk(
-            1, self._summary_chunk(), "some srt content", 130,
-            min_chapter_duration=15, max_optimal_duration=120,
+            1,
+            self._summary_chunk(),
+            "some srt content",
+            130,
+            min_chapter_duration=15,
+            max_optimal_duration=120,
         )
 
         assert entry["chunk_number"] == 1
@@ -900,8 +901,12 @@ class TestAnalyzeSingleChunk:
         from congress_videos.modules.youtube.download import _analyze_single_chunk
 
         entry = _analyze_single_chunk(
-            1, self._summary_chunk(), "some srt content", 130,
-            min_chapter_duration=15, max_optimal_duration=120,
+            1,
+            self._summary_chunk(),
+            "some srt content",
+            130,
+            min_chapter_duration=15,
+            max_optimal_duration=120,
         )
 
         assert entry["interesting_chapters"][0]["fallback"] is True
@@ -912,15 +917,19 @@ class TestAnalyzeSingleChunk:
             '{"interesting_chapters": ['
             '{"title": "Bad", "start_time": "00:10:00", "end_time": "00:02:00", '
             '"duration_minutes": 120, "speakers": [], "topics": []}'
-            ']}'
+            "]}"
         )
         _patch_completion(mocker, chapters_json)
 
         from congress_videos.modules.youtube.download import _analyze_single_chunk
 
         entry = _analyze_single_chunk(
-            1, self._summary_chunk(), "some srt content", 130,
-            min_chapter_duration=15, max_optimal_duration=120,
+            1,
+            self._summary_chunk(),
+            "some srt content",
+            130,
+            min_chapter_duration=15,
+            max_optimal_duration=120,
         )
 
         assert entry["interesting_chapters"][0]["fallback"] is True
@@ -935,8 +944,12 @@ class TestAnalyzeSingleChunk:
         from congress_videos.modules.youtube.download import _analyze_single_chunk
 
         entry = _analyze_single_chunk(
-            1, self._summary_chunk(), "some srt content", 130,
-            min_chapter_duration=15, max_optimal_duration=120,
+            1,
+            self._summary_chunk(),
+            "some srt content",
+            130,
+            min_chapter_duration=15,
+            max_optimal_duration=120,
         )
 
         assert entry["interesting_chapters"][0]["fallback"] is True
@@ -945,20 +958,27 @@ class TestAnalyzeSingleChunk:
         """>LARGE_SRT_THRESHOLD → map_reduce_identify_chapters, not a direct call."""
         mocker.patch("openai.OpenAI", return_value=MagicMock())
         mr = mocker.patch(
-            "congress_videos.modules.youtube.map_reduce_chapters."
-            "map_reduce_identify_chapters",
-            return_value=[{
-                "title": "Cap", "start_time": "00:10:00", "end_time": "00:40:00",
-                "duration_minutes": 30,
-            }],
+            "congress_videos.modules.youtube.map_reduce_chapters.map_reduce_identify_chapters",
+            return_value=[
+                {
+                    "title": "Cap",
+                    "start_time": "00:10:00",
+                    "end_time": "00:40:00",
+                    "duration_minutes": 30,
+                }
+            ],
         )
 
         from congress_videos.modules.youtube.download import _analyze_single_chunk
 
         big_content = "00:00:01 " + ("palabra " * 20000)  # >100k chars
         entry = _analyze_single_chunk(
-            1, self._summary_chunk(), big_content, 130,
-            min_chapter_duration=15, max_optimal_duration=120,
+            1,
+            self._summary_chunk(),
+            big_content,
+            130,
+            min_chapter_duration=15,
+            max_optimal_duration=120,
         )
 
         assert mr.called
@@ -969,8 +989,8 @@ class TestAnalyzeSingleChunk:
 # identify_interesting_chapters
 # ---------------------------------------------------------------------------
 
-class TestIdentifyInterestingChapters:
 
+class TestIdentifyInterestingChapters:
     def _make_summarized_chunk(self, number=1, duration_minutes=30):
         return {
             "chunk_number": number,
@@ -980,7 +1000,7 @@ class TestIdentifyInterestingChapters:
             "duration_minutes": duration_minutes,
             "speakers": [{"name": "Diputado López", "role": "Diputado"}],
             "topics": ["Presupuestos"],
-            "summary": "Debate sobre presupuestos generales"
+            "summary": "Debate sobre presupuestos generales",
         }
 
     def _make_srt_chunk(self, number=1, duration_minutes=30):
@@ -989,7 +1009,7 @@ class TestIdentifyInterestingChapters:
             "start_time": "00:00:00",
             "end_time": "00:30:00",
             "duration_minutes": duration_minutes,
-            "content": "00:00:01 Contenido de transcripción de prueba"
+            "content": "00:00:01 Contenido de transcripción de prueba",
         }
 
     def test_empty_chunk_summaries_returns_zero_videos(self, mocker):
@@ -1015,18 +1035,18 @@ class TestIdentifyInterestingChapters:
 
         from congress_videos.modules.youtube.download import identify_interesting_chapters
 
-        chunk_summaries = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "summarized_chunks": [self._make_summarized_chunk(1, duration_minutes=30)]
-        }]}
-        chunked_srt = {"videos": [{
-            "video_id": "v1",
-            "chunks": [self._make_srt_chunk(1, duration_minutes=30)]
-        }]}
+        chunk_summaries = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "video_title": "Test",
+                    "summarized_chunks": [self._make_summarized_chunk(1, duration_minutes=30)],
+                }
+            ]
+        }
+        chunked_srt = {"videos": [{"video_id": "v1", "chunks": [self._make_srt_chunk(1, duration_minutes=30)]}]}
 
-        result = identify_interesting_chapters(chunk_summaries, chunked_srt, "2025-01-01",
-                                               max_optimal_duration=120)
+        result = identify_interesting_chapters(chunk_summaries, chunked_srt, "2025-01-01", max_optimal_duration=120)
 
         assert result["total_videos"] == 1
         chunk = result["videos"][0]["chunks_with_chapters"][0]
@@ -1048,10 +1068,7 @@ class TestIdentifyInterestingChapters:
 
         from congress_videos.modules.youtube.download import identify_interesting_chapters
 
-        chunk_summaries = {"videos": [{
-            "video_id": "v1",
-            "summarized_chunks": [self._make_summarized_chunk(1)]
-        }]}
+        chunk_summaries = {"videos": [{"video_id": "v1", "summarized_chunks": [self._make_summarized_chunk(1)]}]}
 
         result = identify_interesting_chapters(chunk_summaries, {"videos": []}, "2025-01-01")
 
@@ -1064,18 +1081,20 @@ class TestIdentifyInterestingChapters:
         from congress_videos.modules.youtube.download import identify_interesting_chapters
 
         # duration > max_optimal_duration=120 → AI analysis path
-        chunk_summaries = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "summarized_chunks": [self._make_summarized_chunk(1, duration_minutes=130)]
-        }]}
-        chunked_srt = {"videos": [{
-            "video_id": "v1",
-            "chunks": [self._make_srt_chunk(1, duration_minutes=130)]
-        }]}
+        chunk_summaries = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "video_title": "Test",
+                    "summarized_chunks": [self._make_summarized_chunk(1, duration_minutes=130)],
+                }
+            ]
+        }
+        chunked_srt = {"videos": [{"video_id": "v1", "chunks": [self._make_srt_chunk(1, duration_minutes=130)]}]}
 
-        result = identify_interesting_chapters(chunk_summaries, chunked_srt, "2025-01-01",
-                                               min_chapter_duration=15, max_optimal_duration=120)
+        result = identify_interesting_chapters(
+            chunk_summaries, chunked_srt, "2025-01-01", min_chapter_duration=15, max_optimal_duration=120
+        )
 
         assert result["total_videos"] == 1
         chunk = result["videos"][0]["chunks_with_chapters"][0]
@@ -1086,8 +1105,8 @@ class TestIdentifyInterestingChapters:
 # merge_interesting_chapters
 # ---------------------------------------------------------------------------
 
-class TestMergeInterestingChapters:
 
+class TestMergeInterestingChapters:
     def _make_chapter(self, title, start, end, duration):
         return {
             "title": title,
@@ -1096,7 +1115,7 @@ class TestMergeInterestingChapters:
             "end_time": end,
             "duration_minutes": duration,
             "speakers": ["Speaker A"],
-            "topics": ["Topic X"]
+            "topics": ["Topic X"],
         }
 
     def test_empty_identified_chapters_returns_zero_videos(self):
@@ -1129,14 +1148,18 @@ class TestMergeInterestingChapters:
         ch2 = self._make_chapter("Cap 2", "00:30:00", "01:00:00", 30)
         ch3 = self._make_chapter("Cap 3", "01:00:00", "01:30:00", 30)
 
-        identified = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "chunks_with_chapters": [
-                {"chunk_number": 1, "interesting_chapters": [ch1, ch2]},
-                {"chunk_number": 2, "interesting_chapters": [ch3]},
+        identified = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "video_title": "Test",
+                    "chunks_with_chapters": [
+                        {"chunk_number": 1, "interesting_chapters": [ch1, ch2]},
+                        {"chunk_number": 2, "interesting_chapters": [ch3]},
+                    ],
+                }
             ]
-        }]}
+        }
 
         result = merge_interesting_chapters(identified, "2025-01-01")
 
@@ -1150,14 +1173,18 @@ class TestMergeInterestingChapters:
         ch_a = self._make_chapter("Cap A", "01:00:00", "01:30:00", 30)
         ch_b = self._make_chapter("Cap B", "00:00:00", "00:30:00", 30)
 
-        identified = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "chunks_with_chapters": [
-                {"chunk_number": 1, "interesting_chapters": [ch_a]},
-                {"chunk_number": 2, "interesting_chapters": [ch_b]},
+        identified = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "video_title": "Test",
+                    "chunks_with_chapters": [
+                        {"chunk_number": 1, "interesting_chapters": [ch_a]},
+                        {"chunk_number": 2, "interesting_chapters": [ch_b]},
+                    ],
+                }
             ]
-        }]}
+        }
 
         result = merge_interesting_chapters(identified, "2025-01-01")
 
@@ -1170,14 +1197,18 @@ class TestMergeInterestingChapters:
 
         ch = self._make_chapter("Cap 1", "00:00:00", "00:30:00", 30)
 
-        identified = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "chunks_with_chapters": [
-                {"chunk_number": 1, "error": "AI failed", "interesting_chapters": []},
-                {"chunk_number": 2, "interesting_chapters": [ch]},
+        identified = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "video_title": "Test",
+                    "chunks_with_chapters": [
+                        {"chunk_number": 1, "error": "AI failed", "interesting_chapters": []},
+                        {"chunk_number": 2, "interesting_chapters": [ch]},
+                    ],
+                }
             ]
-        }]}
+        }
 
         result = merge_interesting_chapters(identified, "2025-01-01")
 
@@ -1188,13 +1219,17 @@ class TestMergeInterestingChapters:
 
         ch = self._make_chapter("Cap 1", "00:00:00", "00:30:00", 30)
 
-        identified = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "chunks_with_chapters": [
-                {"chunk_number": 5, "interesting_chapters": [ch]},
+        identified = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "video_title": "Test",
+                    "chunks_with_chapters": [
+                        {"chunk_number": 5, "interesting_chapters": [ch]},
+                    ],
+                }
             ]
-        }]}
+        }
 
         result = merge_interesting_chapters(identified, "2025-01-01")
 
@@ -1205,11 +1240,15 @@ class TestMergeInterestingChapters:
 
         ch = self._make_chapter("Cap 1", "00:00:00", "00:30:00", 30)
 
-        identified = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "chunks_with_chapters": [{"chunk_number": 1, "interesting_chapters": [ch]}]
-        }]}
+        identified = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "video_title": "Test",
+                    "chunks_with_chapters": [{"chunk_number": 1, "interesting_chapters": [ch]}],
+                }
+            ]
+        }
 
         result = merge_interesting_chapters(identified, "2025-01-01")
 
@@ -1222,8 +1261,8 @@ class TestMergeInterestingChapters:
 # T1.1 — LARGE_SRT_THRESHOLD constant and no-truncation behaviour
 # ---------------------------------------------------------------------------
 
-class TestLargeSrtThreshold:
 
+class TestLargeSrtThreshold:
     def test_threshold_constant_is_100k(self):
         from congress_videos.modules.youtube.download import LARGE_SRT_THRESHOLD
 
@@ -1231,30 +1270,42 @@ class TestLargeSrtThreshold:
 
     def _make_ai_chunk_inputs(self, srt_content: str, duration_minutes: int = 130):
         """Build chunk_summaries and chunked_srt inputs for AI-path testing."""
-        chunk_summaries = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "summarized_chunks": [{
-                "chunk_number": 1,
-                "start_time": "00:00:00",
-                "end_time": "02:00:00",
-                "duration_minutes": duration_minutes,
-                "duration_seconds": duration_minutes * 60,
-                "speakers": [],
-                "topics": [],
-                "summary": "Long session",
-            }],
-        }]}
-        chunked_srt = {"videos": [{
-            "video_id": "v1",
-            "chunks": [{
-                "chunk_number": 1,
-                "start_time": "00:00:00",
-                "end_time": "02:00:00",
-                "duration_minutes": duration_minutes,
-                "content": srt_content,
-            }],
-        }]}
+        chunk_summaries = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "video_title": "Test",
+                    "summarized_chunks": [
+                        {
+                            "chunk_number": 1,
+                            "start_time": "00:00:00",
+                            "end_time": "02:00:00",
+                            "duration_minutes": duration_minutes,
+                            "duration_seconds": duration_minutes * 60,
+                            "speakers": [],
+                            "topics": [],
+                            "summary": "Long session",
+                        }
+                    ],
+                }
+            ]
+        }
+        chunked_srt = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "chunks": [
+                        {
+                            "chunk_number": 1,
+                            "start_time": "00:00:00",
+                            "end_time": "02:00:00",
+                            "duration_minutes": duration_minutes,
+                            "content": srt_content,
+                        }
+                    ],
+                }
+            ]
+        }
         return chunk_summaries, chunked_srt
 
     def _mock_openai_chapters(self, mocker):
@@ -1274,8 +1325,11 @@ class TestLargeSrtThreshold:
         from congress_videos.modules.youtube.download import identify_interesting_chapters
 
         identify_interesting_chapters(
-            chunk_summaries, chunked_srt, "2025-01-01",
-            min_chapter_duration=15, max_optimal_duration=120,
+            chunk_summaries,
+            chunked_srt,
+            "2025-01-01",
+            min_chapter_duration=15,
+            max_optimal_duration=120,
         )
 
         user_prompt = mock_completion.call_args[1]["user_prompt"]
@@ -1294,26 +1348,32 @@ class TestLargeSrtThreshold:
         chunk_summaries, chunked_srt = self._make_ai_chunk_inputs(srt_content)
 
         mock_map_reduce = mocker.patch(
-            "congress_videos.modules.youtube.map_reduce_chapters."
-            "map_reduce_identify_chapters",
+            "congress_videos.modules.youtube.map_reduce_chapters.map_reduce_identify_chapters",
             return_value=[],
         )
 
         from congress_videos.modules.youtube.download import identify_interesting_chapters
 
         identify_interesting_chapters(
-            chunk_summaries, chunked_srt, "2025-01-01",
-            min_chapter_duration=15, max_optimal_duration=120,
+            chunk_summaries,
+            chunked_srt,
+            "2025-01-01",
+            min_chapter_duration=15,
+            max_optimal_duration=120,
         )
 
         mock_map_reduce.assert_called_once()
-        passed_srt = mock_map_reduce.call_args[0][0] if mock_map_reduce.call_args[0] \
+        passed_srt = (
+            mock_map_reduce.call_args[0][0]
+            if mock_map_reduce.call_args[0]
             else mock_map_reduce.call_args[1]["srt_content"]
+        )
         assert passed_srt == srt_content, "Full oversized SRT must be passed to map-reduce"
 
     def test_no_warning_for_srt_below_threshold(self, mocker, caplog):
         """Spec #1: no threshold WARNING for SRT <= 100k chars."""
         import logging
+
         srt_content = "z" * 50_000
         self._mock_openai_chapters(mocker)
         chunk_summaries, chunked_srt = self._make_ai_chunk_inputs(srt_content)
@@ -1322,13 +1382,15 @@ class TestLargeSrtThreshold:
 
         with caplog.at_level(logging.WARNING):
             identify_interesting_chapters(
-                chunk_summaries, chunked_srt, "2025-01-01",
-                min_chapter_duration=15, max_optimal_duration=120,
+                chunk_summaries,
+                chunked_srt,
+                "2025-01-01",
+                min_chapter_duration=15,
+                max_optimal_duration=120,
             )
 
         threshold_warnings = [
-            r for r in caplog.records
-            if r.levelno == logging.WARNING and "threshold" in r.message.lower()
+            r for r in caplog.records if r.levelno == logging.WARNING and "threshold" in r.message.lower()
         ]
         assert threshold_warnings == [], "No threshold WARNING expected for small SRT"
 
@@ -1337,8 +1399,8 @@ class TestLargeSrtThreshold:
 # T1.2 — Deterministic fallback for empty/invalid LLM chapters
 # ---------------------------------------------------------------------------
 
-class TestFallbackChunkEntry:
 
+class TestFallbackChunkEntry:
     def _base_summary_chunk(self, number=1):
         # duration_minutes=130 forces the AI-analysis path (> max_optimal_duration=120)
         return {
@@ -1358,25 +1420,38 @@ class TestFallbackChunkEntry:
 
         from congress_videos.modules.youtube.download import identify_interesting_chapters
 
-        chunk_summaries = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "summarized_chunks": [self._base_summary_chunk()],
-        }]}
-        chunked_srt = {"videos": [{
-            "video_id": "v1",
-            "chunks": [{
-                "chunk_number": 1,
-                "start_time": "00:10:00",
-                "end_time": "02:30:00",
-                "duration_minutes": 130,
-                "content": "SRT content",
-            }],
-        }]}
+        chunk_summaries = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "video_title": "Test",
+                    "summarized_chunks": [self._base_summary_chunk()],
+                }
+            ]
+        }
+        chunked_srt = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "chunks": [
+                        {
+                            "chunk_number": 1,
+                            "start_time": "00:10:00",
+                            "end_time": "02:30:00",
+                            "duration_minutes": 130,
+                            "content": "SRT content",
+                        }
+                    ],
+                }
+            ]
+        }
 
         result = identify_interesting_chapters(
-            chunk_summaries, chunked_srt, "2025-01-01",
-            min_chapter_duration=15, max_optimal_duration=120,
+            chunk_summaries,
+            chunked_srt,
+            "2025-01-01",
+            min_chapter_duration=15,
+            max_optimal_duration=120,
         )
 
         chunk = result["videos"][0]["chunks_with_chapters"][0]
@@ -1393,25 +1468,38 @@ class TestFallbackChunkEntry:
 
         from congress_videos.modules.youtube.download import identify_interesting_chapters
 
-        chunk_summaries = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "summarized_chunks": [self._base_summary_chunk()],
-        }]}
-        chunked_srt = {"videos": [{
-            "video_id": "v1",
-            "chunks": [{
-                "chunk_number": 1,
-                "start_time": "00:10:00",
-                "end_time": "02:30:00",
-                "duration_minutes": 130,
-                "content": "SRT content",
-            }],
-        }]}
+        chunk_summaries = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "video_title": "Test",
+                    "summarized_chunks": [self._base_summary_chunk()],
+                }
+            ]
+        }
+        chunked_srt = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "chunks": [
+                        {
+                            "chunk_number": 1,
+                            "start_time": "00:10:00",
+                            "end_time": "02:30:00",
+                            "duration_minutes": 130,
+                            "content": "SRT content",
+                        }
+                    ],
+                }
+            ]
+        }
 
         result = identify_interesting_chapters(
-            chunk_summaries, chunked_srt, "2025-01-01",
-            min_chapter_duration=15, max_optimal_duration=120,
+            chunk_summaries,
+            chunked_srt,
+            "2025-01-01",
+            min_chapter_duration=15,
+            max_optimal_duration=120,
         )
 
         chunk = result["videos"][0]["chunks_with_chapters"][0]
@@ -1432,6 +1520,7 @@ class TestFallbackChunkEntry:
 
         ch = entry["interesting_chapters"][0]
         from utils.time_utils import parse_timestamp
+
         assert parse_timestamp(ch["end_time"]) > parse_timestamp(ch["start_time"])
 
     def test_missing_end_time_raises_value_error(self):
@@ -1446,8 +1535,8 @@ class TestFallbackChunkEntry:
 # T1.3 — _validate_chapter_ranges
 # ---------------------------------------------------------------------------
 
-class TestValidateChapterRanges:
 
+class TestValidateChapterRanges:
     def _make_ch(self, start, end, title="Chapter"):
         return {"title": title, "start_time": start, "end_time": end, "duration_minutes": 30}
 
@@ -1501,12 +1590,15 @@ class TestValidateChapterRanges:
         assert "AlsoGood" in titles
         assert "Bad" not in titles
 
-    @pytest.mark.parametrize("start,end,expected_count", [
-        ("01:30:00", "01:00:00", 0),          # start > end
-        ("00:00:00", "00:00:01", 1),           # valid
-        ("00:05:00", "00:05:00", 0),           # equal
-        ("00:01:30,500", "00:01:31,000", 1),   # ms precision, valid
-    ])
+    @pytest.mark.parametrize(
+        "start,end,expected_count",
+        [
+            ("01:30:00", "01:00:00", 0),  # start > end
+            ("00:00:00", "00:00:01", 1),  # valid
+            ("00:05:00", "00:05:00", 0),  # equal
+            ("00:01:30,500", "00:01:31,000", 1),  # ms precision, valid
+        ],
+    )
     def test_parametrized_range_cases(self, start, end, expected_count):
         from congress_videos.modules.youtube.download import _validate_chapter_ranges
 
@@ -1523,40 +1615,55 @@ class TestValidateChapterRanges:
             '"duration_minutes": 120, "speakers": [], "topics": []},'
             '{"title": "Bad2", "start_time": "00:05:00", "end_time": "00:05:00", '
             '"duration_minutes": 120, "speakers": [], "topics": []}'
-            ']}'
+            "]}"
         )
         _patch_completion(mocker, chapters_json)
 
         from congress_videos.modules.youtube.download import identify_interesting_chapters
 
-        chunk_summaries = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "summarized_chunks": [{
-                "chunk_number": 1,
-                "start_time": "00:00:00",
-                "end_time": "02:00:00",
-                "duration_minutes": 130,
-                "duration_seconds": 7800,
-                "speakers": [],
-                "topics": [],
-                "summary": "Session",
-            }],
-        }]}
-        chunked_srt = {"videos": [{
-            "video_id": "v1",
-            "chunks": [{
-                "chunk_number": 1,
-                "start_time": "00:00:00",
-                "end_time": "02:00:00",
-                "duration_minutes": 130,
-                "content": "SRT content",
-            }],
-        }]}
+        chunk_summaries = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "video_title": "Test",
+                    "summarized_chunks": [
+                        {
+                            "chunk_number": 1,
+                            "start_time": "00:00:00",
+                            "end_time": "02:00:00",
+                            "duration_minutes": 130,
+                            "duration_seconds": 7800,
+                            "speakers": [],
+                            "topics": [],
+                            "summary": "Session",
+                        }
+                    ],
+                }
+            ]
+        }
+        chunked_srt = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "chunks": [
+                        {
+                            "chunk_number": 1,
+                            "start_time": "00:00:00",
+                            "end_time": "02:00:00",
+                            "duration_minutes": 130,
+                            "content": "SRT content",
+                        }
+                    ],
+                }
+            ]
+        }
 
         result = identify_interesting_chapters(
-            chunk_summaries, chunked_srt, "2025-01-01",
-            min_chapter_duration=15, max_optimal_duration=120,
+            chunk_summaries,
+            chunked_srt,
+            "2025-01-01",
+            min_chapter_duration=15,
+            max_optimal_duration=120,
         )
 
         chunk = result["videos"][0]["chunks_with_chapters"][0]
@@ -1568,8 +1675,8 @@ class TestValidateChapterRanges:
 # T1.4 — Dynamic date injection in scoring prompt
 # ---------------------------------------------------------------------------
 
-class TestDynamicDateInScoringPrompt:
 
+class TestDynamicDateInScoringPrompt:
     def test_scoring_prompt_template_has_current_date_placeholder(self):
         """Spec #14: raw template must contain {current_date}, not a literal month."""
         from congress_videos.config.ai_prompts import CHAPTER_RELEVANCE_SCORING_USER_PROMPT_TEMPLATE
@@ -1583,14 +1690,17 @@ class TestDynamicDateInScoringPrompt:
 
         def capture_prompt(**kwargs):
             captured_prompts.append(kwargs.get("user_prompt", ""))
-            return {"data": {
-                "speaker_relevance_points": 1,
-                "topic_relevance_points": 1,
-                "public_interest_points": 0,
-                "reasoning": "test",
-                "key_speakers": [],
-                "is_current_topic": False,
-            }, "error": None}
+            return {
+                "data": {
+                    "speaker_relevance_points": 1,
+                    "topic_relevance_points": 1,
+                    "public_interest_points": 0,
+                    "reasoning": "test",
+                    "key_speakers": [],
+                    "is_current_topic": False,
+                },
+                "error": None,
+            }
 
         mocker.patch(
             "congress_videos.modules.youtube.youtube_ai.cached_json_completion",
@@ -1601,20 +1711,24 @@ class TestDynamicDateInScoringPrompt:
 
         merged = {
             "total_videos": 1,
-            "videos": [{
-                "video_id": "v1",
-                "video_title": "Test",
-                "total_chapters": 1,
-                "final_chapters": [{
-                    "title": "Test Chapter",
-                    "description": "A desc",
-                    "duration_minutes": 30,
-                    "speakers": ["Speaker A"],
-                    "topics": ["Educación"],
-                    "start_time": "00:00:00",
-                    "end_time": "00:30:00",
-                }],
-            }],
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "video_title": "Test",
+                    "total_chapters": 1,
+                    "final_chapters": [
+                        {
+                            "title": "Test Chapter",
+                            "description": "A desc",
+                            "duration_minutes": 30,
+                            "speakers": ["Speaker A"],
+                            "topics": ["Educación"],
+                            "start_time": "00:00:00",
+                            "end_time": "00:30:00",
+                        }
+                    ],
+                }
+            ],
         }
 
         score_chapters_relevance(merged)
@@ -1632,11 +1746,17 @@ class TestDynamicDateInScoringPrompt:
 
         def capture_prompt(**kwargs):
             captured_prompts.append(kwargs.get("user_prompt", ""))
-            return {"data": {
-                "speaker_relevance_points": 0, "topic_relevance_points": 0,
-                "public_interest_points": 0, "reasoning": "",
-                "key_speakers": [], "is_current_topic": False,
-            }, "error": None}
+            return {
+                "data": {
+                    "speaker_relevance_points": 0,
+                    "topic_relevance_points": 0,
+                    "public_interest_points": 0,
+                    "reasoning": "",
+                    "key_speakers": [],
+                    "is_current_topic": False,
+                },
+                "error": None,
+            }
 
         mocker.patch(
             "congress_videos.modules.youtube.youtube_ai.cached_json_completion",
@@ -1647,16 +1767,24 @@ class TestDynamicDateInScoringPrompt:
 
         merged = {
             "total_videos": 1,
-            "videos": [{
-                "video_id": "v1",
-                "video_title": "Test",
-                "total_chapters": 1,
-                "final_chapters": [{
-                    "title": "Ch", "description": "D", "duration_minutes": 10,
-                    "speakers": [], "topics": [],
-                    "start_time": "00:00:00", "end_time": "00:10:00",
-                }],
-            }],
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "video_title": "Test",
+                    "total_chapters": 1,
+                    "final_chapters": [
+                        {
+                            "title": "Ch",
+                            "description": "D",
+                            "duration_minutes": 10,
+                            "speakers": [],
+                            "topics": [],
+                            "start_time": "00:00:00",
+                            "end_time": "00:10:00",
+                        }
+                    ],
+                }
+            ],
         }
 
         score_chapters_relevance(merged)
@@ -1670,8 +1798,18 @@ class TestDynamicDateInScoringPrompt:
 
         result = _current_date_es()
         spanish_months = [
-            "enero", "febrero", "marzo", "abril", "mayo", "junio",
-            "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+            "enero",
+            "febrero",
+            "marzo",
+            "abril",
+            "mayo",
+            "junio",
+            "julio",
+            "agosto",
+            "septiembre",
+            "octubre",
+            "noviembre",
+            "diciembre",
         ]
         assert any(m in result for m in spanish_months), f"Expected Spanish month in: {result!r}"
 
@@ -1689,11 +1827,13 @@ class TestDynamicDateInScoringPrompt:
 # T2.2 — _dedup_overlapping_chapters (#6)
 # ---------------------------------------------------------------------------
 
+
 class TestDedupOverlappingChapters:
     """Tests for spec #6: dedup overlapping chapters in merge step."""
 
     def _ch(self, start: str, end: str, title: str = "Chapter") -> dict:
         from utils.time_utils import parse_timestamp
+
         dur = (parse_timestamp(end) - parse_timestamp(start)) / 60
         return {
             "title": title,
@@ -1814,13 +1954,17 @@ class TestDedupOverlappingChapters:
             "topics": [],
         }
 
-        identified = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "chunks_with_chapters": [
-                {"chunk_number": 1, "interesting_chapters": [ch_outer, ch_inner]},
-            ],
-        }]}
+        identified = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "video_title": "Test",
+                    "chunks_with_chapters": [
+                        {"chunk_number": 1, "interesting_chapters": [ch_outer, ch_inner]},
+                    ],
+                }
+            ]
+        }
 
         result = merge_interesting_chapters(identified, "2025-01-01")
 
@@ -1833,6 +1977,7 @@ class TestDedupOverlappingChapters:
 # ---------------------------------------------------------------------------
 # Batch 4 — #8 map-reduce wiring into identify_interesting_chapters (T4.3)
 # ---------------------------------------------------------------------------
+
 
 class TestIdentifyInterestingChaptersMapReduce:
     """The >LARGE_SRT_THRESHOLD path must delegate to map-reduce (#8)."""
@@ -1853,12 +1998,15 @@ class TestIdentifyInterestingChaptersMapReduce:
         """SRT > 100k chars on an AI-path chunk → map_reduce_identify_chapters."""
         mocker.patch("openai.OpenAI", return_value=MagicMock())
         mr = mocker.patch(
-            "congress_videos.modules.youtube.map_reduce_chapters."
-            "map_reduce_identify_chapters",
-            return_value=[{
-                "title": "Cap", "start_time": "00:10:00", "end_time": "00:40:00",
-                "duration_minutes": 30,
-            }],
+            "congress_videos.modules.youtube.map_reduce_chapters.map_reduce_identify_chapters",
+            return_value=[
+                {
+                    "title": "Cap",
+                    "start_time": "00:10:00",
+                    "end_time": "00:40:00",
+                    "duration_minutes": 30,
+                }
+            ],
         )
 
         from congress_videos.modules.youtube.download import (
@@ -1866,22 +2014,38 @@ class TestIdentifyInterestingChaptersMapReduce:
         )
 
         big_content = "00:00:01 " + ("palabra " * 20000)  # >100k chars
-        chunk_summaries = {"videos": [{
-            "video_id": "v1", "video_title": "T",
-            "summarized_chunks": [self._summarized(130)],
-        }]}
-        chunked_srt = {"videos": [{
-            "video_id": "v1",
-            "chunks": [{
-                "chunk_number": 1, "start_time": "00:00:00",
-                "end_time": "02:10:00", "duration_minutes": 130,
-                "content": big_content,
-            }],
-        }]}
+        chunk_summaries = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "video_title": "T",
+                    "summarized_chunks": [self._summarized(130)],
+                }
+            ]
+        }
+        chunked_srt = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "chunks": [
+                        {
+                            "chunk_number": 1,
+                            "start_time": "00:00:00",
+                            "end_time": "02:10:00",
+                            "duration_minutes": 130,
+                            "content": big_content,
+                        }
+                    ],
+                }
+            ]
+        }
 
         identify_interesting_chapters(
-            chunk_summaries, chunked_srt, "2025-01-01",
-            min_chapter_duration=15, max_optimal_duration=120,
+            chunk_summaries,
+            chunked_srt,
+            "2025-01-01",
+            min_chapter_duration=15,
+            max_optimal_duration=120,
         )
         assert mr.called, "map-reduce must be invoked for oversized SRT"
 
@@ -1894,30 +2058,45 @@ class TestIdentifyInterestingChaptersMapReduce:
         )
         _patch_completion(mocker, chapters_json)
         mr = mocker.patch(
-            "congress_videos.modules.youtube.map_reduce_chapters."
-            "map_reduce_identify_chapters",
+            "congress_videos.modules.youtube.map_reduce_chapters.map_reduce_identify_chapters",
         )
 
         from congress_videos.modules.youtube.download import (
             identify_interesting_chapters,
         )
 
-        chunk_summaries = {"videos": [{
-            "video_id": "v1", "video_title": "T",
-            "summarized_chunks": [self._summarized(130)],
-        }]}
-        chunked_srt = {"videos": [{
-            "video_id": "v1",
-            "chunks": [{
-                "chunk_number": 1, "start_time": "00:00:00",
-                "end_time": "02:10:00", "duration_minutes": 130,
-                "content": "00:00:01 contenido corto",  # well under 100k
-            }],
-        }]}
+        chunk_summaries = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "video_title": "T",
+                    "summarized_chunks": [self._summarized(130)],
+                }
+            ]
+        }
+        chunked_srt = {
+            "videos": [
+                {
+                    "video_id": "v1",
+                    "chunks": [
+                        {
+                            "chunk_number": 1,
+                            "start_time": "00:00:00",
+                            "end_time": "02:10:00",
+                            "duration_minutes": 130,
+                            "content": "00:00:01 contenido corto",  # well under 100k
+                        }
+                    ],
+                }
+            ]
+        }
 
         identify_interesting_chapters(
-            chunk_summaries, chunked_srt, "2025-01-01",
-            min_chapter_duration=15, max_optimal_duration=120,
+            chunk_summaries,
+            chunked_srt,
+            "2025-01-01",
+            min_chapter_duration=15,
+            max_optimal_duration=120,
         )
         assert not mr.called, "small SRT must not trigger map-reduce"
 
@@ -1925,6 +2104,7 @@ class TestIdentifyInterestingChaptersMapReduce:
 # ---------------------------------------------------------------------------
 # Batch 4 — #9 dynamic-mapping callables (T4.4)
 # ---------------------------------------------------------------------------
+
 
 class TestSummarizeOneChunk:
     """The standalone callable Airflow dynamic task mapping expands over."""
@@ -1944,8 +2124,7 @@ class TestSummarizeOneChunk:
     def test_returns_summary_on_success(self, mocker):
         _patch_completion(
             mocker,
-            '{"speakers": [{"name": "Juan"}], "topics": ["T"], '
-            '"timeline": [], "summary": "S"}',
+            '{"speakers": [{"name": "Juan"}], "topics": ["T"], "timeline": [], "summary": "S"}',
         )
         from congress_videos.modules.youtube.download import summarize_one_chunk
 
@@ -1971,8 +2150,11 @@ class TestSummarizeOneChunk:
         # No content and srt_file_path None → _chunk_text raises ValueError,
         # captured into the error field (mapped task isolation).
         chunk = {
-            "chunk_number": 3, "start_time": "00:00:00", "end_time": "00:30:00",
-            "duration_seconds": 1800, "duration_minutes": 30,
+            "chunk_number": 3,
+            "start_time": "00:00:00",
+            "end_time": "00:30:00",
+            "duration_seconds": 1800,
+            "duration_minutes": 30,
             "srt_file_path": None,
         }
         result = summarize_one_chunk(chunk)
@@ -1980,20 +2162,25 @@ class TestSummarizeOneChunk:
 
 
 class TestAggregateChunkSummaries:
-
     def test_empty_returns_empty(self):
         from congress_videos.modules.youtube.download import (
             aggregate_chunk_summaries,
         )
+
         assert aggregate_chunk_summaries([]) == []
 
     def test_sorted_by_chunk_number(self):
         from congress_videos.modules.youtube.download import (
             aggregate_chunk_summaries,
         )
-        out = aggregate_chunk_summaries([
-            {"chunk_number": 3}, {"chunk_number": 1}, {"chunk_number": 2},
-        ])
+
+        out = aggregate_chunk_summaries(
+            [
+                {"chunk_number": 3},
+                {"chunk_number": 1},
+                {"chunk_number": 2},
+            ]
+        )
         assert [c["chunk_number"] for c in out] == [1, 2, 3]
 
 
@@ -2004,11 +2191,13 @@ class TestFlattenAndRegroup:
         from congress_videos.modules.youtube.download import (
             flatten_chunks_for_mapping,
         )
-        data = {"videos": [
-            {"video_id": "v1", "video_title": "T1", "chunks": [
-                {"chunk_number": 1}, {"chunk_number": 2}]},
-            {"video_id": "v2", "error": "boom", "chunks": [{"chunk_number": 9}]},
-        ]}
+
+        data = {
+            "videos": [
+                {"video_id": "v1", "video_title": "T1", "chunks": [{"chunk_number": 1}, {"chunk_number": 2}]},
+                {"video_id": "v2", "error": "boom", "chunks": [{"chunk_number": 9}]},
+            ]
+        }
         refs = flatten_chunks_for_mapping(data)
         assert len(refs) == 2  # v2 skipped (error)
         assert all(r["video_id"] == "v1" for r in refs)
@@ -2018,6 +2207,7 @@ class TestFlattenAndRegroup:
         from congress_videos.modules.youtube.download import (
             flatten_chunks_for_mapping,
         )
+
         assert flatten_chunks_for_mapping(None) == []
         assert flatten_chunks_for_mapping({"videos": []}) == []
 
@@ -2025,11 +2215,10 @@ class TestFlattenAndRegroup:
         from congress_videos.modules.youtube.download import (
             regroup_summarized_chunks,
         )
+
         mapped = [
-            {"chunk_number": 2, "video_id": "v1", "video_title": "T1",
-             "summary": "b"},
-            {"chunk_number": 1, "video_id": "v1", "video_title": "T1",
-             "summary": "a"},
+            {"chunk_number": 2, "video_id": "v1", "video_title": "T1", "summary": "b"},
+            {"chunk_number": 1, "video_id": "v1", "video_title": "T1", "summary": "a"},
         ]
         out = regroup_summarized_chunks(mapped)
         assert out["total_videos"] == 1
@@ -2044,6 +2233,7 @@ class TestFlattenAndRegroup:
         from congress_videos.modules.youtube.download import (
             regroup_summarized_chunks,
         )
+
         out = regroup_summarized_chunks([])
         assert out == {"total_videos": 0, "videos": []}
 
@@ -2052,8 +2242,8 @@ class TestFlattenAndRegroup:
 # guard_enabled -> guard_live_status forwarding (finished-stream-guard E.1)
 # ---------------------------------------------------------------------------
 
-class TestDownloadGuardForwarding:
 
+class TestDownloadGuardForwarding:
     def _patch_paths(self, mocker, tmp_path):
         mocker.patch(
             "congress_videos.modules.youtube.download.get_download_video_path",
@@ -2089,9 +2279,7 @@ class TestDownloadGuardForwarding:
 
         from congress_videos.modules.youtube.download import download_video_from_youtube
 
-        download_video_from_youtube(
-            _make_video_details(_make_video()), "2025-01-01", guard_enabled=False
-        )
+        download_video_from_youtube(_make_video_details(_make_video()), "2025-01-01", guard_enabled=False)
 
         assert spy.call_args.kwargs["guard_live_status"] is False
 
@@ -2099,6 +2287,7 @@ class TestDownloadGuardForwarding:
 # ---------------------------------------------------------------------------
 # PR3 — _flatten_speakers wired into identify_interesting_chapters (Task 3.7 RED)
 # ---------------------------------------------------------------------------
+
 
 class TestIdentifyInterestingChaptersFlattenSpeakers:
     """Assert that identify_interesting_chapters flattens structured speaker
@@ -2118,7 +2307,7 @@ class TestIdentifyInterestingChaptersFlattenSpeakers:
             "duration_minutes": duration_minutes,
             "speakers": [{"name": "Diputado López", "role": "Diputado"}],
             "topics": ["Presupuestos"],
-            "summary": "Debate largo sobre presupuestos"
+            "summary": "Debate largo sobre presupuestos",
         }
 
     def _make_srt_chunk(self, number=1, duration_minutes=130):
@@ -2127,84 +2316,82 @@ class TestIdentifyInterestingChaptersFlattenSpeakers:
             "start_time": "00:00:00",
             "end_time": "02:10:00",
             "duration_minutes": duration_minutes,
-            "content": "1\n00:00:01,000 --> 00:00:05,000\nContenido de prueba"
+            "content": "1\n00:00:01,000 --> 00:00:05,000\nContenido de prueba",
         }
 
     def test_structured_speaker_objects_flattened_to_strings(self, mocker):
         """LLM returns new object-form speakers → chapter['speakers'] is list[str]."""
         # LLM returns structured speaker objects (new prompt format)
-        chapters_json = json.dumps({
-            "interesting_chapters": [{
-                "title": "Debate Presupuestos",
-                "description": "Desc",
-                "start_time": "00:00:00",
-                "end_time": "01:00:00",
-                "duration_minutes": 60,
-                "speakers": [
-                    {"speaker_name": "Ana López", "speaker_role": "Diputada", "speaker_confidence": 0.95},
-                    {"speaker_name": None, "speaker_role": "Portavoz", "speaker_confidence": 0.3},
-                ],
-                "topics": ["Presupuestos"]
-            }]
-        })
+        chapters_json = json.dumps(
+            {
+                "interesting_chapters": [
+                    {
+                        "title": "Debate Presupuestos",
+                        "description": "Desc",
+                        "start_time": "00:00:00",
+                        "end_time": "01:00:00",
+                        "duration_minutes": 60,
+                        "speakers": [
+                            {"speaker_name": "Ana López", "speaker_role": "Diputada", "speaker_confidence": 0.95},
+                            {"speaker_name": None, "speaker_role": "Portavoz", "speaker_confidence": 0.3},
+                        ],
+                        "topics": ["Presupuestos"],
+                    }
+                ]
+            }
+        )
         _patch_completion(mocker, chapters_json)
 
         from congress_videos.modules.youtube.download import identify_interesting_chapters
 
-        chunk_summaries = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "summarized_chunks": [self._make_summarized_chunk(1)]
-        }]}
-        chunked_srt = {"videos": [{
-            "video_id": "v1",
-            "chunks": [self._make_srt_chunk(1)]
-        }]}
+        chunk_summaries = {
+            "videos": [{"video_id": "v1", "video_title": "Test", "summarized_chunks": [self._make_summarized_chunk(1)]}]
+        }
+        chunked_srt = {"videos": [{"video_id": "v1", "chunks": [self._make_srt_chunk(1)]}]}
 
-        result = identify_interesting_chapters(chunk_summaries, chunked_srt, "2025-01-01",
-                                               min_chapter_duration=15, max_optimal_duration=120)
+        result = identify_interesting_chapters(
+            chunk_summaries, chunked_srt, "2025-01-01", min_chapter_duration=15, max_optimal_duration=120
+        )
 
         assert result["total_videos"] == 1
         chapters = result["videos"][0]["chunks_with_chapters"][0]["interesting_chapters"]
         assert len(chapters) == 1
         speakers = chapters[0]["speakers"]
         # Must be flat list[str], not list[dict]
-        assert all(isinstance(s, str) for s in speakers), (
-            f"speakers must be list[str], got: {speakers!r}"
-        )
+        assert all(isinstance(s, str) for s in speakers), f"speakers must be list[str], got: {speakers!r}"
         # Null speaker_name must be dropped; real name must be kept
         assert "Ana López" in speakers
         assert len(speakers) == 1, "null speaker_name entry must be dropped"
 
     def test_legacy_flat_string_speakers_pass_through(self, mocker):
         """LLM returns old flat-string speaker list → chapter['speakers'] unchanged."""
-        chapters_json = json.dumps({
-            "interesting_chapters": [{
-                "title": "Debate",
-                "description": "Desc",
-                "start_time": "00:00:00",
-                "end_time": "01:00:00",
-                "duration_minutes": 60,
-                "speakers": ["Ana López", "Pedro García"],
-                "topics": ["Política"]
-            }]
-        })
+        chapters_json = json.dumps(
+            {
+                "interesting_chapters": [
+                    {
+                        "title": "Debate",
+                        "description": "Desc",
+                        "start_time": "00:00:00",
+                        "end_time": "01:00:00",
+                        "duration_minutes": 60,
+                        "speakers": ["Ana López", "Pedro García"],
+                        "topics": ["Política"],
+                    }
+                ]
+            }
+        )
         _patch_completion(mocker, chapters_json)
 
         from congress_videos.modules.youtube.download import identify_interesting_chapters
 
-        chunk_summaries = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "summarized_chunks": [self._make_summarized_chunk(1)]
-        }]}
-        chunked_srt = {"videos": [{
-            "video_id": "v1",
-            "chunks": [self._make_srt_chunk(1)]
-        }]}
+        chunk_summaries = {
+            "videos": [{"video_id": "v1", "video_title": "Test", "summarized_chunks": [self._make_summarized_chunk(1)]}]
+        }
+        chunked_srt = {"videos": [{"video_id": "v1", "chunks": [self._make_srt_chunk(1)]}]}
 
-        result = identify_interesting_chapters(chunk_summaries, chunked_srt, "2025-01-01",
-                                               min_chapter_duration=15, max_optimal_duration=120)
+        result = identify_interesting_chapters(
+            chunk_summaries, chunked_srt, "2025-01-01", min_chapter_duration=15, max_optimal_duration=120
+        )
 
         chapters = result["videos"][0]["chunks_with_chapters"][0]["interesting_chapters"]
         speakers = chapters[0]["speakers"]
@@ -2214,39 +2401,37 @@ class TestIdentifyInterestingChaptersFlattenSpeakers:
 
     def test_all_null_speaker_names_yields_empty_list(self, mocker):
         """LLM returns only null speaker_name objects → speakers list is empty."""
-        chapters_json = json.dumps({
-            "interesting_chapters": [{
-                "title": "Debate",
-                "description": "Desc",
-                "start_time": "00:00:00",
-                "end_time": "01:00:00",
-                "duration_minutes": 60,
-                "speakers": [
-                    {"speaker_name": None, "speaker_role": "Portavoz PP", "speaker_confidence": None},
-                    {"speaker_name": None, "speaker_role": "Portavoz PSOE", "speaker_confidence": None},
-                ],
-                "topics": ["Política"]
-            }]
-        })
+        chapters_json = json.dumps(
+            {
+                "interesting_chapters": [
+                    {
+                        "title": "Debate",
+                        "description": "Desc",
+                        "start_time": "00:00:00",
+                        "end_time": "01:00:00",
+                        "duration_minutes": 60,
+                        "speakers": [
+                            {"speaker_name": None, "speaker_role": "Portavoz PP", "speaker_confidence": None},
+                            {"speaker_name": None, "speaker_role": "Portavoz PSOE", "speaker_confidence": None},
+                        ],
+                        "topics": ["Política"],
+                    }
+                ]
+            }
+        )
         _patch_completion(mocker, chapters_json)
 
         from congress_videos.modules.youtube.download import identify_interesting_chapters
 
-        chunk_summaries = {"videos": [{
-            "video_id": "v1",
-            "video_title": "Test",
-            "summarized_chunks": [self._make_summarized_chunk(1)]
-        }]}
-        chunked_srt = {"videos": [{
-            "video_id": "v1",
-            "chunks": [self._make_srt_chunk(1)]
-        }]}
+        chunk_summaries = {
+            "videos": [{"video_id": "v1", "video_title": "Test", "summarized_chunks": [self._make_summarized_chunk(1)]}]
+        }
+        chunked_srt = {"videos": [{"video_id": "v1", "chunks": [self._make_srt_chunk(1)]}]}
 
-        result = identify_interesting_chapters(chunk_summaries, chunked_srt, "2025-01-01",
-                                               min_chapter_duration=15, max_optimal_duration=120)
+        result = identify_interesting_chapters(
+            chunk_summaries, chunked_srt, "2025-01-01", min_chapter_duration=15, max_optimal_duration=120
+        )
 
         chapters = result["videos"][0]["chunks_with_chapters"][0]["interesting_chapters"]
         speakers = chapters[0]["speakers"]
-        assert speakers == [], (
-            f"all-null speaker_name objects must yield empty list, got: {speakers!r}"
-        )
+        assert speakers == [], f"all-null speaker_name objects must yield empty list, got: {speakers!r}"

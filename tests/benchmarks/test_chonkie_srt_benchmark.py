@@ -18,8 +18,7 @@ from benchmarks.chonkie_srt.benchmark_srt import (
 def test_parse_srt_normalizes_cues_into_continuous_text(tmp_path):
     source = tmp_path / "sample.srt"
     source.write_text(
-        "1\n00:00:00,000 --> 00:00:02,000\nHello   world\n\n"
-        "2\n00:00:02,000 --> 00:00:04,000\nsecond\nline\n",
+        "1\n00:00:00,000 --> 00:00:02,000\nHello   world\n\n2\n00:00:02,000 --> 00:00:04,000\nsecond\nline\n",
         encoding="utf-8",
     )
 
@@ -35,8 +34,7 @@ def test_parse_srt_normalizes_cues_into_continuous_text(tmp_path):
 def test_parse_srt_stops_at_the_first_thirty_minutes(tmp_path):
     source = tmp_path / "window.srt"
     source.write_text(
-        "1\n00:29:59,000 --> 00:30:00,000\nIncluded cue\n\n"
-        "2\n00:30:00,000 --> 00:30:01,000\nExcluded cue\n",
+        "1\n00:29:59,000 --> 00:30:00,000\nIncluded cue\n\n2\n00:30:00,000 --> 00:30:01,000\nExcluded cue\n",
         encoding="utf-8",
     )
 
@@ -75,8 +73,7 @@ def test_traceable_sections_resolve_to_chronological_cue_timestamps(tmp_path):
 def test_traceability_fails_closed_for_out_of_order_or_invalid_offsets(tmp_path, offsets):
     source = tmp_path / "invalid.srt"
     source.write_text(
-        "1\n00:00:00,000 --> 00:00:02,000\nFirst cue\n\n"
-        "2\n00:00:02,000 --> 00:00:04,000\nSecond cue\n",
+        "1\n00:00:00,000 --> 00:00:02,000\nFirst cue\n\n2\n00:00:02,000 --> 00:00:04,000\nSecond cue\n",
         encoding="utf-8",
     )
 
@@ -87,8 +84,7 @@ def test_traceability_fails_closed_for_out_of_order_or_invalid_offsets(tmp_path,
 def test_parse_srt_rejects_out_of_order_source_cues(tmp_path):
     source = tmp_path / "out-of-order.srt"
     source.write_text(
-        "1\n00:00:03,000 --> 00:00:04,000\nLater cue\n\n"
-        "2\n00:00:01,000 --> 00:00:02,000\nEarlier cue\n",
+        "1\n00:00:03,000 --> 00:00:04,000\nLater cue\n\n2\n00:00:01,000 --> 00:00:02,000\nEarlier cue\n",
         encoding="utf-8",
     )
 
@@ -96,9 +92,7 @@ def test_parse_srt_rejects_out_of_order_source_cues(tmp_path):
         parse_srt(source)
 
 
-def test_cli_rejects_an_incompatible_chonkie_api_before_reading_source(
-    monkeypatch, tmp_path, capsys
-):
+def test_cli_rejects_an_incompatible_chonkie_api_before_reading_source(monkeypatch, tmp_path, capsys):
     chonkie = types.ModuleType("chonkie")
     embeddings = types.ModuleType("chonkie.embeddings")
     monkeypatch.setitem(sys.modules, "chonkie", chonkie)
@@ -107,9 +101,7 @@ def test_cli_rejects_an_incompatible_chonkie_api_before_reading_source(
     from benchmarks.chonkie_srt.benchmark_srt import main
 
     output = tmp_path / "result.json"
-    exit_code = main(
-        ["--source", str(tmp_path / "missing.srt"), "--output", str(output)]
-    )
+    exit_code = main(["--source", str(tmp_path / "missing.srt"), "--output", str(output)])
 
     assert exit_code == 2
     assert "Chonkie 1.7.0 API is incompatible" in capsys.readouterr().err
@@ -146,9 +138,7 @@ def test_cli_rejects_a_chonkie_version_other_than_the_direct_pin(monkeypatch, tm
     assert not output.exists()
 
 
-def test_cli_writes_traceable_sections_using_the_documented_configuration(
-    monkeypatch, tmp_path
-):
+def test_cli_writes_traceable_sections_using_the_documented_configuration(monkeypatch, tmp_path):
     calls = {}
 
     class FakeEmbeddings:
@@ -176,8 +166,7 @@ def test_cli_writes_traceable_sections_using_the_documented_configuration(
 
     source = tmp_path / "sample.srt"
     source.write_text(
-        "1\n00:00:00,000 --> 00:00:02,000\nFirst cue\n\n"
-        "2\n00:00:02,000 --> 00:00:04,000\nSecond cue\n",
+        "1\n00:00:00,000 --> 00:00:02,000\nFirst cue\n\n2\n00:00:02,000 --> 00:00:04,000\nSecond cue\n",
         encoding="utf-8",
     )
     output = tmp_path / "result.json"
@@ -196,9 +185,7 @@ def test_cli_writes_traceable_sections_using_the_documented_configuration(
         "delim",
         "skip_window",
     }
-    assert {
-        key: value for key, value in calls["chunker"].items() if key != "embedding_model"
-    } == {
+    assert {key: value for key, value in calls["chunker"].items() if key != "embedding_model"} == {
         "threshold": 0.75,
         "chunk_size": 512,
         "similarity_window": 2,

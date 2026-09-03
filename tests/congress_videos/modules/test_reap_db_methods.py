@@ -17,6 +17,7 @@ from congress_videos.modules.database import (
 # Fixtures
 # --------------------------------------------------------------------------- #
 
+
 @pytest.fixture(autouse=True)
 def set_pg_env(monkeypatch):
     monkeypatch.setenv("POSTGRES_HOST", "localhost")
@@ -45,6 +46,7 @@ def db(mocker):
     mocker.patch("psycopg2.connect", return_value=mock_conn)
 
     from congress_videos.modules.database import CongressionalVideoDB
+
     instance = CongressionalVideoDB()
     return instance, mock_cursor
 
@@ -53,8 +55,8 @@ def db(mocker):
 # get_chapters_for_shorts
 # --------------------------------------------------------------------------- #
 
-class TestGetChaptersForShorts:
 
+class TestGetChaptersForShorts:
     def test_returns_list_of_chapters(self, db):
         instance, mock_cursor = db
         mock_cursor.fetchall.return_value = [
@@ -98,8 +100,8 @@ class TestGetChaptersForShorts:
 # insert_video_short
 # --------------------------------------------------------------------------- #
 
-class TestInsertVideoShort:
 
+class TestInsertVideoShort:
     def test_returns_inserted_id(self, db):
         instance, mock_cursor = db
         mock_cursor.fetchone.return_value = {"id": 42}
@@ -147,8 +149,8 @@ class TestInsertVideoShort:
 # insert_video_short_clip
 # --------------------------------------------------------------------------- #
 
-class TestInsertVideoShortClip:
 
+class TestInsertVideoShortClip:
     def test_returns_inserted_id(self, db):
         instance, mock_cursor = db
         mock_cursor.fetchone.return_value = {"id": 99}
@@ -186,8 +188,8 @@ class TestInsertVideoShortClip:
 # update_video_short_status
 # --------------------------------------------------------------------------- #
 
-class TestUpdateVideoShortStatus:
 
+class TestUpdateVideoShortStatus:
     def test_executes_update_with_correct_params(self, db):
         instance, mock_cursor = db
 
@@ -212,8 +214,8 @@ class TestUpdateVideoShortStatus:
 # filter_shorts_by_source_cooldown (pure helper)
 # --------------------------------------------------------------------------- #
 
-class TestFilterShortsBySourceCooldown:
 
+class TestFilterShortsBySourceCooldown:
     def test_blocked_before_cooldown_elapses(self):
         """Only 4 other-video uploads since V's last upload — still blocked."""
         candidates = [{"id": 1, "video_id": "V"}]
@@ -290,12 +292,12 @@ class TestFilterShortsBySourceCooldown:
         candidates = [{"id": 1, "video_id": "V"}]
         upload_history = [
             {"video_id": "other1"},
-            {"video_id": "V"},          # most recent V occurrence — index 1
+            {"video_id": "V"},  # most recent V occurrence — index 1
             {"video_id": "other2"},
             {"video_id": "other3"},
             {"video_id": "other4"},
             {"video_id": "other5"},
-            {"video_id": "V"},          # older occurrence — must be ignored
+            {"video_id": "V"},  # older occurrence — must be ignored
         ]
 
         result = filter_shorts_by_source_cooldown(candidates, upload_history)
@@ -344,8 +346,8 @@ class TestFilterShortsBySourceCooldown:
 # get_pending_shorts
 # --------------------------------------------------------------------------- #
 
-class TestGetPendingShorts:
 
+class TestGetPendingShorts:
     def test_returns_list_of_shorts(self, db):
         instance, mock_cursor = db
         mock_cursor.fetchall.return_value = [
@@ -446,7 +448,7 @@ class TestGetPendingShorts:
             {"video_id": "hot"},
         ]
         candidates = [
-            {"id": 1, "video_id": "hot"},   # cooling down (index 0 < cooldown 5)
+            {"id": 1, "video_id": "hot"},  # cooling down (index 0 < cooldown 5)
             {"id": 2, "video_id": "cold"},  # never uploaded -> eligible
         ]
         mock_cursor.fetchall.side_effect = [history, candidates]
@@ -472,7 +474,7 @@ class TestGetPendingShorts:
         instance, mock_cursor = db
         history = [{"video_id": "hot"}]
         candidates = [
-            {"id": 1, "video_id": "hot"},   # blocked
+            {"id": 1, "video_id": "hot"},  # blocked
             {"id": 2, "video_id": "cold"},  # eligible
         ]
         mock_cursor.fetchall.side_effect = [history, candidates]
@@ -532,7 +534,7 @@ class TestGetPendingShorts:
         instance.get_pending_shorts()
 
         candidate_sql = mock_cursor.execute.call_args_list[1][0][0]
-        order_by_clause = candidate_sql[candidate_sql.rfind("ORDER BY"):]
+        order_by_clause = candidate_sql[candidate_sql.rfind("ORDER BY") :]
         assert order_by_clause.index("tier") < order_by_clause.index("youtube_upload_date")
 
     def test_outer_where_predicates_unchanged(self, db):
@@ -595,8 +597,8 @@ class TestGetPendingShorts:
 # mark_short_uploaded
 # --------------------------------------------------------------------------- #
 
-class TestMarkShortUploaded:
 
+class TestMarkShortUploaded:
     def test_executes_update_with_correct_params(self, db):
         instance, mock_cursor = db
 
@@ -621,8 +623,8 @@ class TestMarkShortUploaded:
 # record_short_upload_failure
 # --------------------------------------------------------------------------- #
 
-class TestRecordShortUploadFailure:
 
+class TestRecordShortUploadFailure:
     def test_normal_increment_updates_attempts_and_error(self, db):
         """Non-threshold-crossing failure increments upload_attempts, stores error."""
         instance, mock_cursor = db
@@ -689,8 +691,8 @@ class TestRecordShortUploadFailure:
 # get_chapter_titles
 # --------------------------------------------------------------------------- #
 
-class TestGetChapterTitles:
 
+class TestGetChapterTitles:
     def test_returns_dict_of_id_to_title(self, db):
         instance, mock_cursor = db
         mock_cursor.fetchall.return_value = [
@@ -724,8 +726,8 @@ class TestGetChapterTitles:
 # get_chapter_metadata
 # --------------------------------------------------------------------------- #
 
-class TestGetChapterMetadata:
 
+class TestGetChapterMetadata:
     def test_get_chapter_metadata_returns_source_fields(self, db):
         """AC#1 — chapter with linked source video returns both source fields and youtube_video_id."""
         instance, mock_cursor = db
@@ -811,12 +813,15 @@ class TestGetChapterMetadata:
 # get_source_video_id_for_chapter
 # --------------------------------------------------------------------------- #
 
-class TestGetSourceVideoIdForChapter:
 
-    @pytest.mark.parametrize("row,expected", [
-        ({"video_id": "src_vid_001"}, "src_vid_001"),
-        (None, None),
-    ])
+class TestGetSourceVideoIdForChapter:
+    @pytest.mark.parametrize(
+        "row,expected",
+        [
+            ({"video_id": "src_vid_001"}, "src_vid_001"),
+            (None, None),
+        ],
+    )
     def test_returns_video_id_or_none(self, db, row, expected):
         instance, mock_cursor = db
         mock_cursor.fetchone.return_value = row

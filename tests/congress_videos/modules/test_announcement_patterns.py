@@ -16,7 +16,6 @@ from congress_videos.modules.announcement_patterns import (
 
 
 class TestHasAnnouncementPhrasePerPattern:
-
     def test_named_pattern_hits(self):
         """'Tiene la palabra el señor <name>' must match."""
         assert has_announcement_phrase("Tiene la palabra el señor Sánchez.") is True
@@ -31,7 +30,6 @@ class TestHasAnnouncementPhrasePerPattern:
 
 
 class TestHasAnnouncementPhraseMiss:
-
     def test_unrelated_text_misses(self):
         """Ordinary transcript text with no announcement phrase must not match."""
         assert has_announcement_phrase("El Gobierno presentará el proyecto mañana.") is False
@@ -42,7 +40,6 @@ class TestHasAnnouncementPhraseMiss:
 
 
 class TestHasAnnouncementPhraseToleranceAndEdgeCases:
-
     def test_accent_and_case_tolerant(self):
         """Accent-stripped, uppercase variant must still match (case/accent tolerant)."""
         assert has_announcement_phrase("TIENE LA PALABRA SU SENORIA") is True

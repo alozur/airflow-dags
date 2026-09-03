@@ -4,11 +4,13 @@ TDD RED cycle: all scenarios written before implementation. Covers the
 resolver contract from the spec: roster validation, confidence gate,
 never-raises behavior, and input-order preservation.
 """
+
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_participants(entries=None):
     """Return a roster list. Defaults to a small fixed set."""
@@ -38,6 +40,7 @@ def _stub_completion(matches, error=None, calls=None):
 # Constants
 # ---------------------------------------------------------------------------
 
+
 class TestConstants:
     def test_min_confidence_constant_value(self):
         from congress_videos.modules.chapter_speaker_resolution import CHAPTER_SPEAKER_MIN_CONFIDENCE
@@ -53,6 +56,7 @@ class TestConstants:
 # ---------------------------------------------------------------------------
 # Honorific / dirty name resolution (spec: Dirty honorific name scenario)
 # ---------------------------------------------------------------------------
+
 
 class TestDirtyHonorificResolution:
     def test_dirty_honorific_name_resolves_via_roster_search(self):
@@ -73,9 +77,7 @@ class TestDirtyHonorificResolution:
             calls=calls,
         )
 
-        result = resolve_chapter_speakers(
-            ["Señora Uriarte Bengo Echea"], participants, completion_fn=completion_fn
-        )
+        result = resolve_chapter_speakers(["Señora Uriarte Bengo Echea"], participants, completion_fn=completion_fn)
 
         assert result.primary is not None
         assert result.primary.participant_slug == "edurne-uriarte-bengoechea"
@@ -86,6 +88,7 @@ class TestDirtyHonorificResolution:
 # ---------------------------------------------------------------------------
 # Hallucinated slug rejection
 # ---------------------------------------------------------------------------
+
 
 class TestHallucinatedSlugRejected:
     def test_slug_absent_from_roster_is_rejected(self):
@@ -113,6 +116,7 @@ class TestHallucinatedSlugRejected:
 # ---------------------------------------------------------------------------
 # Confidence gate — 0.79 rejected, 0.80 accepted
 # ---------------------------------------------------------------------------
+
 
 class TestConfidenceGate:
     def test_confidence_0_79_is_rejected(self):
@@ -159,6 +163,7 @@ class TestConfidenceGate:
 # Empty mentions / roster — no LLM call
 # ---------------------------------------------------------------------------
 
+
 class TestEmptyInputsSkipLLMCall:
     def test_empty_mentions_skips_llm_call(self):
         from congress_videos.modules.chapter_speaker_resolution import resolve_chapter_speakers
@@ -187,6 +192,7 @@ class TestEmptyInputsSkipLLMCall:
 # Order = input order; display_name from roster not model
 # ---------------------------------------------------------------------------
 
+
 class TestOrderAndDisplayNameSource:
     def test_result_order_matches_input_order_not_model_order(self):
         """Model returns matches out of order; resolver output follows input order."""
@@ -212,9 +218,7 @@ class TestOrderAndDisplayNameSource:
             ],
         )
 
-        result = resolve_chapter_speakers(
-            ["Pedro Sanchez", "Yolanda Diaz"], participants, completion_fn=completion_fn
-        )
+        result = resolve_chapter_speakers(["Pedro Sanchez", "Yolanda Diaz"], participants, completion_fn=completion_fn)
 
         assert [m.mention for m in result.matches] == ["Pedro Sanchez", "Yolanda Diaz"]
         assert result.primary.participant_slug == "pedro-sanchez"
@@ -246,14 +250,12 @@ class TestOrderAndDisplayNameSource:
 # Cap at MAX_MENTIONS_PER_CALL = 8
 # ---------------------------------------------------------------------------
 
+
 class TestMentionCap:
     def test_mentions_beyond_cap_are_not_sent_to_the_model(self):
         from congress_videos.modules.chapter_speaker_resolution import resolve_chapter_speakers
 
-        participants = [
-            {"slug": f"person-{i}", "display_name": f"Person {i}", "party": "X"}
-            for i in range(10)
-        ]
+        participants = [{"slug": f"person-{i}", "display_name": f"Person {i}", "party": "X"} for i in range(10)]
         mentions = [f"Person {i}" for i in range(10)]
         calls = []
         completion_fn = _stub_completion(matches=[], calls=calls)
@@ -273,6 +275,7 @@ class TestMentionCap:
 # completion_fn failure — never raises
 # ---------------------------------------------------------------------------
 
+
 class TestCompletionFailureNeverRaises:
     def test_completion_fn_raising_returns_empty_result(self):
         from congress_videos.modules.chapter_speaker_resolution import resolve_chapter_speakers
@@ -280,9 +283,7 @@ class TestCompletionFailureNeverRaises:
         def _raising_completion(system_prompt, user_prompt, **kwargs):
             raise TimeoutError("upstream timed out")
 
-        result = resolve_chapter_speakers(
-            ["Pedro Sanchez"], _make_participants(), completion_fn=_raising_completion
-        )
+        result = resolve_chapter_speakers(["Pedro Sanchez"], _make_participants(), completion_fn=_raising_completion)
 
         assert result.matches == ()
         assert result.primary is None
@@ -292,9 +293,7 @@ class TestCompletionFailureNeverRaises:
 
         completion_fn = _stub_completion(matches=[], error="rate_limited")
 
-        result = resolve_chapter_speakers(
-            ["Pedro Sanchez"], _make_participants(), completion_fn=completion_fn
-        )
+        result = resolve_chapter_speakers(["Pedro Sanchez"], _make_participants(), completion_fn=completion_fn)
 
         assert result.matches == ()
         assert result.primary is None

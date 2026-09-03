@@ -22,14 +22,12 @@ MIGRATION_PATH = (
 
 
 class TestMigration026FileExists:
-
     def test_migration_file_exists(self):
         """Migration file must exist at the expected path."""
         assert MIGRATION_PATH.exists(), f"Migration file not found: {MIGRATION_PATH}"
 
 
 class TestMigration026TableDefinition:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -53,24 +51,19 @@ class TestMigration026TableDefinition:
         """youtube_video_id must be NOT NULL."""
         sql = self._sql().upper()
         assert "YOUTUBE_VIDEO_ID" in sql
-        assert re.search(r"YOUTUBE_VIDEO_ID\s+VARCHAR\S*\s+NOT\s+NULL", sql) or \
-               re.search(r"YOUTUBE_VIDEO_ID\s+TEXT\s+NOT\s+NULL", sql), (
-            "youtube_video_id must be NOT NULL"
-        )
+        assert re.search(r"YOUTUBE_VIDEO_ID\s+VARCHAR\S*\s+NOT\s+NULL", sql) or re.search(
+            r"YOUTUBE_VIDEO_ID\s+TEXT\s+NOT\s+NULL", sql
+        ), "youtube_video_id must be NOT NULL"
 
     def test_checkpoint_column_text_not_null(self):
         """checkpoint column must be TEXT NOT NULL."""
         sql = self._sql().upper()
-        assert re.search(r"CHECKPOINT\s+TEXT\s+NOT\s+NULL", sql), (
-            "checkpoint must be TEXT NOT NULL"
-        )
+        assert re.search(r"CHECKPOINT\s+TEXT\s+NOT\s+NULL", sql), "checkpoint must be TEXT NOT NULL"
 
     def test_metrics_column_jsonb_not_null(self):
         """metrics column must be JSONB NOT NULL."""
         sql = self._sql().upper()
-        assert re.search(r"METRICS\s+JSONB\s+NOT\s+NULL", sql), (
-            "metrics must be JSONB NOT NULL"
-        )
+        assert re.search(r"METRICS\s+JSONB\s+NOT\s+NULL", sql), "metrics must be JSONB NOT NULL"
 
     def test_action_taken_column_text_nullable(self):
         """action_taken column must exist as TEXT with no NOT NULL constraint (nullable)."""
@@ -80,9 +73,7 @@ class TestMigration026TableDefinition:
         lines = [line for line in sql.splitlines() if "ACTION_TAKEN" in line]
         assert lines, "action_taken column must be present"
         for line in lines:
-            assert "NOT NULL" not in line, (
-                f"action_taken must be nullable (no NOT NULL), got: {line}"
-            )
+            assert "NOT NULL" not in line, f"action_taken must be nullable (no NOT NULL), got: {line}"
 
     def test_collected_at_column_timestamptz_not_null_default_now(self):
         """collected_at must be TIMESTAMPTZ NOT NULL DEFAULT NOW()."""
@@ -115,7 +106,6 @@ class TestMigration026TableDefinition:
 
 
 class TestMigration026DownBlock:
-
     @staticmethod
     def _sql() -> str:
         return MIGRATION_PATH.read_text(encoding="utf-8")
@@ -123,8 +113,5 @@ class TestMigration026DownBlock:
     def test_down_block_references_video_analytics_snapshots(self):
         """DOWN block must reference video_analytics_snapshots for rollback."""
         sql = self._sql().upper()
-        drop_lines = [
-            line for line in sql.splitlines()
-            if "VIDEO_ANALYTICS_SNAPSHOTS" in line and "DROP" in line
-        ]
+        drop_lines = [line for line in sql.splitlines() if "VIDEO_ANALYTICS_SNAPSHOTS" in line and "DROP" in line]
         assert drop_lines, "DOWN block must drop video_analytics_snapshots table"

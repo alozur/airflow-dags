@@ -16,6 +16,7 @@ Run with (nushell):
 `-o addopts=` is mandatory: the project's default addopts carries
 --cov-fail-under=80, which fails any single-file run regardless of results.
 """
+
 from __future__ import annotations
 
 import os
@@ -28,9 +29,7 @@ import pytest
 import congress_videos.speaker_turns_dag as mod
 
 _TEST_SCHEMA = "test_speaker_turns_order"
-MIGRATIONS_DIR = (
-    Path(__file__).resolve().parents[2] / "congress_videos" / "sql" / "migrations"
-)
+MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "congress_videos" / "sql" / "migrations"
 _VIEW_RE = re.compile(
     r"CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+uploadable_chapters\b.*?;",
     re.IGNORECASE | re.DOTALL,
@@ -163,10 +162,7 @@ def clean_tables(pg_conn):
     select_chapters() opens its OWN connection (see select_chapters_env), so
     it can never see rows this fixture left uncommitted.
     """
-    truncate = (
-        "TRUNCATE video_chapters, youtube_source_videos, speaker_turns "
-        "RESTART IDENTITY CASCADE"
-    )
+    truncate = "TRUNCATE video_chapters, youtube_source_videos, speaker_turns RESTART IDENTITY CASCADE"
     with pg_conn.cursor() as cur:
         cur.execute(truncate)
     pg_conn.commit()
@@ -213,8 +209,7 @@ def _seed_chapter(
     relative to Postgres's own NOW(), evaluated per query)."""
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO youtube_source_videos (video_id, video_title, session_date) "
-            "VALUES (%s, %s, %s)",
+            "INSERT INTO youtube_source_videos (video_id, video_title, session_date) VALUES (%s, %s, %s)",
             (video_id, f"video {video_id}", session_date),
         )
         cur.execute(
@@ -223,8 +218,12 @@ def _seed_chapter(
             "    turns_detected_at, created_at"
             ") VALUES (%s, %s, %s, %s, %s, NOW() - (%s * INTERVAL '1 day'))",
             (
-                chapter_id, video_id, relevance_score, is_upload_abandoned,
-                turns_detected_at, created_at_days_ago,
+                chapter_id,
+                video_id,
+                relevance_score,
+                is_upload_abandoned,
+                turns_detected_at,
+                created_at_days_ago,
             ),
         )
     conn.commit()
@@ -233,18 +232,18 @@ def _seed_chapter(
 class TestChapterOrderLive:
     """Authoritative bucket-ordering tests against a real Postgres view."""
 
-    def test_all_old_bucket_orders_by_session_date_then_relevance(
-        self, clean_tables, select_chapters_env
-    ):
+    def test_all_old_bucket_orders_by_session_date_then_relevance(self, clean_tables, select_chapters_env):
         """AC1: 5 chapters, all older than the 7-day window, all
         relevance_score=2 (today's live production shape) — degrades to
         session_date DESC NULLS LAST."""
-        dates = {1: "2026-06-01", 2: "2026-06-05", 3: "2026-06-03",
-                 4: "2026-06-10", 5: "2026-06-02"}
+        dates = {1: "2026-06-01", 2: "2026-06-05", 3: "2026-06-03", 4: "2026-06-10", 5: "2026-06-02"}
         for chapter_id, session_date in dates.items():
             _seed_chapter(
-                clean_tables, chapter_id=chapter_id, video_id=f"vid_{chapter_id}",
-                session_date=session_date, relevance_score=2,
+                clean_tables,
+                chapter_id=chapter_id,
+                video_id=f"vid_{chapter_id}",
+                session_date=session_date,
+                relevance_score=2,
                 created_at_days_ago=8 + chapter_id,
             )
 
@@ -254,10 +253,22 @@ class TestChapterOrderLive:
 
     def test_recency_outranks_relevance(self, clean_tables, select_chapters_env):
         """AC2: a recent low-relevance chapter outranks an old high-relevance one."""
-        _seed_chapter(clean_tables, chapter_id=1, video_id="vid_1",
-                      session_date="2026-01-01", relevance_score=2, created_at_days_ago=1)
-        _seed_chapter(clean_tables, chapter_id=2, video_id="vid_2",
-                      session_date="2026-06-01", relevance_score=5, created_at_days_ago=10)
+        _seed_chapter(
+            clean_tables,
+            chapter_id=1,
+            video_id="vid_1",
+            session_date="2026-01-01",
+            relevance_score=2,
+            created_at_days_ago=1,
+        )
+        _seed_chapter(
+            clean_tables,
+            chapter_id=2,
+            video_id="vid_2",
+            session_date="2026-06-01",
+            relevance_score=5,
+            created_at_days_ago=10,
+        )
 
         rows = mod.select_chapters(limit=10)
 
@@ -266,11 +277,21 @@ class TestChapterOrderLive:
 
     def test_recent_bucket_orders_by_relevance_only(self, clean_tables, select_chapters_env):
         """AC3: within the recent bucket, session_date must NOT influence order."""
-        _seed_chapter(clean_tables, chapter_id=1, video_id="vid_1",
-                      session_date="2026-01-01", relevance_score=5, created_at_days_ago=1)
+        _seed_chapter(
+            clean_tables,
+            chapter_id=1,
+            video_id="vid_1",
+            session_date="2026-01-01",
+            relevance_score=5,
+            created_at_days_ago=1,
+        )
         _seed_chapter(  # later session_date, lower relevance — must still lose
-            clean_tables, chapter_id=2, video_id="vid_2",
-            session_date="2026-06-01", relevance_score=2, created_at_days_ago=2,
+            clean_tables,
+            chapter_id=2,
+            video_id="vid_2",
+            session_date="2026-06-01",
+            relevance_score=2,
+            created_at_days_ago=2,
         )
 
         rows = mod.select_chapters(limit=10)
@@ -280,24 +301,41 @@ class TestChapterOrderLive:
 
     def test_old_bucket_null_session_date_sorts_last(self, clean_tables, select_chapters_env):
         """AC4: NULL session_date sorts after a non-NULL one in the old bucket."""
-        _seed_chapter(clean_tables, chapter_id=1, video_id="vid_1",
-                      session_date=None, relevance_score=2, created_at_days_ago=10)
-        _seed_chapter(clean_tables, chapter_id=2, video_id="vid_2",
-                      session_date="2026-01-01", relevance_score=2, created_at_days_ago=10)
+        _seed_chapter(
+            clean_tables, chapter_id=1, video_id="vid_1", session_date=None, relevance_score=2, created_at_days_ago=10
+        )
+        _seed_chapter(
+            clean_tables,
+            chapter_id=2,
+            video_id="vid_2",
+            session_date="2026-01-01",
+            relevance_score=2,
+            created_at_days_ago=10,
+        )
 
         rows = mod.select_chapters(limit=10)
 
         ids = [r["chapter_id"] for r in rows]
         assert ids.index(2) < ids.index(1)
 
-    def test_old_bucket_relevance_breaks_session_date_tie(
-        self, clean_tables, select_chapters_env
-    ):
+    def test_old_bucket_relevance_breaks_session_date_tie(self, clean_tables, select_chapters_env):
         """Same session_date, higher relevance_score wins within the old bucket."""
-        _seed_chapter(clean_tables, chapter_id=1, video_id="vid_1",
-                      session_date="2026-01-01", relevance_score=5, created_at_days_ago=10)
-        _seed_chapter(clean_tables, chapter_id=2, video_id="vid_2",
-                      session_date="2026-01-01", relevance_score=2, created_at_days_ago=10)
+        _seed_chapter(
+            clean_tables,
+            chapter_id=1,
+            video_id="vid_1",
+            session_date="2026-01-01",
+            relevance_score=5,
+            created_at_days_ago=10,
+        )
+        _seed_chapter(
+            clean_tables,
+            chapter_id=2,
+            video_id="vid_2",
+            session_date="2026-01-01",
+            relevance_score=2,
+            created_at_days_ago=10,
+        )
 
         rows = mod.select_chapters(limit=10)
 
@@ -309,14 +347,38 @@ class TestChapterOrderLive:
         (chapter 1: recent bucket, relevance_score=3). An inverted bucket
         predicate or CASE branch — see the mutation check — surfaces an
         old-bucket chapter here instead."""
-        _seed_chapter(clean_tables, chapter_id=1, video_id="vid_1",
-                      session_date="2026-01-01", relevance_score=3, created_at_days_ago=1)
-        _seed_chapter(clean_tables, chapter_id=2, video_id="vid_2",
-                      session_date="2026-06-01", relevance_score=1, created_at_days_ago=2)
-        _seed_chapter(clean_tables, chapter_id=3, video_id="vid_3",
-                      session_date="2026-12-01", relevance_score=5, created_at_days_ago=30)
-        _seed_chapter(clean_tables, chapter_id=4, video_id="vid_4",
-                      session_date="2026-11-01", relevance_score=5, created_at_days_ago=30)
+        _seed_chapter(
+            clean_tables,
+            chapter_id=1,
+            video_id="vid_1",
+            session_date="2026-01-01",
+            relevance_score=3,
+            created_at_days_ago=1,
+        )
+        _seed_chapter(
+            clean_tables,
+            chapter_id=2,
+            video_id="vid_2",
+            session_date="2026-06-01",
+            relevance_score=1,
+            created_at_days_ago=2,
+        )
+        _seed_chapter(
+            clean_tables,
+            chapter_id=3,
+            video_id="vid_3",
+            session_date="2026-12-01",
+            relevance_score=5,
+            created_at_days_ago=30,
+        )
+        _seed_chapter(
+            clean_tables,
+            chapter_id=4,
+            video_id="vid_4",
+            session_date="2026-11-01",
+            relevance_score=5,
+            created_at_days_ago=30,
+        )
 
         rows = mod.select_chapters(limit=1)
 
@@ -326,11 +388,22 @@ class TestChapterOrderLive:
         """AC7: already-attempted chapters stay excluded regardless of recency,
         session_date, or relevance_score — only the ORDER BY changed."""
         _seed_chapter(  # non-NULL turns_detected_at excludes it despite being
-            clean_tables, chapter_id=1, video_id="vid_1", session_date="2026-01-01",
-            relevance_score=5, created_at_days_ago=1, turns_detected_at="2026-08-01",
+            clean_tables,
+            chapter_id=1,
+            video_id="vid_1",
+            session_date="2026-01-01",
+            relevance_score=5,
+            created_at_days_ago=1,
+            turns_detected_at="2026-08-01",
         )
-        _seed_chapter(clean_tables, chapter_id=2, video_id="vid_2",
-                      session_date="2026-02-01", relevance_score=2, created_at_days_ago=10)
+        _seed_chapter(
+            clean_tables,
+            chapter_id=2,
+            video_id="vid_2",
+            session_date="2026-02-01",
+            relevance_score=2,
+            created_at_days_ago=10,
+        )
         with clean_tables.cursor() as cur:  # existing speaker_turns row excludes it
             cur.execute("INSERT INTO speaker_turns (chapter_id) VALUES (%s)", (2,))
         clean_tables.commit()

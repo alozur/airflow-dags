@@ -16,9 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-_SCRIPT = (
-    Path(__file__).resolve().parents[3] / "scripts" / "audit_turn_resolution_propagation.py"
-)
+_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "audit_turn_resolution_propagation.py"
 
 
 def _load_script():
@@ -206,10 +204,7 @@ class TestAuditQueryTemplateUnchanged:
 class TestMixedSlugQueryTemplate:
     def test_having_relaxes_both_counters_to_more_than_one(self):
         assert "COUNT(DISTINCT st.speaker_label) > 1" in audit.MIXED_SLUG_QUERY_TEMPLATE
-        assert (
-            "COUNT(DISTINCT stv.resolved_participant_slug) > 1"
-            in audit.MIXED_SLUG_QUERY_TEMPLATE
-        )
+        assert "COUNT(DISTINCT stv.resolved_participant_slug) > 1" in audit.MIXED_SLUG_QUERY_TEMPLATE
 
     def test_drops_the_all_non_null_requirement(self):
         assert "= COUNT(*)" not in audit.MIXED_SLUG_QUERY_TEMPLATE
@@ -400,9 +395,7 @@ class _FakePgConnection:
 class TestMain:
     def test_mode_uniform_runs_exactly_one_select(self, monkeypatch):
         call_log = []
-        monkeypatch.setattr(
-            audit, "PostgresConnection", lambda: _FakePgConnection([], [], call_log)
-        )
+        monkeypatch.setattr(audit, "PostgresConnection", lambda: _FakePgConnection([], [], call_log))
 
         exit_code = audit.main(["--mode", "uniform"])
 
@@ -411,9 +404,7 @@ class TestMain:
 
     def test_mode_mixed_runs_exactly_one_select(self, monkeypatch):
         call_log = []
-        monkeypatch.setattr(
-            audit, "PostgresConnection", lambda: _FakePgConnection([], [], call_log)
-        )
+        monkeypatch.setattr(audit, "PostgresConnection", lambda: _FakePgConnection([], [], call_log))
 
         exit_code = audit.main(["--mode", "mixed"])
 
@@ -422,9 +413,7 @@ class TestMain:
 
     def test_mode_both_runs_exactly_two_selects_and_returns_zero(self, monkeypatch):
         call_log = []
-        monkeypatch.setattr(
-            audit, "PostgresConnection", lambda: _FakePgConnection([], [], call_log)
-        )
+        monkeypatch.setattr(audit, "PostgresConnection", lambda: _FakePgConnection([], [], call_log))
 
         exit_code = audit.main(["--mode", "both"])
 
@@ -433,9 +422,7 @@ class TestMain:
 
     def test_default_argv_none_uses_mode_both(self, monkeypatch):
         call_log = []
-        monkeypatch.setattr(
-            audit, "PostgresConnection", lambda: _FakePgConnection([], [], call_log)
-        )
+        monkeypatch.setattr(audit, "PostgresConnection", lambda: _FakePgConnection([], [], call_log))
         monkeypatch.setattr("sys.argv", ["audit_turn_resolution_propagation.py"])
 
         exit_code = audit.main()

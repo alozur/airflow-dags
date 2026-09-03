@@ -5,6 +5,7 @@ Guards against the snapshot silently drifting from the latest applied view
 migration (currently 040) and from the live production DDL for the 11
 snapshotted base tables. Static SQL-text checks only — no DB connection.
 """
+
 from __future__ import annotations
 
 import re
@@ -12,12 +13,7 @@ from pathlib import Path
 
 import pytest
 
-SCHEMA_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "congress_videos"
-    / "sql"
-    / "production_schema.sql"
-)
+SCHEMA_PATH = Path(__file__).resolve().parents[3] / "congress_videos" / "sql" / "production_schema.sql"
 
 MIGRATION_PATH = (
     Path(__file__).resolve().parents[3]
@@ -76,65 +72,158 @@ def _table_block(table: str) -> str:
 # `\d production.<table>` DDL (canonical source), in FK-dependency order.
 TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
     "youtube_source_videos": (
-        "video_id", "video_title", "video_url", "session_number",
-        "session_date", "duration_seconds", "published_at", "channel_id",
-        "is_processed", "total_chapters", "created_at", "updated_at",
+        "video_id",
+        "video_title",
+        "video_url",
+        "session_number",
+        "session_date",
+        "duration_seconds",
+        "published_at",
+        "channel_id",
+        "is_processed",
+        "total_chapters",
+        "created_at",
+        "updated_at",
         "download_retry_after",
     ),
     "video_chapters": (
-        "chapter_id", "video_id", "title", "description", "start_time",
-        "end_time", "duration_minutes", "speakers", "topics",
-        "relevance_score", "speaker_relevance_points",
-        "topic_relevance_points", "public_interest_points",
-        "scoring_reasoning", "key_speakers", "is_current_topic",
-        "scoring_error", "scored_at", "is_uploaded_to_youtube",
-        "youtube_video_id", "youtube_upload_date", "created_at", "updated_at",
-        "timeline", "upload_attempts", "is_upload_abandoned",
-        "last_upload_error", "resolved_participant_slug", "turns_detected_at",
+        "chapter_id",
+        "video_id",
+        "title",
+        "description",
+        "start_time",
+        "end_time",
+        "duration_minutes",
+        "speakers",
+        "topics",
+        "relevance_score",
+        "speaker_relevance_points",
+        "topic_relevance_points",
+        "public_interest_points",
+        "scoring_reasoning",
+        "key_speakers",
+        "is_current_topic",
+        "scoring_error",
+        "scored_at",
+        "is_uploaded_to_youtube",
+        "youtube_video_id",
+        "youtube_upload_date",
+        "created_at",
+        "updated_at",
+        "timeline",
+        "upload_attempts",
+        "is_upload_abandoned",
+        "last_upload_error",
+        "resolved_participant_slug",
+        "turns_detected_at",
         "upload_verified_at",
     ),
     "llm_cache": ("cache_key", "model", "response", "created_at"),
     "congress_participants": (
-        "normalized_name", "display_name", "party", "parliamentary_group",
-        "constituency", "biography", "full_membership_date", "start_date",
-        "group_entry_date", "photo_url", "created_at", "updated_at",
-        "nickname", "slug",
+        "normalized_name",
+        "display_name",
+        "party",
+        "parliamentary_group",
+        "constituency",
+        "biography",
+        "full_membership_date",
+        "start_date",
+        "group_entry_date",
+        "photo_url",
+        "created_at",
+        "updated_at",
+        "nickname",
+        "slug",
     ),
     "speaker_normalization_cache": (
-        "id", "chapter_id", "dirty_speaker", "canonical_speaker",
-        "participant_normalized_name", "status", "confidence_score",
-        "created_at", "updated_at",
+        "id",
+        "chapter_id",
+        "dirty_speaker",
+        "canonical_speaker",
+        "participant_normalized_name",
+        "status",
+        "confidence_score",
+        "created_at",
+        "updated_at",
     ),
     "video_thumbnails": (
-        "thumbnail_id", "chapter_id", "youtube_video_id", "label", "style",
-        "prompt", "main_score", "local_path", "output_url", "openai_title",
-        "is_chosen", "created_at", "archetype", "art_direction_brief",
+        "thumbnail_id",
+        "chapter_id",
+        "youtube_video_id",
+        "label",
+        "style",
+        "prompt",
+        "main_score",
+        "local_path",
+        "output_url",
+        "openai_title",
+        "is_chosen",
+        "created_at",
+        "archetype",
+        "art_direction_brief",
     ),
     "speaker_turns": (
-        "turn_id", "chapter_id", "start_seconds", "end_seconds",
-        "speaker_label", "resolved_name", "confidence", "source",
-        "created_at", "updated_at", "interest_score", "is_procedural",
+        "turn_id",
+        "chapter_id",
+        "start_seconds",
+        "end_seconds",
+        "speaker_label",
+        "resolved_name",
+        "confidence",
+        "source",
+        "created_at",
+        "updated_at",
+        "interest_score",
+        "is_procedural",
         "procedural_reason",
     ),
     "speaker_turn_trim_proposals": (
-        "proposal_id", "turn_id", "start_seconds", "end_seconds", "tipo",
-        "score", "source", "is_voice_free", "created_at", "updated_at",
-        "is_approved", "approved_at",
+        "proposal_id",
+        "turn_id",
+        "start_seconds",
+        "end_seconds",
+        "tipo",
+        "score",
+        "source",
+        "is_voice_free",
+        "created_at",
+        "updated_at",
+        "is_approved",
+        "approved_at",
     ),
     "speaker_turn_videos": (
-        "video_id", "turn_id", "output_path", "materialized_at",
-        "is_uploaded_to_youtube", "youtube_video_id", "youtube_upload_date",
-        "prepared_at", "upload_verified_at", "upload_attempts",
-        "is_upload_abandoned", "last_upload_error", "turn_type",
-        "resolved_participant_slug", "speaker_resolution_confidence",
-        "speaker_resolution_method", "keep_intervals",
-        "thumbnail_republish_needed_at", "thumbnail_republished_at",
-        "thumbnail_republish_attempts", "thumbnail_republish_abandoned",
+        "video_id",
+        "turn_id",
+        "output_path",
+        "materialized_at",
+        "is_uploaded_to_youtube",
+        "youtube_video_id",
+        "youtube_upload_date",
+        "prepared_at",
+        "upload_verified_at",
+        "upload_attempts",
+        "is_upload_abandoned",
+        "last_upload_error",
+        "turn_type",
+        "resolved_participant_slug",
+        "speaker_resolution_confidence",
+        "speaker_resolution_method",
+        "keep_intervals",
+        "thumbnail_republish_needed_at",
+        "thumbnail_republished_at",
+        "thumbnail_republish_attempts",
+        "thumbnail_republish_abandoned",
         "last_thumbnail_republish_error",
     ),
     "video_analytics_snapshots": (
-        "snapshot_id", "chapter_id", "youtube_video_id", "checkpoint",
-        "metrics", "action_taken", "collected_at", "action_detail",
+        "snapshot_id",
+        "chapter_id",
+        "youtube_video_id",
+        "checkpoint",
+        "metrics",
+        "action_taken",
+        "collected_at",
+        "action_detail",
     ),
 }
 
@@ -155,7 +244,6 @@ FK_QUALIFICATIONS: tuple[tuple[str, str], ...] = (
 
 
 class TestProductionSchemaFileExists:
-
     def test_schema_file_exists(self):
         """production_schema.sql must exist at the expected path."""
         assert SCHEMA_PATH.exists(), f"Schema file not found: {SCHEMA_PATH}"
@@ -224,12 +312,12 @@ class TestUploadableTurns035GroupSpans:
 
     def test_cte_computes_min_start_and_max_end(self):
         sql = self._sql().upper()
-        assert re.search(
-            r"MIN\s*\(\s*ST\.START_SECONDS\s*\)\s+AS\s+GROUP_START_SECONDS", sql
-        ), "CTE must compute MIN(st.start_seconds) AS group_start_seconds"
-        assert re.search(
-            r"MAX\s*\(\s*ST\.END_SECONDS\s*\)\s+AS\s+GROUP_END_SECONDS", sql
-        ), "CTE must compute MAX(st.end_seconds) AS group_end_seconds"
+        assert re.search(r"MIN\s*\(\s*ST\.START_SECONDS\s*\)\s+AS\s+GROUP_START_SECONDS", sql), (
+            "CTE must compute MIN(st.start_seconds) AS group_start_seconds"
+        )
+        assert re.search(r"MAX\s*\(\s*ST\.END_SECONDS\s*\)\s+AS\s+GROUP_END_SECONDS", sql), (
+            "CTE must compute MAX(st.end_seconds) AS group_end_seconds"
+        )
 
     def test_cte_groups_by_output_path(self):
         sql = self._sql().upper()
@@ -237,9 +325,9 @@ class TestUploadableTurns035GroupSpans:
 
     def test_joins_group_spans_back_on_output_path(self):
         sql = self._sql().upper()
-        assert re.search(
-            r"JOIN\s+GROUP_SPANS\s+GS\s+ON\s+GS\.OUTPUT_PATH\s*=\s*STV\.OUTPUT_PATH", sql
-        ), "Must JOIN group_spans gs ON gs.output_path = stv.output_path"
+        assert re.search(r"JOIN\s+GROUP_SPANS\s+GS\s+ON\s+GS\.OUTPUT_PATH\s*=\s*STV\.OUTPUT_PATH", sql), (
+            "Must JOIN group_spans gs ON gs.output_path = stv.output_path"
+        )
 
     def test_outer_where_enforces_300_second_floor(self):
         sql = self._sql().upper()
@@ -260,9 +348,9 @@ class TestUploadableTurns040ProceduralGate:
 
     def test_inner_where_excludes_procedural_turns(self):
         sql = self._sql().upper()
-        assert re.search(
-            r"NOT\s+COALESCE\s*\(\s*ST\.IS_PROCEDURAL\s*,\s*FALSE\s*\)", sql
-        ), "Snapshot must gate on NOT COALESCE(st.is_procedural, FALSE)"
+        assert re.search(r"NOT\s+COALESCE\s*\(\s*ST\.IS_PROCEDURAL\s*,\s*FALSE\s*\)", sql), (
+            "Snapshot must gate on NOT COALESCE(st.is_procedural, FALSE)"
+        )
 
     def test_cte_computes_procedural_seconds(self):
         sql = self._sql().upper()
@@ -307,9 +395,7 @@ class TestProductionQualification:
     )
     def test_base_table_is_qualified(self, table):
         block = self._view_block()
-        assert f"production.{table}" in block, (
-            f"Base table {table} must appear qualified as production.{table}"
-        )
+        assert f"production.{table}" in block, f"Base table {table} must appear qualified as production.{table}"
 
     def test_group_spans_cte_reference_stays_unqualified(self):
         block = self._view_block().upper()
@@ -374,15 +460,13 @@ class TestVideoShortsTableSnapshot:
     def test_column_present_in_block(self, column):
         block = self._video_shorts_block().upper()
         assert re.search(rf"\b{column.upper()}\b", block), (
-            f"video_shorts column {column!r} missing from the extracted "
-            "CREATE TABLE block"
+            f"video_shorts column {column!r} missing from the extracted CREATE TABLE block"
         )
 
     def test_chapter_id_fk_is_production_qualified(self):
         block = re.sub(r"\s+", " ", self._video_shorts_block()).upper()
         assert "REFERENCES PRODUCTION.VIDEO_CHAPTERS(CHAPTER_ID) ON DELETE CASCADE" in block, (
-            "video_shorts.chapter_id must reference production.video_chapters "
-            "with an explicit schema qualification"
+            "video_shorts.chapter_id must reference production.video_chapters with an explicit schema qualification"
         )
 
 
@@ -403,16 +487,13 @@ class TestRemainingBaseTableSnapshots:
     def test_column_present_in_block(self, table, column):
         block = _table_block(table).upper()
         assert re.search(rf"\b{column.upper()}\b", block), (
-            f"{table} column {column!r} missing from the extracted "
-            "CREATE TABLE block"
+            f"{table} column {column!r} missing from the extracted CREATE TABLE block"
         )
 
     @pytest.mark.parametrize("table,references", FK_QUALIFICATIONS)
     def test_fk_is_production_qualified(self, table, references):
         block = re.sub(r"\s+", " ", _table_block(table)).upper()
-        assert references in block, (
-            f"{table} must carry an explicitly schema-qualified FK: {references}"
-        )
+        assert references in block, f"{table} must carry an explicitly schema-qualified FK: {references}"
 
     @pytest.mark.parametrize("table", (*TABLE_COLUMNS, "video_shorts"))
     def test_extracted_block_has_balanced_parens(self, table):
@@ -420,8 +501,7 @@ class TestRemainingBaseTableSnapshots:
         and would silently weaken every assertion above."""
         body = re.sub(r"--[^\n]*", "", _table_block(table))
         assert body.count("(") == body.count(")"), (
-            f"{table} block extraction stopped early — a literal '); ' appears "
-            "before the table's own closing paren"
+            f"{table} block extraction stopped early — a literal '); ' appears before the table's own closing paren"
         )
 
 
@@ -478,9 +558,9 @@ class TestChaptersSnapshotLockstepWithMigration038:
         snapshot_sql = SCHEMA_PATH.read_text(encoding="utf-8")
         migration_sql = MIGRATION_038_PATH.read_text(encoding="utf-8")
 
-        assert _normalize_view_sql(
-            snapshot_sql, "UPLOADABLE_CHAPTERS"
-        ) == _normalize_view_sql(migration_sql, "UPLOADABLE_CHAPTERS"), (
+        assert _normalize_view_sql(snapshot_sql, "UPLOADABLE_CHAPTERS") == _normalize_view_sql(
+            migration_sql, "UPLOADABLE_CHAPTERS"
+        ), (
             "production_schema.sql's uploadable_chapters view has drifted from "
             "migration 038 — update the snapshot to stay in lockstep"
         )

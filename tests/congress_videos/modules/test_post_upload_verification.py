@@ -5,6 +5,7 @@ Covers:
 - Phase 3: select_unverified_uploads, mark_upload_verified,
            record_upload_verification_failure DB methods
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, call, patch
@@ -14,6 +15,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_youtube_service_stub(
     *,
@@ -47,9 +49,7 @@ class TestCheckVideoStatusOembedOk:
         mock_requests.get.return_value = mock_requests.make_response(200)
         from congress_videos.modules.post_upload_verification import check_video_status
 
-        status, detail = check_video_status(
-            "abc123", http_get=mock_requests.get, youtube_service=None
-        )
+        status, detail = check_video_status("abc123", http_get=mock_requests.get, youtube_service=None)
         assert status == "ok"
 
     def test_oembed_200_does_not_call_api(self, mock_requests):
@@ -193,9 +193,7 @@ class TestSelectUnverifiedUploads:
 
     def test_chapter_in_window_returned(self, mock_psycopg2_connection):
         _, _, mock_cursor = mock_psycopg2_connection
-        mock_cursor.fetchall.return_value = [
-            {"chapter_id": 1, "youtube_video_id": "abc", "item_type": "chapter"}
-        ]
+        mock_cursor.fetchall.return_value = [{"chapter_id": 1, "youtube_video_id": "abc", "item_type": "chapter"}]
 
         from congress_videos.modules.database import CongressionalVideoDB
 
@@ -337,6 +335,7 @@ class TestRecordUploadVerificationFailure:
         """When upload_attempts reaches threshold → is_upload_abandoned=TRUE."""
         _, _, mock_cursor = mock_psycopg2_connection
         from congress_videos.modules.database import CHAPTER_UPLOAD_ABANDON_THRESHOLD
+
         mock_cursor.fetchone.return_value = {
             "upload_attempts": CHAPTER_UPLOAD_ABANDON_THRESHOLD,
             "is_upload_abandoned": True,
