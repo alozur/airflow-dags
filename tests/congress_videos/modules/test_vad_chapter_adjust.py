@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import copy
 
-import pytest
-
 from congress_videos.modules.vad_helpers import trim_chapter_silence_with_vad
 from utils.time_utils import parse_timestamp
 

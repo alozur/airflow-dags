@@ -655,7 +655,7 @@ class TestFilterUnprocessedVideos:
 # filter_finished_streams — pre-branch readiness gate
 # --------------------------------------------------------------------------- #
 
-from datetime import UTC, datetime, timedelta, timezone  # noqa: E402 - scoped near its usage, not a sys.path hack
+from datetime import UTC, datetime, timedelta  # noqa: E402 - scoped near its usage, not a sys.path hack
 
 
 def _iso_minutes_ago(minutes: int) -> str:

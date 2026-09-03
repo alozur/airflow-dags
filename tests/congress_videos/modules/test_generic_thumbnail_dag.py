@@ -19,11 +19,10 @@ Test groups:
 from __future__ import annotations
 
 import importlib
-import os
 import re
 import sys
 from datetime import UTC
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -100,7 +99,7 @@ class TestDagSchedule:
         value — a `datetime.now() - timedelta(...)` default silently shifts on
         every DAG-file parse and can trigger a spurious catchup/backfill run
         on a schedule=None DAG (issue #206)."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         dag = self.mod.dag
         assert dag.start_date == datetime(2025, 1, 1, tzinfo=UTC)

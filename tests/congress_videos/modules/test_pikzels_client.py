@@ -7,7 +7,6 @@ on the first run with ImportError or AttributeError.
 from __future__ import annotations
 
 import base64
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -80,7 +79,6 @@ class TestMissingApiKey:
         """No PIKZELS_API_KEY → EnvironmentError naming the variable."""
         monkeypatch.delenv("PIKZELS_API_KEY", raising=False)
         # Re-import to bypass any module-level caching
-        import importlib
         import sys
 
         sys.modules.pop("congress_videos.modules.pikzels_client", None)

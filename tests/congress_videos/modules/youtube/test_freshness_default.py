@@ -9,7 +9,6 @@ Verifies three sites:
 from __future__ import annotations
 
 import inspect
-import os
 from datetime import UTC
 from unittest.mock import MagicMock, patch
 
@@ -33,7 +32,7 @@ class TestGetVideoDetailsFunctionSignatureDefault:
 
     def test_video_ended_3h_ago_is_excluded_with_default(self):
         """With the default 12h margin, a video that ended 3h ago is skipped."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         from unittest.mock import MagicMock, patch
 
         video_id = "EXCLUDED_3H"
@@ -77,7 +76,7 @@ class TestGetVideoDetailsFunctionSignatureDefault:
 
     def test_video_ended_13h_ago_is_included_with_default(self):
         """With the default 12h margin, a video that ended 13h ago is included."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         from unittest.mock import MagicMock, patch
 
         video_id = "INCLUDED_13H"
@@ -121,7 +120,7 @@ class TestGetVideoDetailsFunctionSignatureDefault:
 
     def test_custom_override_of_6_still_honored(self):
         """When min_hours_since_end=6, a video that ended 7h ago is eligible."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         from unittest.mock import MagicMock, patch
 
         video_id = "CUSTOM_7H"
@@ -180,7 +179,6 @@ class TestDAGFreshnessDefault:
         min_hours_since_end is absent from params, and confirming get_video_details
         is called with min_hours_since_end=12 (not 2).
         """
-        import importlib
         import sys
 
         # Ensure the DAG module is freshly loaded

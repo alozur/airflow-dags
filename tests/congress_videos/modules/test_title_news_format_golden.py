@@ -19,9 +19,6 @@ Test group: TestNewsFormatGoldenSnapshots
 from __future__ import annotations
 
 import re
-from unittest.mock import patch
-
-import pytest
 
 # ---------------------------------------------------------------------------
 # Hard-coded canned LLM responses — human-reviewed snapshots.
