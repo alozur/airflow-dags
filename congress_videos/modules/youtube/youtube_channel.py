@@ -8,8 +8,7 @@ specifically for monitoring the Congress YouTube channel for plenary sessions.
 import logging
 import os
 import re
-from datetime import UTC, datetime, timedelta, timezone
-from urllib.parse import urlparse
+from datetime import UTC, datetime, timedelta
 
 import requests
 from bs4 import BeautifulSoup

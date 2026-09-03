@@ -23,7 +23,6 @@ purpose by adding an entry to ``TOKEN_SCOPES``.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
 from congress_videos.config.paths import YOUTUBE_TOKENS_DIR

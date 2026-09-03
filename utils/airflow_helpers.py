@@ -1,8 +1,8 @@
 # dags/repo/utils/airflow_helpers.py
 import os
 from collections.abc import Callable, Iterable
-from datetime import UTC, datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from airflow.models.taskinstance import TaskInstance
 
