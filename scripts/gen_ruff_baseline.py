@@ -30,10 +30,23 @@ import argparse
 import difflib
 import json
 import sys
+import tomllib
 from pathlib import Path
 
 BEGIN_SENTINEL = "# --- ruff baseline: generated, do not edit by hand ---"
 END_SENTINEL = "# --- end ruff baseline ---"
+
+# Permanent entry, never part of the generated/drift-checked baseline growth.
+PERMANENT_INIT_PY_KEY = "__init__.py"
+
+
+class BaselineFormatError(RuntimeError):
+    """The committed `pyproject.toml` baseline region is missing or unparsable."""
+
+
+class DiagnosticsInputError(RuntimeError):
+    """The ruff JSON diagnostics stream on stdin is empty, malformed, or shaped wrong."""
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
@@ -58,8 +71,16 @@ def build_entries(diagnostics: list[dict]) -> dict[str, list[str]]:
     """Group ruff JSON diagnostics into {relative_path: sorted deduped codes}."""
     grouped: dict[str, set[str]] = {}
     for diag in diagnostics:
-        rel_path = repo_relative_posix(diag["filename"])
-        grouped.setdefault(rel_path, set()).add(diag["code"])
+        try:
+            rel_path = repo_relative_posix(diag["filename"])
+            code = diag["code"]
+        except (KeyError, TypeError) as exc:
+            raise DiagnosticsInputError(f"malformed ruff diagnostic entry: {diag!r}") from exc
+        if code is None:
+            raise DiagnosticsInputError(
+                f"diagnostic for {rel_path!r} has code=null (a syntax error cannot be baselined): {diag!r}"
+            )
+        grouped.setdefault(rel_path, set()).add(code)
     return {path: sorted(codes) for path, codes in sorted(grouped.items())}
 
 
@@ -99,11 +120,42 @@ def replace_region(text: str, new_block: str) -> str:
     return text[:start] + new_block.rstrip("\n") + text[end:]
 
 
+def parse_committed_entries(pyproject_text: str) -> dict[str, list[str]]:
+    """Parse the committed sentinel-delimited region back into {path: codes}.
+
+    Inverse of `render_block`: reads the TOML region as-is, drops the
+    permanent `__init__.py` entry (never part of generated baseline growth),
+    and never sees anything outside the sentinels — a decoy
+    `[tool.ruff.lint.per-file-ignores]` table elsewhere in the file is
+    excluded by construction, not by special-casing it here.
+    """
+    try:
+        region = extract_region(pyproject_text)
+        parsed = tomllib.loads(region)
+    except ValueError as exc:
+        raise BaselineFormatError(f"committed ruff baseline region is missing or malformed: {exc}") from exc
+
+    try:
+        per_file_ignores = parsed["tool"]["ruff"]["lint"]["per-file-ignores"]
+    except KeyError as exc:
+        raise BaselineFormatError(
+            "committed ruff baseline region has no [tool.ruff.lint.per-file-ignores] table"
+        ) from exc
+
+    return {path: sorted(codes) for path, codes in per_file_ignores.items() if path != PERMANENT_INIT_PY_KEY}
+
+
 def load_diagnostics(stream) -> list[dict]:
     raw = stream.read()
     if not raw.strip():
-        return []
-    return json.loads(raw)
+        raise DiagnosticsInputError("stdin was empty or whitespace-only — pass ruff JSON diagnostics, not nothing")
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise DiagnosticsInputError(f"stdin is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, list):
+        raise DiagnosticsInputError(f"expected a JSON array of ruff diagnostics, got {type(parsed).__name__}")
+    return parsed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -137,34 +189,42 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    diagnostics = load_diagnostics(sys.stdin)
-    entries = build_entries(diagnostics)
-    new_block = render_block(entries, args.base_sha, args.ruff_version)
+    try:
+        diagnostics = load_diagnostics(sys.stdin)
+        entries = build_entries(diagnostics)
+        new_block = render_block(entries, args.base_sha, args.ruff_version)
 
-    pyproject_text = args.pyproject.read_text(encoding="utf-8")
+        pyproject_text = args.pyproject.read_text(encoding="utf-8")
 
-    if args.write:
-        updated = replace_region(pyproject_text, new_block)
-        args.pyproject.write_text(updated, encoding="utf-8")
-        print(f"Wrote {len(entries)} generated entries to {args.pyproject}")
-        return 0
-
-    if args.check:
-        current_region = extract_region(pyproject_text)
-        if current_region.rstrip("\n") == new_block.rstrip("\n"):
-            print("No drift: baseline is up to date.")
+        if args.write:
+            updated = replace_region(pyproject_text, new_block)
+            args.pyproject.write_text(updated, encoding="utf-8")
+            print(f"Wrote {len(entries)} generated entries to {args.pyproject}")
             return 0
-        diff = difflib.unified_diff(
-            current_region.splitlines(keepends=True),
-            new_block.splitlines(keepends=True),
-            fromfile="pyproject.toml (current)",
-            tofile="pyproject.toml (regenerated)",
-        )
-        sys.stdout.writelines(diff)
-        return 1
 
-    sys.stdout.write(new_block)
-    return 0
+        if args.check:
+            current_region = extract_region(pyproject_text)
+            if current_region.rstrip("\n") == new_block.rstrip("\n"):
+                print("No drift: baseline is up to date.")
+                return 0
+            diff = difflib.unified_diff(
+                current_region.splitlines(keepends=True),
+                new_block.splitlines(keepends=True),
+                fromfile="pyproject.toml (current)",
+                tofile="pyproject.toml (regenerated)",
+            )
+            sys.stdout.writelines(diff)
+            return 1
+
+        sys.stdout.write(new_block)
+        return 0
+    except (BaselineFormatError, DiagnosticsInputError, ValueError) as exc:
+        # ValueError is caught here too: extract_region() (used directly by
+        # --check, above) raises it on a missing sentinel, and this is the
+        # same class of "input is not shaped right" failure as the two named
+        # errors above — it must exit 2 in every mode, not just --write.
+        print(f"gen_ruff_baseline: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
