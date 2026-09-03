@@ -24,6 +24,12 @@ from utils.llm_cache import cached_json_completion
 from utils.llm_config import LLM_CHEAP, LLM_DEFAULT
 from utils.time_utils import format_youtube_timestamp, parse_timestamp
 
+# Fallback topic sentence used when main_topic_content is unavailable in the
+# YouTube description generation error path. Kept as a plain module constant
+# (not inlined) because a `\` line continuation is illegal inside an f-string
+# replacement field.
+_FALLBACK_MAIN_TOPIC_SENTENCE = "En esta sesión parlamentaria se abordan temas de actualidad política nacional."
+
 _SPANISH_MONTHS = {
     1: "enero",
     2: "febrero",
@@ -143,9 +149,10 @@ def generate_youtube_description(main_topic_content, speakers_info, video_metada
         # Fallback description with better structure
         fallback_description = f"""🏛️ Debate en el Congreso de los Diputados
 
-{main_topic_content[:200] if main_topic_content else "En esta sesión parlamentaria se abordan temas de actualidad política nacional."}
+{main_topic_content[:200] if main_topic_content else _FALLBACK_MAIN_TOPIC_SENTENCE}
 
-Este vídeo forma parte de las sesiones de control al Gobierno, donde los diputados formulan preguntas y el Ejecutivo responde sobre diversos asuntos de interés público.
+Este vídeo forma parte de las sesiones de control al Gobierno, donde los diputados formulan preguntas \
+y el Ejecutivo responde sobre diversos asuntos de interés público.
 
 📺 INFORMACIÓN DE LA SESIÓN
 🏛️ Sesión Plenaria Nº {session_number}
@@ -336,7 +343,8 @@ def generate_youtube_metadata_for_selected_videos(top_videos):
             metadata_results["failed_generations"] += 1
 
     logging.info(
-        f"YouTube metadata generation complete: {metadata_results['successful_generations']}/{metadata_results['total_videos']} chapters processed successfully"
+        f"YouTube metadata generation complete: {metadata_results['successful_generations']}/"
+        f"{metadata_results['total_videos']} chapters processed successfully"
     )
     return metadata_results
 
@@ -561,10 +569,12 @@ def score_chapters_relevance(merged_chapters):
         scored_results["total_videos"] += 1
 
     logging.info(
-        f"Chapter relevance scoring complete: {scored_results['successful_scores']}/{scored_results['total_chapters_scored']} chapters scored successfully"
+        f"Chapter relevance scoring complete: {scored_results['successful_scores']}/"
+        f"{scored_results['total_chapters_scored']} chapters scored successfully"
     )
     logging.info(
-        f"Processed {scored_results['total_videos']} videos with a total of {scored_results['total_chapters_scored']} chapters"
+        f"Processed {scored_results['total_videos']} videos with a total of "
+        f"{scored_results['total_chapters_scored']} chapters"
     )
 
     return scored_results
