@@ -131,6 +131,7 @@ DiarizeFn = Callable[[str, float], list[dict]]
 # Regex patterns (compiled once, accent-tolerant)
 # ---------------------------------------------------------------------------
 
+
 def _normalize_text(text: str) -> str:
     """Strip diacritics for accent-tolerant matching."""
     return unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode("ascii")
@@ -304,9 +305,7 @@ def _union_length(spans: list[tuple[int, int]]) -> int:
     return sum(end - start for start, end in merged)
 
 
-def is_procedural_turn(
-    text: str, duration_seconds: float, *, qa_context: bool = False
-) -> tuple[bool, str | None]:
+def is_procedural_turn(text: str, duration_seconds: float, *, qa_context: bool = False) -> tuple[bool, str | None]:
     """Pure AND-gate: duration <= 15s AND phrase coverage >= threshold. Never raises.
 
     Coverage is computed on the turn's OWN accent-stripped, lowercased,
@@ -363,10 +362,7 @@ def is_procedural_turn(
         return (False, None)
 
     qa_marker = " qa_context" if qa_context else ""
-    reason = (
-        f"dur={duration_seconds:.1f}s coverage={coverage:.2f}{qa_marker} "
-        f"patterns={','.join(matched_names)}"
-    )
+    reason = f"dur={duration_seconds:.1f}s coverage={coverage:.2f}{qa_marker} patterns={','.join(matched_names)}"
     return (True, reason)
 
 
@@ -376,9 +372,7 @@ def _turn_window_text(srt_blocks: list[dict], start: float, end: float) -> str:
     Overlap predicate matches ``extract_announcement``/``_window_srt_text``:
     ``block.start_secs < end AND block.end_secs > start``. Pure; no I/O.
     """
-    return " ".join(
-        b["text"] for b in srt_blocks if b["start_secs"] < end and b["end_secs"] > start
-    )
+    return " ".join(b["text"] for b in srt_blocks if b["start_secs"] < end and b["end_secs"] > start)
 
 
 # ---------------------------------------------------------------------------
@@ -412,10 +406,7 @@ def extract_announcement(
     lo = t - window
 
     # Collect blocks fully contained in [lo, t] — backward-only.
-    window_blocks = [
-        b for b in srt_blocks
-        if b["start_secs"] >= lo and b["end_secs"] <= t
-    ]
+    window_blocks = [b for b in srt_blocks if b["start_secs"] >= lo and b["end_secs"] <= t]
 
     if not window_blocks:
         return (None, False)
@@ -684,10 +675,7 @@ def _llm_resolve_name(
         return None
 
     lo = t - ANNOUNCEMENT_WINDOW_SECONDS
-    intro_blocks = [
-        b for b in srt_blocks
-        if b["start_secs"] >= lo and b["end_secs"] <= t
-    ]
+    intro_blocks = [b for b in srt_blocks if b["start_secs"] >= lo and b["end_secs"] <= t]
     if not intro_blocks:
         return None
 
@@ -703,7 +691,8 @@ def _llm_resolve_name(
     except Exception as exc:  # noqa: BLE001 never raise
         log.warning(
             "_llm_resolve_name: completion_fn raised (%s: %s) — falling back to acoustic",
-            type(exc).__name__, exc,
+            type(exc).__name__,
+            exc,
         )
         return None
 
@@ -813,6 +802,7 @@ def _apply_text_gate(
             source = "acoustic"
             confidence = 0.50
             if completion_fn is not None and llm_calls_made < max_llm_calls:
+
                 def _counting_completion_fn(system, user, **kw):
                     nonlocal llm_calls_made
                     llm_calls_made += 1
@@ -825,14 +815,16 @@ def _apply_text_gate(
                     confidence = LLM_RESOLVED_CONFIDENCE
 
         end_seconds = seg.get("end_seconds", t)
-        turns.append(Turn(
-            start_seconds=t,
-            end_seconds=end_seconds,
-            speaker_label=speaker_label,
-            resolved_name=resolved_name,
-            confidence=confidence,
-            source=source,
-        ))
+        turns.append(
+            Turn(
+                start_seconds=t,
+                end_seconds=end_seconds,
+                speaker_label=speaker_label,
+                resolved_name=resolved_name,
+                confidence=confidence,
+                source=source,
+            )
+        )
 
     return turns
 
@@ -878,6 +870,7 @@ def detect_turns(
     """
     if name_resolver is None:
         from congress_videos.modules.participants_db import lookup_participant_fuzzy
+
         name_resolver = lookup_participant_fuzzy
 
     chapter_id = chapter.get("chapter_id")
@@ -933,9 +926,7 @@ def detect_turns(
 # ---------------------------------------------------------------------------
 
 
-def _upsert_turns(
-    cursor, chapter_id: int, turns: list[Turn], table: str = "speaker_turns"
-) -> None:
+def _upsert_turns(cursor, chapter_id: int, turns: list[Turn], table: str = "speaker_turns") -> None:
     """Upsert Turn records into the speaker_turns table.
 
     Each Turn is inserted; conflicts on (chapter_id, start_seconds) update
@@ -973,14 +964,17 @@ def _upsert_turns(
     """
 
     for turn in turns:
-        cursor.execute(sql, (
-            chapter_id,
-            turn.start_seconds,
-            turn.end_seconds,
-            turn.speaker_label,
-            turn.resolved_name,
-            turn.confidence,
-            turn.source,
-            turn.is_procedural,
-            turn.procedural_reason,
-        ))
+        cursor.execute(
+            sql,
+            (
+                chapter_id,
+                turn.start_seconds,
+                turn.end_seconds,
+                turn.speaker_label,
+                turn.resolved_name,
+                turn.confidence,
+                turn.source,
+                turn.is_procedural,
+                turn.procedural_reason,
+            ),
+        )

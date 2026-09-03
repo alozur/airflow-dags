@@ -51,7 +51,6 @@ with DAG(
     max_active_runs=1,
     tags=["congress", "participants", "sync"],
 ) as dag:
-
     t1 = PythonOperator(
         task_id="fetch_and_parse",
         python_callable=lambda ti, **ctx: xcom_task(
@@ -65,9 +64,7 @@ with DAG(
         task_id="upsert_participants",
         python_callable=lambda ti, **ctx: xcom_task(
             ti,
-            lambda: CongressParticipantsDB().upsert_batch(
-                ti.xcom_pull(key="participants")
-            ),
+            lambda: CongressParticipantsDB().upsert_batch(ti.xcom_pull(key="participants")),
             "upsert_result",
         ),
     )

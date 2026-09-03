@@ -74,7 +74,7 @@ def get_processed_video_ids(self, video_ids: list[str]) -> set[str]:
     if not video_ids:
         return set()
 
-    youtube_videos_table = self.pg_conn.get_qualified_table('youtube_source_videos')
+    youtube_videos_table = self.pg_conn.get_qualified_table("youtube_source_videos")
 
     with self.pg_conn.get_connection() as conn:
         with conn.cursor() as cur:
@@ -86,7 +86,7 @@ def get_processed_video_ids(self, video_ids: list[str]) -> set[str]:
                 """,
                 (video_ids,),
             )
-            return {row['video_id'] for row in cur.fetchall()}
+            return {row["video_id"] for row in cur.fetchall()}
 ```
 Notas: `ANY(%s)` + `list` es el idiom correcto psycopg2 (NO `IN %s`). Guard de empty nunca toca SQL.
 Type hints builtin (`list[str]`/`set[str]`) per py312. Lookup por PK → indexado barato.
@@ -105,27 +105,31 @@ def filter_unprocessed_videos(plenary_videos: dict) -> dict:
     PRODUCTION path only (test mode never reaches this task).
     """
     import logging
-    if not plenary_videos or not plenary_videos.get('videos'):
-        return plenary_videos or {'total_matches': 0, 'videos': []}
+
+    if not plenary_videos or not plenary_videos.get("videos"):
+        return plenary_videos or {"total_matches": 0, "videos": []}
 
     from congress_videos.modules.database import CongressionalVideoDB
 
-    videos = plenary_videos['videos']
-    video_ids = [v['video_id'] for v in videos if v.get('video_id')]
+    videos = plenary_videos["videos"]
+    video_ids = [v["video_id"] for v in videos if v.get("video_id")]
 
     db = CongressionalVideoDB()
     already_processed = db.get_processed_video_ids(video_ids)
 
-    kept = [v for v in videos if v.get('video_id') not in already_processed]
+    kept = [v for v in videos if v.get("video_id") not in already_processed]
     skipped = len(videos) - len(kept)
     logging.info(
         "Idempotency filter: %d candidate(s), %d already processed, %d to process. Skipped ids: %s",
-        len(videos), skipped, len(kept), sorted(already_processed),
+        len(videos),
+        skipped,
+        len(kept),
+        sorted(already_processed),
     )
 
-    result = dict(plenary_videos)            # preserve target_date + any extra keys
-    result['videos'] = kept
-    result['total_matches'] = len(kept)
+    result = dict(plenary_videos)  # preserve target_date + any extra keys
+    result["videos"] = kept
+    result["total_matches"] = len(kept)
     return result
 ```
 Import de DB DENTRO del cuerpo (módulo DB-free en import). Tests parchean
@@ -144,13 +148,11 @@ Import de DB DENTRO del cuerpo (módulo DB-free en import). Tests parchean
 # Runs BEFORE any download/transcription. PRODUCTION path only
 # (test path goes t0_test >> [t3a, t3b] and never reaches this task).
 t2b = PythonOperator(
-    task_id='filter_unprocessed_videos',
+    task_id="filter_unprocessed_videos",
     python_callable=lambda ti: xcom_task(
         ti,
-        lambda: yt_channel.filter_unprocessed_videos(
-            ti.xcom_pull(key='plenary_videos')
-        ),
-        'plenary_videos',          # overwrite same key
+        lambda: yt_channel.filter_unprocessed_videos(ti.xcom_pull(key="plenary_videos")),
+        "plenary_videos",  # overwrite same key
     ),
 )
 ```

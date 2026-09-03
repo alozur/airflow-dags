@@ -148,13 +148,8 @@ def _select_task(**context) -> list[dict]:
         "st.turn_id, st.chapter_id, vc.video_id, st.start_seconds, st.end_seconds, "
         "st.resolved_name, st.speaker_label, st.is_procedural"
     )
-    base = (
-        f"SELECT {cols} FROM {turns_table} st "
-        f"JOIN {chapters_table} vc ON vc.chapter_id = st.chapter_id"
-    )
-    pending_predicate = (
-        f"NOT EXISTS (SELECT 1 FROM {stv_table} v WHERE v.turn_id = st.turn_id)"
-    )
+    base = f"SELECT {cols} FROM {turns_table} st JOIN {chapters_table} vc ON vc.chapter_id = st.chapter_id"
+    pending_predicate = f"NOT EXISTS (SELECT 1 FROM {stv_table} v WHERE v.turn_id = st.turn_id)"
 
     with pg.get_connection() as conn:
         with conn.cursor() as cur:
@@ -179,7 +174,11 @@ def _select_task(**context) -> list[dict]:
                 turns = [dict(row) for row in cur.fetchall()]
             else:
                 turns = _select_automatic_chapter(
-                    cur, turns_table, stv_table, base, pending_predicate,
+                    cur,
+                    turns_table,
+                    stv_table,
+                    base,
+                    pending_predicate,
                 )
 
             # Scoped runs select the full chapter/video on purpose, so they
@@ -199,7 +198,11 @@ def _select_task(**context) -> list[dict]:
 
 
 def _select_automatic_chapter(
-    cur, turns_table: str, stv_table: str, base: str, pending_predicate: str,
+    cur,
+    turns_table: str,
+    stv_table: str,
+    base: str,
+    pending_predicate: str,
 ) -> list[dict]:
     """Choose one complete pending chapter, then select its pending turns.
 
@@ -274,24 +277,21 @@ def _materialize_task(**context) -> dict:
             # RealDictCursor rows are dict-like.
             approved_trims = [dict(row) for row in cur.fetchall()]
 
-        resolved_by_id: dict[int, str | None] = {
-            t["turn_id"]: t.get("resolved_name") for t in turns
-        }
+        resolved_by_id: dict[int, str | None] = {t["turn_id"]: t.get("resolved_name") for t in turns}
         turn_rows_by_id: dict[int, dict] = {t["turn_id"]: t for t in turns}
         plans = plan_turn_materialization(turns, approved_trims)
 
         for plan in plans:
             # Use first turn in plan to locate source video
-            first_turn = next(
-                t for t in turns if t["turn_id"] == plan.turn_ids[0]
-            )
+            first_turn = next(t for t in turns if t["turn_id"] == plan.turn_ids[0])
             video_id = str(first_turn["video_id"])
 
             source_path = _find_source_video_any_date(video_id)
             if not source_path:
                 logger.warning(
                     "speaker_turn_videos: no source video for video_id=%s — skipping plan turn_ids=%s",
-                    video_id, plan.turn_ids,
+                    video_id,
+                    plan.turn_ids,
                 )
                 summary["skipped"] += len(plan.turn_ids)
                 continue
@@ -300,10 +300,7 @@ def _materialize_task(**context) -> dict:
             # chapter_id is typed int (non-optional dataclass field) and is
             # always populated by plan_turn_materialization from the DB column;
             # no None guard is needed.
-            output_path = str(
-                get_orador_video_dir(video_id, plan.chapter_id, plan.output_turn_id)
-                / "video.mp4"
-            )
+            output_path = str(get_orador_video_dir(video_id, plan.chapter_id, plan.output_turn_id) / "video.mp4")
 
             turn_type = classify_turn_type(plan.turn_ids, resolved_by_id, turn_rows_by_id)
 
@@ -323,9 +320,7 @@ def _materialize_task(**context) -> dict:
             # values just passed to execute_plan — as absolute source seconds,
             # so SRT retiming at prepare time can never diverge from the video
             # that was actually cut.
-            keep_intervals_json = json.dumps(
-                [[ki.start, ki.end] for ki in plan.keep_intervals]
-            )
+            keep_intervals_json = json.dumps([[ki.start, ki.end] for ki in plan.keep_intervals])
             with conn.cursor() as cur:
                 for tid in plan.turn_ids:
                     cur.execute(
@@ -339,7 +334,8 @@ def _materialize_task(**context) -> dict:
             summary["materialized"] += len(plan.turn_ids)
             logger.info(
                 "speaker_turn_videos: materialized turn_ids=%s -> %s",
-                plan.turn_ids, output_path,
+                plan.turn_ids,
+                output_path,
             )
 
             # Score each turn's SRT window for upload prioritisation.
@@ -356,19 +352,18 @@ def _materialize_task(**context) -> dict:
                     if score is not None:
                         with conn.cursor() as cur:
                             cur.execute(
-                                f"UPDATE {turns_table} "
-                                f"SET interest_score = %s WHERE turn_id = %s",
+                                f"UPDATE {turns_table} SET interest_score = %s WHERE turn_id = %s",
                                 (score, tid),
                             )
                         conn.commit()
                         logger.info(
                             "speaker_turn_videos: interest_score=%d for turn_id=%d",
-                            score, tid,
+                            score,
+                            tid,
                         )
                 except Exception:  # noqa: BLE001 — scoring must never crash materialization
                     logger.warning(
-                        "speaker_turn_videos: interest scoring failed for turn_id=%d — "
-                        "leaving interest_score NULL",
+                        "speaker_turn_videos: interest scoring failed for turn_id=%d — leaving interest_score NULL",
                         tid,
                         exc_info=True,
                     )
@@ -386,8 +381,7 @@ def _materialize_task(**context) -> dict:
                 for turn in dropped_turns:
                     tid = turn["turn_id"]
                     dropped_output_path = str(
-                        get_orador_video_dir(str(turn["video_id"]), turn["chapter_id"], tid)
-                        / "video.mp4"
+                        get_orador_video_dir(str(turn["video_id"]), turn["chapter_id"], tid) / "video.mp4"
                     )
                     cur.execute(
                         f"INSERT INTO {stv_table} "
@@ -400,7 +394,8 @@ def _materialize_task(**context) -> dict:
             summary["dropped_procedural"] += len(dropped_turns)
             logger.info(
                 "speaker_turn_videos: dropped %d turn(s) from all-procedural groups: turn_ids=%s",
-                len(dropped_turns), [t["turn_id"] for t in dropped_turns],
+                len(dropped_turns),
+                [t["turn_id"] for t in dropped_turns],
             )
 
     context["ti"].xcom_push(key="summary", value=summary)

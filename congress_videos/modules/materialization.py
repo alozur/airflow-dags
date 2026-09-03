@@ -155,11 +155,13 @@ def _classify_by_label(
         except (TypeError, ValueError):
             continue
 
-        usable_rows.append({
-            "start_seconds": start_f,
-            "end_seconds": end_f,
-            "speaker_label": label.strip(),
-        })
+        usable_rows.append(
+            {
+                "start_seconds": start_f,
+                "end_seconds": end_f,
+                "speaker_label": label.strip(),
+            }
+        )
 
     if len(usable_rows) < 2:
         return None
@@ -402,9 +404,7 @@ def plan_turn_materialization(
             if group:
                 prev = group[-1]
                 same_chapter = prev["chapter_id"] == turn["chapter_id"]
-                within_gap = (
-                    turn["start_seconds"] <= prev["end_seconds"] + GROUP_GAP_TOLERANCE_SECS
-                )
+                within_gap = turn["start_seconds"] <= prev["end_seconds"] + GROUP_GAP_TOLERANCE_SECS
                 if same_chapter and within_gap:
                     group.append(turn)
                 else:

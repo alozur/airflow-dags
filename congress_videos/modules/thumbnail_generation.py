@@ -58,14 +58,7 @@ _FORBIDDEN_CHARS_RE = re.compile(r"[#@|~^]")
 
 # Unicode emoji detector (matches any character in emoji-relevant Unicode ranges).
 _EMOJI_RE = re.compile(
-    "[\U00010000-\U0010ffff"
-    "\U0001f300-\U0001f9ff"
-    "☀-➿"
-    "⌀-⏿"
-    "⬀-⯿"
-    "■-◿"
-    "✀-➿"
-    "]",
+    "[\U00010000-\U0010ffff\U0001f300-\U0001f9ff☀-➿⌀-⏿⬀-⯿■-◿✀-➿]",
     flags=re.UNICODE,
 )
 
@@ -77,12 +70,8 @@ EMPTY_RESULT: dict = {"support_image_b64": "", "source": "none"}
 # Fallback art-direction brief used when both OpenAI attempts fail.
 # Background must never reference hemiciclo or parliamentary chamber.
 _DEFAULT_ART_BRIEF: dict = {
-    "background": (
-        "una calle española con gente caminando, luz de tarde, tono documental"
-    ),
-    "person": (
-        "un ciudadano español de mediana edad, expresión seria y preocupada, ropa casual"
-    ),
+    "background": ("una calle española con gente caminando, luz de tarde, tono documental"),
+    "person": ("un ciudadano español de mediana edad, expresión seria y preocupada, ropa casual"),
     "text": "LO QUE NO TE CUENTAN",
     "mood": "tensión y curiosidad",
     "logo": "",
@@ -118,9 +107,7 @@ _LAPIDARY_STOP_WORDS = frozenset(
 _LAPIDARY_SPLIT_RE = re.compile(r"[.!?;,]\s+")
 
 
-def _extract_candidate_clauses(
-    srt_fragment: str, max_chars: int, min_words: int, max_words: int
-) -> list[str]:
+def _extract_candidate_clauses(srt_fragment: str, max_chars: int, min_words: int, max_words: int) -> list[str]:
     """Split srt_fragment on clause boundaries and filter to lapidary candidates.
 
     Filters by word count, character length, leading Spanish stop-words, and
@@ -270,9 +257,7 @@ def _real_speakers(key_speakers: list | None) -> list[str]:
     return result
 
 
-def resolved_photo_speaker_name(
-    photo_data: dict | None, key_speakers: list | None
-) -> str | None:
+def resolved_photo_speaker_name(photo_data: dict | None, key_speakers: list | None) -> str | None:
     """Return the speaker name to ground art_direct's 'person' field on, or None.
 
     Activation gate (issue #279): a real, non-placeholder speaker name is
@@ -304,9 +289,7 @@ def _build_art_direction_prompt(
     resolved_speaker_name: str | None = None,
 ) -> str:
     """Build the art-direction user prompt, injecting retry/sibling/photo/extra blocks."""
-    user_prompt = ART_DIRECTION_USER_PROMPT_TEMPLATE.format(
-        debate_summary=debate_summary
-    )
+    user_prompt = ART_DIRECTION_USER_PROMPT_TEMPLATE.format(debate_summary=debate_summary)
     if previous_brief is not None:
         retry_instruction = ART_DIRECTION_RETRY_INSTRUCTION.format(
             previous_brief_json=json.dumps(previous_brief, ensure_ascii=False)
@@ -314,14 +297,10 @@ def _build_art_direction_prompt(
         user_prompt += f"\n\n{retry_instruction}"
     if sibling_briefs:
         sibling_list = "\n".join(f"- {b}" for b in sibling_briefs)
-        sibling_block = ART_DIRECTION_SIBLING_INSTRUCTION.format(
-            sibling_list=sibling_list
-        )
+        sibling_block = ART_DIRECTION_SIBLING_INSTRUCTION.format(sibling_list=sibling_list)
         user_prompt += f"\n\n{sibling_block}"
     if resolved_speaker_name:
-        photo_block = ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION.format(
-            speaker_name=resolved_speaker_name
-        )
+        photo_block = ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION.format(speaker_name=resolved_speaker_name)
         user_prompt += f"\n\n{photo_block}"
     if extra_instruction:
         user_prompt += f"\n\nINSTRUCCIÓN ADICIONAL: {extra_instruction}"
@@ -358,10 +337,7 @@ def _finalize_brief(brief: dict, srt_fragment: str | None) -> dict:
     """
     brief.setdefault("logo", "")
     brief["archetype"] = _coerce_archetype(brief.get("archetype"))
-    result = {
-        key: value.replace("http", "") if isinstance(value, str) else value
-        for key, value in brief.items()
-    }
+    result = {key: value.replace("http", "") if isinstance(value, str) else value for key, value in brief.items()}
 
     # SRT lapidary override: replace the invented text with a verbatim quote.
     if srt_fragment is not None:
@@ -436,17 +412,14 @@ def art_direct(
                 previous_brief,
                 sibling_briefs,
                 extra_instruction=(
-                    "Asegúrate de devolver un JSON con EXACTAMENTE los campos: "
-                    "text, background, person, mood."
+                    "Asegúrate de devolver un JSON con EXACTAMENTE los campos: text, background, person, mood."
                 ),
                 resolved_speaker_name=resolved_speaker_name,
             )
         )
 
     if brief is None:
-        logger.warning(
-            "art_direct: both OpenAI attempts failed — using _DEFAULT_ART_BRIEF"
-        )
+        logger.warning("art_direct: both OpenAI attempts failed — using _DEFAULT_ART_BRIEF")
         brief = dict(_DEFAULT_ART_BRIEF)
 
     finalized = _finalize_brief(brief, srt_fragment)
@@ -494,9 +467,7 @@ def resolve_participant_photo(slug: str, cfg: dict) -> dict:
     """
     # Guard: absent / blank slug — skip lookup entirely.
     if not slug or not str(slug).strip():
-        logger.warning(
-            "resolve_participant_photo: slug is absent or blank — returning empty result"
-        )
+        logger.warning("resolve_participant_photo: slug is absent or blank — returning empty result")
         return EMPTY_RESULT
 
     lookup_fn = cfg["participants_lookup"]
@@ -623,15 +594,11 @@ def _build_title_prompt(
     )
     if sibling_titles:
         sibling_list = "\n".join(f"- {t}" for t in sibling_titles)
-        sibling_block = THUMBNAIL_TITLE_SIBLING_INSTRUCTION.format(
-            sibling_list=sibling_list
-        )
+        sibling_block = THUMBNAIL_TITLE_SIBLING_INSTRUCTION.format(sibling_list=sibling_list)
         user_prompt += f"\n\n{sibling_block}"
     real = _real_speakers(key_speakers)
     if real:
-        user_prompt += "\n\n" + THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION.format(
-            speaker_list=", ".join(real)
-        )
+        user_prompt += "\n\n" + THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION.format(speaker_list=", ".join(real))
     else:
         # Falsy key_speakers (None / []) and all-placeholder lists both map
         # to the nameless format — this is the hard guarantee that prevents
@@ -735,9 +702,7 @@ def generate_title(
 
         # Second attempt
         second = _request_title(
-            _build_title_prompt(
-                summary, best, sibling_titles, key_speakers, extra_instruction=instruction
-            )
+            _build_title_prompt(summary, best, sibling_titles, key_speakers, extra_instruction=instruction)
         )
         if second and _is_valid_title(second):
             final_title = second
@@ -852,10 +817,7 @@ def fetch_recent_thumbnail_history(
     try:
         pg = PostgresConnection()
         table = pg.get_qualified_table("video_thumbnails")
-        sql = (
-            f"SELECT prompt, openai_title FROM {table} "
-            f"WHERE is_chosen = TRUE ORDER BY chapter_id DESC LIMIT %s"
-        )
+        sql = f"SELECT prompt, openai_title FROM {table} WHERE is_chosen = TRUE ORDER BY chapter_id DESC LIMIT %s"
         with pg.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, (limit,))
@@ -869,9 +831,7 @@ def fetch_recent_thumbnail_history(
         return briefs, titles
 
     except Exception as exc:
-        logger.warning(
-            "fetch_recent_thumbnail_history: failed to load history — %s", exc
-        )
+        logger.warning("fetch_recent_thumbnail_history: failed to load history — %s", exc)
         return [], []
 
 

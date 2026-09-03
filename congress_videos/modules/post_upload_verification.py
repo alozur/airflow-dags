@@ -16,6 +16,7 @@ State machine:
         - empty items OR processingStatus=failed → abandoned
         - any exception (quota, network, etc.) → unknown (never abandoned)
 """
+
 from __future__ import annotations
 
 import logging
@@ -37,17 +38,12 @@ VERIFY_WINDOW_MAX_HOURS: int = 48
 MAX_API_CALLS_PER_RUN: int = 50
 
 # Template for the oembed check (Step 1).
-OEMBED_URL: str = (
-    "https://www.youtube.com/oembed"
-    "?url=https://www.youtube.com/watch?v={video_id}&format=json"
-)
+OEMBED_URL: str = "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
 
 HTTP_TIMEOUT_SECONDS: int = 10
 
 # Staleness tolerance: skip replays older than this many minutes.
-STALE_RUN_TOLERANCE_MINUTES: int = int(
-    os.getenv("VERIFICATION_STALE_RUN_TOLERANCE_MINUTES", "30")
-)
+STALE_RUN_TOLERANCE_MINUTES: int = int(os.getenv("VERIFICATION_STALE_RUN_TOLERANCE_MINUTES", "30"))
 
 # Privacy statuses that indicate the video is live (not abandoned).
 # "public" is handled by the oembed 200 path, but included here for
@@ -58,6 +54,7 @@ LIVE_PRIVACY_STATUSES: frozenset[str] = frozenset({"private", "unlisted", "publi
 # ---------------------------------------------------------------------------
 # State machine
 # ---------------------------------------------------------------------------
+
 
 def check_video_status(
     video_id: str,
@@ -92,26 +89,18 @@ def check_video_status(
             logger.debug("post_upload_verification: oembed 200 for %s → ok", video_id)
             return "ok", "oembed_200"
     except Exception as exc:
-        logger.warning(
-            "post_upload_verification: oembed request failed for %s: %s", video_id, exc
-        )
+        logger.warning("post_upload_verification: oembed request failed for %s: %s", video_id, exc)
         # Fall through to Step 2
 
     # ------------------------------------------------------------------
     # Step 2: Data API fallback — only reached on non-200 oembed
     # ------------------------------------------------------------------
     if youtube_service is None:
-        logger.warning(
-            "post_upload_verification: no youtube_service for %s, status unknown", video_id
-        )
+        logger.warning("post_upload_verification: no youtube_service for %s, status unknown", video_id)
         return "unknown", "no_youtube_service"
 
     try:
-        api_result = (
-            youtube_service.videos()
-            .list(id=video_id, part="status,processingDetails")
-            .execute()
-        )
+        api_result = youtube_service.videos().list(id=video_id, part="status,processingDetails").execute()
     except Exception as exc:
         logger.warning(
             "post_upload_verification: Data API error for %s: %s — treating as unknown",
@@ -123,9 +112,7 @@ def check_video_status(
     items = api_result.get("items", [])
 
     if not items:
-        logger.info(
-            "post_upload_verification: video %s absent from Data API → abandoned", video_id
-        )
+        logger.info("post_upload_verification: video %s absent from Data API → abandoned", video_id)
         return "abandoned", "empty_items"
 
     item = items[0]

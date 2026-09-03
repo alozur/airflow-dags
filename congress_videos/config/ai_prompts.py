@@ -180,13 +180,13 @@ ART_DIRECTION_SYSTEM_PROMPT = (
 
 # Sibling-brief injection block: appended to the art_direct user prompt when
 # recent chosen briefs are available to steer the model away from repetition.
-ART_DIRECTION_SIBLING_INSTRUCTION = "NO REPITAS estos enfoques recientes (varía fondo, persona, mood y texto):\n{sibling_list}"
+ART_DIRECTION_SIBLING_INSTRUCTION = (
+    "NO REPITAS estos enfoques recientes (varía fondo, persona, mood y texto):\n{sibling_list}"
+)
 
 # Sibling-titles injection block: appended to the generate_title user prompt when
 # recent chosen titles are available to prevent emotional/tonal repetition.
-THUMBNAIL_TITLE_SIBLING_INSTRUCTION = (
-    "NO REPITAS el enfoque de estos títulos recientes:\n{sibling_list}"
-)
+THUMBNAIL_TITLE_SIBLING_INSTRUCTION = "NO REPITAS el enfoque de estos títulos recientes:\n{sibling_list}"
 
 ART_DIRECTION_USER_PROMPT_TEMPLATE = (
     "Crea el brief visual JSON para la miniatura de YouTube de este debate parlamentario.\n\n"
@@ -226,9 +226,7 @@ ART_DIRECTION_RESOLVED_PHOTO_INSTRUCTION = (
 # Source: issue #60 verbatim. IMPORTANT: keep topic/register words only — NO proper
 # politician names. Proper names are constrained via key_speakers injection at
 # prompt time (see generate_title + THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION below).
-TITLE_PRIORITY_KEYWORDS: tuple[str, ...] = (
-    "corrupción",
-)
+TITLE_PRIORITY_KEYWORDS: tuple[str, ...] = ("corrupción",)
 
 TITLE_WORDS_TO_AVOID: tuple[str, ...] = (
     "vivienda",
@@ -239,11 +237,13 @@ TITLE_WORDS_TO_AVOID: tuple[str, ...] = (
 
 # Known placeholder tokens for unidentified speakers. Match case-insensitively on
 # .strip().lower(). Extend this set if new tokens surface in production data.
-SPEAKER_PLACEHOLDERS: frozenset[str] = frozenset({
-    "interviniente no identificado",
-    "ponente desconocido",
-    "orador desconocido",
-})
+SPEAKER_PLACEHOLDERS: frozenset[str] = frozenset(
+    {
+        "interviniente no identificado",
+        "ponente desconocido",
+        "orador desconocido",
+    }
+)
 
 # Hard prohibition injected into the user prompt when real speakers (non-placeholder)
 # are present. ONLY names from this list may appear in the title.
@@ -268,10 +268,8 @@ THUMBNAIL_TITLE_SYSTEM_PROMPT = (
     "Los títulos deben generar urgencia y curiosidad sin perder rigor informativo. "
     "Varía el registro emocional entre títulos consecutivos: alterna entre urgencia, pérdida, "
     "amenaza, curiosidad e identidad para evitar la monotonía tonal. "
-    "PRIORIZA términos con alto impacto político cuando sean relevantes: "
-    + ", ".join(TITLE_PRIORITY_KEYWORDS) + ". "
-    "EVITA términos genéricos que no diferencian el contenido: "
-    + ", ".join(TITLE_WORDS_TO_AVOID) + ". "
+    "PRIORIZA términos con alto impacto político cuando sean relevantes: " + ", ".join(TITLE_PRIORITY_KEYWORDS) + ". "
+    "EVITA términos genéricos que no diferencian el contenido: " + ", ".join(TITLE_WORDS_TO_AVOID) + ". "
     "RESTRICCIONES ABSOLUTAS: máximo 90 caracteres; sin emojis; sin comillas; "
     "sin símbolos de canal; sin hashtags; sin los caracteres: # @ | ~ ^. "
     "Usa mayúsculas y minúsculas normales (capitalización estándar en español): "
@@ -413,8 +411,7 @@ LAPIDARY_RANKING_SYSTEM_PROMPT = (
 )
 
 LAPIDARY_RANKING_USER_TEMPLATE = (
-    "Frases candidatas:\n{candidates}\n\n"
-    "Responde solo con el número de la frase más impactante o con NONE."
+    "Frases candidatas:\n{candidates}\n\nResponde solo con el número de la frase más impactante o con NONE."
 )
 
 

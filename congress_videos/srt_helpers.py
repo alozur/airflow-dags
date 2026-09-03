@@ -28,11 +28,9 @@ INTEREST_FILTER_THRESHOLD: int = 1
 # but sorts last among all turns with a real score.
 INTEREST_NEUTRAL: int = 1
 
-_TIMESTAMP_RE = re.compile(r'\d{2}:\d{2}:\d{2}')
-_TIMESTAMP_STRIP_RE = re.compile(r',\d+')
-_SRT_TIMESTAMP_ARROW_RE = re.compile(
-    r'(\d{2}:\d{2}:\d{2},\d+)\s*-->\s*(\d{2}:\d{2}:\d{2},\d+)'
-)
+_TIMESTAMP_RE = re.compile(r"\d{2}:\d{2}:\d{2}")
+_TIMESTAMP_STRIP_RE = re.compile(r",\d+")
+_SRT_TIMESTAMP_ARROW_RE = re.compile(r"(\d{2}:\d{2}:\d{2},\d+)\s*-->\s*(\d{2}:\d{2}:\d{2},\d+)")
 
 
 def _secs_to_srt_ts(secs: float) -> str:
@@ -52,10 +50,7 @@ def _serialize_srt_blocks(blocks: list[dict]) -> str:
     """
     out = []
     for i, b in enumerate(blocks, start=1):
-        out.append(
-            f"{i}\n{_secs_to_srt_ts(b['start_secs'])} --> "
-            f"{_secs_to_srt_ts(b['end_secs'])}\n{b['text']}\n"
-        )
+        out.append(f"{i}\n{_secs_to_srt_ts(b['start_secs'])} --> {_secs_to_srt_ts(b['end_secs'])}\n{b['text']}\n")
     return "\n".join(out)
 
 
@@ -93,16 +88,12 @@ def find_srt_for_chapter(
 
     if session_date:
         for name in srt_filenames:
-            candidates.append(
-                os.path.join(DOWNLOADS_DIR, session_date, video_id, "srt_files", name)
-            )
+            candidates.append(os.path.join(DOWNLOADS_DIR, session_date, video_id, "srt_files", name))
     else:
         if os.path.isdir(DOWNLOADS_DIR):
             for date_folder in os.listdir(DOWNLOADS_DIR):
                 for name in srt_filenames:
-                    candidates.append(
-                        os.path.join(DOWNLOADS_DIR, date_folder, video_id, "srt_files", name)
-                    )
+                    candidates.append(os.path.join(DOWNLOADS_DIR, date_folder, video_id, "srt_files", name))
 
     for path in candidates:
         if os.path.exists(path):
@@ -165,8 +156,7 @@ def parse_srt_to_text(srt_path: str, max_chars: int | None = None) -> str:
     # Pathological guard: warn and cap at PRETRIM_MAX_CHARS when unbounded.
     if len(result) > _PRETRIM_PATHOLOGICAL_THRESHOLD:
         logger.warning(
-            "parse_srt_to_text: SRT text is %d chars (> %d); "
-            "capping at PRETRIM_MAX_CHARS=%d to avoid context overflow",
+            "parse_srt_to_text: SRT text is %d chars (> %d); capping at PRETRIM_MAX_CHARS=%d to avoid context overflow",
             len(result),
             _PRETRIM_PATHOLOGICAL_THRESHOLD,
             PRETRIM_MAX_CHARS,
@@ -230,11 +220,13 @@ def _parse_srt_blocks(srt_path: str) -> list[dict]:
         except (ValueError, IndexError):
             continue
 
-        result.append({
-            "start_secs": start_secs,
-            "end_secs": end_secs,
-            "text": " ".join(text_lines),
-        })
+        result.append(
+            {
+                "start_secs": start_secs,
+                "end_secs": end_secs,
+                "text": " ".join(text_lines),
+            }
+        )
 
     return result
 
@@ -288,11 +280,13 @@ def _window_srt_blocks(
     out = []
     for b in blocks:
         if b["start_secs"] < window_end and b["end_secs"] > window_start:
-            out.append({
-                "start_secs": max(0.0, b["start_secs"] - window_start),
-                "end_secs": max(0.0, b["end_secs"] - window_start),
-                "text": b["text"],
-            })
+            out.append(
+                {
+                    "start_secs": max(0.0, b["start_secs"] - window_start),
+                    "end_secs": max(0.0, b["end_secs"] - window_start),
+                    "text": b["text"],
+                }
+            )
     return out
 
 
@@ -316,7 +310,8 @@ def chapter_window_blocks(blocks: list[dict], start_time, end_time) -> list[dict
     if start_secs is None or end_secs <= start_secs:
         logger.warning(
             "chapter_window_blocks: invalid chapter span start_time=%r end_time=%r — returning []",
-            start_time, end_time,
+            start_time,
+            end_time,
         )
         return []
 
@@ -356,7 +351,8 @@ def write_chapter_srt_sidecar(
     if not video_id or not isinstance(chapter_id, int):
         logger.warning(
             "write_chapter_srt_sidecar: invalid video_id=%r chapter_id=%r — skipping",
-            video_id, chapter_id,
+            video_id,
+            chapter_id,
         )
         return None
 
@@ -366,9 +362,11 @@ def write_chapter_srt_sidecar(
         start_secs, end_secs = float(start_secs), float(end_secs)
     except (ValueError, TypeError):
         logger.warning(
-            "write_chapter_srt_sidecar: unparseable bounds start_time=%r end_time=%r "
-            "(video_id=%r chapter_id=%r)",
-            start_time, end_time, video_id, chapter_id,
+            "write_chapter_srt_sidecar: unparseable bounds start_time=%r end_time=%r (video_id=%r chapter_id=%r)",
+            start_time,
+            end_time,
+            video_id,
+            chapter_id,
         )
         return None
 
@@ -379,7 +377,8 @@ def write_chapter_srt_sidecar(
     if srt_path is None:
         logger.warning(
             "write_chapter_srt_sidecar: no source SRT found for video_id=%r chapter_id=%r",
-            video_id, chapter_id,
+            video_id,
+            chapter_id,
         )
         return None
 
@@ -391,9 +390,9 @@ def write_chapter_srt_sidecar(
     )
     if not windowed:
         logger.warning(
-            "write_chapter_srt_sidecar: padded window yields no blocks for "
-            "video_id=%r chapter_id=%r — no file written",
-            video_id, chapter_id,
+            "write_chapter_srt_sidecar: padded window yields no blocks for video_id=%r chapter_id=%r — no file written",
+            video_id,
+            chapter_id,
         )
         return None
 
@@ -408,9 +407,11 @@ def write_chapter_srt_sidecar(
         os.replace(tmp_path, target_path)
     except OSError as e:
         logger.warning(
-            "write_chapter_srt_sidecar: failed to write sidecar for "
-            "video_id=%r chapter_id=%r: %s",
-            video_id, chapter_id, e, exc_info=True,
+            "write_chapter_srt_sidecar: failed to write sidecar for video_id=%r chapter_id=%r: %s",
+            video_id,
+            chapter_id,
+            e,
+            exc_info=True,
         )
         try:
             tmp_path.unlink(missing_ok=True)
@@ -455,9 +456,7 @@ def _window_srt_blocks_multi(
     Returns:
         Re-timed blocks in chronological output order.
     """
-    valid_intervals = sorted(
-        (float(start), float(end)) for start, end in intervals if float(end) > float(start)
-    )
+    valid_intervals = sorted((float(start), float(end)) for start, end in intervals if float(end) > float(start))
 
     out: list[dict] = []
     elapsed = 0.0
@@ -466,11 +465,13 @@ def _window_srt_blocks_multi(
             if b["start_secs"] < window_end and b["end_secs"] > window_start:
                 clamped_start = max(b["start_secs"], window_start)
                 clamped_end = min(b["end_secs"], window_end)
-                out.append({
-                    "start_secs": clamped_start - window_start + elapsed,
-                    "end_secs": clamped_end - window_start + elapsed,
-                    "text": b["text"],
-                })
+                out.append(
+                    {
+                        "start_secs": clamped_start - window_start + elapsed,
+                        "end_secs": clamped_end - window_start + elapsed,
+                        "text": b["text"],
+                    }
+                )
         elapsed += window_end - window_start
     return out
 
@@ -499,11 +500,7 @@ def _window_srt_text(video_id: str, start_seconds: float, end_seconds: float) ->
         return ""
 
     blocks = _parse_srt_blocks(srt_path)
-    texts = [
-        b["text"]
-        for b in blocks
-        if b["start_secs"] < end_seconds and b["end_secs"] > start_seconds
-    ]
+    texts = [b["text"] for b in blocks if b["start_secs"] < end_seconds and b["end_secs"] > start_seconds]
     return " ".join(texts)
 
 
@@ -617,10 +614,11 @@ def select_pretrim_window(
 
     if start_block is None or end_block is None:
         logger.warning(
-            "select_pretrim_window: phrases not found in SRT "
-            "(start_phrase=%r found=%s, end_phrase=%r found=%s)",
-            start_phrase[:60], start_block is not None,
-            end_phrase[:60], end_block is not None,
+            "select_pretrim_window: phrases not found in SRT (start_phrase=%r found=%s, end_phrase=%r found=%s)",
+            start_phrase[:60],
+            start_block is not None,
+            end_phrase[:60],
+            end_block is not None,
         )
         return None
 
@@ -630,7 +628,8 @@ def select_pretrim_window(
     if end_secs <= start_secs:
         logger.warning(
             "select_pretrim_window: end (%.1f) <= start (%.1f) — invalid window",
-            end_secs, start_secs,
+            end_secs,
+            start_secs,
         )
         return None
 
@@ -641,6 +640,8 @@ def select_pretrim_window(
 
     logger.info(
         "select_pretrim_window: window %.1f–%.1f (%.0fs) resolved from SRT phrases",
-        start_secs, end_secs, duration,
+        start_secs,
+        end_secs,
+        duration,
     )
     return {"start_seconds": start_secs, "end_seconds": end_secs}

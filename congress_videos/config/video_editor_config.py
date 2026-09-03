@@ -33,7 +33,6 @@ _VIDEO_EDITOR_CONFIG: dict = {
             # Pillow tipos: rendered as transparent PNG, composited via ffmpeg.
             # Color values are (R, G, B) or (R, G, B, A) tuples.
             # ------------------------------------------------------------------
-
             # Bottom-centered 90% bar: session extract label.
             # titulo      → main extract text (large)
             # descripcion → optional subtitle (small, optional)
@@ -51,7 +50,6 @@ _VIDEO_EDITOR_CONFIG: dict = {
                 "height": 104,
                 "margin_y": 60,
             },
-
             # Lower-left card: speaker name + role/party.
             # titulo   → speaker name (large)
             # descripcion → role · party (small, optional)
@@ -70,7 +68,6 @@ _VIDEO_EDITOR_CONFIG: dict = {
                 "margin_x": 64,
                 "margin_y": 60,
             },
-
             # Centered large quote highlight.
             # titulo      → quote body (large, white)
             # descripcion → attribution, e.g. "— Juan Pérez" (small, gold)
@@ -87,7 +84,6 @@ _VIDEO_EDITOR_CONFIG: dict = {
                 "width_pct": 0.86,
                 "padding": 28,
             },
-
             # Top red breaking-news banner.
             # titulo      → news text
             # descripcion → optional detail line (smaller)
@@ -109,7 +105,6 @@ _VIDEO_EDITOR_CONFIG: dict = {
                 "height": 62,
                 "margin_y": 24,
             },
-
             # Bottom-right compact data/context box.
             # titulo      → headline or number (large)
             # descripcion → context sentence (small, optional)
@@ -150,7 +145,6 @@ def get_domain_config(domain: str) -> dict:
     """
     if domain not in _VIDEO_EDITOR_CONFIG:
         raise ConfigError(
-            f"Unknown video editor domain: {domain!r}. "
-            f"Available domains: {list(_VIDEO_EDITOR_CONFIG.keys())}"
+            f"Unknown video editor domain: {domain!r}. Available domains: {list(_VIDEO_EDITOR_CONFIG.keys())}"
         )
     return _VIDEO_EDITOR_CONFIG[domain]

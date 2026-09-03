@@ -60,8 +60,7 @@ def prepare_orador_upload_config(
         sidecar_path = os.path.join(video_dir, sidecar)
         if not os.path.isfile(sidecar_path):
             raise FileNotFoundError(
-                f"prepare_orador_upload_config: required sidecar missing: "
-                f"{sidecar} (expected at {sidecar_path})"
+                f"prepare_orador_upload_config: required sidecar missing: {sidecar} (expected at {sidecar_path})"
             )
 
     with open(os.path.join(video_dir, "title.txt"), encoding="utf-8") as f:
@@ -163,63 +162,60 @@ def prepare_chapter_upload_config(
         - videos: List of video objects with upload parameters
         Returns None if no videos to upload
     """
-    if not chapter_extraction_results or not chapter_extraction_results.get('results'):
+    if not chapter_extraction_results or not chapter_extraction_results.get("results"):
         logging.warning("No chapter extraction results to upload")
         return None
 
     # Create metadata lookup by chapter_id
     metadata_lookup = {}
-    if youtube_metadata_results and youtube_metadata_results.get('topic_metadata'):
-        for metadata in youtube_metadata_results['topic_metadata']:
-            chapter_id = metadata.get('chapter_id')
+    if youtube_metadata_results and youtube_metadata_results.get("topic_metadata"):
+        for metadata in youtube_metadata_results["topic_metadata"]:
+            chapter_id = metadata.get("chapter_id")
             if chapter_id:
                 metadata_lookup[chapter_id] = metadata
 
     # Create thumbnail lookup by chapter_id (legacy batch path)
     thumbnail_lookup = {}
-    if thumbnail_results and thumbnail_results.get('results'):
-        for thumbnail in thumbnail_results['results']:
-            chapter_id = thumbnail.get('chapter_id')
-            if chapter_id and thumbnail.get('success'):
-                thumbnail_lookup[chapter_id] = thumbnail.get('output_path')
+    if thumbnail_results and thumbnail_results.get("results"):
+        for thumbnail in thumbnail_results["results"]:
+            chapter_id = thumbnail.get("chapter_id")
+            if chapter_id and thumbnail.get("success"):
+                thumbnail_lookup[chapter_id] = thumbnail.get("output_path")
 
     # Parse single-chapter Pikzels thumbnail result
     pikzels_chapter_id = None
     pikzels_thumbnail_path = None
     pikzels_title = None
-    if thumbnail_result and thumbnail_result.get('success'):
-        pikzels_chapter_id = thumbnail_result.get('chapter_id')
-        pikzels_thumbnail_path = thumbnail_result.get('output_path')
-        pikzels_title = thumbnail_result.get('title')
+    if thumbnail_result and thumbnail_result.get("success"):
+        pikzels_chapter_id = thumbnail_result.get("chapter_id")
+        pikzels_thumbnail_path = thumbnail_result.get("output_path")
+        pikzels_title = thumbnail_result.get("title")
 
     # Build videos list for generic uploader
     videos = []
-    for extraction_result in chapter_extraction_results['results']:
-        if not extraction_result.get('success') or not extraction_result.get('output_path'):
+    for extraction_result in chapter_extraction_results["results"]:
+        if not extraction_result.get("success") or not extraction_result.get("output_path"):
             logging.warning(
-                f"Skipping chapter {extraction_result.get('chapter_id')}: "
-                f"extraction failed or no output path"
+                f"Skipping chapter {extraction_result.get('chapter_id')}: extraction failed or no output path"
             )
             continue
 
-        chapter_id = extraction_result.get('chapter_id')
-        video_id = extraction_result.get('video_id')
+        chapter_id = extraction_result.get("chapter_id")
+        video_id = extraction_result.get("video_id")
         metadata = metadata_lookup.get(chapter_id, {})
         thumbnail_file = thumbnail_lookup.get(chapter_id)
 
         # Extract title and description from nested dicts
-        title_data = metadata.get('title', {})
-        description_data = metadata.get('description', {})
+        title_data = metadata.get("title", {})
+        description_data = metadata.get("description", {})
 
         title = (
-            title_data.get('title', f'Congreso - Capítulo {chapter_id}')
+            title_data.get("title", f"Congreso - Capítulo {chapter_id}")
             if isinstance(title_data, dict)
             else str(title_data)
         )
         description = (
-            description_data.get('description', '')
-            if isinstance(description_data, dict)
-            else str(description_data)
+            description_data.get("description", "") if isinstance(description_data, dict) else str(description_data)
         )
 
         # Apply Pikzels thumbnail result override when it matches this chapter
@@ -234,23 +230,23 @@ def prepare_chapter_upload_config(
         )
 
         video_config = {
-            'chapter_id': chapter_id,  # Include chapter_id for tracking in upload results
-            'video_id': video_id,  # Include source video_id for reference
-            'video_file': extraction_result['output_path'],
-            'title': title,
-            'description': description,
-            'category_id': '25',  # News & Politics
-            'privacy_status': 'private' if is_testing else 'public',
-            'tags': ['congress', 'politics', 'españa', 'congreso', 'debate', 'parlamento'],
-            'made_for_kids': False,
+            "chapter_id": chapter_id,  # Include chapter_id for tracking in upload results
+            "video_id": video_id,  # Include source video_id for reference
+            "video_file": extraction_result["output_path"],
+            "title": title,
+            "description": description,
+            "category_id": "25",  # News & Politics
+            "privacy_status": "private" if is_testing else "public",
+            "tags": ["congress", "politics", "españa", "congreso", "debate", "parlamento"],
+            "made_for_kids": False,
         }
 
         # Add thumbnail if available
         if thumbnail_file:
-            video_config['thumbnail_file'] = thumbnail_file
+            video_config["thumbnail_file"] = thumbnail_file
 
-        if not dry_run and extraction_result.get('turn_id'):
-            _write_orador_sidecars(video_config['video_file'], title, description)
+        if not dry_run and extraction_result.get("turn_id"):
+            _write_orador_sidecars(video_config["video_file"], title, description)
 
         videos.append(video_config)
 
@@ -259,10 +255,7 @@ def prepare_chapter_upload_config(
         return None
 
     # Configuration for generic uploader
-    config = {
-        'token_file': resolve_token_path(DEFAULT_CHANNEL, 'upload'),
-        'videos': videos
-    }
+    config = {"token_file": resolve_token_path(DEFAULT_CHANNEL, "upload"), "videos": videos}
 
     logging.info(f"Prepared chapter upload config for {len(videos)} videos")
     logging.info(f"Privacy status: {'private' if is_testing else 'public'} (is_testing={is_testing})")

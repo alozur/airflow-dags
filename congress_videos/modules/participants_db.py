@@ -105,9 +105,7 @@ class CongressParticipantsDB:
         """
         with self.pg_conn.get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    f"SELECT * FROM {self.participants_table} ORDER BY normalized_name"
-                )
+                cur.execute(f"SELECT * FROM {self.participants_table} ORDER BY normalized_name")
                 return cur.fetchall()
 
     def update_photo_url(self, normalized_name: str, photo_url: str) -> None:
@@ -136,6 +134,7 @@ class CongressParticipantsDB:
 # Module-level helper used by lookup functions (injectable for testing)
 # ---------------------------------------------------------------------------
 
+
 def _get_participants_for_lookup() -> list[dict]:
     """Instantiate a DB and fetch all participants. Extracted for monkeypatching."""
     return CongressParticipantsDB().get_all_participants()
@@ -144,6 +143,7 @@ def _get_participants_for_lookup() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Module-level lookup API
 # ---------------------------------------------------------------------------
+
 
 def get_participants_roster() -> list[dict]:
     """Public roster accessor for chapter_speaker_resolution (issue #263).
@@ -154,6 +154,7 @@ def get_participants_roster() -> list[dict]:
     method that share a name — see the ratified A1 amendment.
     """
     return _get_participants_for_lookup()
+
 
 def lookup_participant(name: str) -> dict | None:
     """
@@ -188,9 +189,7 @@ def lookup_participant_by_slug(slug: str) -> dict | None:
     return next((row for row in rows if row.get("slug") == slug), None)
 
 
-def lookup_participant_fuzzy(
-    name: str, threshold: float = WIKIDATA_FUZZY_THRESHOLD
-) -> dict | None:
+def lookup_participant_fuzzy(name: str, threshold: float = WIKIDATA_FUZZY_THRESHOLD) -> dict | None:
     """
     Look up a participant using rapidfuzz token_sort_ratio fuzzy matching.
 

@@ -91,9 +91,7 @@ def _format_session_line(session_number: int | None, session_date: date | None) 
     """Return a Spanish attribution line for a congressional session, or '' if both args are falsy."""
     number_part = f"Sesión nº {session_number} del Congreso" if session_number else ""
     date_part = (
-        f"{session_date.day} de {_MONTHS[session_date.month - 1]} de {session_date.year}"
-        if session_date
-        else ""
+        f"{session_date.day} de {_MONTHS[session_date.month - 1]} de {session_date.year}" if session_date else ""
     )
     body = " - ".join(p for p in (number_part, date_part) if p)
     return f"\n\n🏛️ {body}" if body else ""
@@ -128,9 +126,7 @@ with DAG(
         min_virality = context["params"].get("min_virality_score", 0.0)
 
         db = CongressionalVideoDB()
-        shorts = db.get_pending_shorts(
-            limit=max_shorts, min_virality_score=min_virality
-        )
+        shorts = db.get_pending_shorts(limit=max_shorts, min_virality_score=min_virality)
 
         if not shorts:
             logging.info("No pending shorts to upload")
@@ -170,9 +166,7 @@ with DAG(
 
             # Fallback metadata — used if Whisper or GPT fail
             title = truncate_text(
-                f"{primary_speaker}: {chapter_title} #Shorts"
-                if primary_speaker
-                else f"{chapter_title} #Shorts",
+                f"{primary_speaker}: {chapter_title} #Shorts" if primary_speaker else f"{chapter_title} #Shorts",
                 max_length=100,
             )
             description = "🏛️ Debate en el Congreso de los Diputados.\n\n#Congreso #España #Política #Shorts"
@@ -209,22 +203,15 @@ with DAG(
                             )
                             if whisper_result.get("success"):
                                 transcript = whisper_result.get("text", "").strip()
-                                logging.info(
-                                    f"Transcribed short {short_id}: {len(transcript)} chars"
-                                )
+                                logging.info(f"Transcribed short {short_id}: {len(transcript)} chars")
                         else:
                             logging.warning(
-                                f"ffmpeg failed for short {short_id}: "
-                                f"{ffmpeg_result.stderr.decode()[:200]}"
+                                f"ffmpeg failed for short {short_id}: {ffmpeg_result.stderr.decode()[:200]}"
                             )
                 except Exception as e:
-                    logging.warning(
-                        f"Audio extraction failed for short {short_id}: {e}"
-                    )
+                    logging.warning(f"Audio extraction failed for short {short_id}: {e}")
             else:
-                logging.warning(
-                    f"Video file not found for short {short_id}: {video_path}"
-                )
+                logging.warning(f"Video file not found for short {short_id}: {video_path}")
 
             if transcript:
                 user_prompt = SHORTS_METADATA_USER_PROMPT_TEMPLATE.format(
@@ -249,15 +236,10 @@ with DAG(
                         description = ai_description
                     logging.info(f"AI metadata for short {short_id}: title='{title}'")
                 else:
-                    logging.warning(
-                        f"GPT metadata generation failed for short {short_id}: "
-                        f"{ai_result.get('error')}"
-                    )
+                    logging.warning(f"GPT metadata generation failed for short {short_id}: {ai_result.get('error')}")
 
             description += _format_own_channel_footer(ch.get("youtube_video_id"))
-            description += _format_session_line(
-                ch.get("session_number"), ch.get("session_date")
-            )
+            description += _format_session_line(ch.get("session_number"), ch.get("session_date"))
 
             metadata_list.append(
                 {
@@ -361,14 +343,10 @@ with DAG(
                                 "video_file": video_config.get("video_file"),
                                 "success": dag_run.state == "success",
                                 "youtube_video_id": None,
-                                "error": "Upload failed - no results available"
-                                if dag_run.state == "failed"
-                                else None,
+                                "error": "Upload failed - no results available" if dag_run.state == "failed" else None,
                             }
                         )
-                    ti.xcom_push(
-                        key="upload_results", value={"upload_details": upload_details}
-                    )
+                    ti.xcom_push(key="upload_results", value={"upload_details": upload_details})
 
                 if dag_run.state == "failed":
                     raise Exception(f"Upload DAG failed: {dag_run.run_id}")
@@ -403,9 +381,7 @@ with DAG(
                 if reap_clip_id:
                     db.record_short_upload_failure(reap_clip_id, detail.get("error"))
                 else:
-                    logging.warning(
-                        f"Skipping failure recording — detail without reap_clip_id: {detail}"
-                    )
+                    logging.warning(f"Skipping failure recording — detail without reap_clip_id: {detail}")
 
         logging.info(f"Upload summary: {successful} successful, {failed} failed")
 
@@ -418,16 +394,10 @@ with DAG(
             logging.info("No upload results to check")
             return
         failed = [
-            d
-            for d in upload_details
-            if not (
-                d.get("success") and d.get("reap_clip_id") and d.get("youtube_video_id")
-            )
+            d for d in upload_details if not (d.get("success") and d.get("reap_clip_id") and d.get("youtube_video_id"))
         ]
         if failed:
-            raise Exception(
-                f"{len(failed)} short(s) failed to upload (DB writes already committed)"
-            )
+            raise Exception(f"{len(failed)} short(s) failed to upload (DB writes already committed)")
         logging.info("All shorts uploaded successfully")
 
     t4 = PythonOperator(

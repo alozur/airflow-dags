@@ -31,6 +31,7 @@ Pipeline::
             persistence only: _upsert_turns (idempotent) → mark
             turns_detected_at → commit
 """
+
 from __future__ import annotations
 
 import logging
@@ -98,8 +99,7 @@ def select_chapters(limit: int = DEFAULT_LIMIT, chapter_ids: list[int] | None = 
         with conn.cursor() as cur:
             if chapter_ids:
                 cur.execute(
-                    f"SELECT {cols} FROM {view} WHERE chapter_id = ANY(%s) "
-                    f"ORDER BY chapter_id",
+                    f"SELECT {cols} FROM {view} WHERE chapter_id = ANY(%s) ORDER BY chapter_id",
                     (list(chapter_ids),),
                 )
             else:
@@ -109,9 +109,7 @@ def select_chapters(limit: int = DEFAULT_LIMIT, chapter_ids: list[int] | None = 
                 # for recent rows, which key 1 has already segregated).
                 # RECENT_CHAPTER_WINDOW_DAYS is a module int constant, int()-coerced
                 # here: not user input, not an injection seam. `limit` stays bound.
-                recent_cutoff = (
-                    f"NOW() - INTERVAL '{int(RECENT_CHAPTER_WINDOW_DAYS)} days'"
-                )
+                recent_cutoff = f"NOW() - INTERVAL '{int(RECENT_CHAPTER_WINDOW_DAYS)} days'"
                 cur.execute(
                     f"SELECT {cols} FROM {view} vc"
                     f" WHERE EXISTS ("
@@ -167,7 +165,9 @@ def run_chapter_turns(
     if not video_path:
         logger.warning(
             "chapter %s: no source video for %s/%s — skipping",
-            chapter_id, session_date, video_id,
+            chapter_id,
+            session_date,
+            video_id,
         )
         return {"status": "skipped_no_video", "chapter_id": chapter_id, "turns": []}
 
@@ -175,13 +175,9 @@ def run_chapter_turns(
     end_secs = parse_timestamp(chapter["end_time"])
     duration = max(0.0, end_secs - start_secs)
 
-    wav_path = os.path.join(
-        tempfile.gettempdir(), f"speaker_turns_{video_id}_{chapter_id}.wav"
-    )
+    wav_path = os.path.join(tempfile.gettempdir(), f"speaker_turns_{video_id}_{chapter_id}.wav")
     try:
-        extract_audio_wav(
-            video_path, wav_path, start_secs=start_secs, duration_secs=duration
-        )
+        extract_audio_wav(video_path, wav_path, start_secs=start_secs, duration_secs=duration)
 
         srt_path = find_srt_for_chapter(video_id, chapter_id, session_date)
         if srt_path:
@@ -190,31 +186,25 @@ def run_chapter_turns(
             # announcement. Upper bound stays at end_secs — no leakage into
             # the next chapter.
             srt_blocks = [
-                b for b in _parse_srt_blocks(srt_path)
-                if b["start_secs"] >= start_secs - ANNOUNCEMENT_WINDOW_SECONDS
-                and b["end_secs"] <= end_secs
+                b
+                for b in _parse_srt_blocks(srt_path)
+                if b["start_secs"] >= start_secs - ANNOUNCEMENT_WINDOW_SECONDS and b["end_secs"] <= end_secs
             ]
         else:
-            logger.warning(
-                "chapter %s: no SRT — acoustic-only detection", chapter_id
-            )
+            logger.warning("chapter %s: no SRT — acoustic-only detection", chapter_id)
             srt_blocks = []
 
         chapter["_wav_path"] = wav_path
         chapter["_chapter_offset_seconds"] = start_secs
 
-        turns = detect_turns(
-            chapter, srt_blocks, diarize_fn, name_resolver, completion_fn=completion_fn
-        )
+        turns = detect_turns(chapter, srt_blocks, diarize_fn, name_resolver, completion_fn=completion_fn)
         return {"status": "ok", "chapter_id": chapter_id, "turns": turns}
     finally:
         if os.path.exists(wav_path):
             os.remove(wav_path)
 
 
-def _persist_chapter_turns(
-    pg, chapter_id: int, turns: list, *, turns_table: str, vc_table: str
-) -> None:
+def _persist_chapter_turns(pg, chapter_id: int, turns: list, *, turns_table: str, vc_table: str) -> None:
     """Persist detected turns for one chapter in a single short-lived transaction.
 
     Opens a connection only for the upsert of ``turns`` plus the
@@ -226,8 +216,7 @@ def _persist_chapter_turns(
         with conn.cursor() as cur:
             _upsert_turns(cur, chapter_id, turns, table=turns_table)
             cur.execute(
-                f"UPDATE {vc_table} SET turns_detected_at = NOW() "
-                f"WHERE chapter_id = %s AND turns_detected_at IS NULL",
+                f"UPDATE {vc_table} SET turns_detected_at = NOW() WHERE chapter_id = %s AND turns_detected_at IS NULL",
                 (chapter_id,),
             )
             conn.commit()  # durable per chapter — a later failure must not undo this
@@ -262,9 +251,7 @@ def _process_task(**context) -> dict:
             )
             raise
         except Exception:  # noqa: BLE001 data error → skip
-            logger.exception(
-                "chapter %s failed — skipping", chapter.get("chapter_id")
-            )
+            logger.exception("chapter %s failed — skipping", chapter.get("chapter_id"))
             summary["skipped"] += 1
             continue
 
@@ -274,13 +261,14 @@ def _process_task(**context) -> dict:
 
         try:
             _persist_chapter_turns(
-                pg, result["chapter_id"], result["turns"],
-                turns_table=turns_table, vc_table=vc_table,
+                pg,
+                result["chapter_id"],
+                result["turns"],
+                turns_table=turns_table,
+                vc_table=vc_table,
             )
         except Exception:  # noqa: BLE001 persistence error → skip, chapter unmarked
-            logger.exception(
-                "chapter %s: persistence failed — skipping", result["chapter_id"]
-            )
+            logger.exception("chapter %s: persistence failed — skipping", result["chapter_id"])
             summary["skipped"] += 1
             continue
 

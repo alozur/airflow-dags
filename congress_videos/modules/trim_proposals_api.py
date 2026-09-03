@@ -14,6 +14,7 @@ On any transport or parse failure the function raises :class:`SidecarApiError`
 — it never returns an empty list silently or hangs indefinitely.  This
 preserves the ``YamnetFn -> list[dict]`` contract.
 """
+
 from __future__ import annotations
 
 import logging
@@ -79,25 +80,17 @@ def api_yamnet_fn(
                 timeout=timeout,
             )
     except requests.exceptions.Timeout as exc:
-        raise SidecarApiError(
-            f"yamnet-api timed out after {timeout}s at {YAMNET_API_URL}"
-        ) from exc
+        raise SidecarApiError(f"yamnet-api timed out after {timeout}s at {YAMNET_API_URL}") from exc
     except requests.exceptions.ConnectionError as exc:
-        raise SidecarApiError(
-            f"yamnet-api unreachable at {YAMNET_API_URL}: {exc}"
-        ) from exc
+        raise SidecarApiError(f"yamnet-api unreachable at {YAMNET_API_URL}: {exc}") from exc
 
     if resp.status_code != 200:
-        raise SidecarApiError(
-            f"yamnet-api returned HTTP {resp.status_code} for {url}"
-        )
+        raise SidecarApiError(f"yamnet-api returned HTTP {resp.status_code} for {url}")
 
     try:
         payload = resp.json()
     except Exception as exc:
-        raise SidecarApiError(
-            f"yamnet-api malformed JSON response from {url}: {exc}"
-        ) from exc
+        raise SidecarApiError(f"yamnet-api malformed JSON response from {url}: {exc}") from exc
 
     return payload["applause_intervals"]
 

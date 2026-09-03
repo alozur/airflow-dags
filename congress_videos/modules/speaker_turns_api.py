@@ -15,6 +15,7 @@ On any transport or parse failure the function raises :class:`SidecarApiError`
 ``DiarizeFn -> list[dict]`` contract: callers that need to handle failures must
 catch the exception.
 """
+
 from __future__ import annotations
 
 import logging
@@ -86,25 +87,17 @@ def api_diarize_fn(
                 timeout=timeout,
             )
     except requests.exceptions.Timeout as exc:
-        raise SidecarApiError(
-            f"diarize-api timed out after {timeout}s at {DIARIZE_API_URL}"
-        ) from exc
+        raise SidecarApiError(f"diarize-api timed out after {timeout}s at {DIARIZE_API_URL}") from exc
     except requests.exceptions.ConnectionError as exc:
-        raise SidecarApiError(
-            f"diarize-api unreachable at {DIARIZE_API_URL}: {exc}"
-        ) from exc
+        raise SidecarApiError(f"diarize-api unreachable at {DIARIZE_API_URL}: {exc}") from exc
 
     if resp.status_code != 200:
-        raise SidecarApiError(
-            f"diarize-api returned HTTP {resp.status_code} for {url}"
-        )
+        raise SidecarApiError(f"diarize-api returned HTTP {resp.status_code} for {url}")
 
     try:
         payload = resp.json()
     except Exception as exc:
-        raise SidecarApiError(
-            f"diarize-api malformed JSON response from {url}: {exc}"
-        ) from exc
+        raise SidecarApiError(f"diarize-api malformed JSON response from {url}: {exc}") from exc
 
     return payload["speaker_changes"]
 

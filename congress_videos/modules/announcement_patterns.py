@@ -50,8 +50,4 @@ def has_announcement_phrase(text: str | None) -> bool:
     """
     if not text:
         return False
-    return bool(
-        RE_NAMED.search(text)
-        or RE_SU_SENORIA.search(text)
-        or RE_GRACIAS_SENORIA.search(text)
-    )
+    return bool(RE_NAMED.search(text) or RE_SU_SENORIA.search(text) or RE_GRACIAS_SENORIA.search(text))

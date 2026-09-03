@@ -73,7 +73,7 @@ class TrimProposal:
     turn_id: int
     start_seconds: float
     end_seconds: float
-    kind: str        # "silence" | "applause"
+    kind: str  # "silence" | "applause"
     score: float | None
     source: str
     is_voice_free: bool
@@ -288,22 +288,26 @@ def generate_trim_proposals(
     except Exception as exc:
         log.warning(
             "trim_proposals.vad_fn.failed turn_id=%s wav_path=%s error=%s",
-            turn_id, wav_path, exc,
+            turn_id,
+            wav_path,
+            exc,
         )
         voiced_segments = []
 
     # --- Silence path ---
     gaps = _silence_gaps(voiced_segments, turn_start, turn_end, min_duration_secs)
     for gap_start, gap_end in gaps:
-        proposals.append(TrimProposal(
-            turn_id=turn_id,
-            start_seconds=gap_start,
-            end_seconds=gap_end,
-            kind="silence",
-            score=None,
-            source=VAD_SOURCE,
-            is_voice_free=True,  # gaps are voice-free by construction
-        ))
+        proposals.append(
+            TrimProposal(
+                turn_id=turn_id,
+                start_seconds=gap_start,
+                end_seconds=gap_end,
+                kind="silence",
+                score=None,
+                source=VAD_SOURCE,
+                is_voice_free=True,  # gaps are voice-free by construction
+            )
+        )
 
     # --- Applause path ---
     try:
@@ -313,7 +317,9 @@ def generate_trim_proposals(
     except Exception as exc:
         log.warning(
             "trim_proposals.yamnet_fn.failed turn_id=%s wav_path=%s error=%s",
-            turn_id, wav_path, exc,
+            turn_id,
+            wav_path,
+            exc,
         )
         applause_rounds = []
 
@@ -335,15 +341,17 @@ def generate_trim_proposals(
         if not gate_result:
             continue
 
-        proposals.append(TrimProposal(
-            turn_id=turn_id,
-            start_seconds=start,
-            end_seconds=end,
-            kind="applause",
-            score=max_score,
-            source=YAMNET_SOURCE,
-            is_voice_free=True,  # gate passed
-        ))
+        proposals.append(
+            TrimProposal(
+                turn_id=turn_id,
+                start_seconds=start,
+                end_seconds=end,
+                kind="applause",
+                score=max_score,
+                source=YAMNET_SOURCE,
+                is_voice_free=True,  # gate passed
+            )
+        )
 
     return proposals
 
@@ -397,14 +405,17 @@ def _upsert_proposals(
     """
 
     for proposal in proposals:
-        cursor.execute(sql, (
-            proposal.turn_id,
-            proposal.start_seconds,
-            proposal.end_seconds,
-            proposal.kind,   # SQL col: tipo
-            proposal.score,
-            proposal.source,
-            proposal.is_voice_free,
-        ))
+        cursor.execute(
+            sql,
+            (
+                proposal.turn_id,
+                proposal.start_seconds,
+                proposal.end_seconds,
+                proposal.kind,  # SQL col: tipo
+                proposal.score,
+                proposal.source,
+                proposal.is_voice_free,
+            ),
+        )
 
     return len(proposals)

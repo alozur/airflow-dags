@@ -40,17 +40,17 @@ from utils.env_loader import load_env_if_local
 load_env_if_local()
 
 # Check if running in development environment
-POSTGRES_SCHEMA = os.getenv('POSTGRES_SCHEMA', 'development')
-IS_DEVELOPMENT = POSTGRES_SCHEMA == 'development'
+POSTGRES_SCHEMA = os.getenv("POSTGRES_SCHEMA", "development")
+IS_DEVELOPMENT = POSTGRES_SCHEMA == "development"
 
 
 default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 2,
-    'retry_delay': timedelta(minutes=5),
+    "owner": "airflow",
+    "depends_on_past": False,
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 2,
+    "retry_delay": timedelta(minutes=5),
 }
 
 
@@ -62,25 +62,21 @@ def _resolve_srt_input(ti):
     ValueError (fail-fast) when neither qualifies, so the run FAILs visibly
     instead of persisting a silent empty result (#158).
     """
-    merged = ti.xcom_pull(key='merged_srt_files')
-    subtitles = ti.xcom_pull(key='youtube_subtitles')
+    merged = ti.xcom_pull(key="merged_srt_files")
+    subtitles = ti.xcom_pull(key="youtube_subtitles")
 
     def _has_videos(val):
-        return bool(val and val.get('videos'))
+        return bool(val and val.get("videos"))
 
     if _has_videos(merged):
         return merged
     if _has_videos(subtitles):
         return subtitles
 
-    plenary = ti.xcom_pull(key='plenary_videos')
+    plenary = ti.xcom_pull(key="plenary_videos")
     video_ids = []
     if plenary and isinstance(plenary, dict):
-        video_ids = [
-            v.get('video_id')
-            for v in plenary.get('videos', [])
-            if isinstance(v, dict) and v.get('video_id')
-        ]
+        video_ids = [v.get("video_id") for v in plenary.get("videos", []) if isinstance(v, dict) and v.get("video_id")]
     raise ValueError(
         "split_srt_by_silence has no SRT input: both sources are empty. "
         f"video_ids={video_ids or 'unknown'} "
@@ -100,11 +96,7 @@ def _resolve_target_date(context) -> str:
     explicit = (context.get("params") or {}).get("target_date")
     if explicit:
         return str(explicit)
-    logical = (
-        context.get("logical_date")
-        or context.get("data_interval_end")
-        or context.get("execution_date")
-    )
+    logical = context.get("logical_date") or context.get("data_interval_end") or context.get("execution_date")
     if logical is not None:
         return logical.strftime("%Y-%m-%d")
     return str(context.get("ds") or datetime.now(UTC).strftime("%Y-%m-%d"))
@@ -134,9 +126,7 @@ def _slim_transcriptions_for_xcom(result):
                 slim["total_chunks"] = video["total_chunks"]
             if "successful_transcriptions" in video:
                 slim["successful_transcriptions"] = video["successful_transcriptions"]
-            srt_paths = [
-                c.get("srt_path") for c in video.get("chunks", []) if c.get("srt_path")
-            ]
+            srt_paths = [c.get("srt_path") for c in video.get("chunks", []) if c.get("srt_path")]
             if srt_paths:
                 slim["srt_paths"] = srt_paths
         else:
@@ -155,14 +145,14 @@ def _slim_transcriptions_for_xcom(result):
 
 
 with DAG(
-    'congress_youtube_channel_monitor',
+    "congress_youtube_channel_monitor",
     default_args=default_args,
-    description='Monitor YouTube channel for Congress plenary sessions and identify finished streams',
-    schedule='0 * * * *',  # Run every hour on the hour
+    description="Monitor YouTube channel for Congress plenary sessions and identify finished streams",
+    schedule="0 * * * *",  # Run every hour on the hour
     start_date=datetime(2025, 10, 9),
     catchup=False,
     max_active_runs=1,  # Serialize runs so overlapping hourly runs don't race on the same video_id
-    tags=['congress', 'youtube', 'monitor'],
+    tags=["congress", "youtube", "monitor"],
     params={  # No default: resolved per-run via _resolve_target_date (issue #206)
         "target_date": None,
         "lookback_days": 1,  # Inclusive lookback window: target_date - lookback_days .. target_date
@@ -172,80 +162,78 @@ with DAG(
         "max_videos": 20,  # Maximum number of videos to check
         "chunk_duration_minutes": 30,  # Duration of each audio chunk in minutes (default: 30 minutes)
         "isTesting": False,  # Set to True manually when testing
-        "test_video_url": "https://www.youtube.com/watch?v=ZBU0bVpYXM4"  # Test video URL (used when isTesting=True)
-    }
+        "test_video_url": "https://www.youtube.com/watch?v=ZBU0bVpYXM4",  # Test video URL (used when isTesting=True)
+    },
 ) as dag:
-
     # Step 0: Branch based on test mode
     def check_test_mode(**context):
         """Branch based on isTesting parameter."""
         is_testing = context["params"].get("isTesting", False)
         if is_testing:
             logging.info("Running in TEST MODE - using predefined test video")
-            return 'create_test_video_data'
+            return "create_test_video_data"
         else:
             logging.info("Running in PRODUCTION MODE - fetching from YouTube channel")
-            return 'fetch_youtube_channel_videos'
+            return "fetch_youtube_channel_videos"
 
     t0_branch = BranchPythonOperator(
-        task_id='check_test_mode',
+        task_id="check_test_mode",
         python_callable=check_test_mode,
     )
 
     # Test mode: Create test video data
     t0_test = PythonOperator(
-        task_id='create_test_video_data',
+        task_id="create_test_video_data",
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.create_test_video_data(
                 test_video_url=context["params"].get("test_video_url", "https://www.youtube.com/watch?v=ZBU0bVpYXM4")
             ),
-            'plenary_videos'
+            "plenary_videos",
         ),
     )
 
     # Step 1: Fetch videos from YouTube channel (streams tab) - PRODUCTION MODE
     t1 = PythonOperator(
-        task_id='fetch_youtube_channel_videos',
+        task_id="fetch_youtube_channel_videos",
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.fetch_youtube_channel_videos(
-                channel_id=YOUTUBE_CHANNEL_ID,
-                max_results=context["params"].get("max_videos", 10)
+                channel_id=YOUTUBE_CHANNEL_ID, max_results=context["params"].get("max_videos", 10)
             ),
-            'channel_videos'
+            "channel_videos",
         ),
     )
 
     # Step 2: Filter for "Sesión Plenaria (original)" videos
     t2 = PythonOperator(
-        task_id='filter_plenary_sessions',
+        task_id="filter_plenary_sessions",
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.filter_plenary_session_videos(
-                ti.xcom_pull(key='channel_videos'),
+                ti.xcom_pull(key="channel_videos"),
                 target_title=TARGET_VIDEO_TITLE,
                 target_date=_resolve_target_date(context),
-                lookback_days=context["params"].get("lookback_days", 1)
+                lookback_days=context["params"].get("lookback_days", 1),
             ),
-            'plenary_videos'
+            "plenary_videos",
         ),
     )
 
     # Step 2a: Check if any plenary sessions were found
     def check_plenary_found(ti):
         """Branch based on whether plenary sessions were found."""
-        plenary_videos = ti.xcom_pull(key='plenary_videos')
+        plenary_videos = ti.xcom_pull(key="plenary_videos")
 
-        if plenary_videos and plenary_videos.get('total_matches', 0) > 0:
+        if plenary_videos and plenary_videos.get("total_matches", 0) > 0:
             logging.info(f"Found {plenary_videos['total_matches']} plenary session(s). Continuing to process.")
-            return ['get_video_details', 'get_video_descriptions']
+            return ["get_video_details", "get_video_descriptions"]
         else:
             logging.info("No plenary sessions found for target date. Ending DAG execution.")
-            return 'no_plenary_sessions'
+            return "no_plenary_sessions"
 
     t2a = BranchPythonOperator(
-        task_id='check_if_plenary_found',
+        task_id="check_if_plenary_found",
         python_callable=check_plenary_found,
     )
 
@@ -253,13 +241,11 @@ with DAG(
     # Runs BEFORE any download/transcription. PRODUCTION path only
     # (test path goes t0_test >> [t3a, t3b] and never reaches this task).
     t2b = PythonOperator(
-        task_id='filter_unprocessed_videos',
+        task_id="filter_unprocessed_videos",
         python_callable=lambda ti: xcom_task(
             ti,
-            lambda: yt_channel.filter_unprocessed_videos(
-                ti.xcom_pull(key='plenary_videos')
-            ),
-            'plenary_videos',          # overwrite same key
+            lambda: yt_channel.filter_unprocessed_videos(ti.xcom_pull(key="plenary_videos")),
+            "plenary_videos",  # overwrite same key
         ),
     )
 
@@ -269,15 +255,15 @@ with DAG(
     # Overwrites the same 'plenary_videos' XCom (mirrors t2b). PRODUCTION path
     # only. Gated behind guard_enabled for config-only rollback.
     t2_guard = PythonOperator(
-        task_id='filter_finished_streams',
+        task_id="filter_finished_streams",
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.filter_finished_streams(
-                ti.xcom_pull(key='plenary_videos'),
+                ti.xcom_pull(key="plenary_videos"),
                 guard_enabled=context["params"].get("guard_enabled", True),
                 guard_floor_minutes=context["params"].get("guard_floor_minutes", 10),
             ),
-            'plenary_videos',          # overwrite same key
+            "plenary_videos",  # overwrite same key
         ),
     )
 
@@ -285,78 +271,72 @@ with DAG(
     # Note: We already filtered for completed streams, no need to check status again
     # trigger_rule: Execute if any upstream task succeeds (test or production path)
     t3a = PythonOperator(
-        task_id='get_video_details',
+        task_id="get_video_details",
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.get_video_details(
-                ti.xcom_pull(key='plenary_videos'),
-                min_hours_since_end=context["params"].get("min_hours_since_end", 12)
+                ti.xcom_pull(key="plenary_videos"), min_hours_since_end=context["params"].get("min_hours_since_end", 12)
             ),
-            'video_details'
+            "video_details",
         ),
-        trigger_rule='none_failed_min_one_success'
+        trigger_rule="none_failed_min_one_success",
     )
 
     # Step 3b: Get full video descriptions (runs in parallel with get_video_details)
     # trigger_rule: Execute if any upstream task succeeds (test or production path)
     t3b = PythonOperator(
-        task_id='get_video_descriptions',
+        task_id="get_video_descriptions",
         python_callable=lambda ti: xcom_task(
-            ti,
-            lambda: yt_channel.get_video_descriptions(
-                ti.xcom_pull(key='plenary_videos')
-            ),
-            'video_descriptions'
+            ti, lambda: yt_channel.get_video_descriptions(ti.xcom_pull(key="plenary_videos")), "video_descriptions"
         ),
-        trigger_rule='none_failed_min_one_success'
+        trigger_rule="none_failed_min_one_success",
     )
 
     # Step 3c: Try to download existing SRT subtitles from YouTube (FIRST - fastest option!)
     t3c = PythonOperator(
-        task_id='try_download_subtitles_from_youtube',
+        task_id="try_download_subtitles_from_youtube",
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.try_download_subtitles_from_youtube(
-                ti.xcom_pull(key='video_details'),
-                target_date=_resolve_target_date(context)
+                ti.xcom_pull(key="video_details"), target_date=_resolve_target_date(context)
             ),
-            'youtube_subtitles'
+            "youtube_subtitles",
         ),
     )
 
     # Step 3c_branch: Check if subtitles were downloaded successfully
     def check_subtitles_downloaded(ti):
         """Branch based on whether subtitles were downloaded from YouTube."""
-        subtitle_results = ti.xcom_pull(key='youtube_subtitles')
+        subtitle_results = ti.xcom_pull(key="youtube_subtitles")
 
-        if subtitle_results and subtitle_results.get('total_downloaded', 0) > 0:
+        if subtitle_results and subtitle_results.get("total_downloaded", 0) > 0:
             logging.info("✅ Subtitles downloaded from YouTube! Skipping audio extraction and transcription.")
             # Subtitles available - go directly to split_srt_by_silence
-            return 'split_srt_by_silence'
+            return "split_srt_by_silence"
         else:
             logging.info("No subtitles available on YouTube. Will extract audio and transcribe.")
             # Need to extract audio and transcribe
-            return 'extract_audio_from_youtube'
+            return "extract_audio_from_youtube"
 
     t3c_branch = BranchPythonOperator(
-        task_id='check_subtitles_available',
+        task_id="check_subtitles_available",
         python_callable=check_subtitles_downloaded,
     )
 
     # Step 3c2: Download video from YouTube (runs after subtitle check)
     # ENABLED: Video download needed for chapter extraction in youtube_upload_dag_v2
     t3c2 = PythonOperator(
-        task_id='download_video_from_youtube',
+        task_id="download_video_from_youtube",
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.download_video_from_youtube(
-                ti.xcom_pull(key='video_details'),
+                ti.xcom_pull(key="video_details"),
                 target_date=_resolve_target_date(context),
-                guard_enabled=context["params"].get("guard_enabled", True)
+                guard_enabled=context["params"].get("guard_enabled", True),
             ),
-            'downloaded_videos'
+            "downloaded_videos",
         ),
-        trigger_rule='none_failed_min_one_success'  # Run regardless of which branch
+        trigger_rule="none_failed_min_one_success",  # Run regardless of which branch
     )
 
     # Step 3c2b: Post-download container-level integrity gate (ffprobe)
@@ -368,12 +348,13 @@ with DAG(
     # of which subtitle branch was taken.
     def _check_source_integrity(ti, **context):
         from congress_videos.modules.database import CongressionalVideoDB
-        downloaded = ti.xcom_pull(key='downloaded_videos')
+
+        downloaded = ti.xcom_pull(key="downloaded_videos")
         if not downloaded:
             logging.warning("No downloaded_videos XCom available for integrity check — passthrough.")
-            return {'total_downloaded': 0, 'videos': [], 'failed_video_ids': []}
+            return {"total_downloaded": 0, "videos": [], "failed_video_ids": []}
         enriched = yt_channel.check_source_video_integrity(downloaded)
-        failed_ids = enriched.get('failed_video_ids', [])
+        failed_ids = enriched.get("failed_video_ids", [])
         if failed_ids:
             db = CongressionalVideoDB()
             for video_id in failed_ids:
@@ -382,119 +363,105 @@ with DAG(
         return enriched
 
     t3c2_integrity = PythonOperator(
-        task_id='check_source_integrity',
+        task_id="check_source_integrity",
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: _check_source_integrity(ti, **context),
-            'downloaded_videos'  # re-push enriched dict under the same key
+            "downloaded_videos",  # re-push enriched dict under the same key
         ),
-        trigger_rule='none_failed_min_one_success',
+        trigger_rule="none_failed_min_one_success",
     )
 
     # Step 3d: Extract audio from YouTube (only if subtitles not available)
     t3d = PythonOperator(
-        task_id='extract_audio_from_youtube',
+        task_id="extract_audio_from_youtube",
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.extract_audio_from_youtube(
-                ti.xcom_pull(key='video_details'),
+                ti.xcom_pull(key="video_details"),
                 target_date=_resolve_target_date(context),
-                chunk_duration_minutes=context["params"].get("chunk_duration_minutes", 10)
+                chunk_duration_minutes=context["params"].get("chunk_duration_minutes", 10),
             ),
-            'extracted_audio'
+            "extracted_audio",
         ),
     )
 
     # Step 3e: Transcribe audio using Whisper API
     t3e = PythonOperator(
-        task_id='transcribe_audio_with_whisper',
+        task_id="transcribe_audio_with_whisper",
         python_callable=lambda ti: xcom_task(
             ti,
             lambda: _slim_transcriptions_for_xcom(
                 yt_channel.transcribe_audio_with_whisper(
-                    ti.xcom_pull(key='extracted_audio'),
+                    ti.xcom_pull(key="extracted_audio"),
                     language="es",
-                    timeout=3600  # 1 hour timeout per chunk
+                    timeout=3600,  # 1 hour timeout per chunk
                 )
             ),
-            'transcriptions'
+            "transcriptions",
         ),
     )
 
     # Step 3f: Merge SRT files into single simplified file per video
     t3f = PythonOperator(
-        task_id='merge_srt_files',
+        task_id="merge_srt_files",
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.merge_transcription_srt_files(
-                ti.xcom_pull(key='transcriptions'),
-                target_date=_resolve_target_date(context)
+                ti.xcom_pull(key="transcriptions"), target_date=_resolve_target_date(context)
             ),
-            'merged_srt_files'
+            "merged_srt_files",
         ),
     )
 
     # Step 4: Parse description links (Nota de prensa and Orden del día)
     t4 = PythonOperator(
-        task_id='parse_description_links',
+        task_id="parse_description_links",
         python_callable=lambda ti: xcom_task(
-            ti,
-            lambda: yt_channel.parse_description_links(
-                ti.xcom_pull(key='video_descriptions')
-            ),
-            'parsed_links'
+            ti, lambda: yt_channel.parse_description_links(ti.xcom_pull(key="video_descriptions")), "parsed_links"
         ),
-        trigger_rule='none_failed_min_one_success'  # Run from either branch or t3b
+        trigger_rule="none_failed_min_one_success",  # Run from either branch or t3b
     )
 
     # Step 5a: Scrape press release (Nota de prensa) - runs in parallel with agenda download
     t5a = PythonOperator(
-        task_id='scrape_press_release',
+        task_id="scrape_press_release",
         python_callable=lambda ti: xcom_task(
-            ti,
-            lambda: yt_channel.scrape_press_release(
-                ti.xcom_pull(key='parsed_links')
-            ),
-            'press_releases'
+            ti, lambda: yt_channel.scrape_press_release(ti.xcom_pull(key="parsed_links")), "press_releases"
         ),
     )
 
     # Step 5b: Download and read agenda PDF (Orden del día) - runs in parallel with press release scraping
     t5b = PythonOperator(
-        task_id='download_and_read_agenda',
+        task_id="download_and_read_agenda",
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.download_and_read_agenda(
-                ti.xcom_pull(key='parsed_links'),
-                target_date=_resolve_target_date(context)
+                ti.xcom_pull(key="parsed_links"), target_date=_resolve_target_date(context)
             ),
-            'agendas'
+            "agendas",
         ),
     )
 
     # Step 5c: Extract session number based on target date position
     t5c = PythonOperator(
-        task_id='extract_session_date',
+        task_id="extract_session_date",
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.extract_session_date(
-                ti.xcom_pull(key='agendas'),
-                target_date=_resolve_target_date(context)
+                ti.xcom_pull(key="agendas"), target_date=_resolve_target_date(context)
             ),
-            'session_date'
+            "session_date",
         ),
     )
 
     # Step 5d: Extract the specific agenda section for the target date
     t5d = PythonOperator(
-        task_id='extract_agenda_section',
+        task_id="extract_agenda_section",
         python_callable=lambda ti: xcom_task(
             ti,
-            lambda: yt_channel.extract_agenda_section(
-                ti.xcom_pull(key='agendas'),
-                ti.xcom_pull(key='session_date')
-            ),
-            'agenda_section'
+            lambda: yt_channel.extract_agenda_section(ti.xcom_pull(key="agendas"), ti.xcom_pull(key="session_date")),
+            "agenda_section",
         ),
     )
 
@@ -502,7 +469,7 @@ with DAG(
     # Split transcription into chunks at natural breaks (15+ second silences)
     # Ensures chunks are at least 20 minutes, merging smaller ones
     t5e = PythonOperator(
-        task_id='split_srt_by_silence',
+        task_id="split_srt_by_silence",
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.split_srt_by_silence(
@@ -513,9 +480,9 @@ with DAG(
                 max_chunk_duration_minutes=20,
                 use_adaptive=True,  # #13: adaptive silence threshold active in production
             ),
-            'silence_chunks'
+            "silence_chunks",
         ),
-        trigger_rule='none_failed_min_one_success'  # Run if either path succeeded
+        trigger_rule="none_failed_min_one_success",  # Run if either path succeeded
     )
 
     # Step 5f: Summarize silence chunks (TASK 2) — PARALLELIZED (#9)
@@ -526,72 +493,63 @@ with DAG(
     # 5f-1: flatten silence_chunks (nested per-video) into a flat list of
     # chunk-refs that dynamic task mapping can expand over.
     t5f_flatten = PythonOperator(
-        task_id='flatten_chunks_for_mapping',
-        python_callable=lambda ti: yt_channel.flatten_chunks_for_mapping(
-            ti.xcom_pull(key='silence_chunks')
-        ),
+        task_id="flatten_chunks_for_mapping",
+        python_callable=lambda ti: yt_channel.flatten_chunks_for_mapping(ti.xcom_pull(key="silence_chunks")),
     )
 
     # 5f-2: mapped summarization — one task instance per chunk-ref. Empty input
     # ⇒ zero mapped instances (Airflow supports empty expand).
     t5f_map = PythonOperator.partial(
-        task_id='summarize_one_chunk',
+        task_id="summarize_one_chunk",
         python_callable=yt_channel.summarize_one_chunk,
     ).expand(op_args=t5f_flatten.output.map(lambda ref: [ref]))
 
     # 5f-3: reduce mapped results back into the chunk_summaries shape consumed
     # by identify_interesting_chapters (identical to the serial output).
     t5f = PythonOperator(
-        task_id='aggregate_chunk_summaries',
+        task_id="aggregate_chunk_summaries",
         python_callable=lambda ti, **context: xcom_task(
             ti,
-            lambda: yt_channel.regroup_summarized_chunks(
-                ti.xcom_pull(task_ids='summarize_one_chunk')
-            ),
-            'chunk_summaries'
+            lambda: yt_channel.regroup_summarized_chunks(ti.xcom_pull(task_ids="summarize_one_chunk")),
+            "chunk_summaries",
         ),
-        trigger_rule='none_failed_min_one_success',  # tolerate per-chunk failures
+        trigger_rule="none_failed_min_one_success",  # tolerate per-chunk failures
     )
 
     # Step 6: Use AI to identify interesting chapters within each chunk
     # This task waits for chunk summaries (t5f) and chunked SRT data (t5e)
     t6 = PythonOperator(
-        task_id='identify_interesting_chapters',
+        task_id="identify_interesting_chapters",
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.identify_interesting_chapters(
-                ti.xcom_pull(key='chunk_summaries'),  # Summaries from t5f
-                ti.xcom_pull(key='silence_chunks'),   # SRT chunks from t5e
-                target_date=_resolve_target_date(context)
+                ti.xcom_pull(key="chunk_summaries"),  # Summaries from t5f
+                ti.xcom_pull(key="silence_chunks"),  # SRT chunks from t5e
+                target_date=_resolve_target_date(context),
             ),
-            'identified_chapters'
+            "identified_chapters",
         ),
-        trigger_rule='none_failed_min_one_success'  # Run if either path succeeded
+        trigger_rule="none_failed_min_one_success",  # Run if either path succeeded
     )
 
     # Step 7: Merge interesting chapters from all chunks into final list
     t7 = PythonOperator(
-        task_id='merge_interesting_chapters',
+        task_id="merge_interesting_chapters",
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: yt_channel.merge_interesting_chapters(
-                ti.xcom_pull(key='identified_chapters'),
-                target_date=_resolve_target_date(context)
+                ti.xcom_pull(key="identified_chapters"), target_date=_resolve_target_date(context)
             ),
-            'interesting_chapters'
+            "interesting_chapters",
         ),
     )
 
     # Step 8: Score chapter relevance using AI (0-5 scale)
     # Evaluates each chapter based on speaker relevance, topic relevance, and public interest
     t8 = PythonOperator(
-        task_id='score_chapter_relevance',
+        task_id="score_chapter_relevance",
         python_callable=lambda ti: xcom_task(
-            ti,
-            lambda: yt_channel.score_chapters_relevance(
-                ti.xcom_pull(key='interesting_chapters')
-            ),
-            'scored_chapters'
+            ti, lambda: yt_channel.score_chapters_relevance(ti.xcom_pull(key="interesting_chapters")), "scored_chapters"
         ),
     )
 
@@ -604,7 +562,7 @@ with DAG(
     # that edge unchanged; never blocks the DAG. Re-pushes the corrected
     # scored_chapters under the same XCom key so t9_db saves the VAD-trimmed spans.
     def _trim_chapter_silence(ti, **context):
-        scored = ti.xcom_pull(key='scored_chapters')
+        scored = ti.xcom_pull(key="scored_chapters")
         if not scored:
             logging.warning("No scored_chapters available — VAD passthrough, nothing to trim.")
             return scored
@@ -617,16 +575,16 @@ with DAG(
         )
 
     t_trim = PythonOperator(
-        task_id='trim_chapter_silence',
+        task_id="trim_chapter_silence",
         python_callable=lambda ti, **context: xcom_task(
             ti,
             lambda: _trim_chapter_silence(ti, **context),
-            'scored_chapters'  # overwrite same key with VAD-trimmed spans
+            "scored_chapters",  # overwrite same key with VAD-trimmed spans
         ),
         # Wait for BOTH scoring (t8) and the video download (t3c2) to reach a
         # terminal state. all_done (not all_success) so a failed/slow download
         # never blocks persisting chapters — VAD is best-effort.
-        trigger_rule='all_done',
+        trigger_rule="all_done",
     )
 
     # Step 9: Save scored chapters to database
@@ -639,14 +597,14 @@ with DAG(
         from congress_videos.modules.database import CongressionalVideoDB
         from congress_videos.srt_helpers import write_chapter_srt_sidecar
 
-        scored_chapters = ti.xcom_pull(key='scored_chapters')
-        session_date_data = ti.xcom_pull(key='session_date')
+        scored_chapters = ti.xcom_pull(key="scored_chapters")
+        session_date_data = ti.xcom_pull(key="session_date")
         target_date = _resolve_target_date(context)
 
         if not scored_chapters:
             logging.warning("No scored chapters data to save")
-            result = {'total_videos_saved': 0, 'total_chapters_saved': 0, 'videos': []}
-            ti.xcom_push(key='db_save_results', value=result)
+            result = {"total_videos_saved": 0, "total_chapters_saved": 0, "videos": []}
+            ti.xcom_push(key="db_save_results", value=result)
             return result
 
         # Extract session_number and session_date from session_date_data
@@ -655,11 +613,11 @@ with DAG(
         session_date_str = None
 
         if session_date_data and isinstance(session_date_data, dict):
-            videos_list = session_date_data.get('videos', [])
+            videos_list = session_date_data.get("videos", [])
             if videos_list:
                 first_video = videos_list[0]
-                session_number = first_video.get('session_number')
-                session_date_str = first_video.get('target_date', target_date)
+                session_number = first_video.get("session_number")
+                session_date_str = first_video.get("target_date", target_date)
             else:
                 logging.warning("No videos in session_date_data")
         else:
@@ -683,41 +641,44 @@ with DAG(
         )
         logging.info(
             "Saved %d chapters across %d videos",
-            result['total_chapters_saved'], result['total_videos_saved'],
+            result["total_chapters_saved"],
+            result["total_videos_saved"],
         )
 
         # Persist a per-chapter SRT sidecar in this same run — the only
         # moment the source SRT is provably still on disk (issue #340).
         # Best-effort: one chapter's write failure must never abort the
         # loop nor block the db_save_results XCom push below.
-        for video_result in result.get('videos', []):
-            video_id = video_result.get('video_id')
-            for chapter in video_result.get('chapters', []):
+        for video_result in result.get("videos", []):
+            video_id = video_result.get("video_id")
+            for chapter in video_result.get("chapters", []):
                 try:
                     write_chapter_srt_sidecar(
                         video_id,
-                        chapter.get('chapter_id'),
-                        chapter.get('start_time'),
-                        chapter.get('end_time'),
+                        chapter.get("chapter_id"),
+                        chapter.get("start_time"),
+                        chapter.get("end_time"),
                         session_date=session_date_str,
                     )
                 except Exception:
                     logging.warning(
                         "write_chapter_srt_sidecar failed for video_id=%s chapter_id=%s",
-                        video_id, chapter.get('chapter_id'), exc_info=True,
+                        video_id,
+                        chapter.get("chapter_id"),
+                        exc_info=True,
                     )
 
-        ti.xcom_push(key='db_save_results', value=result)
+        ti.xcom_push(key="db_save_results", value=result)
         return result
 
     t9_db = PythonOperator(
-        task_id='save_chapters_to_db',
+        task_id="save_chapters_to_db",
         python_callable=_run_save_chapters_to_db,
     )
 
     # End task for when no plenary sessions found
     t_end = PythonOperator(
-        task_id='no_plenary_sessions',
+        task_id="no_plenary_sessions",
         python_callable=lambda: logging.info("No plenary sessions found. DAG execution stopped."),
     )
 
@@ -794,12 +755,14 @@ with DAG(
                             if result.updated:
                                 logging.info(
                                     "_normalize_speakers: chapter %d updated with %d correction(s)",
-                                    chapter_id, len(result.corrections),
+                                    chapter_id,
+                                    len(result.corrections),
                                 )
                         except Exception as exc:  # noqa: BLE001
                             logging.warning(
                                 "_normalize_speakers: error normalizing chapter %d: %s",
-                                chapter_id, exc,
+                                chapter_id,
+                                exc,
                             )
         return True
 

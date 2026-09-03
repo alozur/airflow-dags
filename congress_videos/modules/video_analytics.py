@@ -75,11 +75,13 @@ def pending_checkpoints(
                 continue
             if (yt_id, label) in collected:
                 continue
-            result.append({
-                "chapter_id": row["chapter_id"],
-                "youtube_video_id": yt_id,
-                "checkpoint": label,
-            })
+            result.append(
+                {
+                    "chapter_id": row["chapter_id"],
+                    "youtube_video_id": yt_id,
+                    "checkpoint": label,
+                }
+            )
 
     return result
 
