@@ -13,9 +13,7 @@ from typing import Any
 CANDIDATE_LABEL = "NO_DIARIZED_SPEECH"
 REJECTED_LABEL = "REJECTED_VOICE_PRESENT"
 CONFIRMED_LABEL = "CONFIRMED_NO_VOICE"
-SCOPE_NOTE = (
-    "VAD validates voice activity versus no voice only; applause classification remains separate."
-)
+SCOPE_NOTE = "VAD validates voice activity versus no voice only; applause classification remains separate."
 
 
 class ValidationError(ValueError):
@@ -57,9 +55,7 @@ def _intervals(artifact: dict[str, Any], field_name: str) -> list[dict[str, Any]
         start = _finite_number(interval.get("start_seconds"), f"{field_name}.intervals[{index}].start_seconds")
         end = _finite_number(interval.get("end_seconds"), f"{field_name}.intervals[{index}].end_seconds")
         if end <= start:
-            raise ValidationError(
-                f"{field_name}.intervals[{index}].end_seconds must be greater than start_seconds"
-            )
+            raise ValidationError(f"{field_name}.intervals[{index}].end_seconds must be greater than start_seconds")
         validated.append({**interval, "start_seconds": start, "end_seconds": end})
     return validated
 
@@ -74,9 +70,7 @@ def validate_candidate_intervals(
 
     for candidate_index, candidate in enumerate(candidates):
         if candidate.get("label") != CANDIDATE_LABEL:
-            raise ValidationError(
-                f"candidates.intervals[{candidate_index}] must have label {CANDIDATE_LABEL}"
-            )
+            raise ValidationError(f"candidates.intervals[{candidate_index}] must have label {CANDIDATE_LABEL}")
         start = candidate["start_seconds"]
         end = candidate["end_seconds"]
         overlap_indexes = [
@@ -102,9 +96,7 @@ def validate_candidate_intervals(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidates", required=True, help="candidate-interval JSON artifact")
-    parser.add_argument(
-        "--vad-speech-intervals", required=True, help="offline VAD speech-interval JSON artifact"
-    )
+    parser.add_argument("--vad-speech-intervals", required=True, help="offline VAD speech-interval JSON artifact")
     parser.add_argument("--output", required=True, help="separate VAD-validated JSON artifact")
     return parser.parse_args(argv)
 

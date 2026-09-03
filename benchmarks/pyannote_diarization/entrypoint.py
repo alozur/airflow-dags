@@ -122,8 +122,7 @@ def _run_diarization(args: argparse.Namespace) -> int:
     diarization_seconds = round(time.monotonic() - started_at, 6)
 
     turns = (
-        (turn.start, turn.end, speaker)
-        for turn, _, speaker in output.speaker_diarization.itertracks(yield_label=True)
+        (turn.start, turn.end, speaker) for turn, _, speaker in output.speaker_diarization.itertracks(yield_label=True)
     )
     summary = {
         "model_id": MODEL_ID,
@@ -185,8 +184,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         )
     ):
         parser.error(
-            "--audio, --output, --sample-duration-seconds, and "
-            "--full-video-duration-seconds are required for inference"
+            "--audio, --output, --sample-duration-seconds, and --full-video-duration-seconds are required for inference"
         )
     return args
 

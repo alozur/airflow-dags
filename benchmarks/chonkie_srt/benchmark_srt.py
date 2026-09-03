@@ -70,9 +70,7 @@ def parse_srt(source: Path, max_seconds: int = MAX_INPUT_SECONDS) -> ParsedSrt:
 
     for raw_block in raw_blocks:
         lines = [line.strip() for line in raw_block.splitlines() if line.strip()]
-        timestamp_index = next(
-            (index for index, line in enumerate(lines) if _TIMESTAMP.match(line)), None
-        )
+        timestamp_index = next((index for index, line in enumerate(lines) if _TIMESTAMP.match(line)), None)
         if timestamp_index is None:
             continue
         match = _TIMESTAMP.match(lines[timestamp_index])
@@ -100,9 +98,7 @@ def parse_srt(source: Path, max_seconds: int = MAX_INPUT_SECONDS) -> ParsedSrt:
     return ParsedSrt(text=" ".join(parts), cues=tuple(cues))
 
 
-def trace_section_offsets(
-    parsed: ParsedSrt, offsets: list[tuple[int, int]]
-) -> list[SectionRange]:
+def trace_section_offsets(parsed: ParsedSrt, offsets: list[tuple[int, int]]) -> list[SectionRange]:
     """Resolve ordered character offsets to chronological source cue timestamps."""
     sections: list[SectionRange] = []
     previous_end = 0
@@ -154,21 +150,17 @@ def build_chunker() -> Any:
         from chonkie.embeddings import SentenceTransformerEmbeddings
     except (ImportError, AttributeError) as error:
         raise ChonkieApiError(
-            "Chonkie 1.7.0 API is incompatible: expected SemanticChunker and "
-            "SentenceTransformerEmbeddings"
+            "Chonkie 1.7.0 API is incompatible: expected SemanticChunker and SentenceTransformerEmbeddings"
         ) from error
     if __version__ != CHONKIE_VERSION:
-        raise ChonkieApiError(
-            f"Chonkie 1.7.0 API is incompatible: installed version is {__version__!r}"
-        )
+        raise ChonkieApiError(f"Chonkie 1.7.0 API is incompatible: installed version is {__version__!r}")
 
     try:
         embeddings = SentenceTransformerEmbeddings(MODEL_NAME, device="cpu")
         return SemanticChunker(embedding_model=embeddings, **CHUNKER_CONFIGURATION)
     except TypeError as error:
         raise ChonkieApiError(
-            "Chonkie 1.7.0 API is incompatible with the documented benchmark "
-            "configuration"
+            "Chonkie 1.7.0 API is incompatible with the documented benchmark configuration"
         ) from error
 
 
@@ -177,9 +169,7 @@ def _chunk_offsets(chunker: Any, text: str) -> list[tuple[int, int]]:
     try:
         chunks = list(chunker(text))
     except TypeError as error:
-        raise ChonkieApiError(
-            "Chonkie 1.7.0 API is incompatible: SemanticChunker must accept text"
-        ) from error
+        raise ChonkieApiError("Chonkie 1.7.0 API is incompatible: SemanticChunker must accept text") from error
 
     offsets: list[tuple[int, int]] = []
     cursor = 0
@@ -189,9 +179,7 @@ def _chunk_offsets(chunker: Any, text: str) -> list[tuple[int, int]]:
             raise TraceabilityError("Chonkie chunk does not expose non-empty text")
         start_offset = text.find(chunk_text, cursor)
         if start_offset < 0:
-            raise TraceabilityError(
-                "Chonkie chunk text cannot be exactly aligned to the normalized input"
-            )
+            raise TraceabilityError("Chonkie chunk text cannot be exactly aligned to the normalized input")
         end_offset = start_offset + len(chunk_text)
         offsets.append((start_offset, end_offset))
         cursor = end_offset
@@ -237,9 +225,7 @@ def benchmark(source: Path, max_seconds: int = MAX_INPUT_SECONDS) -> dict[str, A
 
 
 def _arguments(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Benchmark Chonkie 1.7.0 semantic SRT chunking with traceability."
-    )
+    parser = argparse.ArgumentParser(description="Benchmark Chonkie 1.7.0 semantic SRT chunking with traceability.")
     parser.add_argument("--source", type=Path, required=True, help="source SRT file")
     parser.add_argument("--output", type=Path, required=True, help="result JSON file")
     parser.add_argument(

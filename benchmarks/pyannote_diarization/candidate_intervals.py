@@ -39,9 +39,7 @@ def _rounded(value: float) -> float:
 
 def derive_candidate_intervals(summary: dict[str, Any], min_gap_seconds: float) -> list[dict[str, object]]:
     """Return gaps in raw diarization activity that meet the requested minimum duration."""
-    duration = _finite_number(
-        summary.get("full_video_duration_seconds"), "full_video_duration_seconds"
-    )
+    duration = _finite_number(summary.get("full_video_duration_seconds"), "full_video_duration_seconds")
     if duration < 0:
         raise SummaryValidationError("full_video_duration_seconds must not be negative")
 

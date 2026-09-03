@@ -9,6 +9,7 @@ Reads audit-sheet.csv (label column filled with real|ruido) and reports:
 Note: this measures PRECISION only. Recall needs separately labelling the
 changes the detector MISSED, which this sheet does not capture.
 """
+
 from __future__ import annotations
 
 import csv
