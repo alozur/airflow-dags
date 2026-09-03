@@ -76,13 +76,12 @@ def get_cached(cache_key: str) -> dict | None:
     """
     try:
         pg = PostgresConnection()
-        with pg.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT response FROM llm_cache WHERE cache_key = %s",
-                    (cache_key,),
-                )
-                row = cur.fetchone()
+        with pg.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT response FROM llm_cache WHERE cache_key = %s",
+                (cache_key,),
+            )
+            row = cur.fetchone()
     except Exception as exc:  # noqa: BLE001 - cache must never break the pipeline
         logger.warning("LLM cache unavailable on read (%s); treating as miss", exc)
         return None
@@ -106,13 +105,12 @@ def put_cached(cache_key: str, model: str, response: dict) -> None:
     """
     try:
         pg = PostgresConnection()
-        with pg.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO llm_cache (cache_key, model, response) "
-                    "VALUES (%s, %s, %s) ON CONFLICT (cache_key) DO NOTHING",
-                    (cache_key, model, Json(response)),
-                )
+        with pg.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO llm_cache (cache_key, model, response) "
+                "VALUES (%s, %s, %s) ON CONFLICT (cache_key) DO NOTHING",
+                (cache_key, model, Json(response)),
+            )
     except Exception as exc:  # noqa: BLE001 - cache must never break the pipeline
         logger.warning("LLM cache unavailable on write (%s); skipping store", exc)
 
