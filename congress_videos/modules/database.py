@@ -222,8 +222,9 @@ class CongressionalVideoDB:
         # video (e.g. an aborted statement) does not poison the whole transaction
         # and discard the videos that did succeed. get_connection() owns the full
         # connection lifecycle (commit/rollback/close); `with conn` adds the inner
-        # transaction scope.
-        with self.pg_conn.get_connection() as conn:  # noqa: SIM117 - nesting documents the two-level lifecycle: outer connection (commit/rollback/close), inner `with conn` transaction/SAVEPOINT scope
+        # transaction scope. The two `with` blocks are kept separate (not merged
+        # per SIM117) to keep that two-level lifecycle explicit.
+        with self.pg_conn.get_connection() as conn:  # noqa: SIM117 - two-level lifecycle, see comment above
             with conn:
                 with conn.cursor() as cur:
                     for video_data in scored_chapters_data["videos"]:
@@ -253,7 +254,8 @@ class CongressionalVideoDB:
                             cur.execute(
                                 f"""
                                 INSERT INTO {youtube_videos_table}
-                                (video_id, video_title, video_url, session_number, session_date, total_chapters, is_processed)
+                                (video_id, video_title, video_url, session_number, session_date,
+                                 total_chapters, is_processed)
                                 VALUES (%s, %s, %s, %s, %s, %s, TRUE)
                                 ON CONFLICT (video_id) DO UPDATE SET
                                     video_title = EXCLUDED.video_title,
@@ -303,19 +305,24 @@ class CongressionalVideoDB:
                                     f"""
                                     INSERT INTO {chapters_table}
                                     (video_id, title, description, start_time, end_time, duration_minutes,
-                                     speakers, topics, timeline, relevance_score, speaker_relevance_points, topic_relevance_points,
+                                     speakers, topics, timeline, relevance_score,
+                                     speaker_relevance_points, topic_relevance_points,
                                      public_interest_points, scoring_reasoning, key_speakers, is_current_topic,
                                      scoring_error, scored_at)
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s,
+                                            %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                                     ON CONFLICT (video_id, start_time, end_time) DO UPDATE SET
                                         title = EXCLUDED.title, description = EXCLUDED.description,
                                         duration_minutes = EXCLUDED.duration_minutes, speakers = EXCLUDED.speakers,
-                                        topics = EXCLUDED.topics, timeline = EXCLUDED.timeline, relevance_score = EXCLUDED.relevance_score,
+                                        topics = EXCLUDED.topics, timeline = EXCLUDED.timeline,
+                                        relevance_score = EXCLUDED.relevance_score,
                                         speaker_relevance_points = EXCLUDED.speaker_relevance_points,
                                         topic_relevance_points = EXCLUDED.topic_relevance_points,
                                         public_interest_points = EXCLUDED.public_interest_points,
-                                        scoring_reasoning = EXCLUDED.scoring_reasoning, key_speakers = EXCLUDED.key_speakers,
-                                        is_current_topic = EXCLUDED.is_current_topic, scoring_error = EXCLUDED.scoring_error,
+                                        scoring_reasoning = EXCLUDED.scoring_reasoning,
+                                        key_speakers = EXCLUDED.key_speakers,
+                                        is_current_topic = EXCLUDED.is_current_topic,
+                                        scoring_error = EXCLUDED.scoring_error,
                                         scored_at = CURRENT_TIMESTAMP
                                     RETURNING chapter_id
                                 """,

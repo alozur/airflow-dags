@@ -141,7 +141,8 @@ def download_with_pytubefix(
         logger.info(f"[pytubefix] Available streams ({len(all_streams)} total):")
         for s in all_streams[:15]:  # Log first 15
             logger.info(
-                f"  - {s.resolution or 'audio'} | {s.mime_type} | adaptive={s.is_adaptive} | progressive={s.is_progressive}"
+                f"  - {s.resolution or 'audio'} | {s.mime_type} | adaptive={s.is_adaptive} | "
+                f"progressive={s.is_progressive}"
             )
 
         # First try: H264 (mp4) adaptive video at min_resolution or higher (720p+).
@@ -367,7 +368,11 @@ def download_youtube_video_for_upload(
     # height>=720 ensures MINIMUM 720p quality.
     format_map = {
         "720p": "bestvideo[vcodec^=avc1][height>=720]+bestaudio[ext=m4a]/bestvideo[height>=720]+bestaudio/best",
-        "1080p": "bestvideo[vcodec^=avc1][height>=1080]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][height>=720]+bestaudio[ext=m4a]/bestvideo[height>=720]+bestaudio/best",
+        "1080p": (
+            "bestvideo[vcodec^=avc1][height>=1080]+bestaudio[ext=m4a]/"
+            "bestvideo[vcodec^=avc1][height>=720]+bestaudio[ext=m4a]/"
+            "bestvideo[height>=720]+bestaudio/best"
+        ),
         "best": "bestvideo[vcodec^=avc1][height>=720]+bestaudio[ext=m4a]/bestvideo[height>=720]+bestaudio/best",
     }
 

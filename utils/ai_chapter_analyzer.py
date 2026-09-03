@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 # OpenAI API configuration
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
+# SRT timestamp: HH:MM:SS with an optional ,mmm millisecond suffix.
+_SRT_TIMESTAMP = r"\d{1,2}:\d{2}:\d{2}(?:,\d{3})?"
+# One SRT entry: timestamp range, newline, then text up to the next timestamp
+# range (or end of string). Kept as a plain str (not compiled) — re.findall
+# is always called here with a `flags` argument, which rejects a compiled pattern.
+_SRT_ENTRY_PATTERN = rf"({_SRT_TIMESTAMP})\s*-->\s*({_SRT_TIMESTAMP})\s*\n(.+?)(?=\n{_SRT_TIMESTAMP}\s*-->|\Z)"
+
 
 def parse_timestamp_to_seconds(timestamp: str) -> float:
     """Convert SRT timestamp to total seconds.
@@ -116,7 +123,7 @@ def detect_silence_gaps(
     # Parse SRT format to extract timestamps and text
     # SRT format: timestamp1 --> timestamp2 followed by text
     # Supports both HH:MM:SS and HH:MM:SS,mmm formats
-    pattern = r"(\d{1,2}:\d{2}:\d{2}(?:,\d{3})?)\s*-->\s*(\d{1,2}:\d{2}:\d{2}(?:,\d{3})?)\s*\n(.+?)(?=\n\d{1,2}:\d{2}:\d{2}(?:,\d{3})?\s*-->|\Z)"
+    pattern = _SRT_ENTRY_PATTERN
 
     entries = re.findall(pattern, srt_content, re.DOTALL)
 
@@ -280,7 +287,7 @@ def chunk_by_silence(
 
     # Extract all SRT entries with timestamps
     # Supports both HH:MM:SS and HH:MM:SS,mmm formats
-    pattern = r"(\d{1,2}:\d{2}:\d{2}(?:,\d{3})?)\s*-->\s*(\d{1,2}:\d{2}:\d{2}(?:,\d{3})?)\s*\n(.+?)(?=\n\d{1,2}:\d{2}:\d{2}(?:,\d{3})?\s*-->|\Z)"
+    pattern = _SRT_ENTRY_PATTERN
     entries = re.findall(pattern, srt_content, re.DOTALL)
 
     chunks = []
@@ -382,7 +389,8 @@ def chunk_by_silence(
     logger.info(f"Created {len(merged_chunks)} chunks based on silence gaps (min: {min_chunk_duration_minutes} min)")
     for chunk in merged_chunks:
         logger.info(
-            f"  Chunk {chunk['chunk_number']}: {chunk['start_time']} - {chunk['end_time']} ({chunk['duration_minutes']} min)"
+            f"  Chunk {chunk['chunk_number']}: {chunk['start_time']} - "
+            f"{chunk['end_time']} ({chunk['duration_minutes']} min)"
         )
 
     return merged_chunks

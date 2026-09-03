@@ -111,7 +111,9 @@ def main(argv: list[str] | None = None) -> int:
             "model_id": args.model_id,
             "intervals": intervals,
             "rules": {
-                "scope": "VAD distinguishes voice activity versus no voice only; applause classification remains separate.",
+                "scope": (
+                    "VAD distinguishes voice activity versus no voice only; applause classification remains separate."
+                ),
                 "offline": True,
             },
         }
