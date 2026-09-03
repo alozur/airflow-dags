@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DAGS_DOC = REPO_ROOT / "docs" / "DAGS.md"
+DAG_ID = "congress_youtube_chapter_uploader"
 
 
 def _make_ti(xcom_store: dict | None = None):
@@ -612,12 +618,6 @@ class TestCheckUploadFailures:
 
 
 class TestTriggerUploadWithConfig:
-    def test_schedule_is_once_daily_at_19_utc(self):
-        """DAG schedule is '0 19 * * *' — one run daily at 19:00 UTC."""
-        from congress_videos.youtube_upload_dag import dag
-
-        assert dag.schedule_interval == "0 19 * * *"
-
     def test_no_raise_on_child_failure_and_pushes_fallback(self, mocker):
         from congress_videos.youtube_upload_dag import trigger_upload_with_config
 
@@ -3192,3 +3192,95 @@ class TestTurnIdSurvivesUploadRoundTrip:
 
         mock_db.mark_turns_uploaded.assert_called_once_with(turn_id=1, youtube_video_id="yt-round-trip")
         mock_db.mark_turns_uploaded_by_output_path.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# docs/DAGS.md <-> DAG schedule consistency guard (issue #422)
+# ---------------------------------------------------------------------------
+
+
+def _documented_schedule(markdown: str, dag_id: str) -> str:
+    """Return the cron token documented for ``dag_id`` in a DAGS.md-shaped document.
+
+    Anchors on the per-DAG ``## `` heading, never on line numbers, so section
+    renumbering and surrounding prose are free to change. ``re.split`` on ``^## ``
+    cannot split on ``### `` subheadings, so a DAG's subsections stay inside its
+    own section.
+    """
+    sections = [s for s in re.split(r"^## ", markdown, flags=re.M)[1:] if dag_id in s.splitlines()[0]]
+    assert len(sections) == 1, (
+        f"docs/DAGS.md must contain exactly one '## ...' section whose heading names {dag_id}; found {len(sections)}."
+    )
+    crons = re.findall(r"^\*\*Schedule:\*\*\s*`([^`]+)`", sections[0], flags=re.M)
+    assert len(crons) == 1, (
+        f"Expected exactly one '**Schedule:** `<cron>`' line in the {dag_id} section of docs/DAGS.md; found {len(crons)}."
+    )
+    return crons[0].strip()
+
+
+class TestDocsScheduleConsistency:
+    """The schedule stated in docs/DAGS.md must be the one the DAG declares.
+
+    Documentation drift is what manufactured issues #325 and #328; this guard
+    binds the single documented cron token to ``dag.schedule_interval``. Scope is
+    deliberately one scalar fact — do not extend it to the task graph, the daily
+    cap or the artifact layout, which fail on legitimate reformatting.
+    """
+
+    def test_schedule_is_once_daily_at_19_utc(self):
+        """DAG schedule is '0 19 * * *' — one run daily at 19:00 UTC."""
+        from congress_videos.youtube_upload_dag import dag
+
+        assert dag.schedule_interval == "0 19 * * *"
+
+    def test_documented_schedule_matches_dag_schedule(self):
+        """docs/DAGS.md and the DAG must not drift apart."""
+        from congress_videos.youtube_upload_dag import dag
+
+        documented = _documented_schedule(DAGS_DOC.read_text(encoding="utf-8"), DAG_ID)
+
+        assert documented == dag.schedule_interval, (
+            f"docs/DAGS.md documents schedule {documented!r} for {DAG_ID}, but the DAG declares "
+            f"{dag.schedule_interval!r} in congress_videos/youtube_upload_dag.py. Fix whichever "
+            f"is wrong: the '**Schedule:**' line in the {DAG_ID} section of docs/DAGS.md, or the "
+            f"schedule= argument of the DAG."
+        )
+
+    def test_extractor_ignores_other_dag_sections_and_subheadings(self):
+        """Only the uploader's own section is read; '### ' subsections stay inside it."""
+        markdown = (
+            "# DAGs\n"
+            "\n"
+            "## 1. congress_youtube_channel_monitor\n"
+            "\n"
+            "**Schedule:** `0 22 * * *` (22:00 hora Madrid, diario)\n"
+            "\n"
+            "## 2. congress_youtube_chapter_uploader\n"
+            "\n"
+            "**Schedule:** `0 19 * * *` (19:00 UTC, diario)\n"
+            "\n"
+            "### Nomenclatura\n"
+            "\n"
+            "Texto libre que menciona `0 12 * * *` sin ser una linea de Schedule.\n"
+        )
+
+        assert _documented_schedule(markdown, DAG_ID) == "0 19 * * *"
+
+    def test_extractor_rejects_two_schedule_lines_in_one_section(self):
+        """Two schedules under one heading IS the drift — fail loudly, do not pick one."""
+        markdown = (
+            "## 2. congress_youtube_chapter_uploader\n"
+            "\n"
+            "**Schedule:** `0 19 * * *`\n"
+            "**Schedule:** `0 12 * * *`\n"
+        )
+
+        with pytest.raises(AssertionError, match="exactly one '\\*\\*Schedule:\\*\\*"):
+            _documented_schedule(markdown, DAG_ID)
+
+    def test_extractor_rejects_missing_dag_section(self):
+        """Losing the per-DAG heading loses the doc's index key — fail loudly."""
+        markdown = "## 1. congress_youtube_channel_monitor\n\n**Schedule:** `0 22 * * *`\n"
+
+        with pytest.raises(AssertionError, match="exactly one '## ...' section"):
+            _documented_schedule(markdown, DAG_ID)
