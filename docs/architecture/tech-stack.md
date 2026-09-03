@@ -12,7 +12,7 @@ This document outlines the complete technology stack used in the Airflow DAGs pr
 | **Database** | PostgreSQL | 16 | Data warehouse and Airflow metadata | Robust, open-source, excellent JSON support |
 | **Language** | Python | 3.11+ | DAG development and task logic | Airflow's native language, rich ecosystem |
 | **Environment Manager** | Conda | Latest | Python environment isolation | Reliable environment management |
-| **Linter & Formatter** | Ruff | Latest | Code quality and formatting | Fast, modern Python linter (replaces flake8, black) |
+| **Linter & Formatter** | Ruff | 0.16.5 (pinned, `[dependency-groups] dev`) | Code quality; blocking CI gate | Fast, modern Python linter (replaces flake8, black); managed by `uv`, not conda/pip |
 | **Container Platform** | Docker | Latest | Airflow deployment | Consistent deployment environment |
 | **Container Orchestration** | Docker Compose | Latest | Multi-service orchestration | Simple, effective for small-medium deployments |
 | **Version Control** | Git | Latest | Source code management | Industry standard |
@@ -74,36 +74,39 @@ pip install apache-airflow==2.7.3
 pip install apache-airflow-providers-postgres
 pip install requests beautifulsoup4 lxml urllib3
 pip install openai  # For AI-enhanced projects
-pip install ruff    # Linting and formatting
 pip install pytest  # Testing (optional)
 ```
 
+Ruff is **not** installed via conda/pip: it is a pinned `uv` dev dependency
+(`ruff==0.16.5` in `[dependency-groups] dev`), see below.
+
 #### Ruff (Linting & Formatting)
-- **Purpose:** Code quality enforcement and auto-formatting
+- **Purpose:** Code quality enforcement; blocking CI gate (issue #269)
 - **Speed:** 10-100x faster than traditional tools (flake8, black, isort)
 - **Features:**
-  - Linting (replaces flake8)
-  - Formatting (replaces black)
+  - Linting (replaces flake8), including mccabe complexity (`C90`/`C901`)
+  - Formatting (replaces black) — declared in config, **not** gated in CI yet
   - Import sorting (replaces isort)
 
-**Installation:**
-```bash
-conda run -n airflow pip install ruff
-```
+**Installation:** already included via `uv sync --only-group dev` (no
+separate install step; version comes from `uv.lock`).
 
 **Usage:**
 ```bash
-# Check code
-ruff check .
+# Check code (same command CI runs)
+uv run ruff check .
 
 # Fix auto-fixable issues
-ruff check --fix .
+uv run ruff check --fix .
 
-# Format code
-ruff format .
+# Format code (declared, not CI-gated — see coding-standards.md)
+uv run ruff format .
 ```
 
-**Configuration:** See `.ruff.toml` in project root (see coding-standards.md)
+**Configuration:** `[tool.ruff]` in `pyproject.toml` — see
+[coding-standards.md](coding-standards.md#ruff-configuration) for the full
+rule set, the generated per-file-ignores baseline, and the suppression
+policy. CI workflow: [`.github/workflows/lint.yml`](../../.github/workflows/lint.yml).
 
 ### Development Workflow Commands
 
@@ -127,14 +130,14 @@ conda run -n airflow airflow dags trigger congreso_youtube
 
 #### Code Quality Commands
 ```bash
-# Run linter
-conda run -n airflow ruff check .
+# Run linter (same command CI runs)
+uv run ruff check .
 
 # Auto-fix issues
-conda run -n airflow ruff check --fix .
+uv run ruff check --fix .
 
-# Format code
-conda run -n airflow ruff format .
+# Format code (not CI-gated yet — see coding-standards.md)
+uv run ruff format .
 ```
 
 ## Docker Deployment
@@ -263,24 +266,17 @@ def test_dag_has_tags():
     assert dag.tags is not None
 ```
 
-#### CI/CD Testing (Future)
-Planned GitHub Actions workflow:
-```yaml
-name: DAG Validation
-on: [push, pull_request]
-jobs:
-  validate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      - run: pip install apache-airflow ruff pytest
-      - run: ruff check .
-      - run: pytest tests/
-      - run: python -m py_compile congreso_youtube/*.py
-```
+#### CI/CD Testing
+
+Ruff lint is already a blocking gate — see
+[`.github/workflows/lint.yml`](../../.github/workflows/lint.yml) (issue #269).
+It installs via `astral-sh/setup-uv@v3` + `uv sync --frozen --only-group dev`,
+not `actions/setup-python` + `pip install`.
+
+A full DAG-validation workflow (`pytest`, `DagBag` import-error check,
+`python -m py_compile`) running in GitHub Actions remains a future item —
+today those checks run locally (`uv run pytest`) and via
+`scripts/test-airflow-e2e.sh` before merge, not in CI.
 
 ## Database Schema Management
 
@@ -417,7 +413,7 @@ MAX_ACTIVE_RUNS_PER_DAG: 1  # Max concurrent DAG runs
 1. **Local Development:**
    - Develop DAG in `dev` branch
    - Test with `conda run -n airflow airflow dags test`
-   - Lint with `ruff check`
+   - Lint with `uv run ruff check .` (also gated in CI: `.github/workflows/lint.yml`)
 
 2. **Push to Dev:**
    - Commit and push to `dev` branch

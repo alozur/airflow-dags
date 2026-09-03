@@ -62,10 +62,12 @@ airflow-dags/
 ### `.github/`
 **Purpose:** CI/CD workflows and GitHub Actions
 
+- **workflows/lint.yml:** Blocking ruff lint gate on `pull_request`/`push` to
+  `dev` (issue #269) — see `docs/architecture/coding-standards.md#ruff-configuration`
+- **workflows/pip-audit.yml:** Dependency vulnerability scan (informational)
 - Future location for:
   - DAG syntax validation
-  - Automated testing
-  - Linting checks (ruff)
+  - Automated testing (`pytest` / `DagBag` import-error checks in CI)
   - Deployment pipelines
 
 ### `docs/architecture/`
