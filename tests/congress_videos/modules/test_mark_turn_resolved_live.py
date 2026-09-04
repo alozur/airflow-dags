@@ -100,6 +100,7 @@ CREATE TABLE speaker_turn_videos (
         speaker_resolution_method IN ('ai_srt_context', 'fuzzy', 'manual')
         OR speaker_resolution_method IS NULL
     ),
+    speaker_resolution_evidence TEXT,
     CONSTRAINT uq_speaker_turn_videos_turn UNIQUE (turn_id)
 );
 """
@@ -371,3 +372,40 @@ class TestMarkTurnResolvedLive:
         assert g4_row["resolved_participant_slug"] == "pedro-sanchez"
         assert g4_row["speaker_resolution_confidence"] >= SPEAKER_RESOLUTION_MIN_CONFIDENCE
         assert _already_resolved(g4_row) is True
+
+    def test_mark_turn_resolved_persists_evidence_only_when_provided(self, clean_tables, db_env):
+        """Spec: Evidence Persistence — mark_turn_resolved writes
+        speaker_resolution_evidence only when evidence= is passed; an
+        omitted evidence kwarg leaves the column NULL (issue #430,
+        migration 046)."""
+        _seed_turn(
+            clean_tables,
+            turn_id=501,
+            chapter_id=5,
+            video_id="vid_g5",
+            speaker_label="SPEAKER_00",
+            output_path="/data/g5.mp4",
+        )
+        _seed_turn(
+            clean_tables,
+            turn_id=601,
+            chapter_id=6,
+            video_id="vid_g6",
+            speaker_label="SPEAKER_00",
+            output_path="/data/g6.mp4",
+        )
+
+        db = CongressionalVideoDB()
+        audit = '{"method": "monologue_window_v1"}'
+        db.mark_turn_resolved("/data/g5.mp4", "pedro-sanchez", 0.95, "ai_srt_context", 501, evidence=audit)
+        db.mark_turn_resolved("/data/g6.mp4", "pedro-sanchez", 0.95, "ai_srt_context", 601)
+
+        with clean_tables.cursor() as cur:
+            cur.execute(
+                "SELECT turn_id, speaker_resolution_evidence "
+                "FROM speaker_turn_videos WHERE turn_id IN (501, 601) ORDER BY turn_id"
+            )
+            rows = {row["turn_id"]: row for row in cur.fetchall()}
+
+        assert rows[501]["speaker_resolution_evidence"] == audit
+        assert rows[601]["speaker_resolution_evidence"] is None

@@ -217,6 +217,7 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "resolved_participant_slug",
         "speaker_resolution_confidence",
         "speaker_resolution_method",
+        "speaker_resolution_evidence",  # migration 046 (issue #430)
         "keep_intervals",
         "thumbnail_republish_needed_at",
         "thumbnail_republished_at",

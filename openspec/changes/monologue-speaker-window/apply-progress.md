@@ -269,3 +269,99 @@ functions (`select_preceding_window`, `identify_floor_holder`, `resolve_announce
 `resolve_monologue_speaker`) now exist and are fully tested; the module remains INERT — no
 caller imports it. Ready for `sdd-verify` on this slice, then PR against the A2a branch. Do NOT
 start Phase 4 (B) in this session — orchestrator launches it separately per the chain plan.
+
+## Phase 4 — B: Evidence Migration
+
+**Status**: 11/12 tasks done, 1 explicitly deferred (4.11 — operational, out of this apply
+slice's reach). Branch `feat/430-b-evidence-migration`, base A2b HEAD (`7687cd6`). Commit
+`fb112ee`.
+
+### TDD Cycle Evidence
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 4.3/4.4 | `tests/congress_videos/sql/test_production_schema.py` | Unit (schema-snapshot) | ✅ 214/214 (full file, run before touching the schema) | Written — `test_column_present_in_block[speaker_turn_videos-speaker_resolution_evidence]` fails: column missing from the extracted CREATE TABLE block | Passed — 215/215 | ➖ Single scenario (membership check); no additional case needed | ➖ None needed |
+| 4.5/4.6 | `tests/congress_videos/modules/test_database_speaker_resolution.py` | Unit | ✅ 9/9 (pre-existing `TestMarkTurnResolved` tests, run before editing `database.py`) | Written — `TypeError: got an unexpected keyword argument 'evidence'` on both parametrized cases | Passed — 24/24 | 3 cases: evidence-provided (column present), evidence-omitted (column absent) as ONE `@pytest.mark.parametrize` test, plus a byte-identical golden-string test for the plain 5-positional call | Clean — `evidence_set`/`set_params` stay 2 lines, WHERE clause and `logger.info` untouched byte-for-byte |
+
+### Test Summary
+- Total tests written this slice: 4 test functions (5 cases: 1 schema-tuple parametrize case, 2
+  `evidence`-presence parametrize cases, 1 byte-identical case, 1 new opt-in live test)
+- Total tests passing: 239/239 (targeted, non-live), 3 skipped (live-Postgres, unreachable —
+  same as the file's 2 pre-existing live tests); 4529/4529 non-skipped (full suite)
+- Layers used: Unit (3 new non-live test functions), opt-in live-Postgres (1 new test, skipped
+  in this environment)
+- Approval tests: The byte-identical golden-string test IS an approval test — it captures the
+  exact pre-#430 SQL text for the 5-positional (no-evidence) call path and asserts the new
+  optional parameter changes nothing when omitted.
+- Pure functions created: 0 (this slice only extends an existing DB method's SQL-building logic)
+
+### Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused test command and exact result | `uv run pytest tests/congress_videos/sql/test_production_schema.py tests/congress_videos/modules/test_database_speaker_resolution.py -v -o addopts=` → 239 passed |
+| Runtime harness command/scenario and exact result | Opt-in live-Postgres round-trip: `TEST_DATABASE_URL=postgresql://airflow:airflow@100.120.28.116:5433/postgres uv run pytest tests/congress_videos/modules/test_mark_turn_resolved_live.py -o addopts= -v` → 3 skipped (`Postgres unavailable` — NAS unreachable from this sandbox, no Tailscale). This is the SAME opt-in/best-effort harness pattern the project has used for every prior live-Postgres slice (see `docs/agents` live-Postgres convention); it is a graceful skip, not a failure. Migration 046 itself was NOT applied to any live database from this apply — see the deferred task 4.11 below. |
+| Rollback boundary | Revert commit `fb112ee` (or delete `congress_videos/sql/migrations/046_add_speaker_resolution_evidence.sql`, revert the `production_schema.sql` column+header addition, revert `database.py`'s `evidence` parameter, and the 3 test-file changes). The column is additive and nullable; if migration 046 has already been applied live, leaving it in place (rather than running its manual DOWN) is explicitly the documented rollback per design.md's Migration/Rollout section. |
+
+### Files Changed
+| File | Action | What Was Done |
+|------|--------|---------------|
+| `congress_videos/sql/migrations/046_add_speaker_resolution_evidence.sql` | Created | `ALTER TABLE speaker_turn_videos ADD COLUMN IF NOT EXISTS speaker_resolution_evidence TEXT;`, DOWN block commented per the 044 convention — copied verbatim from design.md's exact SQL |
+| `congress_videos/sql/production_schema.sql` | Modified | Added `speaker_resolution_evidence TEXT,` after `speaker_resolution_method` in the `speaker_turn_videos` block; extended the folded-migration header comment with `+ 046 (resolution evidence, issue #430)` |
+| `congress_videos/modules/database.py` | Modified | `mark_turn_resolved(..., evidence: str \| None = None)` — `evidence_set`/`set_params` computed before the query, appended to the SET clause and param tuple only when `evidence is not None`; WHERE subselect and `logger.info` call byte-identical |
+| `tests/congress_videos/sql/test_production_schema.py` | Modified | Added `"speaker_resolution_evidence"` to `TABLE_COLUMNS["speaker_turn_videos"]` |
+| `tests/congress_videos/modules/test_database_speaker_resolution.py` | Modified | +1 parametrized test (evidence-provided/evidence-omitted, 2 cases) + 1 byte-identical golden-string test for the 5-positional call |
+| `tests/congress_videos/modules/test_mark_turn_resolved_live.py` | Modified | `speaker_resolution_evidence TEXT` added to `_SCHEMA_SQL`; +1 opt-in live round-trip test (`test_mark_turn_resolved_persists_evidence_only_when_provided`) |
+| `openspec/changes/monologue-speaker-window/tasks.md` | Modified | Phase 4 (11 of 12 tasks) marked `[x]`; task 4.11 left `[ ]` and annotated as a deferred deployment action |
+
+### Deviations from Design
+None on the code shape — `mark_turn_resolved`'s `evidence_set`/`set_params` construction and the
+migration SQL match design.md's Interfaces/Contracts and Migration sections verbatim. One
+**scope deviation, explicitly required by the environment**: task 4.11 ("Apply migration 046 to
+dev, then to prod, BEFORE Phase 5 merges to main") was NOT executed. This is a live
+database-migration action, not a code-authoring task — it requires SSH/DB credentials to the
+dev and prod stacks that this sandboxed apply worktree does not have (confirmed: the NAS
+`postgres_shared:5433` opt-in live-test endpoint itself is unreachable — see Runtime harness
+above). **This is a hard blocker for the orchestrator/maintainer**: migration 046 must be applied
+to both dev and prod before slice C's PR merges to main, exactly as the migration file's own
+header states and as task 4.11 requires. Do not skip this step when landing slice C.
+
+### Issues Found
+None. Migration numbering confirmed clean: `ls congress_videos/sql/migrations/ | tail -3` showed
+`044_deterministic_turn_publish_order.sql`, `045_add_chapter_mentioned_people.sql` (PR #449,
+issue #432) already present on this branch, so 046 required no renumbering.
+
+### Quality Gate
+`uv run ruff check congress_videos/modules/database.py tests/congress_videos/sql/test_production_schema.py tests/congress_videos/modules/test_database_speaker_resolution.py tests/congress_videos/modules/test_mark_turn_resolved_live.py` → All checks passed.
+`uv run ruff format --check` (same paths) → clean (1 file auto-reformatted during this slice, all logic-preserving).
+Note: `ruff` does not lint `.sql` files — the migration file has no ruff gate; its shape is
+proven by the `test_production_schema.py` snapshot tests and its own SQL is copied verbatim from
+design.md.
+
+### Full Suite
+`uv run pytest -n auto -q` → 4529 passed, 28 skipped (27 pre-existing live-Postgres skips + 1 new
+one from this slice's opt-in live test — Postgres/NAS not reachable in this environment).
+`tests/congress_videos/modules/test_monologue_speaker_window.py` and
+`tests/congress_videos/test_speaker_turn_prepare_dag.py` are untouched this slice (git status
+confirms only the 6 files listed above changed) — the DAG and the monologue resolver are wired
+together in slice C, not here.
+
+### Measured Diff
+`git diff --stat 7687cd6..HEAD -- . ':!openspec'` → 6 files changed, 142 insertions(+), 3
+deletions(-) = **145 authored lines**. Forecast was ~120; actual is 145 — close to forecast and
+comfortably under the 400-line budget on the first pass, no collapsing needed (consistent with
+the parametrize-from-the-start discipline: the evidence-presence test was written as one
+2-case parametrized test rather than two separate functions from the outset).
+
+### Remaining Tasks (later slices — NOT started, per launch scope)
+- [ ] Task 4.11 (deferred, this phase) — apply migration 046 to dev, then prod, BEFORE Phase 5
+      merges to main. **Orchestrator/maintainer action required.**
+- [ ] Phase 5 — C: Routing + caller-suite rewiring + docs (needs A2b and B — both now done).
+
+### Status
+11/12 Phase-4 (B) tasks complete (44 cumulative task-count across A1+A2a+A2b+B, plus 1 explicitly
+deferred operational task). The `speaker_resolution_evidence` column now exists in the schema
+snapshot and `mark_turn_resolved` can write it, but NOTHING calls it with a non-None `evidence=`
+yet — that wiring is slice C's job. Ready for `sdd-verify` on this slice, then PR against the A2b
+branch (with the 4.11 deployment blocker flagged for the maintainer). Do NOT start Phase 5 (C) in
+this session — orchestrator launches it separately per the chain plan.
