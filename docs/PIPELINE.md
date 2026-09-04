@@ -84,6 +84,16 @@ fuente de la Fase 1. El paso que los habilita es `speaker_turn_prepare`, que
 escribe los sidecars y marca `prepared_at`; hasta entonces el turno no aparece
 en `uploadable_turns`.
 
+Durante la preparación de la subida (#432), `_analyze_chapter_content` deriva
+del sidecar SRT del capítulo (ventana del capítulo, no del turno; los límites
+salen de `get_chapter_srt_context`, porque `uploadable_turns` no expone
+`start_time`/`end_time`) dos análisis LLM independientes: personas mencionadas
+(slugs validados contra el roster de `congress_participants`, columna
+`mentioned_participant_slugs`) y temas (`topics`, normalizados y
+deduplicados). Cada análisis se persiste por separado: el fallo de uno nunca
+descarta el resultado válido del otro, y un resultado vacío de temas deja
+`topics` intacto.
+
 ## Fase 3 — Shorts · pipeline Reap
 
 1. **`reap_clip_preparer`** (diario 15:00 UTC): selecciona capítulos elegibles,
