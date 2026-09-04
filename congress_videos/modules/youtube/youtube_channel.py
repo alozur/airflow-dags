@@ -8,7 +8,7 @@ specifically for monitoring the Congress YouTube channel for plenary sessions.
 import logging
 import os
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import requests
 from bs4 import BeautifulSoup
@@ -106,6 +106,43 @@ def _fetch_video_items_by_id(youtube, ids: list[str], part: str) -> dict[str, di
     """
     resp = youtube.videos().list(part=part, id=",".join(ids)).execute()
     return {it["id"]: it for it in resp.get("items", [])}
+
+
+def _airing_timestamp(item: dict | None) -> tuple[str | None, str | None]:
+    """(iso_timestamp, "actualEndTime" | "actualStartTime") or (None, None).
+
+    A value is returned only when ``isinstance(value, str) and value`` — a
+    non-string or empty timestamp is reported as absent, so the caller never
+    parses a non-str.
+
+    Not yet called by any production code path (added ahead of the
+    filter_plenary_session_videos cutover so it lands as its own reviewable,
+    directly-tested unit).
+    """
+    if not item:
+        return None, None
+
+    live_details = item.get("liveStreamingDetails") or {}
+
+    end_time = live_details.get("actualEndTime")
+    if isinstance(end_time, str) and end_time:
+        return end_time, "actualEndTime"
+
+    start_time = live_details.get("actualStartTime")
+    if isinstance(start_time, str) and start_time:
+        return start_time, "actualStartTime"
+
+    return None, None
+
+
+def _airing_date(iso_timestamp: str) -> date:
+    """UTC calendar date for an ISO-8601 timestamp (``Z`` or explicit offset).
+
+    Raises ValueError/TypeError/AttributeError on a malformed input; the
+    caller (the future filter_plenary_session_videos cutover) is responsible
+    for catching these and excluding the candidate instead of raising.
+    """
+    return datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00")).astimezone(UTC).date()
 
 
 def filter_plenary_session_videos(
