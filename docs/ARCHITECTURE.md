@@ -73,8 +73,13 @@ independientes de YouTube.
   NAS montado en /opt/airflow/data/congress_videos/:
     downloads/{date}/{video_id}/audio_chunks/  (audio WebM)
     downloads/{date}/{video_id}/srt_files/     (subtitulos SRT)
+    {channel_slug}/{source_video_id}/video_chapters/{chapter_id}/subtitles.srt
+      (sidecar SRT del capitulo, #340: timestamps absolutos del video fuente)
     {channel_slug}/{source_video_id}/video_chapters/{chapter_id}/oradores/{output_turn_id}/{filename}
       (layout canonico #133: video.mp4, thumbnail.png, subtitles.srt)
+    {channel_slug}/{source_video_id}/video_chapters/{chapter_id}/shorts/{clip_id}.mp4 + {clip_id}.srt
+      (sidecar SRT del short, #431: aproximacion a la ventana de pre-recorte del
+      capitulo re-temporizada al origen del clip; Reap no expone tiempos por clip)
     assets/  (background, logo, fonts)
     congress_youtube_token.pickle
 
