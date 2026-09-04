@@ -92,7 +92,7 @@ accounted for.
 - [x] 2.1 CREATE: `congress_videos/sql/migrations/045_add_chapter_mentioned_people.sql` — `ALTER TABLE video_chapters ADD COLUMN IF NOT EXISTS mentioned_participant_slugs TEXT[]` + `COMMENT ON COLUMN` for both `mentioned_participant_slugs` and `topics`; DOWN block stays a **comment**, never live SQL (the runner executes the whole file in one transaction — an uncommented DOWN self-reverts its own UP). `[M8]` `[T7]`
 - [x] 2.2 RED: `tests/congress_videos/sql/test_production_schema.py` — append `"mentioned_participant_slugs"` to `TABLE_COLUMNS["video_chapters"]` and bump both `133 columns` comments (lines 78, 484) to `134`; this turns the existing parametrized `test_column_present_in_block` RED. `[M8]`
 - [x] 2.3 GREEN: `congress_videos/sql/production_schema.sql` mirror — trailing comma on `upload_verified_at TIMESTAMPTZ`, then `-- Added by migration 045 (mentioned people, issue #432)` + `mentioned_participant_slugs TEXT[]` with no trailing comma before `);`; comment line must contain no literal `);`. `[M8]`
-- [ ] 2.4 GREEN: `congress_videos/sql/youtube_chapters_schema.sql` dev mirror — same last-column comma discipline. *(cut candidate 1: move to PR3 if PR2 is over budget)* `[M8]` — **CUT applied**: PR2's authored diff was ~597 changed lines even after this cut, the drop-reason test parametrize cut (2.12/2.10 merged), and the docstring trim, all applied per the design's PR2 cut list; deferred to PR3 (task 3.x scope will re-add this mirror alongside the topic-extraction dev mirror needs, or the release PR).
+- [x] 2.4 GREEN: `congress_videos/sql/youtube_chapters_schema.sql` dev mirror — same last-column comma discipline. `[M8]` — deferred from PR2 (over budget there) to PR3; completed in the PR3 batch.
 - [x] 2.5 VERIFY: `uv run pytest -n auto tests/congress_videos/sql/test_production_schema.py`. No live-DB migration test exists in this repo (existing `test_migration_0NN.py` files are static SQL assertions only) — do not add one; live application is a rollout step (Phase 4), not a pytest task.
 - [x] 2.6 RED: `tests/congress_videos/modules/test_mentioned_people_resolution.py::test_returns_empty_and_ok_false_on_empty_text_or_empty_roster` (no `completion_fn` call, asserted via a spy). `[M1]`
 - [x] 2.7 GREEN: CREATE `congress_videos/modules/mentioned_people_resolution.py` — `MentionedPerson`/`MentionedPeopleResult` dataclasses, `resolve_mentioned_people` empty-input guard. `[M1]`
@@ -118,39 +118,61 @@ accounted for.
 
 ## Phase 3: PR3 — Topic extraction + upload-DAG hooks (Closes #432)
 
-- [ ] 3.1 RED: `tests/congress_videos/modules/test_topic_extraction.py::test_topics_normalized_lowercase_trimmed_whitespace_collapsed`. `[T2]`
-- [ ] 3.2 GREEN: CREATE `congress_videos/modules/topic_extraction.py` — `TopicsResult` dataclass, `extract_topics` normalization: `strip()` → `lower()` → collapse internal whitespace. `[T2]`
-- [ ] 3.3 RED: `test_topics_deduplicated_preserving_first_seen_order`. `[T2]`
-- [ ] 3.4 GREEN: dedup on the normalised string, first-seen order. `[T2]`
-- [ ] 3.5 RED: `test_overlong_topic_dropped` (> 60 chars). `[T2]`
-- [ ] 3.6 GREEN: drop topics longer than `MAX_TOPIC_CHARS = 60`. `[T2]`
-- [ ] 3.7 RED: `test_capped_at_max_topics`. `[T2]`
-- [ ] 3.8 GREEN: truncate to `MAX_TOPICS = 8`. `[T2]`
-- [ ] 3.9 RED: `test_no_topics_returns_ok_true_empty`. `[T3]`
-- [ ] 3.10 GREEN: empty-topics-but-`ok=True` path — distinct from a failed extraction. `[T3]`
-- [ ] 3.11 RED: `test_malformed_output_returns_ok_false` (parametrized). `[T4]`
-- [ ] 3.12 GREEN: error/malformed handling; wrap `completion_fn` in `try/except` → `ok=False`, never raise. `[T4]`
-- [ ] 3.13 GREEN: `congress_videos/config/ai_prompts.py` — topics prompt pair, schema `{"topics": ["<short topic label>", ...]}`, instructed concise Spanish noun phrases, not sentences; wire the lazily-imported `cached_json_completion` default with a cache key distinct from `resolve_mentioned_people`. `[T1]` `[T6]`
-- [ ] 3.14 VERIFY: `uv run pytest -n auto tests/congress_videos/modules/test_topic_extraction.py`.
-- [ ] 3.15 RED: `tests/congress_videos/modules/test_database_chapters.py::test_update_uses_bound_parameters` (threat-matrix control — LLM-derived values always bound; only column names come from a fixed literal allow-list).
-- [ ] 3.16 GREEN: `congress_videos/modules/database.py` — `update_chapter_content_analysis(chapter_id, *, mentioned_slugs=None, topics=None)`: builds `SET` from non-`None` kwargs, one statement, one round trip, no-op (`False`) when both are `None` (D10).
-- [ ] 3.17 RED: `tests/congress_videos/test_youtube_upload_dag.py::test_analysis_uses_chapter_window_not_turn_window` — turn row built from the **real** `uploadable_turns` column list (no `start_time`/`end_time`); mock `db.get_chapter_srt_context` to return the chapter span; group span a strict subset; assert the analyses receive chapter-scoped text. `[T5]`
-- [ ] 3.18 GREEN: `congress_videos/youtube_upload_dag.py` — add `_analyze_chapter_content(chapter_id, blocks, db)`: `ctx = db.get_chapter_srt_context(chapter_id)` in `try/except`, `chapter_text` via `chapter_window_blocks(blocks, ctx["start_time"], ctx["end_time"])` (D6, D7, F1). `[T5]` `[M1]`
-- [ ] 3.19 RED: `test_missing_chapter_context_skips_both_analyses` (parametrized: `get_chapter_srt_context` returns `None` and raises); assert `update_chapter_content_analysis` never called and the upload continues. `[T5]` `[M1]`
-- [ ] 3.20 GREEN: skip-both-analyses branch on missing/failed context, WARNING, nothing written. `[T5]` `[M1]`
-- [ ] 3.21 RED: `test_one_analysis_failing_persists_the_other` (patch `resolve_mentioned_people` to raise; assert the UPDATE still carries `topics` and no `mentioned_participant_slugs`). `[M7]`
-- [ ] 3.22 GREEN: independent `try/except` around `resolve_mentioned_people` and `extract_topics`; a failed analysis contributes no column (D9). `[M7]`
-- [ ] 3.23 RED: `test_empty_topics_does_not_overwrite` (asserts `topics` absent from the UPDATE kwargs). `[T3]`
-- [ ] 3.24 GREEN: persist gate — write a column only when `ok=True`; `ok=True` + empty people → write `{}`; `ok=True` + empty topics → skip the write, log INFO (D9). `[M3]` `[T3]`
-- [ ] 3.25 RED: `test_db_failure_does_not_fail_the_upload` (`update_chapter_content_analysis` raising).
-- [ ] 3.26 GREEN: wrap the persistence call in `try/except` → WARNING, upload continues.
-- [ ] 3.27 GREEN: wire `_analyze_chapter_content(...)` into the shared path of `_prepare_thumbnail_config`, after `blocks` is parsed, outside the `is_turn` branch (D6). `[T5]`
-- [ ] 3.28 DOCS: `docs/ARCHITECTURE.md` `video_chapters` column list (lines 189-197) — add `mentioned_participant_slugs[]`, re-document `topics[]` as the upload-time source of truth. `[M4]` `[T7]`
-- [ ] 3.29 DOCS: `docs/PIPELINE.md` turn/upload flow (lines 75-81) — state the upload prep derives mentioned people and topics from the chapter SRT window, independently persisted. *(cut candidate 1 — move to the release PR if PR3 is over budget; the design already flags PR3 as "at budget", apply this cut up front)* `[T5]`
-- [ ] 3.30 VERIFY: `uv run pytest -n auto tests/congress_videos/test_youtube_upload_dag.py tests/congress_videos/modules/test_database_chapters.py`.
-- [ ] 3.31 VERIFY: `uv run ruff check` and `uv run ruff format --check` on all touched files.
-- [ ] 3.32 VERIFY: `uv run python congress_videos/youtube_upload_dag.py` (DAG import check).
-- [ ] 3.33 VERIFY: `uv run pytest -n auto` (full suite green) and `bash scripts/test-airflow-e2e.sh` (gated on `congress_videos/**`).
+**size:exception** — actual authored diff (excluding `openspec/`) is 9 files
+changed, 679 insertions(+), 2 deletions(-) = 681 changed lines, against the
+400-line budget and the ~400-line forecast. All three design-sanctioned PR3
+cuts were applied: (1) `docs/PIPELINE.md` turn/upload-flow edit (task 3.29)
+deferred to the release PR up front, per the design's explicit instruction
+that PR3 is "at budget — apply cut 1 up front"; (2) the malformed-output
+tests are parametrized (one `pytest.mark.parametrize` table) rather than
+four separate test methods, matching the resolver module's own pattern;
+(3) `update_chapter_content_analysis` is the single merged helper the
+design already assumed (D10), not two separate UPDATE methods. No further
+reduction is possible without deleting tests, docs, or comments, which is
+forbidden. The overrun is driven by the same shape of pressure as PR2: a
+second LLM-backed module (`topic_extraction.py`, ~116 lines + its own
+~133-line test file) plus the upload-hook wiring itself
+(`_analyze_chapter_content`, ~90 lines) and its own dedicated coverage
+across four new test classes in `test_youtube_upload_dag.py` (~206 lines)
+— covering the F1 correction's extra `get_chapter_srt_context` read, the
+skip-on-missing-context branch, and the independent-failure-isolation
+matrix the design flagged as pushing PR3 from ~365 to ~400 lines before any
+implementation began. Reported honestly as `size:exception` rather than
+iterating further to force the number down.
+
+- [x] 3.1 RED: `tests/congress_videos/modules/test_topic_extraction.py::test_topics_normalized_lowercase_trimmed_whitespace_collapsed`. `[T2]`
+- [x] 3.2 GREEN: CREATE `congress_videos/modules/topic_extraction.py` — `TopicsResult` dataclass, `extract_topics` normalization: `strip()` → `lower()` → collapse internal whitespace. `[T2]`
+- [x] 3.3 RED: `test_topics_deduplicated_preserving_first_seen_order`. `[T2]`
+- [x] 3.4 GREEN: dedup on the normalised string, first-seen order. `[T2]`
+- [x] 3.5 RED: `test_overlong_topic_dropped` (> 60 chars). `[T2]`
+- [x] 3.6 GREEN: drop topics longer than `MAX_TOPIC_CHARS = 60`. `[T2]`
+- [x] 3.7 RED: `test_capped_at_max_topics`. `[T2]`
+- [x] 3.8 GREEN: truncate to `MAX_TOPICS = 8`. `[T2]`
+- [x] 3.9 RED: `test_no_topics_returns_ok_true_empty`. `[T3]`
+- [x] 3.10 GREEN: empty-topics-but-`ok=True` path — distinct from a failed extraction. `[T3]`
+- [x] 3.11 RED: `test_malformed_output_returns_ok_false` (parametrized). `[T4]`
+- [x] 3.12 GREEN: error/malformed handling; wrap `completion_fn` in `try/except` → `ok=False`, never raise. `[T4]`
+- [x] 3.13 GREEN: `congress_videos/config/ai_prompts.py` — topics prompt pair, schema `{"topics": ["<short topic label>", ...]}`, instructed concise Spanish noun phrases, not sentences; wire the lazily-imported `cached_json_completion` default with a cache key distinct from `resolve_mentioned_people`. `[T1]` `[T6]`
+- [x] 3.14 VERIFY: `uv run pytest -n auto tests/congress_videos/modules/test_topic_extraction.py`.
+- [x] 3.15 RED: `tests/congress_videos/modules/test_database_chapters.py::test_update_uses_bound_parameters` (threat-matrix control — LLM-derived values always bound; only column names come from a fixed literal allow-list).
+- [x] 3.16 GREEN: `congress_videos/modules/database.py` — `update_chapter_content_analysis(chapter_id, *, mentioned_slugs=None, topics=None)`: builds `SET` from non-`None` kwargs, one statement, one round trip, no-op (`False`) when both are `None` (D10).
+- [x] 3.17 RED: `tests/congress_videos/test_youtube_upload_dag.py::test_analysis_uses_chapter_window_not_turn_window` — turn row built from the **real** `uploadable_turns` column list (no `start_time`/`end_time`); mock `db.get_chapter_srt_context` to return the chapter span; group span a strict subset; assert the analyses receive chapter-scoped text. `[T5]`
+- [x] 3.18 GREEN: `congress_videos/youtube_upload_dag.py` — add `_analyze_chapter_content(chapter_id, blocks, db)`: `ctx = db.get_chapter_srt_context(chapter_id)` in `try/except`, `chapter_text` via `chapter_window_blocks(blocks, ctx["start_time"], ctx["end_time"])` (D6, D7, F1). `[T5]` `[M1]`
+- [x] 3.19 RED: `test_missing_chapter_context_skips_both_analyses` (parametrized: `get_chapter_srt_context` returns `None` and raises); assert `update_chapter_content_analysis` never called and the upload continues. `[T5]` `[M1]`
+- [x] 3.20 GREEN: skip-both-analyses branch on missing/failed context, WARNING, nothing written. `[T5]` `[M1]`
+- [x] 3.21 RED: `test_one_analysis_failing_persists_the_other` (patch `resolve_mentioned_people` to raise; assert the UPDATE still carries `topics` and no `mentioned_participant_slugs`). `[M7]`
+- [x] 3.22 GREEN: independent `try/except` around `resolve_mentioned_people` and `extract_topics`; a failed analysis contributes no column (D9). `[M7]`
+- [x] 3.23 RED: `test_empty_topics_does_not_overwrite` (asserts `topics` absent from the UPDATE kwargs). `[T3]`
+- [x] 3.24 GREEN: persist gate — write a column only when `ok=True`; `ok=True` + empty people → write `{}`; `ok=True` + empty topics → skip the write, log INFO (D9). `[M3]` `[T3]`
+- [x] 3.25 RED: `test_db_failure_does_not_fail_the_upload` (`update_chapter_content_analysis` raising).
+- [x] 3.26 GREEN: wrap the persistence call in `try/except` → WARNING, upload continues.
+- [x] 3.27 GREEN: wire `_analyze_chapter_content(...)` into the shared path of `_prepare_thumbnail_config`, after `blocks` is parsed, outside the `is_turn` branch (D6). `[T5]`
+- [x] 3.28 DOCS: `docs/ARCHITECTURE.md` `video_chapters` column list (lines 189-197) — add `mentioned_participant_slugs[]`, re-document `topics[]` as the upload-time source of truth. `[M4]` `[T7]`
+- [ ] 3.29 DOCS: `docs/PIPELINE.md` turn/upload flow (lines 75-81) — state the upload prep derives mentioned people and topics from the chapter SRT window, independently persisted. *(cut candidate 1 — move to the release PR if PR3 is over budget; the design already flags PR3 as "at budget", apply this cut up front)* `[T5]` — **CUT applied**: deferred to the release PR (task 4.6) per the design's explicit up-front instruction.
+- [x] 3.30 VERIFY: `uv run pytest -n auto tests/congress_videos/test_youtube_upload_dag.py tests/congress_videos/modules/test_database_chapters.py`.
+- [x] 3.31 VERIFY: `uv run ruff check` and `uv run ruff format --check` on all touched files.
+- [x] 3.32 VERIFY: `uv run python congress_videos/youtube_upload_dag.py` (DAG import check).
+- [x] 3.33 VERIFY: `uv run pytest -n auto` (full suite green); `bash scripts/test-airflow-e2e.sh` reports **unavailable** — Docker daemon not running in this environment (`docker info` fails); run manually before merge per `CLAUDE.md`.
 
 ## Phase 4: Delivery
 
