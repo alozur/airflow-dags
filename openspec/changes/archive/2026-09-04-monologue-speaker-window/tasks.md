@@ -123,10 +123,13 @@ before opening its PR.
 - [x] 4.9 Targeted: `uv run pytest tests/congress_videos/sql/test_production_schema.py
       tests/congress_videos/modules/test_database_speaker_resolution.py -v`.
 - [x] 4.10 Full: `uv run pytest -n auto`.
-- [ ] 4.11 Apply migration 046 to dev, then to prod, BEFORE Phase 5 merges to main. NOT DONE in
-      this apply slice — this is a deployment/ops action requiring live dev/prod DB access this
-      sandboxed worktree does not have (confirmed: NAS `postgres_shared:5433` is unreachable, no
-      Tailscale). Flagged for the orchestrator/maintainer to run before Phase 5 (C) merges to main.
+- [x] 4.11 Apply migration 046 to dev, then to prod, BEFORE Phase 5 merges to main. DONE by the
+      orchestrator on the NAS (2026-09-04), outside this sandboxed worktree (no Tailscale/DB access
+      here). Verified via `pg_attribute`: `speaker_resolution_evidence` exists in BOTH
+      `development.speaker_turn_videos` and `production.speaker_turn_videos` (query returned
+      development|1, production|1; type text, nullable). `development` applied via `run_migrations`
+      after `git_sync`; `production` was pre-applied idempotently with the same
+      `ADD COLUMN IF NOT EXISTS`, so `run_migrations` records 046 as a no-op there after release.
 - [x] 4.12 Measure: `git diff --stat <A2b-branch>...HEAD -- . ':!openspec'` vs ~120-line forecast.
       Landed at 145 authored lines (142 insertions + 3 deletions) on the first pass — under the
       400-line budget, no collapsing needed.
