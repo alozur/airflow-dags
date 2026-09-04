@@ -230,6 +230,44 @@ def _select_automatic_chapter(
     return [dict(row) for row in cur.fetchall()]
 
 
+def _score_plan_turns(conn, pg, plan, video_id: str) -> None:
+    """Score each of ``plan``'s turns on its SRT window and persist ``interest_score``.
+
+    Failures are non-fatal per turn: logged at WARNING, ``interest_score``
+    stays NULL, and scoring continues with the next turn. One commit per
+    successfully scored turn.
+    """
+    # Score each turn's SRT window for upload prioritisation.
+    # Failures are non-fatal: log at WARNING, leave interest_score NULL.
+    turns_table = pg.get_qualified_table("speaker_turns")
+    for tid in plan.turn_ids:
+        try:
+            window_text = _window_srt_text(
+                video_id,
+                float(plan.keep_intervals[0].start),
+                float(plan.keep_intervals[-1].end),
+            )
+            score = score_turn_interest(window_text)
+            if score is not None:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"UPDATE {turns_table} SET interest_score = %s WHERE turn_id = %s",
+                        (score, tid),
+                    )
+                conn.commit()
+                logger.info(
+                    "speaker_turn_videos: interest_score=%d for turn_id=%d",
+                    score,
+                    tid,
+                )
+        except Exception:  # noqa: BLE001 — scoring must never crash materialization
+            logger.warning(
+                "speaker_turn_videos: interest scoring failed for turn_id=%d — leaving interest_score NULL",
+                tid,
+                exc_info=True,
+            )
+
+
 def _materialize_task(**context) -> dict:
     """Plan and execute materialization for each pending turn.
 
@@ -337,35 +375,7 @@ def _materialize_task(**context) -> dict:
                 output_path,
             )
 
-            # Score each turn's SRT window for upload prioritisation.
-            # Failures are non-fatal: log at WARNING, leave interest_score NULL.
-            turns_table = pg.get_qualified_table("speaker_turns")
-            for tid in plan.turn_ids:
-                try:
-                    window_text = _window_srt_text(
-                        video_id,
-                        float(plan.keep_intervals[0].start),
-                        float(plan.keep_intervals[-1].end),
-                    )
-                    score = score_turn_interest(window_text)
-                    if score is not None:
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                f"UPDATE {turns_table} SET interest_score = %s WHERE turn_id = %s",
-                                (score, tid),
-                            )
-                        conn.commit()
-                        logger.info(
-                            "speaker_turn_videos: interest_score=%d for turn_id=%d",
-                            score,
-                            tid,
-                        )
-                except Exception:  # noqa: BLE001 — scoring must never crash materialization
-                    logger.warning(
-                        "speaker_turn_videos: interest scoring failed for turn_id=%d — leaving interest_score NULL",
-                        tid,
-                        exc_info=True,
-                    )
+            _score_plan_turns(conn, pg, plan, video_id)
 
         # Degenerate all-procedural groups (issue #143 D5): turns present in
         # the input but absent from EVERY plan's turn_ids never got a plan at
