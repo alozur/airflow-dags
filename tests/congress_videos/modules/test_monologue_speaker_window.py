@@ -3,15 +3,20 @@
 Slice A1: window selection + prompt constants.
 Slice A2a: FloorHolder/AnnouncedIdentity dataclasses and the two LLM-step seam
 functions (identify_floor_holder, resolve_announced_identity).
-Slice A2b (this file, extended): the never-raise orchestrator
-(resolve_monologue_speaker) that loads SRT blocks, runs the announcement
-pre-gate, wires the two steps together, and builds the audit JSON.
+Slice A2b: the never-raise orchestrator (resolve_monologue_speaker) that
+loads SRT blocks, runs the announcement pre-gate, wires the two steps
+together, and builds the audit JSON.
+Slice C (this file, extended): one opt-in live_llm test -- the only honest
+way to check the addressee/floor-holder distinction against a real model,
+since every mocked test above is a pass-through proof, not a model-behaviour
+proof (design.md Testing Strategy).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from unittest.mock import patch
 
 import pytest
@@ -570,3 +575,29 @@ def test_resolve_monologue_speaker_never_raises_end_to_end(raising_step, caplog)
 
     assert result is None
     assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Opt-in live-LLM check (issue #430) -- skipped by default and in CI. Run
+# with OPENAI_API_KEY and LIVE_LLM_TESTS=1 set to actually exercise the
+# floor-holder prompt against the real model.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.live_llm
+@pytest.mark.skipif(
+    not (os.getenv("OPENAI_API_KEY") and os.getenv("LIVE_LLM_TESTS") == "1"),
+    reason="Opt-in: requires OPENAI_API_KEY and LIVE_LLM_TESTS=1",
+)
+def test_identify_floor_holder_live_model_resolves_full_name_announcement():
+    """The real model, given 'Tiene la palabra la señora García', must find
+    the floor holder and name García -- the one thing no mocked test above
+    can prove."""
+    from utils.llm_cache import cached_json_completion
+
+    window_blocks = [_block(380.0, 385.0, "Tiene la palabra la señora García")]
+
+    result = identify_floor_holder(window_blocks, completion_fn=cached_json_completion)
+
+    assert result.found is True
+    assert "García" in result.announced_name_or_role

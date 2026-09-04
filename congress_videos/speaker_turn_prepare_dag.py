@@ -25,6 +25,7 @@ from airflow.operators.python import PythonOperator
 
 from congress_videos.config.constants import SPEAKER_TURN_PREPARE_DAG_ID
 from congress_videos.modules.database import CongressionalVideoDB
+from congress_videos.modules.monologue_speaker_window import resolve_monologue_speaker
 from congress_videos.modules.participants_db import CongressParticipantsDB
 from congress_videos.modules.speaker_placeholders import is_placeholder
 from congress_videos.modules.speaker_resolution import (
@@ -303,7 +304,15 @@ def _prepare_turns_callable() -> None:
                 and float(turn.get("speaker_resolution_confidence") or 0) >= SPEAKER_RESOLUTION_MIN_CONFIDENCE
             )
             if not already_resolved:
-                narrow = resolve_speaker(turn, participants)
+                # issue #430: monologue (non-qa) turns resolve from the
+                # pre-turn announcement window only -- the turn's own
+                # transcript never reaches a model. qa turns keep the
+                # combined/wide resolver (#322), and so does the
+                # qa-promotion re-pass below (#342).
+                if (turn.get("turn_type") or "monologue") != "qa":
+                    narrow = resolve_monologue_speaker(turn, participants)
+                else:
+                    narrow = resolve_speaker(turn, participants)
                 if narrow is not None:
                     narrow_slug = narrow["participant_slug"]
                     narrow_name = _display_name_for(participants, narrow_slug)
@@ -375,6 +384,7 @@ def _prepare_turns_callable() -> None:
                             winner["confidence"],
                             "ai_srt_context",
                             turn_id,
+                            evidence=winner.get("audit") or winner.get("evidence") or None,
                         )
                         # Patch in-memory so thumbnail/title steps see the real name.
                         if winner_name:

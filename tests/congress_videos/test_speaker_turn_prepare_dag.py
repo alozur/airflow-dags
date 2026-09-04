@@ -1015,7 +1015,7 @@ class TestSpeakerResolutionStep:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_write_sidecars),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", side_effect=fake_resolve),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", side_effect=fake_resolve),
             patch(
                 "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
             ),
@@ -1044,7 +1044,7 @@ class TestSpeakerResolutionStep:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker") as mock_resolve,
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker") as mock_resolve,
             patch(
                 "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
             ),
@@ -1066,7 +1066,7 @@ class TestSpeakerResolutionStep:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars") as mock_sidecars,
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=None),
             patch(
                 "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
             ),
@@ -1096,7 +1096,7 @@ class TestSpeakerResolutionStep:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_write_sidecars),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=resolution_result),
             patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=participants),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
@@ -1118,7 +1118,10 @@ class TestSpeakerResolutionStep:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars") as mock_sidecars,
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", side_effect=RuntimeError("unexpected")),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker",
+                side_effect=RuntimeError("unexpected"),
+            ),
             patch(
                 "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
             ),
@@ -1127,6 +1130,106 @@ class TestSpeakerResolutionStep:
             _prepare_turns_callable()
 
         mock_sidecars.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Routing by turn_type (issue #430): monologue (non-qa) turns resolve from
+# resolve_monologue_speaker; qa turns (and the qa-promotion wide re-pass,
+# covered separately in TestQaPromotionReresolution) keep resolve_speaker.
+# ---------------------------------------------------------------------------
+
+
+class TestSpeakerResolutionRouting:
+    def _make_participants(self):
+        return [{"slug": "pedro-sanchez", "display_name": "Pedro Sanchez", "party": "PSOE"}]
+
+    def test_monologue_turn_routes_to_monologue_resolver(self):
+        """turn_type != 'qa' (default, no turn_type set) -> resolve_monologue_speaker
+        is called, resolve_speaker is not."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turns = [_make_turn(1, "/data/v1.mp4")]
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = turns
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=None
+            ) as mock_monologue,
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None) as mock_wide,
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
+            ),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        mock_monologue.assert_called_once()
+        mock_wide.assert_not_called()
+
+    def test_qa_turn_routes_to_resolve_speaker(self):
+        """turn_type == 'qa' -> resolve_speaker is called, resolve_monologue_speaker
+        is not."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turn = _make_turn(1, "/data/v1.mp4")
+        turn["turn_type"] = "qa"
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = [turn]
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=None
+            ) as mock_monologue,
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None) as mock_qa,
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
+            ),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        mock_qa.assert_called_once()
+        mock_monologue.assert_not_called()
+
+    def test_qa_promotion_wide_repass_still_uses_resolve_speaker(self):
+        """The qa-promotion wide re-pass (issue #342) calls resolve_speaker with
+        turn_type='qa' on a shallow copy -- never resolve_monologue_speaker,
+        even though the original turn is a monologue turn."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
+
+        turn = _make_turn(1, "/data/v1.mp4")
+        narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
+        wide = {"participant_slug": "carlos-ruiz", "confidence": 0.90, "evidence": "..."}
+        participants = [
+            {"slug": "maria-lopez", "display_name": "Maria Lopez", "party": "PSOE"},
+            {"slug": "carlos-ruiz", "display_name": "Carlos Ruiz", "party": "PP"},
+        ]
+        mock_db = MagicMock()
+        mock_db.select_unprepared_turns.return_value = [turn]
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=narrow
+            ) as mock_monologue,
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=wide) as mock_wide,
+            patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=participants),
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        ):
+            _prepare_turns_callable()
+
+        mock_monologue.assert_called_once()
+        mock_wide.assert_called_once()
+        assert mock_wide.call_args[0][0]["turn_type"] == "qa"
 
 
 class TestPromotionHook:
@@ -1153,7 +1256,7 @@ class TestPromotionHook:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=resolution_result),
             patch(
                 "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
             ),
@@ -1178,7 +1281,7 @@ class TestPromotionHook:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=resolution_result),
             patch(
                 "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
             ),
@@ -1203,7 +1306,7 @@ class TestPromotionHook:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=resolution_result),
             patch(
                 "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
             ),
@@ -1228,7 +1331,7 @@ class TestPromotionHook:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=resolution_result),
             patch(
                 "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
             ),
@@ -1254,7 +1357,7 @@ class TestPromotionHook:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=resolution_result),
             patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=participants),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
@@ -1279,7 +1382,7 @@ class TestPromotionHook:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars") as mock_sidecars,
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolution_result),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=resolution_result),
             patch(
                 "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
             ),
@@ -1326,7 +1429,9 @@ class TestRosterCrosscheckGate:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=self._resolution()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=self._resolution()
+            ),
             patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._participants()),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
             caplog.at_level(logging.WARNING, logger="congress_videos.speaker_turn_prepare_dag"),
@@ -1360,14 +1465,16 @@ class TestRosterCrosscheckGate:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=self._resolution()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=self._resolution()
+            ),
             patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._participants()),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             _prepare_turns_callable()
 
         mock_db.mark_turn_resolved.assert_called_once_with(
-            "/data/v1.mp4", "felix-bolanos-garcia", 0.92, "ai_srt_context", 7
+            "/data/v1.mp4", "felix-bolanos-garcia", 0.92, "ai_srt_context", 7, evidence="..."
         )
         assert turn["resolved_name"] == "Félix Bolaños García"
 
@@ -1386,14 +1493,16 @@ class TestRosterCrosscheckGate:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=self._resolution()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=self._resolution()
+            ),
             patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._participants()),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             _prepare_turns_callable()
 
         mock_db.mark_turn_resolved.assert_called_once_with(
-            "/data/v1.mp4", "felix-bolanos-garcia", 0.92, "ai_srt_context", 3
+            "/data/v1.mp4", "felix-bolanos-garcia", 0.92, "ai_srt_context", 3, evidence="..."
         )
 
     def test_no_opinion_empty_roster_fails_open(self):
@@ -1410,14 +1519,16 @@ class TestRosterCrosscheckGate:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=self._resolution()),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=self._resolution()
+            ),
             patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._participants()),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
         ):
             _prepare_turns_callable()
 
         mock_db.mark_turn_resolved.assert_called_once_with(
-            "/data/v1.mp4", "felix-bolanos-garcia", 0.92, "ai_srt_context", 4
+            "/data/v1.mp4", "felix-bolanos-garcia", 0.92, "ai_srt_context", 4, evidence="..."
         )
 
 
@@ -1572,7 +1683,7 @@ class TestPrepareTurnsCallableVadStep:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", side_effect=fake_vad),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_sidecars),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", side_effect=fake_resolve),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", side_effect=fake_resolve),
             patch(
                 "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
             ),
@@ -1603,7 +1714,7 @@ class TestPrepareTurnsCallableVadStep:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(1.5, 2.0)),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_sidecars),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=None),
             patch(
                 "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
             ),
@@ -1633,7 +1744,7 @@ class TestPrepareTurnsCallableVadStep:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars", side_effect=fake_sidecars),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=None),
             patch(
                 "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
             ),
@@ -1658,7 +1769,7 @@ class TestPrepareTurnsCallableVadStep:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(2.0, 3.0)),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=None),
             patch(
                 "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
             ),
@@ -1673,7 +1784,9 @@ class TestPrepareTurnsCallableVadStep:
         assert "/data/v1.mp4" in cmd, f"Decode check must operate on output_path /data/v1.mp4; cmd={cmd}"
 
     def test_monologue_and_qa_both_vad_called(self):
-        """Two turns (different turn_type) → VAD called for both."""
+        """Two turns (different turn_type) → VAD called for both — turn1
+        (monologue) routes to resolve_monologue_speaker, turn2 (qa) routes
+        to resolve_speaker (issue #430 routing)."""
         from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
 
         turn1 = _make_turn(1, "/data/v1.mp4")
@@ -1694,6 +1807,7 @@ class TestPrepareTurnsCallableVadStep:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", side_effect=fake_vad),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=None),
             patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=None),
             patch(
                 "congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=self._make_participants()
@@ -1729,10 +1843,15 @@ class TestQaPromotionReresolution:
         self,
         turn,
         participants=None,
-        resolve_side_effect=None,
-        resolve_return=None,
+        narrow_return=None,
+        wide_return=None,
+        wide_side_effect=None,
         wide_enabled=None,
     ):
+        """issue #430: narrow now resolves via resolve_monologue_speaker (called
+        at most once); wide re-resolution keeps resolve_speaker (called at most
+        once, only on the promotion signal) -- two independent mocks, since they
+        are two different functions after the routing change."""
         from congress_videos.speaker_turn_prepare_dag import _prepare_turns_callable
 
         participants = participants if participants is not None else self._participants()
@@ -1747,13 +1866,16 @@ class TestQaPromotionReresolution:
             stack.enter_context(
                 patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0))
             )
-            if resolve_side_effect is not None:
-                mock_resolve = stack.enter_context(
-                    patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", side_effect=resolve_side_effect)
+            mock_narrow = stack.enter_context(
+                patch("congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=narrow_return)
+            )
+            if wide_side_effect is not None:
+                mock_wide = stack.enter_context(
+                    patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", side_effect=wide_side_effect)
                 )
             else:
-                mock_resolve = stack.enter_context(
-                    patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=resolve_return)
+                mock_wide = stack.enter_context(
+                    patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=wide_return)
                 )
             stack.enter_context(
                 patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=participants)
@@ -1765,7 +1887,7 @@ class TestQaPromotionReresolution:
                 )
             _prepare_turns_callable()
 
-        return mock_db, mock_resolve, mock_sidecars
+        return mock_db, mock_narrow, mock_wide, mock_sidecars
 
     def test_wide_accepted_writes_wide_slug_promotes(self, caplog):
         """Wide result non-None and Gate B accepts it -> wide slug persisted, promotion
@@ -1776,12 +1898,15 @@ class TestQaPromotionReresolution:
         wide = {"participant_slug": "carlos-ruiz", "confidence": 0.90, "evidence": "..."}
 
         with caplog.at_level(logging.INFO, logger="congress_videos.speaker_turn_prepare_dag"):
-            mock_db, mock_resolve, _ = self._run(turn, resolve_side_effect=[narrow, wide])
+            mock_db, mock_narrow, mock_wide, _ = self._run(turn, narrow_return=narrow, wide_return=wide)
 
-        mock_db.mark_turn_resolved.assert_called_once_with("/data/v1.mp4", "carlos-ruiz", 0.90, "ai_srt_context", 1)
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "carlos-ruiz", 0.90, "ai_srt_context", 1, evidence="..."
+        )
         mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
-        assert mock_resolve.call_count == 2
-        assert mock_resolve.call_args_list[1][0][0]["turn_type"] == "qa"
+        assert mock_narrow.call_count == 1
+        assert mock_wide.call_count == 1
+        assert mock_wide.call_args_list[0][0][0]["turn_type"] == "qa"
 
         audit_records = [r for r in caplog.records if "qa_reresolution" in r.getMessage()]
         assert len(audit_records) == 1, f"exactly one qa_reresolution INFO line expected; got {len(audit_records)}"
@@ -1794,11 +1919,14 @@ class TestQaPromotionReresolution:
         turn = _make_turn(1, "/data/v1.mp4")
         narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
 
-        mock_db, mock_resolve, _ = self._run(turn, resolve_side_effect=[narrow, None])
+        mock_db, mock_narrow, mock_wide, _ = self._run(turn, narrow_return=narrow, wide_return=None)
 
-        assert mock_resolve.call_count == 2, "the wide pass must be attempted before falling back"
-        assert mock_resolve.call_args_list[1][0][0]["turn_type"] == "qa"
-        mock_db.mark_turn_resolved.assert_called_once_with("/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1)
+        assert mock_narrow.call_count == 1
+        assert mock_wide.call_count == 1, "the wide pass must be attempted before falling back"
+        assert mock_wide.call_args_list[0][0][0]["turn_type"] == "qa"
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1, evidence="..."
+        )
         mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
 
     def test_wide_rejected_by_gate_b_falls_back_to_narrow(self, caplog):
@@ -1810,11 +1938,14 @@ class TestQaPromotionReresolution:
         wide = {"participant_slug": "carlos-ruiz", "confidence": 0.90, "evidence": "..."}
 
         with caplog.at_level(logging.WARNING, logger="congress_videos.speaker_turn_prepare_dag"):
-            mock_db, mock_resolve, _ = self._run(turn, resolve_side_effect=[narrow, wide])
+            mock_db, mock_narrow, mock_wide, _ = self._run(turn, narrow_return=narrow, wide_return=wide)
 
-        assert mock_resolve.call_count == 2, "the wide pass must be attempted before falling back"
-        assert mock_resolve.call_args_list[1][0][0]["turn_type"] == "qa"
-        mock_db.mark_turn_resolved.assert_called_once_with("/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1)
+        assert mock_narrow.call_count == 1
+        assert mock_wide.call_count == 1, "the wide pass must be attempted before falling back"
+        assert mock_wide.call_args_list[0][0][0]["turn_type"] == "qa"
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1, evidence="..."
+        )
         mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
         warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert warnings == [], f"no WARNING expected on a silent wide-reject; got: {[r.getMessage() for r in warnings]}"
@@ -1828,10 +1959,11 @@ class TestQaPromotionReresolution:
         wide = {"participant_slug": "carlos-ruiz", "confidence": 0.90, "evidence": "..."}
 
         with caplog.at_level(logging.WARNING, logger="congress_videos.speaker_turn_prepare_dag"):
-            mock_db, mock_resolve, _ = self._run(turn, resolve_side_effect=[narrow, wide])
+            mock_db, mock_narrow, mock_wide, _ = self._run(turn, narrow_return=narrow, wide_return=wide)
 
-        assert mock_resolve.call_count == 2, "the wide pass must be attempted before rejecting"
-        assert mock_resolve.call_args_list[1][0][0]["turn_type"] == "qa"
+        assert mock_narrow.call_count == 1
+        assert mock_wide.call_count == 1, "the wide pass must be attempted before rejecting"
+        assert mock_wide.call_args_list[0][0][0]["turn_type"] == "qa"
         mock_db.mark_turn_resolved.assert_not_called()
         mock_db.promote_turn_type_to_qa.assert_not_called()
         assert turn["resolved_name"] == "Speaker Name", "resolved_name must NOT be patched on reject"
@@ -1842,15 +1974,18 @@ class TestQaPromotionReresolution:
         assert "1" in message and "maria-lopez" in message and "Maria Lopez" in message
 
     def test_kill_switch_skips_wide_pass(self):
-        """QA_WIDE_CONTEXT_ENABLED=False -> resolve_speaker called exactly once; narrow
+        """QA_WIDE_CONTEXT_ENABLED=False -> resolve_speaker (wide) never called; narrow
         written; promotion still fires."""
         turn = _make_turn(1, "/data/v1.mp4")
         narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
 
-        mock_db, mock_resolve, _ = self._run(turn, resolve_return=narrow, wide_enabled=False)
+        mock_db, mock_narrow, mock_wide, _ = self._run(turn, narrow_return=narrow, wide_enabled=False)
 
-        assert mock_resolve.call_count == 1
-        mock_db.mark_turn_resolved.assert_called_once_with("/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1)
+        assert mock_narrow.call_count == 1
+        mock_wide.assert_not_called()
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1, evidence="..."
+        )
         mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
 
     def test_wide_pass_does_not_mutate_original_turn(self):
@@ -1861,10 +1996,10 @@ class TestQaPromotionReresolution:
         narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
         wide = {"participant_slug": "carlos-ruiz", "confidence": 0.90, "evidence": "..."}
 
-        mock_db, mock_resolve, _ = self._run(turn, resolve_side_effect=[narrow, wide])
+        mock_db, mock_narrow, mock_wide, _ = self._run(turn, narrow_return=narrow, wide_return=wide)
 
         assert turn["turn_type"] == "monologue", "original turn['turn_type'] must be untouched"
-        wide_call_arg = mock_resolve.call_args_list[1][0][0]
+        wide_call_arg = mock_wide.call_args_list[0][0][0]
         assert wide_call_arg is not turn, "wide pass must receive a shallow copy, not the original turn"
         assert wide_call_arg["turn_type"] == "qa"
 
@@ -1877,10 +2012,14 @@ class TestQaPromotionReresolution:
         narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
         wide = {"participant_slug": "old-name-slug", "confidence": 0.95, "evidence": "..."}
 
-        mock_db, mock_resolve, _ = self._run(turn, participants=participants, resolve_side_effect=[narrow, wide])
+        mock_db, mock_narrow, mock_wide, _ = self._run(
+            turn, participants=participants, narrow_return=narrow, wide_return=wide
+        )
 
         mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
-        mock_db.mark_turn_resolved.assert_called_once_with("/data/v1.mp4", "old-name-slug", 0.95, "ai_srt_context", 1)
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "old-name-slug", 0.95, "ai_srt_context", 1, evidence="..."
+        )
 
     def test_wide_pass_raises_falls_back_to_narrow(self):
         """The wide resolve_speaker call raises -> caught internally, narrow written,
@@ -1888,22 +2027,28 @@ class TestQaPromotionReresolution:
         turn = _make_turn(1, "/data/v1.mp4")
         narrow = {"participant_slug": "maria-lopez", "confidence": 0.85, "evidence": "..."}
 
-        mock_db, mock_resolve, mock_sidecars = self._run(turn, resolve_side_effect=[narrow, RuntimeError("wide boom")])
+        mock_db, mock_narrow, mock_wide, mock_sidecars = self._run(
+            turn, narrow_return=narrow, wide_side_effect=RuntimeError("wide boom")
+        )
 
-        assert mock_resolve.call_count == 2, "the wide pass must be attempted before raising"
-        mock_db.mark_turn_resolved.assert_called_once_with("/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1)
+        assert mock_narrow.call_count == 1
+        assert mock_wide.call_count == 1, "the wide pass must be attempted before raising"
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1, evidence="..."
+        )
         mock_sidecars.assert_called_once()
 
 
 class TestQaReresolutionNoSignalRegression:
     """Regression guard: when the narrow-computed promotion signal is False,
     the resolution step must remain logically identical to pre-#342
-    behavior — exactly one resolve_speaker call, one crosscheck_slug call.
+    behavior — exactly one narrow resolve call, one crosscheck_slug call,
+    and the wide resolve_speaker re-pass is never attempted.
     """
 
     def test_no_signal_single_resolve_single_crosscheck_call(self):
         """previous_name equals the narrow-resolved name (casefold) -> no wide pass,
-        exactly one resolve_speaker call and one crosscheck_slug call, one write,
+        exactly one narrow resolve call and one crosscheck_slug call, one write,
         zero promotions."""
         from congress_videos.modules.speaker_roster_crosscheck import (
             crosscheck_slug as real_crosscheck_slug,
@@ -1922,7 +2067,10 @@ class TestQaReresolutionNoSignalRegression:
             patch("congress_videos.speaker_turn_prepare_dag.CongressionalVideoDB", return_value=mock_db),
             patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
             patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
-            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=narrow) as mock_resolve,
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.resolve_monologue_speaker", return_value=narrow
+            ) as mock_narrow,
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker") as mock_wide,
             patch("congress_videos.speaker_turn_prepare_dag.get_all_participants", return_value=participants),
             patch("subprocess.run", return_value=MagicMock(returncode=0)),
             patch(
@@ -1932,9 +2080,12 @@ class TestQaReresolutionNoSignalRegression:
         ):
             _prepare_turns_callable()
 
-        assert mock_resolve.call_count == 1
+        assert mock_narrow.call_count == 1
+        mock_wide.assert_not_called()
         assert mock_crosscheck.call_count == 1
-        mock_db.mark_turn_resolved.assert_called_once_with("/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1)
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "maria-lopez", 0.85, "ai_srt_context", 1, evidence="..."
+        )
         mock_db.promote_turn_type_to_qa.assert_not_called()
 
 

@@ -194,6 +194,7 @@ markers = [
     "unit: fast isolated unit tests (default)",
     "integration: tests that touch multiple components",
     "slow: tests that take > 1s",
+    "live_llm: opt-in tests that call the real LLM API (issue #430); requires OPENAI_API_KEY and LIVE_LLM_TESTS=1, skipped otherwise",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",
