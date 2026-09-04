@@ -1464,3 +1464,53 @@ class TestWriteShortSrtSidecar:
         assert not target_path.with_name(target_path.name + ".tmp").exists()
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert any(r.exc_info is not None for r in warnings)
+
+
+class TestChapterAndShortSidecarsCoexist:
+    """Both writers run for the same chapter and land in distinct canonical
+    files: ``.../video_chapters/{chapter_id}/subtitles.srt`` for the chapter
+    and ``.../video_chapters/{chapter_id}/shorts/{clip_id}.srt`` for the short.
+    The short writer reads the chapter sidecar it finds first (D1) and never
+    touches it."""
+
+    VIDEO_ID = "vidboth"
+    CHAPTER_ID = 11
+    CLIP_ID = "clipboth"
+    START = "00:05:00,000"
+    END = "00:10:00,000"
+
+    @pytest.fixture
+    def data_root(self, tmp_path, mocker):
+        """One data root shared by the path helpers and the legacy SRT lookup."""
+        mocker.patch("congress_videos.config.paths.PROJECT_DATA_DIR", str(tmp_path))
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", str(tmp_path))
+        mocker.patch("congress_videos.srt_helpers.DOWNLOADS_DIR", str(tmp_path / "no_downloads"))
+        srt_dir = tmp_path / self.VIDEO_ID / "srt_files"
+        srt_dir.mkdir(parents=True)
+        (srt_dir / f"{self.VIDEO_ID}.srt").write_text(_SHORT_SIDECAR_SOURCE_SRT, encoding="utf-8")
+        return tmp_path
+
+    def test_both_sidecars_exist_at_distinct_canonical_paths(self, data_root):
+        chapter_path = write_chapter_srt_sidecar(self.VIDEO_ID, self.CHAPTER_ID, self.START, self.END)
+        assert chapter_path is not None
+        chapter_bytes_before = chapter_path.read_bytes()
+
+        short_path = write_short_srt_sidecar(
+            self.VIDEO_ID,
+            self.CHAPTER_ID,
+            self.CLIP_ID,
+            self.START,
+            self.END,
+            pretrim_start_secs=30,
+            pretrim_end_secs=100,
+        )
+
+        assert short_path is not None
+        assert chapter_path.exists() and short_path.exists()
+        assert chapter_path != short_path
+        assert chapter_path == get_video_chapter_dir(self.VIDEO_ID, self.CHAPTER_ID) / "subtitles.srt"
+        assert short_path == get_chapter_short_srt_path(self.VIDEO_ID, self.CHAPTER_ID, self.CLIP_ID)
+        assert short_path.parent.name == "shorts"
+        assert short_path.parent.parent == chapter_path.parent
+        assert chapter_path.read_bytes() == chapter_bytes_before
+        assert short_path.stat().st_size > 0
