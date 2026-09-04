@@ -142,8 +142,13 @@ class TestFilterPlenarySessionVideos:
             "channel_title": "Test Channel",
         }
 
-    def test_empty_videos_returns_zero_matches(self):
-        """Empty channel_videos input returns total_matches=0."""
+    def test_empty_videos_returns_zero_matches(self, monkeypatch, mocker):
+        """Empty channel_videos input returns total_matches=0, no API call."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            side_effect=AssertionError("build should not be called"),
+        )
         from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
 
         result = filter_plenary_session_videos({}, "Sesion Plenaria", "2025-05-22")
@@ -151,16 +156,26 @@ class TestFilterPlenarySessionVideos:
         assert result["total_matches"] == 0
         assert result["videos"] == []
 
-    def test_none_input_returns_zero_matches(self):
-        """None input returns total_matches=0."""
+    def test_none_input_returns_zero_matches(self, monkeypatch, mocker):
+        """None input returns total_matches=0, no API call."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            side_effect=AssertionError("build should not be called"),
+        )
         from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
 
         result = filter_plenary_session_videos(None, "Sesion Plenaria", "2025-05-22")
 
         assert result["total_matches"] == 0
 
-    def test_title_match_and_date_match_returns_one(self):
-        """Video with matching title and date is included."""
+    def test_title_match_and_date_match_returns_one(self, monkeypatch, mocker):
+        """Video with matching title and an airing date in the window is included."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"vid001": [_item(actual_end="2025-05-22T10:00:00Z")]}),
+        )
         from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
 
         video = self._make_video(
@@ -178,8 +193,16 @@ class TestFilterPlenarySessionVideos:
         assert result["total_matches"] == 1
         assert result["videos"][0]["video_id"] == "vid001"
 
-    def test_title_mismatch_returns_zero_matches(self):
-        """Video whose title does NOT contain target_title is excluded."""
+    def test_title_mismatch_returns_zero_matches(self, monkeypatch, mocker):
+        """Video whose title does NOT contain target_title is excluded, no API call.
+
+        This is the spec's "zero title matches skip the API" scenario.
+        """
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            side_effect=AssertionError("build should not be called"),
+        )
         from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
 
         video = self._make_video(
@@ -196,14 +219,19 @@ class TestFilterPlenarySessionVideos:
 
         assert result["total_matches"] == 0
 
-    def test_date_outside_lookback_window_returns_zero_matches(self):
-        """Video with correct title but a date outside the lookback window is excluded.
-        Published 3 days earlier with the default lookback_days=1 -> dropped."""
+    def test_date_outside_lookback_window_returns_zero_matches(self, monkeypatch, mocker):
+        """Video with correct title but an airing date outside the lookback window is excluded.
+        Aired 3 days earlier with the default lookback_days=1 -> dropped."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"vid001": [_item(actual_end="2025-05-19T10:00:00Z")]}),
+        )
         from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
 
         video = self._make_video(
             title="Sesion Plenaria (original)",
-            published_at="2025-05-19T10:00:00Z",  # 3 days earlier, outside window
+            published_at="2025-05-19T10:00:00Z",  # 3 days earlier; airing date drives the result now
         )
         channel_videos = self._make_channel_videos([video])
 
@@ -215,8 +243,13 @@ class TestFilterPlenarySessionVideos:
 
         assert result["total_matches"] == 0
 
-    def test_title_match_is_case_insensitive(self):
+    def test_title_match_is_case_insensitive(self, monkeypatch, mocker):
         """Title matching is case-insensitive."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"vid001": [_item(actual_end="2025-05-22T08:00:00Z")]}),
+        )
         from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
 
         video = self._make_video(
@@ -233,8 +266,13 @@ class TestFilterPlenarySessionVideos:
 
         assert result["total_matches"] == 1
 
-    def test_target_date_preserved_in_result(self):
-        """Result dict always contains the target_date used for filtering."""
+    def test_target_date_preserved_in_result(self, monkeypatch, mocker):
+        """Result dict always contains the target_date used for filtering, no API call."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            side_effect=AssertionError("build should not be called"),
+        )
         from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
 
         result = filter_plenary_session_videos(
@@ -245,8 +283,18 @@ class TestFilterPlenarySessionVideos:
 
         assert result["target_date"] == "2025-01-15"
 
-    def test_multiple_matches_all_returned(self):
+    def test_multiple_matches_all_returned(self, monkeypatch, mocker):
         """When multiple videos match, all are included."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service(
+                {
+                    "vid-a": [_item(actual_end="2025-05-22T09:00:00Z")],
+                    "vid-b": [_item(actual_end="2025-05-22T11:00:00Z")],
+                }
+            ),
+        )
         from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
 
         videos = [
@@ -264,9 +312,20 @@ class TestFilterPlenarySessionVideos:
 
         assert result["total_matches"] == 2
 
-    def test_lookback_range_keeps_today_and_yesterday_drops_older(self):
-        """With lookback_days=1 and a fixed reference date, videos published on
+    def test_lookback_range_keeps_today_and_yesterday_drops_older(self, monkeypatch, mocker):
+        """With lookback_days=1 and a fixed reference date, videos airing on
         the target date and the day before are KEPT; one 3 days earlier is DROPPED."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service(
+                {
+                    "vid-today": [_item(actual_end="2025-05-22T09:00:00Z")],
+                    "vid-yesterday": [_item(actual_end="2025-05-21T18:00:00Z")],
+                    "vid-old": [_item(actual_end="2025-05-19T10:00:00Z")],
+                }
+            ),
+        )
         from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
 
         target_date = "2025-05-22"
@@ -288,6 +347,114 @@ class TestFilterPlenarySessionVideos:
         assert kept_ids == {"vid-today", "vid-yesterday"}
         assert "vid-old" not in kept_ids
         assert result["total_matches"] == 2
+
+    # --- boundary + regression (design tests #1-#3) -------------------------- #
+
+    def test_issue_426_regression_matches_on_airing_time(self, monkeypatch, mocker):
+        """Design test #1: the actual issue #426 shape. Created 2026-08-27,
+        aired 2026-09-03; target 2026-09-03, lookback 1 -> matches on airing
+        time even though publishedAt is a week outside the window."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service(
+                {
+                    "5RNELQ2W6co": [
+                        _item(
+                            actual_start="2026-09-03T06:55:01Z",
+                            actual_end="2026-09-03T13:09:16Z",
+                        )
+                    ]
+                }
+            ),
+        )
+        from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
+
+        video = self._make_video(
+            title="Sesion Plenaria (original)",
+            published_at="2026-08-27T08:05:32Z",
+            video_id="5RNELQ2W6co",
+        )
+
+        result = filter_plenary_session_videos(
+            self._make_channel_videos([video]),
+            target_title="Sesion Plenaria",
+            target_date="2026-09-03",
+            lookback_days=1,
+        )
+
+        assert result["total_matches"] == 1
+        assert result["videos"][0]["video_id"] == "5RNELQ2W6co"
+
+    def test_airing_date_at_lower_boundary_kept(self, monkeypatch, mocker):
+        """Design test #2: airing date == target_date - lookback_days is kept (inclusive)."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"vid001": [_item(actual_end="2025-05-21T00:00:00Z")]}),
+        )
+        from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
+
+        video = self._make_video(title="Sesion Plenaria (original)", published_at="2025-05-21T00:00:00Z")
+
+        result = filter_plenary_session_videos(
+            self._make_channel_videos([video]),
+            target_title="Sesion Plenaria",
+            target_date="2025-05-22",
+            lookback_days=1,
+        )
+
+        assert result["total_matches"] == 1
+
+    def test_airing_date_one_day_past_target_not_kept(self, monkeypatch, mocker):
+        """Design test #3: airing date == target_date + 1 day is NOT kept (upper boundary)."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"vid001": [_item(actual_end="2025-05-23T00:00:00Z")]}),
+        )
+        from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
+
+        video = self._make_video(title="Sesion Plenaria (original)", published_at="2025-05-23T00:00:00Z")
+
+        result = filter_plenary_session_videos(
+            self._make_channel_videos([video]),
+            target_title="Sesion Plenaria",
+            target_date="2025-05-22",
+            lookback_days=1,
+        )
+
+        assert result["total_matches"] == 0
+
+    def test_exactly_one_call_for_all_title_matched_ids(self, monkeypatch, mocker):
+        """Design test #8: title-matched A,B,C -> one call, id="A,B,C", part="liveStreamingDetails"."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        service = _service(
+            {
+                "A": [_item(actual_end="2025-05-22T09:00:00Z")],
+                "B": [_item(actual_end="2025-05-22T09:00:00Z")],
+                "C": [_item(actual_end="2025-05-22T09:00:00Z")],
+            }
+        )
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=service,
+        )
+        from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
+
+        videos = [
+            self._make_video("Sesion Plenaria A", "2025-05-22T09:00:00Z", "A"),
+            self._make_video("Sesion Plenaria B", "2025-05-22T09:00:00Z", "B"),
+            self._make_video("Sesion Plenaria C", "2025-05-22T09:00:00Z", "C"),
+        ]
+
+        filter_plenary_session_videos(
+            self._make_channel_videos(videos),
+            target_title="Sesion Plenaria",
+            target_date="2025-05-22",
+        )
+
+        service.videos.return_value.list.assert_called_once_with(part="liveStreamingDetails", id="A,B,C")
 
 
 # --------------------------------------------------------------------------- #

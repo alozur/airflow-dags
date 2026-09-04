@@ -155,7 +155,7 @@ with DAG(
     tags=["congress", "youtube", "monitor"],
     params={  # No default: resolved per-run via _resolve_target_date (issue #206)
         "target_date": None,
-        "lookback_days": 1,  # Inclusive lookback window: target_date - lookback_days .. target_date
+        "lookback_days": 1,  # Inclusive airing-date lookback window: target_date - lookback_days .. target_date
         "min_hours_since_end": 12,  # Skip videos whose live broadcast ended less than this many hours ago
         "guard_enabled": True,  # Finished-stream guard: drop not-ready VODs before the branch (+ downloader guard)
         "guard_floor_minutes": 10,  # Cheap pre-probe skip: drop candidates that ended less than this ago

@@ -152,14 +152,16 @@ def filter_plenary_session_videos(
     lookback_days: int = 1,
 ):
     """
-    Filter videos for "Sesión Plenaria (original)" based on title and date.
+    Filter videos for "Sesión Plenaria (original)" based on title and airing time.
 
     Args:
         channel_videos: Results from fetch_youtube_channel_videos
         target_title: Title to filter for (e.g., "Sesión Plenaria (original)")
         target_date: Target date in YYYY-MM-DD format
         lookback_days: Inclusive lookback window. A video is kept when its
-            published date falls in [target_date - lookback_days, target_date].
+            airing time (``actualEndTime``, falling back to
+            ``actualStartTime``) falls in
+            [target_date - lookback_days, target_date] (UTC calendar date).
 
     Returns:
         Dict with filtered videos:
@@ -174,21 +176,33 @@ def filter_plenary_session_videos(
     target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
     range_start = target_date_obj - timedelta(days=lookback_days)
     logging.info(
-        f"Filtering for videos with title containing '{target_title}' published in [{range_start} .. {target_date_obj}]"
+        f"Filtering for videos with title containing '{target_title}' airing in [{range_start} .. {target_date_obj}]"
     )
 
-    matching_videos = []
-    for video in channel_videos["videos"]:
-        # Check if title contains target string (case-insensitive)
-        if target_title.lower() in video["title"].lower():
-            # Parse published date
-            published_at = datetime.fromisoformat(video["published_at"].replace("Z", "+00:00"))
-            published_date = published_at.date()
+    title_matched = [video for video in channel_videos["videos"] if target_title.lower() in video["title"].lower()]
+    if not title_matched:
+        logging.info(f"Found 0 matching videos for {target_date}")
+        return {"total_matches": 0, "videos": [], "target_date": target_date}
 
-            # Check if date falls within the inclusive lookback range
-            if range_start <= published_date <= target_date_obj:
-                logging.info(f"Match found: {video['title']} - {video['video_id']}")
-                matching_videos.append(video)
+    youtube_api_key = os.getenv("YOUTUBE_API_KEY")
+    if not youtube_api_key:
+        error_msg = "YOUTUBE_API_KEY environment variable not set"
+        logging.error(error_msg)
+        raise ValueError(error_msg)
+
+    youtube = build("youtube", "v3", developerKey=youtube_api_key)
+
+    ids = [video["video_id"] for video in title_matched if video.get("video_id")]
+    by_id = _fetch_video_items_by_id(youtube, ids, "liveStreamingDetails")
+
+    matching_videos, resolved_dates = _select_airing_window_matches(title_matched, by_id, range_start, target_date_obj)
+
+    if not matching_videos:
+        matched_ids = [video.get("video_id") for video in title_matched]
+        logging.warning(
+            f"No plenary matched: {len(title_matched)} title match(es) {matched_ids} "
+            f"with airing dates {resolved_dates} outside window [{range_start} .. {target_date_obj}]"
+        )
 
     logging.info(f"Found {len(matching_videos)} matching videos for {target_date}")
     return {
@@ -196,6 +210,60 @@ def filter_plenary_session_videos(
         "videos": matching_videos,
         "target_date": target_date,
     }
+
+
+def _select_airing_window_matches(
+    title_matched: list[dict],
+    by_id: dict[str, dict],
+    range_start: date,
+    target_date_obj: date,
+) -> tuple[list[dict], list[str]]:
+    """Resolve each title-matched video's airing date and keep the ones inside
+    the window. Returns (matching_videos, resolved_dates) where resolved_dates
+    has one entry per title-matched video, in order (ISO date or "missing").
+    """
+    matching_videos: list[dict] = []
+    resolved_dates: list[str] = []
+
+    for video in title_matched:
+        video_id = video.get("video_id")
+        item = by_id.get(video_id)
+
+        iso_timestamp, key_name = _airing_timestamp(item)
+        if iso_timestamp is None:
+            logging.warning(
+                f"No airing time for {video_id}: liveStreamingDetails has neither actualEndTime nor "
+                "actualStartTime; excluding"
+            )
+            resolved_dates.append("missing")
+            continue
+
+        if key_name == "actualStartTime":
+            logging.warning(
+                f"Airing time for {video_id} falls back to actualStartTime ({iso_timestamp}); actualEndTime absent"
+            )
+
+        try:
+            airing_date = _airing_date(iso_timestamp)
+        except (ValueError, TypeError, AttributeError):
+            logging.warning(f"Unparseable airing time for {video_id}: {iso_timestamp!r}; excluding")
+            resolved_dates.append("missing")
+            continue
+
+        resolved_dates.append(airing_date.isoformat())
+
+        if range_start <= airing_date <= target_date_obj:
+            logging.info(f"Match found: {video['title']} - {video_id}")
+            live_details = (item or {}).get("liveStreamingDetails") or {}
+            matching_videos.append(
+                {
+                    **video,
+                    "actual_end_time": live_details.get("actualEndTime"),
+                    "actual_start_time": live_details.get("actualStartTime"),
+                }
+            )
+
+    return matching_videos, resolved_dates
 
 
 def filter_unprocessed_videos(plenary_videos: dict) -> dict:
