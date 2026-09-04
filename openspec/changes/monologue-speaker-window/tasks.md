@@ -133,32 +133,38 @@ before opening its PR.
 
 ## Phase 5 — C: Routing + Wiring (`feat/430-c-routing`, base B branch)
 
-- [ ] 5.1 RED: 3 routing tests in `tests/congress_videos/test_speaker_turn_prepare_dag.py` —
+- [x] 5.1 RED: 3 routing tests in `tests/congress_videos/test_speaker_turn_prepare_dag.py` —
       non-qa turn calls `resolve_monologue_speaker` not `resolve_speaker`; `turn_type='qa'` calls
       `resolve_speaker` not the monologue resolver; qa-promotion wide re-pass still calls
       `resolve_speaker` with `turn_type='qa'`.
-- [ ] 5.2 GREEN: `congress_videos/speaker_turn_prepare_dag.py` — routing at the resolve-speakers
+- [x] 5.2 GREEN: `congress_videos/speaker_turn_prepare_dag.py` — routing at the resolve-speakers
       step (`turn_type != 'qa'` → new resolver) and `evidence=winner.get("audit") or
       winner.get("evidence") or None` at the `mark_turn_resolved` call site, per design.md.
       Docstring updated (no new "airflow"/"dag" trigger words).
-- [ ] 5.3 Rewire the caller suite (`test_speaker_turn_prepare_dag.py`): the 23
+- [x] 5.3 Rewire the caller suite (`test_speaker_turn_prepare_dag.py`): the 23
       `patch("...resolve_speaker")` sites patch the new resolver for non-qa `_make_turn()` turns;
       the 10 `mark_turn_resolved.assert_called_once_with(...)` + 2 `assert_not_called` gain the
       `evidence=` kwarg; `TestQaPromotionReresolution._run` uses two mocks (narrow → monologue,
       wide → `resolve_speaker`) instead of one `side_effect` list.
-- [ ] 5.4 `docs/PIPELINE.md` (modify) — one paragraph on the two-step monologue resolution.
-- [ ] 5.5 Grep `docs/` and root `*.md` for stale `120`/"intro window"/`resolve_speaker` mentions of
-      the old single-call window and update them.
-- [ ] 5.6 Import check: `uv run python congress_videos/speaker_turn_prepare_dag.py`.
-- [ ] 5.7 Non-regression check: `git diff dev...HEAD --
-      tests/congress_videos/modules/test_speaker_resolution.py` is empty; run
-      `uv run pytest tests/congress_videos/modules/test_speaker_resolution.py` green.
-- [ ] 5.8 Draft follow-up-issue text in apply-progress notes: "reassess `resolve_speaker`'s narrow
-      branch after monologue routing (#430)" — for the orchestrator to file post-merge.
-- [ ] 5.9 Quality: `uv run ruff check` + `ruff format --check` on changed files.
-- [ ] 5.10 Targeted: `uv run pytest tests/congress_videos/test_speaker_turn_prepare_dag.py -v`.
-- [ ] 5.11 Full: `uv run pytest -n auto`.
-- [ ] 5.12 Measure: `git diff --stat <B-branch>...HEAD -- . ':!openspec'` vs ~210-line forecast.
+- [x] 5.4 `docs/PIPELINE.md` (modify) — one paragraph on the two-step monologue resolution.
+- [x] 5.5 Grep `docs/` and root `*.md` for stale `120`/"intro window"/`resolve_speaker` mentions of
+      the old single-call window and update them. Swept `docs/*.md`, `docs/architecture/*.md`,
+      `docs/agents/*.md`, `docs/ops/*.md`, `README.md`, `CLAUDE.md`, `congress_videos/*.md` — no
+      hits describing the old single-call intro+turn mechanics anywhere outside `PIPELINE.md`
+      (which never described the resolution algorithm before this change); qa docs untouched.
+- [x] 5.6 Import check: `PYTHONPATH=. uv run python congress_videos/speaker_turn_prepare_dag.py`
+      (bare `uv run python ...` without `PYTHONPATH=.` fails with `ModuleNotFoundError:
+      congress_videos` in this environment — pre-existing project layout, not a regression).
+- [x] 5.7 Non-regression check: `git diff 6700695..HEAD --
+      tests/congress_videos/modules/test_speaker_resolution.py` is empty (0 lines); ran
+      `uv run pytest tests/congress_videos/modules/test_speaker_resolution.py` → 71 passed.
+- [x] 5.8 Draft follow-up-issue text in apply-progress notes: "reassess `resolve_speaker`'s narrow
+      branch after monologue routing (#430)" — for the orchestrator to file post-merge. See the
+      "Follow-up Issue" subsection of apply-progress.md's Phase 5 (C) section.
+- [x] 5.9 Quality: `uv run ruff check` + `ruff format --check` on changed files.
+- [x] 5.10 Targeted: `uv run pytest tests/congress_videos/test_speaker_turn_prepare_dag.py -v`.
+- [x] 5.11 Full: `uv run pytest -n auto`.
+- [x] 5.12 Measure: `git diff --stat <B-branch>...HEAD -- . ':!openspec'` vs ~210-line forecast.
 
 ## Commit Plan
 
