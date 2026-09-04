@@ -91,6 +91,63 @@ class TestLoadPlan:
             backfill.load_plan(str(plan_path))
 
 
+class TestParsePlanEntry:
+    """Quirks of the per-item validator lifted out of load_plan (issue #272)."""
+
+    @pytest.mark.parametrize("turn_id", [True, False])
+    def test_bool_turn_id_is_rejected_even_though_bool_is_an_int(self, turn_id):
+        parse = backfill._parse_plan_entry
+
+        with pytest.raises(backfill.BackfillInputError, match="integer"):
+            parse(0, {"turn_id": turn_id, "new_slug": "a"}, set())
+
+    def test_duplicate_detection_works_through_the_shared_set_across_calls(self):
+        parse = backfill._parse_plan_entry
+        seen: set[int] = set()
+        parse(0, {"turn_id": 1, "new_slug": "a"}, seen)
+
+        with pytest.raises(backfill.BackfillInputError, match=r"entry 1: duplicate turn_id 1"):
+            parse(1, {"turn_id": 1, "new_slug": "b"}, seen)
+
+    def test_expected_current_slug_may_be_null_but_not_a_number(self):
+        parse = backfill._parse_plan_entry
+
+        entry = parse(0, {"turn_id": 1, "expected_current_slug": None, "new_slug": "a"}, set())
+        assert entry.expected_current_slug is None
+
+        with pytest.raises(backfill.BackfillInputError, match="string or null"):
+            parse(0, {"turn_id": 2, "expected_current_slug": 5, "new_slug": "a"}, set())
+
+    def test_empty_new_slug_is_rejected(self):
+        parse = backfill._parse_plan_entry
+
+        with pytest.raises(backfill.BackfillInputError, match="non-empty"):
+            parse(0, {"turn_id": 1, "new_slug": ""}, set())
+
+    @pytest.mark.parametrize(
+        "index, item, match",
+        [
+            (3, "not-an-object", r"entry 3: must be a JSON object"),
+            (7, {"turn_id": 1}, r"entry 7: missing required field\(s\) \['new_slug'\]"),
+            (9, {"turn_id": "x", "new_slug": "a"}, r"entry 9: turn_id must be an integer"),
+        ],
+    )
+    def test_error_messages_carry_the_entry_index(self, index, item, match):
+        parse = backfill._parse_plan_entry
+
+        with pytest.raises(backfill.BackfillInputError, match=match):
+            parse(index, item, set())
+
+    def test_a_valid_item_mutates_seen_turn_ids(self):
+        parse = backfill._parse_plan_entry
+        seen: set[int] = set()
+
+        entry = parse(0, {"turn_id": 8124, "expected_current_slug": "old", "new_slug": "new"}, seen)
+
+        assert entry == backfill.BackfillEntry(turn_id=8124, expected_current_slug="old", new_slug="new")
+        assert seen == {8124}
+
+
 class TestValidateConfidence:
     def test_accepts_boundary_values(self):
         backfill.validate_confidence(0.0)
