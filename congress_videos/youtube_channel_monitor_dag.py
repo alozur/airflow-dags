@@ -102,6 +102,37 @@ def _resolve_target_date(context) -> str:
     return str(context.get("ds") or datetime.now(UTC).strftime("%Y-%m-%d"))
 
 
+def _slim_video(video: dict) -> dict:
+    """Slim one transcription entry for XCom.
+
+    The per-video loop body of :func:`_slim_transcriptions_for_xcom`, lifted
+    verbatim (issue #272): only identifiers, counters, and srt path(s)
+    survive; every key is kept or dropped by the same truthiness rules.
+    """
+    slim = {"video_id": video.get("video_id")}
+    if "video_title" in video:
+        slim["video_title"] = video.get("video_title")
+    slim["chunked"] = video.get("chunked", False)
+
+    if video.get("chunked"):
+        if "total_chunks" in video:
+            slim["total_chunks"] = video["total_chunks"]
+        if "successful_transcriptions" in video:
+            slim["successful_transcriptions"] = video["successful_transcriptions"]
+        srt_paths = [c.get("srt_path") for c in video.get("chunks", []) if c.get("srt_path")]
+        if srt_paths:
+            slim["srt_paths"] = srt_paths
+    else:
+        if "transcription_success" in video:
+            slim["transcription_success"] = video["transcription_success"]
+        if video.get("srt_path"):
+            slim["srt_path"] = video["srt_path"]
+
+    if video.get("error"):
+        slim["error"] = video["error"]
+    return slim
+
+
 def _slim_transcriptions_for_xcom(result):
     """Trim transcribe_audio_with_whisper()'s payload before it reaches XCom
     (issue #202b). The Postgres XCom backend persists every push; full
@@ -116,28 +147,7 @@ def _slim_transcriptions_for_xcom(result):
 
     slimmed_videos = []
     for video in result.get("videos", []):
-        slim = {"video_id": video.get("video_id")}
-        if "video_title" in video:
-            slim["video_title"] = video.get("video_title")
-        slim["chunked"] = video.get("chunked", False)
-
-        if video.get("chunked"):
-            if "total_chunks" in video:
-                slim["total_chunks"] = video["total_chunks"]
-            if "successful_transcriptions" in video:
-                slim["successful_transcriptions"] = video["successful_transcriptions"]
-            srt_paths = [c.get("srt_path") for c in video.get("chunks", []) if c.get("srt_path")]
-            if srt_paths:
-                slim["srt_paths"] = srt_paths
-        else:
-            if "transcription_success" in video:
-                slim["transcription_success"] = video["transcription_success"]
-            if video.get("srt_path"):
-                slim["srt_path"] = video["srt_path"]
-
-        if video.get("error"):
-            slim["error"] = video["error"]
-        slimmed_videos.append(slim)
+        slimmed_videos.append(_slim_video(video))
 
     slimmed = dict(result)
     slimmed["videos"] = slimmed_videos
