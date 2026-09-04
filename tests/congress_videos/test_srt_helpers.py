@@ -666,6 +666,86 @@ class TestFindSrtForChapterCanonical:
 
 
 # ---------------------------------------------------------------------------
+# _srt_candidate_paths — the probe list lifted out of find_srt_for_chapter
+# (issue #272). Pure list construction: order and membership are behaviour.
+# ---------------------------------------------------------------------------
+
+
+class TestSrtCandidatePaths:
+    def test_order_is_canonical_then_project_merged_then_plain_then_downloads(self, mocker):
+        from congress_videos.srt_helpers import _srt_candidate_paths
+
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", "/p")
+        mocker.patch("congress_videos.srt_helpers.DOWNLOADS_DIR", "/d")
+
+        candidates = _srt_candidate_paths("vid1", "2025-01-01", "/c")
+
+        assert candidates == [
+            "/c/subtitles.srt",
+            "/p/vid1/srt_files/vid1_merged.srt",
+            "/p/vid1/srt_files/vid1.srt",
+            "/d/2025-01-01/vid1/srt_files/vid1_merged.srt",
+            "/d/2025-01-01/vid1/srt_files/vid1.srt",
+        ]
+
+    def test_empty_canonical_dir_adds_no_canonical_candidate(self, mocker):
+        from congress_videos.srt_helpers import _srt_candidate_paths
+
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", "/p")
+        mocker.patch("congress_videos.srt_helpers.DOWNLOADS_DIR", "/d")
+
+        candidates = _srt_candidate_paths("vid1", "2025-01-01", "")
+
+        assert candidates[0] == "/p/vid1/srt_files/vid1_merged.srt"
+        assert not any(c.endswith("subtitles.srt") for c in candidates)
+
+    def test_no_session_date_and_missing_downloads_dir_adds_no_downloads_candidates(self, mocker):
+        from congress_videos.srt_helpers import _srt_candidate_paths
+
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", "/p")
+        mocker.patch("congress_videos.srt_helpers.DOWNLOADS_DIR", "/d")
+        mocker.patch("os.path.isdir", return_value=False)
+        listdir = mocker.patch("os.listdir")
+
+        candidates = _srt_candidate_paths("vid1", None, None)
+
+        assert candidates == [
+            "/p/vid1/srt_files/vid1_merged.srt",
+            "/p/vid1/srt_files/vid1.srt",
+        ]
+        listdir.assert_not_called()
+
+    def test_no_session_date_walks_every_date_folder_in_listdir_order(self, mocker):
+        from congress_videos.srt_helpers import _srt_candidate_paths
+
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", "/p")
+        mocker.patch("congress_videos.srt_helpers.DOWNLOADS_DIR", "/d")
+        mocker.patch("os.path.isdir", return_value=True)
+        mocker.patch("os.listdir", return_value=["2025-02-02", "2025-01-01"])
+
+        candidates = _srt_candidate_paths("vid1", None, None)
+
+        assert candidates[2:] == [
+            "/d/2025-02-02/vid1/srt_files/vid1_merged.srt",
+            "/d/2025-02-02/vid1/srt_files/vid1.srt",
+            "/d/2025-01-01/vid1/srt_files/vid1_merged.srt",
+            "/d/2025-01-01/vid1/srt_files/vid1.srt",
+        ]
+
+    def test_candidate_construction_never_probes_existence(self, mocker):
+        """Existence is find_srt_for_chapter's job; the list builder stays pure."""
+        from congress_videos.srt_helpers import _srt_candidate_paths
+
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", "/p")
+        mocker.patch("congress_videos.srt_helpers.DOWNLOADS_DIR", "/d")
+        exists = mocker.patch("os.path.exists")
+
+        _srt_candidate_paths("vid1", "2025-01-01", "/c")
+
+        exists.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # score_turn_interest
 # ---------------------------------------------------------------------------
 

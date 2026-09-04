@@ -73,6 +73,32 @@ def _serialize_srt_blocks(blocks: list[dict]) -> str:
     return "\n".join(out)
 
 
+def _srt_candidate_paths(video_id: str, session_date: str | None, canonical_dir: str | None) -> list[str]:
+    """Build the ordered SRT probe list for :func:`find_srt_for_chapter`.
+
+    Lifted verbatim out of that function (issue #272). Pure list
+    construction — no existence probe happens here; the order (canonical,
+    then project data merged/plain, then downloads) is the behaviour.
+    """
+    srt_filenames = [f"{video_id}_merged.srt", f"{video_id}.srt"]
+
+    candidates = []
+    if canonical_dir:
+        candidates.append(os.path.join(canonical_dir, "subtitles.srt"))
+    for name in srt_filenames:
+        candidates.append(os.path.join(PROJECT_DATA_DIR, video_id, "srt_files", name))
+
+    if session_date:
+        for name in srt_filenames:
+            candidates.append(os.path.join(DOWNLOADS_DIR, session_date, video_id, "srt_files", name))
+    else:
+        if os.path.isdir(DOWNLOADS_DIR):
+            for date_folder in os.listdir(DOWNLOADS_DIR):
+                for name in srt_filenames:
+                    candidates.append(os.path.join(DOWNLOADS_DIR, date_folder, video_id, "srt_files", name))
+    return candidates
+
+
 def find_srt_for_chapter(
     video_id: str,
     chapter_id: int,
@@ -97,22 +123,7 @@ def find_srt_for_chapter(
         logger.warning("find_srt_for_chapter: unsafe video_id %r — refusing path probe", video_id)
         return None
 
-    srt_filenames = [f"{video_id}_merged.srt", f"{video_id}.srt"]
-
-    candidates = []
-    if canonical_dir:
-        candidates.append(os.path.join(canonical_dir, "subtitles.srt"))
-    for name in srt_filenames:
-        candidates.append(os.path.join(PROJECT_DATA_DIR, video_id, "srt_files", name))
-
-    if session_date:
-        for name in srt_filenames:
-            candidates.append(os.path.join(DOWNLOADS_DIR, session_date, video_id, "srt_files", name))
-    else:
-        if os.path.isdir(DOWNLOADS_DIR):
-            for date_folder in os.listdir(DOWNLOADS_DIR):
-                for name in srt_filenames:
-                    candidates.append(os.path.join(DOWNLOADS_DIR, date_folder, video_id, "srt_files", name))
+    candidates = _srt_candidate_paths(video_id, session_date, canonical_dir)
 
     for path in candidates:
         if os.path.exists(path):
