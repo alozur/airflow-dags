@@ -43,12 +43,14 @@ from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from congress_videos.config import speaker_normalization_config as snc
 from congress_videos.config.paths import get_video_chapter_dir
 from congress_videos.modules.chapter_speaker_resolution import resolve_chapter_speakers
+from congress_videos.modules.mentioned_people_resolution import resolve_mentioned_people
 from congress_videos.modules.participants_db import (
     get_participants_roster,
     lookup_participant_by_slug,
     lookup_participant_fuzzy,
 )
 from congress_videos.modules.speaker_placeholders import is_placeholder
+from congress_videos.modules.topic_extraction import extract_topics
 from congress_videos.modules.upload_marking import mark_chapter_uploads, mark_turn_uploads
 from congress_videos.srt_helpers import (
     _parse_srt_blocks,
@@ -208,6 +210,90 @@ def _turn_window_bound(primary, fallback, default: float) -> float:
     return default
 
 
+def _analyze_chapter_content(chapter_id: int, blocks: list[dict], db) -> None:
+    """Derive mentioned-people and topics for one chapter, upload-time (issue #432).
+
+    Runs on the shared path of `_prepare_thumbnail_config`, after `blocks` is
+    parsed and outside the turn-only branch. `uploadable_turns` carries no
+    `start_time`/`end_time` (design F1), so the chapter's own SRT bounds come
+    from `db.get_chapter_srt_context(chapter_id)`, never from the turn row.
+
+    Each analysis is independently try/excepted: a failure in one MUST NOT
+    discard or block the other (design D9). The persist gate writes a
+    column only when that analysis returned `ok=True`; an `ok=True` empty
+    people result is a real finding and is written, but an `ok=True` empty
+    topics result would clobber a pre-existing value and is skipped instead
+    (design D9). The final persistence call always runs — `update_chapter_
+    content_analysis` itself no-ops when both kwargs are None (design D10)
+    — and is itself try/excepted so a DB failure never fails the upload.
+    """
+    try:
+        ctx = db.get_chapter_srt_context(chapter_id)
+    except Exception as exc:
+        logging.warning(
+            "_analyze_chapter_content: get_chapter_srt_context failed for chapter_id=%s: %s — skipping analyses",
+            chapter_id,
+            exc,
+        )
+        return
+
+    if ctx is None:
+        logging.warning(
+            "_analyze_chapter_content: no chapter context for chapter_id=%s — skipping analyses",
+            chapter_id,
+        )
+        return
+
+    chapter_text = " ".join(
+        b["text"] for b in chapter_window_blocks(blocks, ctx.get("start_time"), ctx.get("end_time"))
+    )
+    if not chapter_text:
+        logging.warning(
+            "_analyze_chapter_content: empty chapter window for chapter_id=%s — skipping analyses",
+            chapter_id,
+        )
+        return
+
+    mentioned_slugs: list[str] | None = None
+    try:
+        roster = get_participants_roster()
+        people_result = resolve_mentioned_people(chapter_text, roster)
+        if people_result.ok:
+            mentioned_slugs = list(people_result.slugs)
+    except Exception as exc:
+        logging.warning(
+            "_analyze_chapter_content: resolve_mentioned_people failed for chapter_id=%s: %s",
+            chapter_id,
+            exc,
+        )
+
+    topics: list[str] | None = None
+    try:
+        topics_result = extract_topics(chapter_text)
+        if topics_result.ok and topics_result.topics:
+            topics = list(topics_result.topics)
+        elif topics_result.ok:
+            logging.info(
+                "_analyze_chapter_content: extraction found no topics for chapter_id=%s — leaving topics untouched",
+                chapter_id,
+            )
+    except Exception as exc:
+        logging.warning(
+            "_analyze_chapter_content: extract_topics failed for chapter_id=%s: %s",
+            chapter_id,
+            exc,
+        )
+
+    try:
+        db.update_chapter_content_analysis(chapter_id, mentioned_slugs=mentioned_slugs, topics=topics)
+    except Exception as exc:
+        logging.warning(
+            "_analyze_chapter_content: update_chapter_content_analysis failed for chapter_id=%s: %s",
+            chapter_id,
+            exc,
+        )
+
+
 def _prepare_thumbnail_config(chapter: dict, db) -> dict:
     """Build the thumbnail-generation config dict for a single chapter or turn.
 
@@ -339,6 +425,10 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
         return config
 
     blocks = _parse_srt_blocks(srt_path)
+
+    if chapter_id is not None:
+        _analyze_chapter_content(chapter_id, blocks, db)
+
     if is_turn:
         # Grouped clips (#129/#231) publish the GROUP span, not the
         # representative turn's own narrow span (issue #341).

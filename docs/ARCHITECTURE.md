@@ -193,7 +193,20 @@ XCom keys en congress_youtube_chapter_uploader:
     relevance_score 0-5, speaker_relevance_points 0-2,
     topic_relevance_points 0-2, public_interest_points 0-1,
     scoring_reasoning, key_speakers[], is_current_topic,
-    is_uploaded_to_youtube, youtube_video_id
+    is_uploaded_to_youtube, youtube_video_id,
+    resolved_participant_slug, mentioned_participant_slugs[]
+
+    Tres conceptos distintos, resueltos por caminos independientes (issue #432):
+    - resolved_participant_slug: quien HABLA (orador del capítulo), issue #263.
+    - mentioned_participant_slugs[]: a quien se MENCIONA en la transcripción,
+      congress_videos/modules/mentioned_people_resolution.py, roster-gated,
+      migración 045. NULL = sin analizar; array vacío = analizado, sin menciones.
+    - topics[]: de que TRATA el capítulo. Escrito originalmente por
+      utils/ai_chapter_analyzer.py en la identificación de capítulos; desde el
+      issue #432 la fuente de verdad se refresca en tiempo de subida por
+      congress_videos/modules/topic_extraction.py (independiente de
+      mentioned_participant_slugs, propia llamada LLM y cache). Una extracción
+      exitosa sin temas NO sobrescribe un valor previo no vacío.
 
   Vistas:
     uploadable_chapters  relevance_score >= 2 AND is_uploaded = FALSE

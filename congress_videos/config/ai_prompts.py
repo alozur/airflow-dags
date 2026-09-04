@@ -781,6 +781,22 @@ MENTIONED_PEOPLE_USER_TEMPLATE = (
 )
 
 
+# Topic Extraction — dedicated LLM call, independent of mentioned-people (issue #432)
+TOPIC_EXTRACTION_SYSTEM_PROMPT = (
+    "You are a topic-extraction assistant for the Spanish Congress of Deputies. "
+    "You receive a chapter transcript and identify the subject-matter topics "
+    "discussed in it — what is being talked about, not who is speaking or who "
+    "is mentioned.\n\n"
+    "Rules:\n"
+    "- Respond with ONLY valid JSON and nothing else.\n"
+    "- Return concise Spanish noun phrases, not sentences.\n"
+    "- Each topic label should be short (a few words).\n\n"
+    'JSON schema: {"topics": ["<short topic label>", ...]}'
+)
+
+TOPIC_EXTRACTION_USER_TEMPLATE = 'CHAPTER TRANSCRIPT:\n{srt_text}\n\nReturn ONLY valid JSON: {{"topics": [...]}}'
+
+
 # Speaker Normalization — match a dirty speaker string to a congress_participants candidate
 SPEAKER_MATCH_SYSTEM_PROMPT = (
     "You are a speaker-name disambiguation assistant for the Spanish Congress of Deputies. "
