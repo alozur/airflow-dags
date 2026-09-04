@@ -77,19 +77,24 @@ before opening its PR.
 
 ## Phase 3 — A2b: Orchestrator (`feat/430-a2b-orchestrator`, base A2a branch)
 
-- [ ] 3.1 RED: pre-gate no-call (no announcement phrase → `None`, `completion_fn` call count 0);
+- [x] 3.1 RED: pre-gate no-call (no announcement phrase → `None`, `completion_fn` call count 0);
       Step-1 payload-exclusion (sentinel text outside the window absent from every captured prompt).
-- [ ] 3.2 GREEN: `_load_turn_blocks` + `build_resolution_audit` in `monologue_speaker_window.py`.
-- [ ] 3.3 RED: `found=false` stops before Step 2 (call count 1); evidence not locatable in window
+- [x] 3.2 GREEN: `_load_turn_blocks` + `build_resolution_audit` in `monologue_speaker_window.py`.
+- [x] 3.3 RED: `found=false` stops before Step 2 (call count 1); evidence not locatable in window
       blocks → `None`; audit JSON has exactly the 7 keys incl. `method="monologue_window_v1"`;
       result shape has `participant_slug`/`confidence`/`evidence`/`audit`.
-- [ ] 3.4 RED: never-raise end to end — `completion_fn` raising on Step 1, and on Step 2 → `None`
-      + one WARNING (`caplog`).
-- [ ] 3.5 GREEN: `_resolve_monologue_inner` + `resolve_monologue_speaker` (try/except wrapper).
-- [ ] 3.6 Quality: `uv run ruff check` + `ruff format --check` on the module and test file.
-- [ ] 3.7 Targeted: `uv run pytest tests/congress_videos/modules/test_monologue_speaker_window.py -v`.
-- [ ] 3.8 Full: `uv run pytest -n auto`.
-- [ ] 3.9 Measure: `git diff --stat <A2a-branch>...HEAD -- . ':!openspec'` vs ~230-line forecast.
+- [x] 3.4 RED: never-raise end to end — `completion_fn` raising on Step 1, and on Step 2 → `None`
+      + one WARNING (`caplog`). NOTE: the opt-in `@pytest.mark.live_llm` test described in
+      design.md's Testing Strategy is NOT assigned to any Phase 1-3 task and was not added here;
+      `live_llm` marker registration is deferred until a task explicitly schedules it.
+- [x] 3.5 GREEN: `_resolve_monologue_inner` + `resolve_monologue_speaker` (try/except wrapper).
+- [x] 3.6 Quality: `uv run ruff check` + `ruff format --check` on the module and test file.
+- [x] 3.7 Targeted: `uv run pytest tests/congress_videos/modules/test_monologue_speaker_window.py -v`.
+- [x] 3.8 Full: `uv run pytest -n auto`.
+- [x] 3.9 Measure: `git diff --stat <A2a-branch>...HEAD -- . ':!openspec'` vs ~230-line forecast.
+      Landed at 320 authored lines (308 insertions + 12 deletions) on the first pass — under the
+      400-line budget with no collapsing needed, following the parametrize-from-the-start
+      discipline applied in the A2a budget correction.
 
 ## Phase 4 — B: Evidence Migration (`feat/430-b-evidence-migration`, base A2b branch)
 
