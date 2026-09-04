@@ -98,27 +98,38 @@ before opening its PR.
 
 ## Phase 4 — B: Evidence Migration (`feat/430-b-evidence-migration`, base A2b branch)
 
-- [ ] 4.1 Confirm migration number 046 is still free (renumber if PR #449/045 landed differently).
-- [ ] 4.2 Create `congress_videos/sql/migrations/046_add_speaker_resolution_evidence.sql` — exact
+- [x] 4.1 Confirm migration number 046 is still free (renumber if PR #449/045 landed differently).
+      Confirmed via `ls congress_videos/sql/migrations/ | tail -3`: 045 (mentioned people, issue
+      #432, from PR #449) already exists on this branch; 046 is free — no renumbering needed.
+- [x] 4.2 Create `congress_videos/sql/migrations/046_add_speaker_resolution_evidence.sql` — exact
       SQL from design.md (`ADD COLUMN IF NOT EXISTS`, DOWN block fully commented per 044).
-- [ ] 4.3 RED: `test_production_schema.py` column-tuple test expects
+- [x] 4.3 RED: `test_production_schema.py` column-tuple test expects
       `speaker_resolution_evidence` in `TABLE_COLUMNS["speaker_turn_videos"]` — fails.
-- [ ] 4.4 GREEN: `congress_videos/sql/production_schema.sql` (modify) — add
+- [x] 4.4 GREEN: `congress_videos/sql/production_schema.sql` (modify) — add
       `speaker_resolution_evidence TEXT` after `speaker_resolution_method`, extend the folded
       header comment with `+ 046`.
-- [ ] 4.5 RED: `tests/congress_videos/modules/test_database_speaker_resolution.py` (+3 SQL-shape
+- [x] 4.5 RED: `tests/congress_videos/modules/test_database_speaker_resolution.py` (+3 SQL-shape
       tests) — SQL contains `speaker_resolution_evidence` with `evidence=`, absent without it;
-      5-positional-arg call leaves the SQL byte-identical.
-- [ ] 4.6 GREEN: `congress_videos/modules/database.py` — `mark_turn_resolved(..., evidence:
+      5-positional-arg call leaves the SQL byte-identical. Implemented as one
+      `@pytest.mark.parametrize` test (2 cases: provided/omitted) + one byte-identical golden-string
+      test, per the parametrize-from-the-start discipline.
+- [x] 4.6 GREEN: `congress_videos/modules/database.py` — `mark_turn_resolved(..., evidence:
       str | None = None)` exactly as in design.md; WHERE clause and `logger.info` untouched.
-- [ ] 4.7 `tests/congress_videos/modules/test_mark_turn_resolved_live.py` (modify) — +1 column in
-      `_SCHEMA_SQL`, +1 opt-in live round-trip test against NAS `postgres_shared:5433`.
-- [ ] 4.8 Quality: `uv run ruff check` + `ruff format --check` on changed files.
-- [ ] 4.9 Targeted: `uv run pytest tests/congress_videos/sql/test_production_schema.py
+- [x] 4.7 `tests/congress_videos/modules/test_mark_turn_resolved_live.py` (modify) — +1 column in
+      `_SCHEMA_SQL`, +1 opt-in live round-trip test against NAS `postgres_shared:5433`. NAS
+      unreachable from this sandbox (no Tailscale) — the new test skips cleanly alongside the 2
+      pre-existing live tests in this file, same as every prior slice's Docker/NAS harness.
+- [x] 4.8 Quality: `uv run ruff check` + `ruff format --check` on changed files.
+- [x] 4.9 Targeted: `uv run pytest tests/congress_videos/sql/test_production_schema.py
       tests/congress_videos/modules/test_database_speaker_resolution.py -v`.
-- [ ] 4.10 Full: `uv run pytest -n auto`.
-- [ ] 4.11 Apply migration 046 to dev, then to prod, BEFORE Phase 5 merges to main.
-- [ ] 4.12 Measure: `git diff --stat <A2b-branch>...HEAD -- . ':!openspec'` vs ~120-line forecast.
+- [x] 4.10 Full: `uv run pytest -n auto`.
+- [ ] 4.11 Apply migration 046 to dev, then to prod, BEFORE Phase 5 merges to main. NOT DONE in
+      this apply slice — this is a deployment/ops action requiring live dev/prod DB access this
+      sandboxed worktree does not have (confirmed: NAS `postgres_shared:5433` is unreachable, no
+      Tailscale). Flagged for the orchestrator/maintainer to run before Phase 5 (C) merges to main.
+- [x] 4.12 Measure: `git diff --stat <A2b-branch>...HEAD -- . ':!openspec'` vs ~120-line forecast.
+      Landed at 145 authored lines (142 insertions + 3 deletions) on the first pass — under the
+      400-line budget, no collapsing needed.
 
 ## Phase 5 — C: Routing + Wiring (`feat/430-c-routing`, base B branch)
 
