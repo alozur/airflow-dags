@@ -1763,6 +1763,30 @@ class CongressionalVideoDB:
             row = cur.fetchone()
             return dict(row) if row else None
 
+    def get_chapter_srt_context(self, chapter_id: int) -> dict | None:
+        """Returns ``{video_id, start_time, end_time, session_date}`` for one
+        chapter, or ``None`` when the chapter does not exist.
+
+        LEFT JOIN to youtube_source_videos for session_date, mirroring
+        get_chapter_metadata. Consumed by the PR1 short-sidecar hook
+        (ReapJobSensor.poke) and the PR3 upload-time content-analysis hook —
+        both need the chapter's own SRT-format bounds, which the uploader's
+        uploadable_turns row does not carry (design F1).
+        """
+        chapters_table = self.pg_conn.get_qualified_table("video_chapters")
+        youtube_source_videos_table = self.pg_conn.get_qualified_table("youtube_source_videos")
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT vc.video_id, vc.start_time, vc.end_time,
+                               ysv.session_date
+                        FROM {chapters_table} vc
+                        LEFT JOIN {youtube_source_videos_table} ysv ON ysv.video_id = vc.video_id
+                        WHERE vc.chapter_id = %s""",
+                (chapter_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
     def _upsert_source_integrity_failure(self, cur, video_id: str, retry_after_hours: int) -> None:
         """Execute the integrity-failure upsert for one video using an open cursor.
 
