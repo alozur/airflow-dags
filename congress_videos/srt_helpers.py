@@ -1,11 +1,24 @@
-"""SRT file helpers for AI-assisted pre-trim window selection."""
+"""SRT file helpers for AI-assisted pre-trim window selection.
+
+Also hosts ``write_short_srt_sidecar`` (issue #431), which writes an SRT sidecar
+next to every downloaded Reap short clip. Reap exposes no per-clip in/out
+timing, so the short's window is only an APPROXIMATION derived from the
+chapter's own bounds plus the pre-trim offsets recorded for the source clip
+(``[chapter_start + pretrim_start_secs, chapter_start + pretrim_end_secs]``);
+it does not reflect Reap's own (unexposed) clip selection.
+"""
 
 import logging
 import os
 import re
 from pathlib import Path
 
-from congress_videos.config.paths import DOWNLOADS_DIR, PROJECT_DATA_DIR, get_video_chapter_dir
+from congress_videos.config.paths import (
+    DOWNLOADS_DIR,
+    PROJECT_DATA_DIR,
+    get_chapter_short_srt_path,
+    get_video_chapter_dir,
+)
 from utils.llm_cache import cached_json_completion
 from utils.llm_config import LLM_CHEAP
 from utils.time_utils import parse_timestamp
@@ -449,6 +462,173 @@ def write_chapter_srt_sidecar(
             "write_chapter_srt_sidecar: failed to write sidecar for video_id=%r chapter_id=%r: %s",
             video_id,
             chapter_id,
+            e,
+            exc_info=True,
+        )
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+    return target_path
+
+
+# clip_id comes from the external Reap API and becomes a filesystem path
+# component (via get_chapter_short_srt_path) — reject anything outside a safe
+# charset to block path traversal. Independent of the caller's existing gate
+# in reap_processor_dag.py (defence in depth, D12).
+_SAFE_CLIP_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _coerce_pretrim_offset(value) -> float | None:
+    """Best-effort float coercion for a pre-trim offset; ``None`` on failure."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def write_short_srt_sidecar(
+    video_id: str,
+    chapter_id: int,
+    clip_id: str,
+    chapter_start_time,
+    chapter_end_time,
+    pretrim_start_secs: float | None = None,
+    pretrim_end_secs: float | None = None,
+    session_date: str | None = None,
+    channel_slug: str | None = None,
+) -> Path | None:
+    """Persist an SRT sidecar for one downloaded Reap short clip, best-effort.
+
+    Reap exposes no per-clip in/out timing, so the window is an
+    APPROXIMATION: ``[chapter_start + pretrim_start_secs, chapter_start +
+    pretrim_end_secs]``, falling back to the full chapter span when either
+    offset is missing/non-numeric or the derived window is empty, inverted,
+    or disjoint from the chapter span (see module docstring).
+
+    Unlike ``write_chapter_srt_sidecar`` (absolute timestamps, a context
+    payload), the output here is a playable subtitle track next to a
+    standalone clip: timestamps are re-timed to clip origin via
+    ``_window_srt_blocks``.
+
+    Locates the source via ``find_srt_for_chapter``, probing the chapter's
+    own persisted sidecar (``canonical_dir=get_video_chapter_dir(...)``)
+    first, then legacy paths — self-read is impossible since the output path
+    is ``shorts/{clip_id}.srt``, a different file (D1).
+
+    Never raises. Writes via tmp-file + ``os.replace``, exactly as
+    ``write_chapter_srt_sidecar``. Returns the written (or reused) ``Path``,
+    or ``None`` on any failure — see the module's contract table for every
+    outcome and its log level.
+    """
+    if not clip_id or not _SAFE_CLIP_ID_RE.fullmatch(str(clip_id)):
+        logger.warning(
+            "write_short_srt_sidecar: unsafe clip_id %r — refusing (video_id=%r chapter_id=%r)",
+            clip_id,
+            video_id,
+            chapter_id,
+        )
+        return None
+
+    target_path = get_chapter_short_srt_path(video_id, chapter_id, clip_id, channel_slug)
+
+    if target_path.exists() and target_path.stat().st_size > 0:
+        logger.info("write_short_srt_sidecar: reusing existing sidecar %s", target_path)
+        return target_path
+
+    try:
+        chapter_start_secs = (
+            chapter_start_time
+            if isinstance(chapter_start_time, (int, float))
+            else _srt_timestamp_to_seconds(chapter_start_time)
+        )
+        chapter_end_secs = (
+            chapter_end_time
+            if isinstance(chapter_end_time, (int, float))
+            else _srt_timestamp_to_seconds(chapter_end_time)
+        )
+        chapter_start_secs, chapter_end_secs = float(chapter_start_secs), float(chapter_end_secs)
+    except (ValueError, TypeError):
+        logger.warning(
+            "write_short_srt_sidecar: unparseable chapter bounds start=%r end=%r "
+            "(video_id=%r chapter_id=%r clip_id=%r)",
+            chapter_start_time,
+            chapter_end_time,
+            video_id,
+            chapter_id,
+            clip_id,
+        )
+        return None
+
+    pretrim_start = _coerce_pretrim_offset(pretrim_start_secs)
+    pretrim_end = _coerce_pretrim_offset(pretrim_end_secs)
+
+    if pretrim_start is None or pretrim_end is None:
+        window_start, window_end = chapter_start_secs, chapter_end_secs
+        logger.info(
+            "write_short_srt_sidecar: no pre-trim offsets — using full chapter span "
+            "(video_id=%r chapter_id=%r clip_id=%r)",
+            video_id,
+            chapter_id,
+            clip_id,
+        )
+    else:
+        window_start = chapter_start_secs + pretrim_start
+        window_end = chapter_start_secs + pretrim_end
+        # D3/F2: the derived window must actually overlap the chapter span.
+        window_valid = window_end > window_start and window_start < chapter_end_secs and window_end > chapter_start_secs
+        if not window_valid:
+            logger.warning(
+                "write_short_srt_sidecar: derived window %.1f..%.1f outside chapter span %.1f..%.1f "
+                "— falling back (video_id=%r chapter_id=%r clip_id=%r)",
+                window_start,
+                window_end,
+                chapter_start_secs,
+                chapter_end_secs,
+                video_id,
+                chapter_id,
+                clip_id,
+            )
+            window_start, window_end = chapter_start_secs, chapter_end_secs
+
+    canonical_dir = str(get_video_chapter_dir(video_id, chapter_id, channel_slug))
+    srt_path = find_srt_for_chapter(video_id, chapter_id, session_date, canonical_dir=canonical_dir)
+    if srt_path is None:
+        logger.warning(
+            "write_short_srt_sidecar: no source SRT for video_id=%r chapter_id=%r clip_id=%r",
+            video_id,
+            chapter_id,
+            clip_id,
+        )
+        return None
+
+    blocks = _parse_srt_blocks(srt_path)
+    windowed = _window_srt_blocks(blocks, window_start, window_end)
+    if not windowed:
+        logger.warning(
+            "write_short_srt_sidecar: window yields no blocks — no file written (video_id=%r chapter_id=%r clip_id=%r)",
+            video_id,
+            chapter_id,
+            clip_id,
+        )
+        return None
+
+    tmp_path = target_path.with_name(target_path.name + ".tmp")
+
+    try:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path.write_text(_serialize_srt_blocks(windowed), encoding="utf-8")
+        os.replace(tmp_path, target_path)
+    except OSError as e:
+        logger.warning(
+            "write_short_srt_sidecar: failed to write sidecar for video_id=%r chapter_id=%r clip_id=%r: %s",
+            video_id,
+            chapter_id,
+            clip_id,
             e,
             exc_info=True,
         )

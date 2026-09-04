@@ -19,6 +19,7 @@ from congress_videos.config.paths import (
     PROJECT_DATA_DIR,
     ensure_directory_exists,
     get_chapter_short_file_path,
+    get_chapter_short_srt_path,
     get_chapter_shorts_dir,
     get_download_date_path,
     get_download_file_path,
@@ -330,3 +331,26 @@ class TestChapterShortPathHelpers:
         assert isinstance(get_video_chapter_dir("v", 1), Path)
         assert isinstance(get_chapter_shorts_dir("v", 1), Path)
         assert isinstance(get_chapter_short_file_path("v", 1, "c"), Path)
+
+
+# ---------------------------------------------------------------------------
+# TestGetChapterShortSrtPath — PR1 (issue #431)
+# ---------------------------------------------------------------------------
+
+
+class TestGetChapterShortSrtPath:
+    """Unit tests for the short-clip SRT sidecar path helper."""
+
+    def test_sibling_of_clip_mp4_path(self):
+        result = get_chapter_short_srt_path("abc123", 7, "clip01")
+        mp4_path = get_chapter_short_file_path("abc123", 7, "clip01")
+        assert result.parent == mp4_path.parent
+        assert result.name == "clip01.srt"
+
+    def test_explicit_channel_slug_overrides_default(self):
+        result = get_chapter_short_srt_path("abc123", 7, "clip01", channel_slug="custom-channel")
+        assert "custom-channel/" in str(result)
+        assert "congreso-es-tv" not in str(result)
+
+    def test_return_type_is_path(self):
+        assert isinstance(get_chapter_short_srt_path("v", 1, "c"), Path)
