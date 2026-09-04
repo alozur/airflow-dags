@@ -71,32 +71,50 @@ Requirement legend (spec code → title), referenced as `[code]` on each task:
 
 ## Phase 2: PR2 — Migration 045 + mentioned-people resolver
 
-- [ ] 2.1 CREATE: `congress_videos/sql/migrations/045_add_chapter_mentioned_people.sql` — `ALTER TABLE video_chapters ADD COLUMN IF NOT EXISTS mentioned_participant_slugs TEXT[]` + `COMMENT ON COLUMN` for both `mentioned_participant_slugs` and `topics`; DOWN block stays a **comment**, never live SQL (the runner executes the whole file in one transaction — an uncommented DOWN self-reverts its own UP). `[M8]` `[T7]`
-- [ ] 2.2 RED: `tests/congress_videos/sql/test_production_schema.py` — append `"mentioned_participant_slugs"` to `TABLE_COLUMNS["video_chapters"]` and bump both `133 columns` comments (lines 78, 484) to `134`; this turns the existing parametrized `test_column_present_in_block` RED. `[M8]`
-- [ ] 2.3 GREEN: `congress_videos/sql/production_schema.sql` mirror — trailing comma on `upload_verified_at TIMESTAMPTZ`, then `-- Added by migration 045 (mentioned people, issue #432)` + `mentioned_participant_slugs TEXT[]` with no trailing comma before `);`; comment line must contain no literal `);`. `[M8]`
-- [ ] 2.4 GREEN: `congress_videos/sql/youtube_chapters_schema.sql` dev mirror — same last-column comma discipline. *(cut candidate 1: move to PR3 if PR2 is over budget)* `[M8]`
-- [ ] 2.5 VERIFY: `uv run pytest -n auto tests/congress_videos/sql/test_production_schema.py`. No live-DB migration test exists in this repo (existing `test_migration_0NN.py` files are static SQL assertions only) — do not add one; live application is a rollout step (Phase 4), not a pytest task.
-- [ ] 2.6 RED: `tests/congress_videos/modules/test_mentioned_people_resolution.py::test_returns_empty_and_ok_false_on_empty_text_or_empty_roster` (no `completion_fn` call, asserted via a spy). `[M1]`
-- [ ] 2.7 GREEN: CREATE `congress_videos/modules/mentioned_people_resolution.py` — `MentionedPerson`/`MentionedPeopleResult` dataclasses, `resolve_mentioned_people` empty-input guard. `[M1]`
-- [ ] 2.8 RED: `test_zero_one_and_multiple_people_resolved` (parametrized). `[M3]`
-- [ ] 2.9 GREEN: happy-path parsing of `completion_fn` response, `ok=True`, `.slugs` property. `[M3]`
-- [ ] 2.10 RED: `test_slug_absent_from_roster_is_dropped_and_logged` (`caplog` INFO has the raw name). `[M2]`
-- [ ] 2.11 GREEN: roster gate — drop when `participant_slug` falsy or absent from `roster_by_slug`, INFO-log the raw name (D11). `[M2]`
-- [ ] 2.12 RED: `test_low_confidence_and_non_numeric_confidence_dropped` (parametrized). `[M2]`
-- [ ] 2.13 GREEN: confidence gate — drop when `float(confidence)` fails or `< MENTIONED_PEOPLE_MIN_CONFIDENCE (0.80)` (D11). `[M2]`
-- [ ] 2.14 RED: `test_duplicate_slugs_deduplicated_first_seen_order`. `[M3]`
-- [ ] 2.15 GREEN: dedup by slug, first-seen order. `[M3]`
-- [ ] 2.16 RED: `test_capped_at_max_mentioned_people`. `[M3]`
-- [ ] 2.17 GREEN: cap at `MAX_MENTIONED_PEOPLE = 12`. `[M3]`
-- [ ] 2.18 RED: `test_malformed_response_returns_ok_false` (parametrized: `{"error": ...}`, `{"data": None}`, missing key, non-list). `[M5]`
-- [ ] 2.19 GREEN: `error`/missing-`data` handling → `ok=False`, ensures no downstream clobbering write. `[M5]`
-- [ ] 2.20 RED: `test_never_raises_on_completion_fn_exception`. `[M5]`
-- [ ] 2.21 GREEN: wrap the `completion_fn` call in `try/except` → `ok=False`, never raise. `[M5]`
-- [ ] 2.22 RED: `test_prompt_states_speaker_is_not_a_mention` (asserts on the prompt constant text). `[M4]`
-- [ ] 2.23 GREEN: `congress_videos/config/ai_prompts.py` — `MENTIONED_PEOPLE_SYSTEM_PROMPT` (must carry verbatim: *"The person who is SPEAKING is not automatically a mentioned person. Include only people REFERRED TO in the transcript content."*) + `MENTIONED_PEOPLE_USER_TEMPLATE`; wire the lazily-imported default `completion_fn = utils.llm_cache.cached_json_completion`, model `LLM_CHEAP`, text truncated to `MENTIONED_PEOPLE_MAX_CHARS = 20_000`, roster block `slug | display_name | party`. `[M1]` `[M4]` `[M6]`
-- [ ] 2.24 VERIFY: `uv run pytest -n auto tests/congress_videos/modules/test_mentioned_people_resolution.py`.
-- [ ] 2.25 VERIFY: `uv run ruff check` and `uv run ruff format --check` on all touched files.
-- [ ] 2.26 VERIFY: `uv run pytest -n auto` (full suite green). No DAG file touched in PR2 — no DAG import check needed.
+**size:exception** — actual authored diff (excluding `openspec/`) is 6 files
+changed, 594 insertions(+), 3 deletions(-) = 597 changed lines, against the
+400-line budget and the ~352-line forecast. All three design-sanctioned cuts
+were applied (youtube_chapters_schema.sql dev mirror deferred to PR3/task
+2.4; the three drop-reason tests — unknown slug, low confidence, non-numeric
+confidence — merged into one parametrized table instead of two test classes;
+module docstring trimmed from 21 to 7 lines). No further reduction is
+possible without deleting tests or docs, which is forbidden. The overrun is
+driven by the test file (309 lines) providing full RED/GREEN coverage for
+six independent gates (empty-input, roster, confidence, dedup, cap,
+malformed-response, never-raises, prompt-content) on a resolver of
+comparable complexity to `chapter_speaker_resolution.py` + its own 250-line
+test file (405 lines combined) — this module's combined module+test size
+(205 + 309 = 514) is in the same order of magnitude once the additional
+dedup/cap gates (absent from the speaker resolver, which validates a
+caller-supplied mention list rather than an open-ended LLM-found result) are
+accounted for.
+
+- [x] 2.1 CREATE: `congress_videos/sql/migrations/045_add_chapter_mentioned_people.sql` — `ALTER TABLE video_chapters ADD COLUMN IF NOT EXISTS mentioned_participant_slugs TEXT[]` + `COMMENT ON COLUMN` for both `mentioned_participant_slugs` and `topics`; DOWN block stays a **comment**, never live SQL (the runner executes the whole file in one transaction — an uncommented DOWN self-reverts its own UP). `[M8]` `[T7]`
+- [x] 2.2 RED: `tests/congress_videos/sql/test_production_schema.py` — append `"mentioned_participant_slugs"` to `TABLE_COLUMNS["video_chapters"]` and bump both `133 columns` comments (lines 78, 484) to `134`; this turns the existing parametrized `test_column_present_in_block` RED. `[M8]`
+- [x] 2.3 GREEN: `congress_videos/sql/production_schema.sql` mirror — trailing comma on `upload_verified_at TIMESTAMPTZ`, then `-- Added by migration 045 (mentioned people, issue #432)` + `mentioned_participant_slugs TEXT[]` with no trailing comma before `);`; comment line must contain no literal `);`. `[M8]`
+- [ ] 2.4 GREEN: `congress_videos/sql/youtube_chapters_schema.sql` dev mirror — same last-column comma discipline. *(cut candidate 1: move to PR3 if PR2 is over budget)* `[M8]` — **CUT applied**: PR2's authored diff was ~597 changed lines even after this cut, the drop-reason test parametrize cut (2.12/2.10 merged), and the docstring trim, all applied per the design's PR2 cut list; deferred to PR3 (task 3.x scope will re-add this mirror alongside the topic-extraction dev mirror needs, or the release PR).
+- [x] 2.5 VERIFY: `uv run pytest -n auto tests/congress_videos/sql/test_production_schema.py`. No live-DB migration test exists in this repo (existing `test_migration_0NN.py` files are static SQL assertions only) — do not add one; live application is a rollout step (Phase 4), not a pytest task.
+- [x] 2.6 RED: `tests/congress_videos/modules/test_mentioned_people_resolution.py::test_returns_empty_and_ok_false_on_empty_text_or_empty_roster` (no `completion_fn` call, asserted via a spy). `[M1]`
+- [x] 2.7 GREEN: CREATE `congress_videos/modules/mentioned_people_resolution.py` — `MentionedPerson`/`MentionedPeopleResult` dataclasses, `resolve_mentioned_people` empty-input guard. `[M1]`
+- [x] 2.8 RED: `test_zero_one_and_multiple_people_resolved` (parametrized). `[M3]`
+- [x] 2.9 GREEN: happy-path parsing of `completion_fn` response, `ok=True`, `.slugs` property. `[M3]`
+- [x] 2.10 RED: `test_slug_absent_from_roster_is_dropped_and_logged` (`caplog` INFO has the raw name). `[M2]`
+- [x] 2.11 GREEN: roster gate — drop when `participant_slug` falsy or absent from `roster_by_slug`, INFO-log the raw name (D11). `[M2]`
+- [x] 2.12 RED: `test_low_confidence_and_non_numeric_confidence_dropped` (parametrized). `[M2]`
+- [x] 2.13 GREEN: confidence gate — drop when `float(confidence)` fails or `< MENTIONED_PEOPLE_MIN_CONFIDENCE (0.80)` (D11). `[M2]`
+- [x] 2.14 RED: `test_duplicate_slugs_deduplicated_first_seen_order`. `[M3]`
+- [x] 2.15 GREEN: dedup by slug, first-seen order. `[M3]`
+- [x] 2.16 RED: `test_capped_at_max_mentioned_people`. `[M3]`
+- [x] 2.17 GREEN: cap at `MAX_MENTIONED_PEOPLE = 12`. `[M3]`
+- [x] 2.18 RED: `test_malformed_response_returns_ok_false` (parametrized: `{"error": ...}`, `{"data": None}`, missing key, non-list). `[M5]`
+- [x] 2.19 GREEN: `error`/missing-`data` handling → `ok=False`, ensures no downstream clobbering write. `[M5]`
+- [x] 2.20 RED: `test_never_raises_on_completion_fn_exception`. `[M5]`
+- [x] 2.21 GREEN: wrap the `completion_fn` call in `try/except` → `ok=False`, never raise. `[M5]`
+- [x] 2.22 RED: `test_prompt_states_speaker_is_not_a_mention` (asserts on the prompt constant text). `[M4]`
+- [x] 2.23 GREEN: `congress_videos/config/ai_prompts.py` — `MENTIONED_PEOPLE_SYSTEM_PROMPT` (must carry verbatim: *"The person who is SPEAKING is not automatically a mentioned person. Include only people REFERRED TO in the transcript content."*) + `MENTIONED_PEOPLE_USER_TEMPLATE`; wire the lazily-imported default `completion_fn = utils.llm_cache.cached_json_completion`, model `LLM_CHEAP`, text truncated to `MENTIONED_PEOPLE_MAX_CHARS = 20_000`, roster block `slug | display_name | party`. `[M1]` `[M4]` `[M6]`
+- [x] 2.24 VERIFY: `uv run pytest -n auto tests/congress_videos/modules/test_mentioned_people_resolution.py`.
+- [x] 2.25 VERIFY: `uv run ruff check` and `uv run ruff format --check` on all touched files.
+- [x] 2.26 VERIFY: `uv run pytest -n auto` (full suite green). No DAG file touched in PR2 — no DAG import check needed.
 
 ## Phase 3: PR3 — Topic extraction + upload-DAG hooks (Closes #432)
 
