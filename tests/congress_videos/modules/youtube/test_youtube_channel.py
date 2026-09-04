@@ -456,6 +456,24 @@ class TestFilterPlenarySessionVideos:
 
         service.videos.return_value.list.assert_called_once_with(part="liveStreamingDetails", id="A,B,C")
 
+    def test_missing_api_key_with_title_matches_raises(self, monkeypatch, mocker):
+        """Title matches need the Data API: an absent YOUTUBE_API_KEY fails loudly before any call."""
+        monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            side_effect=AssertionError("build should not be called"),
+        )
+        from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
+
+        videos = [self._make_video("Sesion Plenaria", "2025-05-22T09:00:00Z", "A")]
+
+        with pytest.raises(ValueError, match="YOUTUBE_API_KEY"):
+            filter_plenary_session_videos(
+                self._make_channel_videos(videos),
+                target_title="Sesion Plenaria",
+                target_date="2025-05-22",
+            )
+
     # --- airing-time key resolution (design tests #4-#7) --------------------- #
 
     def test_missing_live_streaming_details_excluded_with_warning(self, monkeypatch, mocker, caplog):
