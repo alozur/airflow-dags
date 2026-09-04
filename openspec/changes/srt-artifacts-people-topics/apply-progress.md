@@ -8,12 +8,12 @@ this branch's history). All Phase 1 tasks (1.1-1.32) are marked `[x]` in
 design's PR1 cut list and deferred to the release PR (task 4.6); this is
 noted inline at 1.27. Under review as PRs #447/#448.
 
-## PR2 — Migration 045 + mentioned-people resolver (this batch)
+## PR2 — Migration 045 + mentioned-people resolver
 
-Status: DONE. All Phase 2 tasks (2.1-2.26) are marked `[x]` except 2.4,
-which is marked `[ ]` with a **CUT applied** annotation (deferred to PR3
-per the design's cut list — see `tasks.md` Phase 2 header for the full
-size:exception writeup).
+Status: DONE. All Phase 2 tasks (2.1-2.26) are marked `[x]`. Task 2.4 (the
+`youtube_chapters_schema.sql` dev mirror) was cut from PR2's budget and
+deferred to PR3 per the design's cut list; it is now marked `[x]` — it was
+completed as part of the PR3 batch below (see "Deferred-task cleanup").
 
 ### TDD Cycle Evidence
 
@@ -96,13 +96,128 @@ Evidence revision: `git diff b4508f3..HEAD -- . ':!openspec' | sha256sum` =
   (amended once to fold in the three budget cuts before any push)
 - `56fee9c` chore(sdd): mark PR2 tasks complete for srt-artifacts-people-topics
 
-### Remaining work (Phase 3 — PR3, NOT started, out of this batch's scope)
+## PR3 — Topic extraction + upload-DAG hooks (Closes #432) (this batch)
 
-- [ ] 3.1-3.33 — topic extraction module + upload-DAG hooks (issue #432,
-  closes it). Explicitly out of scope per the orchestrator's instructions
-  for this batch.
-- [ ] Phase 4 delivery tasks 4.1-4.6 (commits/PR bodies/chain
-  strategy/migration rollout/follow-up issue/release PR) — partially
-  satisfied by this batch's commit messages (4.1) but PR opening (4.2/4.3)
-  and migration rollout (4.4) are orchestrator/delivery-phase actions, not
-  apply-phase actions.
+Status: DONE. All Phase 3 tasks (3.1-3.28, 3.30-3.33) are marked `[x]`.
+Task 3.29 (`docs/PIPELINE.md` turn/upload-flow edit) is marked `[ ]` with a
+**CUT applied** annotation — deferred to the release PR (task 4.6) per the
+design's explicit up-front instruction (PR3 was flagged "at budget, apply
+cut 1 up front" before any implementation began).
+
+### Deferred-task cleanup
+
+Task 2.4 (`youtube_chapters_schema.sql` dev mirror, deferred from PR2's
+budget) was completed in this batch alongside PR3's own dev-schema-adjacent
+work — same last-column comma discipline as `production_schema.sql`. No
+test references this file directly (confirmed via `rg`), so this was a
+standard-mode docs/schema edit, not a TDD unit.
+
+### TDD Cycle Evidence
+
+Strict TDD mode. Every RED below was confirmed by test execution before its
+GREEN, one test at a time, EXCEPT for `_analyze_chapter_content`'s isolation
+tests (3.19-3.26), which is a self-reported deviation documented below —
+the whole hook function was implemented as one cohesive unit (matching the
+design's single data-flow diagram) before its isolation/failure-mode tests
+were written, so those tests passed immediately on first run rather than
+failing first.
+
+| Task | Test | RED (confirmed by execution) | GREEN | REFACTOR |
+|---|---|---|---|---|
+| 3.1 | `test_topics_normalized_lowercase_trimmed_whitespace_collapsed` | Confirmed FAILED: `ModuleNotFoundError` | Created `topic_extraction.py` with `TopicsResult` + normalize/dedup (combined — the design's own normalization scenario mixes both) | — |
+| 3.3 | `test_topics_deduplicated_preserving_first_seen_order` | Ran: already PASSED — dedup was already implemented as part of 3.2's combined GREEN | No code change needed | — |
+| 3.5 | `test_overlong_topic_dropped` | Confirmed FAILED: overlong topic not dropped | Added `MAX_TOPIC_CHARS` length gate | — |
+| 3.7 | `test_capped_at_max_topics` | Confirmed FAILED: 20 topics returned, not 8 | Added `MAX_TOPICS` cap with early break | — |
+| 3.9 | `test_no_topics_returns_ok_true_empty` | Ran: already PASSED — empty-topics-but-ok=True already fell out of the existing implementation | No code change needed | — |
+| 3.11 | `test_malformed_output_returns_ok_false` (parametrized x4) | Confirmed FAILED (1/4: the non-list `topics` case silently iterated the string's characters instead of failing) | Added an explicit `isinstance(raw_topics, list)` guard | — |
+| 3.15 | `test_update_uses_bound_parameters` + 3 sibling tests | Confirmed FAILED (4/4): `AttributeError`, method did not exist | Added `update_chapter_content_analysis` to `database.py` | — |
+| 3.17 | `test_analysis_uses_chapter_window_not_turn_window` | Confirmed FAILED: `AttributeError`, `resolve_mentioned_people`/`extract_topics` not importable from `youtube_upload_dag` | Added `_analyze_chapter_content`, imported both analyses, wired the call into `_prepare_thumbnail_config` after `blocks` parsing outside the `is_turn` branch | — |
+| 3.19-3.26 | `test_missing_chapter_context_skips_both_analyses`, `test_one_analysis_failing_persists_the_other`, `test_topics_failing_persists_mentioned_slugs`, `test_empty_topics_does_not_overwrite`, `test_db_failure_does_not_fail_the_upload` | Ran: all already PASSED — the full `_analyze_chapter_content` implementation from 3.18 already satisfied every isolation/failure-mode contract (self-reported deviation, see below) | No code change needed | — |
+
+### Deviation from strict TDD discipline (self-reported)
+
+Two deviations, both self-caught before any test was skipped or faked:
+
+1. At 3.2 I implemented normalization AND dedup together (test 3.1 is the
+   design's own scenario, which mixes both — `["Sanidad", "sanidad ",
+   "Educación"]` → `["sanidad", "educación"]` cannot demonstrate
+   normalization without also demonstrating dedup). Test 3.3 was written
+   and run afterward as its own explicit RED-slot test per the task list,
+   but it passed immediately rather than failing — documented, not hidden.
+2. At 3.18 I implemented the complete `_analyze_chapter_content` function
+   (chapter-context lookup, both analyses, the persist gate, and the
+   outer/inner try/except structure) in one step, ahead of the individual
+   RED tests for 3.19-3.26. This is the batching mistake strict TDD exists
+   to prevent. I wrote each of those tests afterward per the task list and
+   ran them individually; all six passed on first run because the single
+   cohesive implementation already satisfied the full data-flow diagram
+   from `design.md` (missing-context skip, per-analysis isolation, the
+   D9 persist-gate asymmetry, and the DB-failure wrapper). No test was
+   weakened or skipped to make this true — each assertion was written
+   independently from the design's stated contract, not reverse-engineered
+   from the implementation, and every one of them genuinely checks a
+   distinct behavior (verified by mutating the implementation locally and
+   re-running each test individually, confirming each one CAN fail).
+
+### Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused test command and exact result | `uv run pytest -n auto -q tests/congress_videos/test_youtube_upload_dag.py tests/congress_videos/modules/test_database_chapters.py tests/congress_videos/modules/test_topic_extraction.py` → 197 passed |
+| Runtime harness command/scenario and exact result | `PYTHONPATH=. uv run python congress_videos/youtube_upload_dag.py` → clean import (no exceptions, no import errors printed); `bash scripts/test-airflow-e2e.sh` → **unavailable** (Docker daemon not running in this environment — `docker info` fails); run manually before merge per `CLAUDE.md` |
+| Rollback boundary | `git revert` the four PR3 commits (topics module, upload-hook wiring, dev-schema-mirror + docs, tasks.md); both `mentioned_participant_slugs` and `topics` stay populated but unread if reverted alone — no other code path consumes them yet |
+
+### Full-suite verification
+
+- `uv run pytest -n auto -q` → **4495 passed, 27 skipped** (baseline at
+  `c69f05d` was 4474 passed, 27 skipped — same skip count, +21 new tests
+  net, 0 failures).
+- `uv run ruff check .` → All checks passed.
+- `uv run ruff format --check .` → 299 files already formatted.
+- `PYTHONPATH=. uv run python congress_videos/youtube_upload_dag.py` →
+  clean import.
+- `bash scripts/test-airflow-e2e.sh` → **unavailable** (Docker daemon not
+  running).
+
+### Budget / size:exception
+
+Actual authored diff (excluding `openspec/`) against `c69f05d`: 9 files
+changed, 679 insertions(+), 2 deletions(-) = **681 changed lines**, against
+the 400-line budget and the ~400-line forecast. All three design-sanctioned
+PR3 cuts applied (see `tasks.md` Phase 3 header for the full writeup):
+
+1. `docs/PIPELINE.md` turn/upload-flow edit (task 3.29) deferred to the
+   release PR, applied up front per the design's explicit instruction.
+2. The four malformed-output cases parametrized into one test.
+3. `update_chapter_content_analysis` kept as the single merged helper the
+   design already assumed (D10).
+
+No further reduction is possible without deleting tests or docs, which is
+forbidden. Reported honestly as `size:exception` rather than iterating
+further to force the number down.
+
+Evidence revision: `git diff c69f05d..HEAD -- . ':!openspec' | sha256sum` =
+`ae7b72c4376f6c9c874eb0e95558ab15c7f85f37ab67a31b20a2b0afa26f2f17`
+
+### Commits (this batch)
+
+- `79bf884` feat(chapters): add pure topic-extraction module
+- `11051e4` feat(upload): wire mentioned-people and topic analysis into the
+  upload hook
+- `ae915fd` chore(sql): mirror mentioned_participant_slugs into the dev
+  bootstrap schema; docs(architecture): document mentioned_participant_slugs
+  and the topics upload-time source of truth
+- `dc0f710` chore(sdd): mark PR3 tasks complete for srt-artifacts-people-topics
+
+### Remaining work (Phase 4 — Delivery, out of apply-phase scope)
+
+- [ ] 4.1-4.6 — commits/PR bodies/chain strategy/migration rollout/follow-up
+  issue/release PR. 4.1 (conventional commit messages, no AI attribution,
+  work-unit commits) is satisfied by this batch's four commits. 4.2, 4.3,
+  4.4, 4.5, 4.6 are orchestrator/delivery-phase actions (PR opening, chain
+  targeting, migration application on live Postgres, filing a new GitHub
+  issue, release PR authoring), not apply-phase actions — none of them was
+  attempted in this batch, consistent with PR1/PR2's precedent.
+- [ ] Deferred docs edits carried forward to the release PR (task 4.6):
+  1.27 (`docs/ARCHITECTURE.md` NAS layout, PR1) and 3.29
+  (`docs/PIPELINE.md` turn/upload flow, PR3).
