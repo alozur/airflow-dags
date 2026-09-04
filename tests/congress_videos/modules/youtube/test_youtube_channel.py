@@ -999,6 +999,36 @@ class TestFilterFinishedStreams:
         with pytest.raises(ValueError, match="YOUTUBE_API_KEY"):
             filter_finished_streams(_plenary(["A"]))
 
+    # --- shared-fetch-helper lift parity (design test #11) ------------------ #
+
+    def test_single_batched_call_with_expected_part_and_ids(self, monkeypatch, mocker):
+        """Approval test for the `_fetch_video_items_by_id` lift: the batched
+        call shape (exactly one call, this `part` string, comma-joined ids)
+        must survive the lift unchanged."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        service = _service(
+            {
+                "A": [_item(actual_end=_iso_minutes_ago(600))],
+                "B": [_item(actual_end=_iso_minutes_ago(600))],
+            }
+        )
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=service,
+        )
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            return_value="was_live",
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        filter_finished_streams(_plenary(["A", "B"]))
+
+        service.videos.return_value.list.assert_called_once_with(
+            part="snippet,contentDetails,liveStreamingDetails", id="A,B"
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Package export (FR12)

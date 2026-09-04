@@ -97,6 +97,17 @@ def fetch_youtube_channel_videos(channel_id: str, max_results: int = 10):
         raise RuntimeError(error_msg) from e
 
 
+def _fetch_video_items_by_id(youtube, ids: list[str], part: str) -> dict[str, dict]:
+    """Batched `videos.list` lookup shared by `filter_plenary_session_videos` and
+    `filter_finished_streams`: one call, the caller's `part`, ids comma-joined.
+
+    Returns the response items keyed by their `id`. No chunking, no empty-ids
+    short-circuit — the caller decides whether to call this at all.
+    """
+    resp = youtube.videos().list(part=part, id=",".join(ids)).execute()
+    return {it["id"]: it for it in resp.get("items", [])}
+
+
 def filter_plenary_session_videos(
     channel_videos,
     target_title: str,
@@ -248,8 +259,7 @@ def filter_finished_streams(
 
     # Single batched Data API call for all candidate ids (no per-candidate call).
     ids = [v["video_id"] for v in videos if v.get("video_id")]
-    resp = youtube.videos().list(part="snippet,contentDetails,liveStreamingDetails", id=",".join(ids)).execute()
-    by_id = {it["id"]: it for it in resp.get("items", [])}
+    by_id = _fetch_video_items_by_id(youtube, ids, "snippet,contentDetails,liveStreamingDetails")
 
     kept = []
 
