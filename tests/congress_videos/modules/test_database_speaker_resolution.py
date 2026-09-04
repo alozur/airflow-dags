@@ -149,6 +149,65 @@ class TestMarkTurnResolved:
 
         assert result is None
 
+    # -----------------------------------------------------------------
+    # evidence= (issue #430, migration 046) — optional 6th kwarg
+    # -----------------------------------------------------------------
+
+    _EXPECTED_SQL_WITHOUT_EVIDENCE = (
+        "\n"
+        "                    UPDATE speaker_turn_videos\n"
+        "                    SET resolved_participant_slug = %s,\n"
+        "                        speaker_resolution_confidence = %s,\n"
+        "                        speaker_resolution_method = %s\n"
+        "                    WHERE turn_id IN (\n"
+        "                        SELECT stv2.turn_id\n"
+        "                        FROM speaker_turn_videos stv2\n"
+        "                        JOIN speaker_turns st2 ON stv2.turn_id = st2.turn_id\n"
+        "                        WHERE stv2.output_path = %s\n"
+        "                          AND st2.speaker_label = (\n"
+        "                              SELECT st3.speaker_label FROM speaker_turns st3\n"
+        "                              WHERE st3.turn_id = %s\n"
+        "                          )\n"
+        "                    )\n"
+        "                    "
+    )
+
+    @pytest.mark.parametrize(
+        ("evidence", "expect_column"),
+        [
+            ('{"method": "monologue_window_v1"}', True),
+            (None, False),
+        ],
+        ids=["evidence-provided", "evidence-omitted"],
+    )
+    def test_sql_includes_evidence_column_only_when_provided(self, evidence, expect_column):
+        """SET gains speaker_resolution_evidence = %s only when evidence is
+        not None -- the 5-positional (no-evidence) path must not grow it."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_turn_resolved(
+                "/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501, evidence=evidence
+            )
+
+        query = cursor.execute.call_args[0][0].upper()
+        assert ("SPEAKER_RESOLUTION_EVIDENCE" in query) is expect_column
+
+    def test_five_positional_arg_call_leaves_sql_byte_identical(self):
+        """A 5-positional-arg call (no evidence kwarg at all) must produce
+        the exact SQL text Gate A produced before issue #430 -- byte-for-byte,
+        proving the new optional parameter is additive-only."""
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            db.mark_turn_resolved("/data/turns/1/video.mp4", "pedro-sanchez", 0.92, "ai_srt_context", 501)
+
+        assert cursor.execute.call_args[0][0] == self._EXPECTED_SQL_WITHOUT_EVIDENCE
+
 
 # ---------------------------------------------------------------------------
 # promote_turn_type_to_qa (issue #282 rule 4)
