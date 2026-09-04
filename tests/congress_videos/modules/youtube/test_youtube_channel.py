@@ -666,12 +666,15 @@ def _item(
     broadcast: str = "none",
     concurrent=None,
     actual_end: str | None = None,
+    actual_start: str | None = None,
 ) -> dict:
     live: dict = {}
     if concurrent is not None:
         live["concurrentViewers"] = concurrent
     if actual_end is not None:
         live["actualEndTime"] = actual_end
+    if actual_start is not None:
+        live["actualStartTime"] = actual_start
     return {
         "snippet": {"liveBroadcastContent": broadcast, "title": "Sesion Plenaria"},
         "contentDetails": {"duration": "PT1H"},
@@ -706,6 +709,102 @@ def _plenary(video_ids, target_date="2025-10-08", extra=None):
     if extra:
         d.update(extra)
     return d
+
+
+# --------------------------------------------------------------------------- #
+# _airing_timestamp / _airing_date — direct unit tests (pure helpers)
+# --------------------------------------------------------------------------- #
+
+
+class TestAiringTimestampHelpers:
+    """Direct tests for the pure helpers ahead of their filter_plenary_session_videos
+    wiring. Exercised directly (not just through the public seam) because they are
+    small, pure, and land in their own reviewable slice."""
+
+    def test_prefers_actual_end_time_when_present(self):
+        from congress_videos.modules.youtube.youtube_channel import _airing_timestamp
+
+        item = _item(actual_end="2025-05-22T10:00:00Z", actual_start="2025-05-21T09:00:00Z")
+
+        iso_timestamp, source = _airing_timestamp(item)
+
+        assert iso_timestamp == "2025-05-22T10:00:00Z"
+        assert source == "actualEndTime"
+
+    def test_falls_back_to_actual_start_time_with_source_label(self):
+        from congress_videos.modules.youtube.youtube_channel import _airing_timestamp
+
+        item = _item(actual_start="2025-05-21T09:00:00Z")
+
+        iso_timestamp, source = _airing_timestamp(item)
+
+        assert iso_timestamp == "2025-05-21T09:00:00Z"
+        assert source == "actualStartTime"
+
+    def test_missing_live_streaming_details_key_returns_none_none(self):
+        from congress_videos.modules.youtube.youtube_channel import _airing_timestamp
+
+        item = {"snippet": {}, "contentDetails": {}}  # no liveStreamingDetails key at all
+
+        assert _airing_timestamp(item) == (None, None)
+
+    def test_empty_live_streaming_details_returns_none_none(self):
+        from congress_videos.modules.youtube.youtube_channel import _airing_timestamp
+
+        item = _item()  # liveStreamingDetails present but empty
+
+        assert _airing_timestamp(item) == (None, None)
+
+    def test_none_item_returns_none_none(self):
+        from congress_videos.modules.youtube.youtube_channel import _airing_timestamp
+
+        assert _airing_timestamp(None) == (None, None)
+
+    def test_non_string_actual_end_time_is_treated_as_absent(self):
+        from congress_videos.modules.youtube.youtube_channel import _airing_timestamp
+
+        item = {"liveStreamingDetails": {"actualEndTime": 12345}}
+
+        iso_timestamp, source = _airing_timestamp(item)
+
+        assert iso_timestamp is None
+        assert source is None
+
+    def test_non_string_actual_end_time_falls_back_to_string_actual_start_time(self):
+        from congress_videos.modules.youtube.youtube_channel import _airing_timestamp
+
+        item = {"liveStreamingDetails": {"actualEndTime": 12345, "actualStartTime": "2025-05-21T09:00:00Z"}}
+
+        iso_timestamp, source = _airing_timestamp(item)
+
+        assert iso_timestamp == "2025-05-21T09:00:00Z"
+        assert source == "actualStartTime"
+
+    def test_airing_date_converts_z_suffix_to_utc_date(self):
+        from datetime import date
+
+        from congress_videos.modules.youtube.youtube_channel import _airing_date
+
+        assert _airing_date("2025-05-22T23:30:00Z") == date(2025, 5, 22)
+
+    def test_airing_date_converts_explicit_offset_to_utc_date(self):
+        """A +02:00 offset just after local midnight rolls the UTC calendar
+        date back a day, proving `.astimezone(UTC)` runs rather than a bare
+        `.date()` on the naive/local wall-clock value."""
+        from datetime import date
+
+        from congress_videos.modules.youtube.youtube_channel import _airing_date
+
+        assert _airing_date("2025-05-23T01:00:00+02:00") == date(2025, 5, 22)
+
+    def test_airing_date_raises_value_error_on_unparseable_timestamp(self):
+        """Per design: unparseable input raises (ValueError/TypeError/AttributeError);
+        the caller — the future filter_plenary_session_videos cutover — is
+        responsible for catching it and excluding the candidate."""
+        from congress_videos.modules.youtube.youtube_channel import _airing_date
+
+        with pytest.raises(ValueError):
+            _airing_date("not-a-real-timestamp")
 
 
 class TestFilterFinishedStreams:
@@ -998,6 +1097,36 @@ class TestFilterFinishedStreams:
 
         with pytest.raises(ValueError, match="YOUTUBE_API_KEY"):
             filter_finished_streams(_plenary(["A"]))
+
+    # --- shared-fetch-helper lift parity (design test #11) ------------------ #
+
+    def test_single_batched_call_with_expected_part_and_ids(self, monkeypatch, mocker):
+        """Approval test for the `_fetch_video_items_by_id` lift: the batched
+        call shape (exactly one call, this `part` string, comma-joined ids)
+        must survive the lift unchanged."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        service = _service(
+            {
+                "A": [_item(actual_end=_iso_minutes_ago(600))],
+                "B": [_item(actual_end=_iso_minutes_ago(600))],
+            }
+        )
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=service,
+        )
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            return_value="was_live",
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_finished_streams
+
+        filter_finished_streams(_plenary(["A", "B"]))
+
+        service.videos.return_value.list.assert_called_once_with(
+            part="snippet,contentDetails,liveStreamingDetails", id="A,B"
+        )
 
 
 # --------------------------------------------------------------------------- #

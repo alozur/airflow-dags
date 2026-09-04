@@ -8,7 +8,7 @@ specifically for monitoring the Congress YouTube channel for plenary sessions.
 import logging
 import os
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import requests
 from bs4 import BeautifulSoup
@@ -95,6 +95,54 @@ def fetch_youtube_channel_videos(channel_id: str, max_results: int = 10):
         error_msg = f"Error fetching YouTube videos: {e}"
         logging.error(error_msg)
         raise RuntimeError(error_msg) from e
+
+
+def _fetch_video_items_by_id(youtube, ids: list[str], part: str) -> dict[str, dict]:
+    """Batched `videos.list` lookup shared by `filter_plenary_session_videos` and
+    `filter_finished_streams`: one call, the caller's `part`, ids comma-joined.
+
+    Returns the response items keyed by their `id`. No chunking, no empty-ids
+    short-circuit — the caller decides whether to call this at all.
+    """
+    resp = youtube.videos().list(part=part, id=",".join(ids)).execute()
+    return {it["id"]: it for it in resp.get("items", [])}
+
+
+def _airing_timestamp(item: dict | None) -> tuple[str | None, str | None]:
+    """(iso_timestamp, "actualEndTime" | "actualStartTime") or (None, None).
+
+    A value is returned only when ``isinstance(value, str) and value`` — a
+    non-string or empty timestamp is reported as absent, so the caller never
+    parses a non-str.
+
+    Not yet called by any production code path (added ahead of the
+    filter_plenary_session_videos cutover so it lands as its own reviewable,
+    directly-tested unit).
+    """
+    if not item:
+        return None, None
+
+    live_details = item.get("liveStreamingDetails") or {}
+
+    end_time = live_details.get("actualEndTime")
+    if isinstance(end_time, str) and end_time:
+        return end_time, "actualEndTime"
+
+    start_time = live_details.get("actualStartTime")
+    if isinstance(start_time, str) and start_time:
+        return start_time, "actualStartTime"
+
+    return None, None
+
+
+def _airing_date(iso_timestamp: str) -> date:
+    """UTC calendar date for an ISO-8601 timestamp (``Z`` or explicit offset).
+
+    Raises ValueError/TypeError/AttributeError on a malformed input; the
+    caller (the future filter_plenary_session_videos cutover) is responsible
+    for catching these and excluding the candidate instead of raising.
+    """
+    return datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00")).astimezone(UTC).date()
 
 
 def filter_plenary_session_videos(
@@ -248,8 +296,7 @@ def filter_finished_streams(
 
     # Single batched Data API call for all candidate ids (no per-candidate call).
     ids = [v["video_id"] for v in videos if v.get("video_id")]
-    resp = youtube.videos().list(part="snippet,contentDetails,liveStreamingDetails", id=",".join(ids)).execute()
-    by_id = {it["id"]: it for it in resp.get("items", [])}
+    by_id = _fetch_video_items_by_id(youtube, ids, "snippet,contentDetails,liveStreamingDetails")
 
     kept = []
 
