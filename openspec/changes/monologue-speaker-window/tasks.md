@@ -54,20 +54,26 @@ before opening its PR.
 
 ## Phase 2 — A2a: LLM Steps (`feat/430-a2a-llm-steps`, base A1 branch)
 
-- [ ] 2.1 RED: `identify_floor_holder` seam pass-through (mock-echo cases incl. `García`,
+- [x] 2.1 RED: `identify_floor_holder` seam pass-through (mock-echo cases incl. `García`,
       `X` for the addressee example, `Ruiz`); error-response cases (`error` set / `data` missing /
       `data` not a dict → `FloorHolder()` sentinel + one WARNING, no exception); raise propagates
       uncaught at this seam.
-- [ ] 2.2 GREEN: add `FloorHolder` dataclass + `identify_floor_holder` to
+- [x] 2.2 GREEN: add `FloorHolder` dataclass + `identify_floor_holder` to
       `monologue_speaker_window.py`.
-- [ ] 2.3 RED: `resolve_announced_identity` roster/confidence gates (0.80 accept, 0.79 reject, slug
+- [x] 2.3 RED: `resolve_announced_identity` roster/confidence gates (0.80 accept, 0.79 reject, slug
       outside roster reject, non-numeric confidence reject); payload-scope test (no window text
       beyond the evidence quote, roster present); same error-response and raise cases as 2.1.
-- [ ] 2.4 GREEN: add `AnnouncedIdentity` dataclass + `resolve_announced_identity`.
-- [ ] 2.5 Quality: `uv run ruff check` + `ruff format --check` on the module and test file.
-- [ ] 2.6 Targeted: `uv run pytest tests/congress_videos/modules/test_monologue_speaker_window.py -v`.
-- [ ] 2.7 Full: `uv run pytest -n auto`.
-- [ ] 2.8 Measure: `git diff --stat <A1-branch>...HEAD -- . ':!openspec'` vs ~250-line forecast.
+- [x] 2.4 GREEN: add `AnnouncedIdentity` dataclass + `resolve_announced_identity`.
+- [x] 2.5 Quality: `uv run ruff check` + `ruff format --check` on the module and test file.
+- [x] 2.6 Targeted: `uv run pytest tests/congress_videos/modules/test_monologue_speaker_window.py -v`.
+- [x] 2.7 Full: `uv run pytest -n auto`.
+- [x] 2.8 Measure: `git diff --stat <A1-branch>...HEAD -- . ':!openspec'` vs ~250-line forecast.
+      Landed at 423 authored lines with 4 separate identify_floor_holder mock-echo tests + 2
+      separate resolve_announced_identity confidence-boundary tests; collapsed both pairs into
+      one `@pytest.mark.parametrize` test each (identical coverage, no scenario dropped) to land
+      at 395 authored lines — under the 400-line budget with no `size:exception` needed. Both
+      steps and all their tests stayed on this single branch; no further split into a separate
+      identity-step branch was required.
 
 ## Phase 3 — A2b: Orchestrator (`feat/430-a2b-orchestrator`, base A2a branch)
 
