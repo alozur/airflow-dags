@@ -296,7 +296,8 @@ CREATE TABLE IF NOT EXISTS production.speaker_turn_trim_proposals (
 -- Folds migrations 025 (create) + 027 (upload tracking) + 030 (prepared_at,
 -- issue #146) + 032 (verification/abandon, issue #141) + 033 (turn_type,
 -- issue #176) + 034 (speaker resolution) + 040 (keep_intervals, issue #143)
--- + 042 (thumbnail republish state, issue #331).
+-- + 042 (thumbnail republish state, issue #331) + 046 (resolution evidence,
+-- issue #430).
 -- Live production has NO CHECK on turn_type — do not add one.
 CREATE TABLE IF NOT EXISTS production.speaker_turn_videos (
     video_id                      SERIAL      PRIMARY KEY,
@@ -325,6 +326,9 @@ CREATE TABLE IF NOT EXISTS production.speaker_turn_videos (
     resolved_participant_slug     TEXT        REFERENCES production.congress_participants(slug),
     speaker_resolution_confidence DOUBLE PRECISION,
     speaker_resolution_method     TEXT,
+
+    -- Added by migration 046 (two-step monologue resolution audit, issue #430)
+    speaker_resolution_evidence   TEXT,
 
     -- Added by migration 040: NULL = legacy single window; otherwise the
     -- keep-interval plan after procedural spans are excised (issue #143)

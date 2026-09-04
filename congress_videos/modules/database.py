@@ -1362,6 +1362,7 @@ class CongressionalVideoDB:
         confidence: float,
         method: str,
         representative_turn_id: int,
+        evidence: str | None = None,
     ) -> None:
         """Persist the speaker resolution result for label-matching sibling rows.
 
@@ -1382,11 +1383,18 @@ class CongressionalVideoDB:
                 resolved — its speaker_label scopes which sibling rows may
                 receive the write. Required (no default) so an un-migrated
                 caller fails loudly instead of silently blanket-writing.
+            evidence: Optional audit string (issue #430, migration 046) —
+                the monologue two-step audit JSON, or the verbatim
+                announcement quote. Written to speaker_resolution_evidence
+                ONLY when not None; omitting it leaves that column untouched.
         """
         stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
         st_table = self.pg_conn.get_qualified_table("speaker_turns")
 
         group_size = self._count_records("speaker_turn_videos", "output_path = %s", (output_path,))
+
+        evidence_set = ",\n                        speaker_resolution_evidence = %s" if evidence is not None else ""
+        set_params = (slug, confidence, method) + ((evidence,) if evidence is not None else ())
 
         with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
             cur.execute(
@@ -1394,7 +1402,7 @@ class CongressionalVideoDB:
                     UPDATE {stv_table}
                     SET resolved_participant_slug = %s,
                         speaker_resolution_confidence = %s,
-                        speaker_resolution_method = %s
+                        speaker_resolution_method = %s{evidence_set}
                     WHERE turn_id IN (
                         SELECT stv2.turn_id
                         FROM {stv_table} stv2
@@ -1406,7 +1414,7 @@ class CongressionalVideoDB:
                           )
                     )
                     """,
-                (slug, confidence, method, output_path, representative_turn_id),
+                (*set_params, output_path, representative_turn_id),
             )
             logger.info(
                 "mark_turn_resolved: output_path=%s representative_turn_id=%s → "
