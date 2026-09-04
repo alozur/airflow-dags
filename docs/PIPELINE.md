@@ -79,6 +79,17 @@ la cadena se disparan vía API (`schedule=None`).
    valida el MP4 con un decode de ffmpeg y solo entonces marca `prepared_at`.
    Es la puerta de entrada a `uploadable_turns`.
 
+Dentro de `speaker_turn_prepare`, la atribución de orador para turnos no-`qa`
+(issue #430) usa un resolutor de dos pasos que solo ve la ventana de anuncio
+previa al turno (hasta 120 s antes del inicio, o del inicio del grupo si el
+turno pertenece a uno): primero identifica a quién se le da la palabra en esa
+ventana, después resuelve esa identidad contra el roster de participantes. El
+texto propio del turno nunca llega al modelo, así que una persona solo
+*mencionada* o *dirigida* al comienzo del turno no puede ganar la atribución.
+Los turnos `qa` (y el re-paso ampliado de promoción qa, issue #342) siguen
+usando el resolutor combinado existente (ventana de anuncio + inicio del
+propio turno).
+
 Los vídeos materializados sí se suben automáticamente desde #171: son la única
 fuente de la Fase 1. El paso que los habilita es `speaker_turn_prepare`, que
 escribe los sidecars y marca `prepared_at`; hasta entonces el turno no aparece
