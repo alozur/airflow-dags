@@ -3081,6 +3081,212 @@ class TestExtractMetadataDescription:
 
 
 # ---------------------------------------------------------------------------
+# _analyze_chapter_content — mentioned-people + topics upload hook (issue #432)
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzeChapterContentUsesChapterWindow:
+    """`_analyze_chapter_content` must derive its text from the chapter's own
+    SRT window (db.get_chapter_srt_context), never from the turn/group span
+    (design F1/D7) — `uploadable_turns` does not expose start_time/end_time."""
+
+    def test_analysis_uses_chapter_window_not_turn_window(self, tmp_path, mocker):
+        from congress_videos.modules.mentioned_people_resolution import MentionedPeopleResult
+        from congress_videos.modules.topic_extraction import TopicsResult
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        # Block 1 is outside the turn's own/group span but inside the wider
+        # chapter span; block 2 is inside both. Both must reach the analyses.
+        srt_content = (
+            "1\n00:00:10,000 --> 00:00:20,000\nFuera del grupo, dentro del capitulo.\n\n"
+            "2\n00:01:30,000 --> 00:02:00,000\nDentro del turno y del grupo.\n\n"
+        )
+        srt_path = tmp_path / "test.srt"
+        srt_path.write_text(srt_content, encoding="utf-8")
+
+        turn = _make_turn_row(turn_id=1, chapter_id=42, start_seconds=90.0, end_seconds=120.0)
+        turn["video_id"] = "video123"
+
+        mock_db = MagicMock()
+        mock_db.get_chapter_srt_context.return_value = {
+            "video_id": "video123",
+            "start_time": "00:00:00,000",
+            "end_time": "00:03:00,000",
+            "session_date": "2025-06-10",
+        }
+
+        mocker.patch("congress_videos.youtube_upload_dag.find_srt_for_chapter", return_value=str(srt_path))
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "garcia-ana"},
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.get_participants_roster", return_value=[])
+        mock_resolve = mocker.patch(
+            "congress_videos.youtube_upload_dag.resolve_mentioned_people",
+            return_value=MentionedPeopleResult(),
+        )
+        mock_extract = mocker.patch(
+            "congress_videos.youtube_upload_dag.extract_topics",
+            return_value=TopicsResult(),
+        )
+
+        _prepare_thumbnail_config(turn, mock_db)
+
+        mock_db.get_chapter_srt_context.assert_called_once_with(42)
+        mock_resolve.assert_called_once()
+        chapter_text = mock_resolve.call_args[0][0]
+        assert "Fuera del grupo, dentro del capitulo" in chapter_text
+        assert "Dentro del turno y del grupo" in chapter_text
+
+        mock_extract.assert_called_once()
+        assert "Fuera del grupo, dentro del capitulo" in mock_extract.call_args[0][0]
+
+
+class TestAnalyzeChapterContentMissingContext:
+    """`ctx is None` or `get_chapter_srt_context` raising must skip BOTH
+    analyses and persist nothing (design F1/D7)."""
+
+    @pytest.mark.parametrize("ctx_behavior", ["returns_none", "raises"])
+    def test_missing_chapter_context_skips_both_analyses(self, ctx_behavior, mocker, tmp_path):
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        srt_path = tmp_path / "test.srt"
+        srt_path.write_text("1\n00:00:10,000 --> 00:00:20,000\nTexto cualquiera.\n\n", encoding="utf-8")
+
+        turn = _make_turn_row(turn_id=1, chapter_id=42)
+        turn["video_id"] = "video123"
+
+        mock_db = MagicMock()
+        if ctx_behavior == "returns_none":
+            mock_db.get_chapter_srt_context.return_value = None
+        else:
+            mock_db.get_chapter_srt_context.side_effect = RuntimeError("db unavailable")
+
+        mocker.patch("congress_videos.youtube_upload_dag.find_srt_for_chapter", return_value=str(srt_path))
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "garcia-ana"},
+        )
+        mock_resolve = mocker.patch("congress_videos.youtube_upload_dag.resolve_mentioned_people")
+        mock_extract = mocker.patch("congress_videos.youtube_upload_dag.extract_topics")
+
+        _prepare_thumbnail_config(turn, mock_db)
+
+        mock_resolve.assert_not_called()
+        mock_extract.assert_not_called()
+        mock_db.update_chapter_content_analysis.assert_not_called()
+
+
+class TestAnalyzeChapterContentFailureIsolation:
+    """A failure in one analysis MUST NOT discard the other's persisted
+    result (design D9/M7/T5)."""
+
+    def _setup(self, mocker, tmp_path):
+        srt_path = tmp_path / "test.srt"
+        srt_path.write_text("1\n00:00:10,000 --> 00:00:20,000\nTexto cualquiera.\n\n", encoding="utf-8")
+
+        turn = _make_turn_row(turn_id=1, chapter_id=42)
+        turn["video_id"] = "video123"
+
+        mock_db = MagicMock()
+        mock_db.get_chapter_srt_context.return_value = {
+            "video_id": "video123",
+            "start_time": "00:00:00,000",
+            "end_time": "00:03:00,000",
+            "session_date": "2025-06-10",
+        }
+
+        mocker.patch("congress_videos.youtube_upload_dag.find_srt_for_chapter", return_value=str(srt_path))
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "garcia-ana"},
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.get_participants_roster", return_value=[])
+        return turn, mock_db
+
+    def test_one_analysis_failing_persists_the_other(self, mocker, tmp_path):
+        from congress_videos.modules.topic_extraction import TopicsResult
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn, mock_db = self._setup(mocker, tmp_path)
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.resolve_mentioned_people",
+            side_effect=RuntimeError("llm failure"),
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.extract_topics",
+            return_value=TopicsResult(ok=True, topics=("sanidad",)),
+        )
+
+        _prepare_thumbnail_config(turn, mock_db)
+
+        mock_db.update_chapter_content_analysis.assert_called_once_with(42, mentioned_slugs=None, topics=["sanidad"])
+
+    def test_topics_failing_persists_mentioned_slugs(self, mocker, tmp_path):
+        from congress_videos.modules.mentioned_people_resolution import MentionedPeopleResult
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn, mock_db = self._setup(mocker, tmp_path)
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.resolve_mentioned_people",
+            return_value=MentionedPeopleResult(ok=True),
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.extract_topics",
+            side_effect=RuntimeError("llm failure"),
+        )
+
+        _prepare_thumbnail_config(turn, mock_db)
+
+        mock_db.update_chapter_content_analysis.assert_called_once_with(42, mentioned_slugs=[], topics=None)
+
+    def test_empty_topics_does_not_overwrite(self, mocker, tmp_path):
+        """ok=True with zero topics must be OMITTED from the UPDATE kwargs
+        (topics stays None), never written as an empty array (design D9)."""
+        from congress_videos.modules.mentioned_people_resolution import MentionedPeopleResult
+        from congress_videos.modules.topic_extraction import TopicsResult
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn, mock_db = self._setup(mocker, tmp_path)
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.resolve_mentioned_people",
+            return_value=MentionedPeopleResult(ok=True),
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.extract_topics",
+            return_value=TopicsResult(ok=True, topics=()),
+        )
+
+        _prepare_thumbnail_config(turn, mock_db)
+
+        mock_db.update_chapter_content_analysis.assert_called_once_with(42, mentioned_slugs=[], topics=None)
+
+    def test_db_failure_does_not_fail_the_upload(self, mocker, tmp_path):
+        from congress_videos.modules.mentioned_people_resolution import MentionedPeopleResult
+        from congress_videos.modules.topic_extraction import TopicsResult
+        from congress_videos.youtube_upload_dag import _prepare_thumbnail_config
+
+        turn, mock_db = self._setup(mocker, tmp_path)
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.resolve_mentioned_people",
+            return_value=MentionedPeopleResult(ok=True, people=()),
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.extract_topics",
+            return_value=TopicsResult(ok=True, topics=("sanidad",)),
+        )
+        mock_db.update_chapter_content_analysis.side_effect = RuntimeError("db write failed")
+
+        result = _prepare_thumbnail_config(turn, mock_db)
+
+        assert result["chapter_id"] == 42
+
+
+# ---------------------------------------------------------------------------
 # Cross-DAG regression: turn_id survives prepare -> upload -> mark (issue #230)
 # ---------------------------------------------------------------------------
 
