@@ -75,7 +75,7 @@ def _table_block(table: str) -> str:
     return sql[start : sql.index(");", start) + 2]
 
 
-# 133 columns across 10 tables (the 8 from #299 plus video_chapters +
+# 134 columns across 10 tables (the 8 from #299 plus video_chapters +
 # youtube_source_videos, issue #304), transcribed from the live
 # `\d production.<table>` DDL (canonical source), in FK-dependency order.
 TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
@@ -125,6 +125,7 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "resolved_participant_slug",
         "turns_detected_at",
         "upload_verified_at",
+        "mentioned_participant_slugs",
     ),
     "llm_cache": ("cache_key", "model", "response", "created_at"),
     "congress_participants": (
@@ -481,7 +482,7 @@ class TestVideoShortsTableSnapshot:
 class TestRemainingBaseTableSnapshots:
     """10 base tables — the 8 added by issue #299 plus video_chapters and
     youtube_source_videos (issue #304) — must be present in the snapshot,
-    transcribed from the live `\\d production.<table>` DDL — 133 columns
+    transcribed from the live `\\d production.<table>` DDL — 134 columns
     total.
 
     Same block-scoping discipline as TestVideoShortsTableSnapshot: assertions

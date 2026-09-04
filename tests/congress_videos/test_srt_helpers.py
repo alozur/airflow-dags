@@ -6,6 +6,7 @@ import logging
 
 import pytest
 
+from congress_videos.config.paths import get_chapter_short_srt_path, get_video_chapter_dir
 from congress_videos.srt_helpers import (
     _blocks_to_prompt_text,
     _find_phrase_in_blocks,
@@ -18,6 +19,7 @@ from congress_videos.srt_helpers import (
     score_turn_interest,
     select_pretrim_window,
     write_chapter_srt_sidecar,
+    write_short_srt_sidecar,
 )
 from utils.llm_config import LLM_CHEAP
 
@@ -1220,3 +1222,295 @@ class TestWriteChapterSrtSidecar:
         for call in spy.call_args_list:
             assert "canonical_dir" not in call.kwargs
             assert len(call.args) <= 3
+
+
+# ---------------------------------------------------------------------------
+# write_short_srt_sidecar (issue #431) — Reap short clip sidecar
+# ---------------------------------------------------------------------------
+
+_SHORT_SIDECAR_SOURCE_SRT = (
+    "1\n00:01:00,000 --> 00:01:05,000\nfuera antes de todo\n\n"
+    "2\n00:05:30,000 --> 00:05:35,000\ndentro del pretrim inicio\n\n"
+    "3\n00:06:00,000 --> 00:06:05,000\ndentro del pretrim medio\n\n"
+    "4\n00:07:00,000 --> 00:07:05,000\nfuera del pretrim final\n\n"
+)
+
+
+class TestWriteShortSrtSidecar:
+    """chapter_start=00:05:00,000 (300s) / chapter_end=00:10:00,000 (600s);
+    pretrim_start_secs=30 / pretrim_end_secs=100 -> window [330s, 400s).
+    Only blocks 2-3 of ``_SHORT_SIDECAR_SOURCE_SRT`` overlap it."""
+
+    VIDEO_ID = "vidshort"
+    CHAPTER_ID = 9
+    CLIP_ID = "clip01"
+    CHAPTER_START = "00:05:00,000"
+    CHAPTER_END = "00:10:00,000"
+    PRETRIM_START = 30
+    PRETRIM_END = 100
+
+    @pytest.fixture(autouse=True)
+    def _data_root(self, tmp_path, mocker):
+        mocker.patch("congress_videos.config.paths.PROJECT_DATA_DIR", str(tmp_path))
+        return tmp_path
+
+    @pytest.fixture
+    def source_srt(self, _data_root):
+        """Source SRT at the canonical chapter sidecar path (D1: probed first)."""
+        chapter_dir = get_video_chapter_dir(self.VIDEO_ID, self.CHAPTER_ID)
+        chapter_dir.mkdir(parents=True)
+        (chapter_dir / "subtitles.srt").write_text(_SHORT_SIDECAR_SOURCE_SRT, encoding="utf-8")
+        return chapter_dir
+
+    def _target_path(self):
+        return get_chapter_short_srt_path(self.VIDEO_ID, self.CHAPTER_ID, self.CLIP_ID)
+
+    def test_writes_srt_next_to_clip_mp4(self, source_srt):
+        result = write_short_srt_sidecar(
+            self.VIDEO_ID,
+            self.CHAPTER_ID,
+            self.CLIP_ID,
+            self.CHAPTER_START,
+            self.CHAPTER_END,
+            pretrim_start_secs=self.PRETRIM_START,
+            pretrim_end_secs=self.PRETRIM_END,
+        )
+
+        target_path = self._target_path()
+        assert result == target_path
+        assert target_path.exists()
+        assert target_path.parent.name == "shorts"
+        content = target_path.read_text(encoding="utf-8")
+        assert "dentro del pretrim inicio" in content
+        assert "dentro del pretrim medio" in content
+        assert "fuera antes de todo" not in content
+        assert "fuera del pretrim final" not in content
+
+    def test_timestamps_are_retimed_to_clip_origin(self, source_srt):
+        write_short_srt_sidecar(
+            self.VIDEO_ID,
+            self.CHAPTER_ID,
+            self.CLIP_ID,
+            self.CHAPTER_START,
+            self.CHAPTER_END,
+            pretrim_start_secs=self.PRETRIM_START,
+            pretrim_end_secs=self.PRETRIM_END,
+        )
+
+        content = self._target_path().read_text(encoding="utf-8")
+        # Block 2 starts exactly at window_start (330s) -> retimed to 0.
+        assert "00:00:00,000 --> 00:00:05,000" in content
+        # Block 3 starts 30s into the window (360s - 330s).
+        assert "00:00:30,000 --> 00:00:35,000" in content
+        # Absolute chapter-relative timestamps must NOT appear.
+        assert "00:05:30" not in content
+
+    def test_existing_non_empty_srt_is_reused_not_rewritten(self, source_srt, caplog):
+        target_path = self._target_path()
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        sentinel = "1\n00:00:00,000 --> 00:00:01,000\nsentinel content\n\n"
+        target_path.write_text(sentinel, encoding="utf-8")
+
+        with caplog.at_level(logging.INFO):
+            result = write_short_srt_sidecar(
+                self.VIDEO_ID,
+                self.CHAPTER_ID,
+                self.CLIP_ID,
+                self.CHAPTER_START,
+                self.CHAPTER_END,
+                pretrim_start_secs=self.PRETRIM_START,
+                pretrim_end_secs=self.PRETRIM_END,
+            )
+
+        assert result == target_path
+        assert target_path.read_text(encoding="utf-8") == sentinel
+        assert any(str(target_path) in rec.message for rec in caplog.records)
+
+    @pytest.mark.parametrize(
+        "pretrim_start_secs,pretrim_end_secs",
+        [
+            (None, None),
+            (None, 100),
+            (30, None),
+            ("not-a-number", 100),
+        ],
+    )
+    def test_null_pretrim_offsets_fall_back_to_full_chapter_span(
+        self, source_srt, pretrim_start_secs, pretrim_end_secs
+    ):
+        result = write_short_srt_sidecar(
+            self.VIDEO_ID,
+            self.CHAPTER_ID,
+            self.CLIP_ID,
+            self.CHAPTER_START,
+            self.CHAPTER_END,
+            pretrim_start_secs=pretrim_start_secs,
+            pretrim_end_secs=pretrim_end_secs,
+        )
+
+        assert result is not None
+        content = result.read_text(encoding="utf-8")
+        # Full chapter span [300s, 600s) covers all four blocks.
+        assert "fuera antes de todo" not in content  # 60-65s, outside [300,600)
+        assert "dentro del pretrim inicio" in content
+        assert "dentro del pretrim medio" in content
+        assert "fuera del pretrim final" in content  # 420-425s, inside [300,600)
+
+    def test_window_outside_chapter_span_falls_back_with_warning(self, source_srt, caplog):
+        # pretrim offsets placing the window entirely past the chapter end.
+        with caplog.at_level(logging.WARNING):
+            result = write_short_srt_sidecar(
+                self.VIDEO_ID,
+                self.CHAPTER_ID,
+                self.CLIP_ID,
+                self.CHAPTER_START,
+                self.CHAPTER_END,
+                pretrim_start_secs=5000,
+                pretrim_end_secs=5010,
+            )
+
+        assert result is not None
+        content = result.read_text(encoding="utf-8")
+        # Fell back to the full chapter span [300s, 600s).
+        assert "fuera del pretrim final" in content
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any("outside chapter span" in r.message for r in warnings)
+
+    def test_zero_blocks_writes_no_file_and_warns(self, source_srt, caplog):
+        with caplog.at_level(logging.WARNING):
+            result = write_short_srt_sidecar(
+                self.VIDEO_ID,
+                self.CHAPTER_ID,
+                self.CLIP_ID,
+                "00:20:00,000",
+                "00:21:00,000",
+                pretrim_start_secs=0,
+                pretrim_end_secs=5,
+            )
+
+        assert result is None
+        assert not self._target_path().exists()
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any("no blocks" in r.message for r in warnings)
+
+    def test_missing_source_srt_returns_none_and_warns(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            result = write_short_srt_sidecar(
+                self.VIDEO_ID,
+                self.CHAPTER_ID,
+                self.CLIP_ID,
+                self.CHAPTER_START,
+                self.CHAPTER_END,
+                pretrim_start_secs=self.PRETRIM_START,
+                pretrim_end_secs=self.PRETRIM_END,
+            )
+
+        assert result is None
+        assert not self._target_path().exists()
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any("no source SRT" in r.message for r in warnings)
+
+    def test_unreadable_source_srt_returns_none_and_writes_no_file(self, source_srt, mocker):
+        mocker.patch("builtins.open", side_effect=OSError("permission denied"))
+
+        result = write_short_srt_sidecar(
+            self.VIDEO_ID,
+            self.CHAPTER_ID,
+            self.CLIP_ID,
+            self.CHAPTER_START,
+            self.CHAPTER_END,
+            pretrim_start_secs=self.PRETRIM_START,
+            pretrim_end_secs=self.PRETRIM_END,
+        )
+
+        assert result is None
+        assert not self._target_path().exists()
+
+    @pytest.mark.parametrize("bad_clip_id", ["../../etc/passwd", "a/b", ""])
+    def test_unsafe_clip_id_refuses(self, source_srt, bad_clip_id):
+        result = write_short_srt_sidecar(
+            self.VIDEO_ID,
+            self.CHAPTER_ID,
+            bad_clip_id,
+            self.CHAPTER_START,
+            self.CHAPTER_END,
+            pretrim_start_secs=self.PRETRIM_START,
+            pretrim_end_secs=self.PRETRIM_END,
+        )
+
+        assert result is None
+        # Nothing written outside the shorts dir for this chapter.
+        shorts_dir = get_chapter_short_srt_path(self.VIDEO_ID, self.CHAPTER_ID, "placeholder").parent
+        if shorts_dir.exists():
+            assert list(shorts_dir.iterdir()) == []
+
+    def test_oserror_on_write_returns_none_and_leaves_no_tmp(self, source_srt, mocker, caplog):
+        mocker.patch("os.replace", side_effect=OSError("disk full"))
+
+        with caplog.at_level(logging.WARNING):
+            result = write_short_srt_sidecar(
+                self.VIDEO_ID,
+                self.CHAPTER_ID,
+                self.CLIP_ID,
+                self.CHAPTER_START,
+                self.CHAPTER_END,
+                pretrim_start_secs=self.PRETRIM_START,
+                pretrim_end_secs=self.PRETRIM_END,
+            )
+
+        target_path = self._target_path()
+        assert result is None
+        assert not target_path.exists()
+        assert not target_path.with_name(target_path.name + ".tmp").exists()
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any(r.exc_info is not None for r in warnings)
+
+
+class TestChapterAndShortSidecarsCoexist:
+    """Both writers run for the same chapter and land in distinct canonical
+    files: ``.../video_chapters/{chapter_id}/subtitles.srt`` for the chapter
+    and ``.../video_chapters/{chapter_id}/shorts/{clip_id}.srt`` for the short.
+    The short writer reads the chapter sidecar it finds first (D1) and never
+    touches it."""
+
+    VIDEO_ID = "vidboth"
+    CHAPTER_ID = 11
+    CLIP_ID = "clipboth"
+    START = "00:05:00,000"
+    END = "00:10:00,000"
+
+    @pytest.fixture
+    def data_root(self, tmp_path, mocker):
+        """One data root shared by the path helpers and the legacy SRT lookup."""
+        mocker.patch("congress_videos.config.paths.PROJECT_DATA_DIR", str(tmp_path))
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", str(tmp_path))
+        mocker.patch("congress_videos.srt_helpers.DOWNLOADS_DIR", str(tmp_path / "no_downloads"))
+        srt_dir = tmp_path / self.VIDEO_ID / "srt_files"
+        srt_dir.mkdir(parents=True)
+        (srt_dir / f"{self.VIDEO_ID}.srt").write_text(_SHORT_SIDECAR_SOURCE_SRT, encoding="utf-8")
+        return tmp_path
+
+    def test_both_sidecars_exist_at_distinct_canonical_paths(self, data_root):
+        chapter_path = write_chapter_srt_sidecar(self.VIDEO_ID, self.CHAPTER_ID, self.START, self.END)
+        assert chapter_path is not None
+        chapter_bytes_before = chapter_path.read_bytes()
+
+        short_path = write_short_srt_sidecar(
+            self.VIDEO_ID,
+            self.CHAPTER_ID,
+            self.CLIP_ID,
+            self.START,
+            self.END,
+            pretrim_start_secs=30,
+            pretrim_end_secs=100,
+        )
+
+        assert short_path is not None
+        assert chapter_path.exists() and short_path.exists()
+        assert chapter_path != short_path
+        assert chapter_path == get_video_chapter_dir(self.VIDEO_ID, self.CHAPTER_ID) / "subtitles.srt"
+        assert short_path == get_chapter_short_srt_path(self.VIDEO_ID, self.CHAPTER_ID, self.CLIP_ID)
+        assert short_path.parent.name == "shorts"
+        assert short_path.parent.parent == chapter_path.parent
+        assert chapter_path.read_bytes() == chapter_bytes_before
+        assert short_path.stat().st_size > 0

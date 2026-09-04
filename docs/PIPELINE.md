@@ -84,12 +84,24 @@ fuente de la Fase 1. El paso que los habilita es `speaker_turn_prepare`, que
 escribe los sidecars y marca `prepared_at`; hasta entonces el turno no aparece
 en `uploadable_turns`.
 
+Durante la preparación de la subida (#432), `_analyze_chapter_content` deriva
+del sidecar SRT del capítulo (ventana del capítulo, no del turno; los límites
+salen de `get_chapter_srt_context`, porque `uploadable_turns` no expone
+`start_time`/`end_time`) dos análisis LLM independientes: personas mencionadas
+(slugs validados contra el roster de `congress_participants`, columna
+`mentioned_participant_slugs`) y temas (`topics`, normalizados y
+deduplicados). Cada análisis se persiste por separado: el fallo de uno nunca
+descarta el resultado válido del otro, y un resultado vacío de temas deja
+`topics` intacto.
+
 ## Fase 3 — Shorts · pipeline Reap
 
 1. **`reap_clip_preparer`** (diario 15:00 UTC): selecciona capítulos elegibles,
    pre-recorta clips largos con IA + contexto SRT y los encola.
 2. **`reap_processor`** (14:30 y 17:30 UTC): reclama exactamente un clip por
-   run y lo procesa vía Reap a formato short.
+   run y lo procesa vía Reap a formato short. Al descargar cada clip, el
+   sensor escribe además `{clip_id}.srt` junto al `.mp4` (#431), best-effort:
+   cualquier fallo se registra y nunca hace fallar el run.
 3. **`reap_shorts_uploader`** (5 veces al día): sube un short por run con
    título generado por IA; tras 3 fallos el clip se marca abandonado.
 

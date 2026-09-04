@@ -8,7 +8,7 @@ specifically for monitoring the Congress YouTube channel for plenary sessions.
 import logging
 import os
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import requests
 from bs4 import BeautifulSoup
@@ -97,6 +97,54 @@ def fetch_youtube_channel_videos(channel_id: str, max_results: int = 10):
         raise RuntimeError(error_msg) from e
 
 
+def _fetch_video_items_by_id(youtube, ids: list[str], part: str) -> dict[str, dict]:
+    """Batched `videos.list` lookup shared by `filter_plenary_session_videos` and
+    `filter_finished_streams`: one call, the caller's `part`, ids comma-joined.
+
+    Returns the response items keyed by their `id`. No chunking, no empty-ids
+    short-circuit — the caller decides whether to call this at all.
+    """
+    resp = youtube.videos().list(part=part, id=",".join(ids)).execute()
+    return {it["id"]: it for it in resp.get("items", [])}
+
+
+def _airing_timestamp(item: dict | None) -> tuple[str | None, str | None]:
+    """(iso_timestamp, "actualEndTime" | "actualStartTime") or (None, None).
+
+    A value is returned only when ``isinstance(value, str) and value`` — a
+    non-string or empty timestamp is reported as absent, so the caller never
+    parses a non-str.
+
+    Not yet called by any production code path (added ahead of the
+    filter_plenary_session_videos cutover so it lands as its own reviewable,
+    directly-tested unit).
+    """
+    if not item:
+        return None, None
+
+    live_details = item.get("liveStreamingDetails") or {}
+
+    end_time = live_details.get("actualEndTime")
+    if isinstance(end_time, str) and end_time:
+        return end_time, "actualEndTime"
+
+    start_time = live_details.get("actualStartTime")
+    if isinstance(start_time, str) and start_time:
+        return start_time, "actualStartTime"
+
+    return None, None
+
+
+def _airing_date(iso_timestamp: str) -> date:
+    """UTC calendar date for an ISO-8601 timestamp (``Z`` or explicit offset).
+
+    Raises ValueError/TypeError/AttributeError on a malformed input; the
+    caller (the future filter_plenary_session_videos cutover) is responsible
+    for catching these and excluding the candidate instead of raising.
+    """
+    return datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00")).astimezone(UTC).date()
+
+
 def filter_plenary_session_videos(
     channel_videos,
     target_title: str,
@@ -104,14 +152,16 @@ def filter_plenary_session_videos(
     lookback_days: int = 1,
 ):
     """
-    Filter videos for "Sesión Plenaria (original)" based on title and date.
+    Filter videos for "Sesión Plenaria (original)" based on title and airing time.
 
     Args:
         channel_videos: Results from fetch_youtube_channel_videos
         target_title: Title to filter for (e.g., "Sesión Plenaria (original)")
         target_date: Target date in YYYY-MM-DD format
         lookback_days: Inclusive lookback window. A video is kept when its
-            published date falls in [target_date - lookback_days, target_date].
+            airing time (``actualEndTime``, falling back to
+            ``actualStartTime``) falls in
+            [target_date - lookback_days, target_date] (UTC calendar date).
 
     Returns:
         Dict with filtered videos:
@@ -126,21 +176,33 @@ def filter_plenary_session_videos(
     target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
     range_start = target_date_obj - timedelta(days=lookback_days)
     logging.info(
-        f"Filtering for videos with title containing '{target_title}' published in [{range_start} .. {target_date_obj}]"
+        f"Filtering for videos with title containing '{target_title}' airing in [{range_start} .. {target_date_obj}]"
     )
 
-    matching_videos = []
-    for video in channel_videos["videos"]:
-        # Check if title contains target string (case-insensitive)
-        if target_title.lower() in video["title"].lower():
-            # Parse published date
-            published_at = datetime.fromisoformat(video["published_at"].replace("Z", "+00:00"))
-            published_date = published_at.date()
+    title_matched = [video for video in channel_videos["videos"] if target_title.lower() in video["title"].lower()]
+    if not title_matched:
+        logging.info(f"Found 0 matching videos for {target_date}")
+        return {"total_matches": 0, "videos": [], "target_date": target_date}
 
-            # Check if date falls within the inclusive lookback range
-            if range_start <= published_date <= target_date_obj:
-                logging.info(f"Match found: {video['title']} - {video['video_id']}")
-                matching_videos.append(video)
+    youtube_api_key = os.getenv("YOUTUBE_API_KEY")
+    if not youtube_api_key:
+        error_msg = "YOUTUBE_API_KEY environment variable not set"
+        logging.error(error_msg)
+        raise ValueError(error_msg)
+
+    youtube = build("youtube", "v3", developerKey=youtube_api_key)
+
+    ids = [video["video_id"] for video in title_matched if video.get("video_id")]
+    by_id = _fetch_video_items_by_id(youtube, ids, "liveStreamingDetails")
+
+    matching_videos, resolved_dates = _select_airing_window_matches(title_matched, by_id, range_start, target_date_obj)
+
+    if not matching_videos:
+        matched_ids = [video.get("video_id") for video in title_matched]
+        logging.warning(
+            f"No plenary matched: {len(title_matched)} title match(es) {matched_ids} "
+            f"with airing dates {resolved_dates} outside window [{range_start} .. {target_date_obj}]"
+        )
 
     logging.info(f"Found {len(matching_videos)} matching videos for {target_date}")
     return {
@@ -148,6 +210,60 @@ def filter_plenary_session_videos(
         "videos": matching_videos,
         "target_date": target_date,
     }
+
+
+def _select_airing_window_matches(
+    title_matched: list[dict],
+    by_id: dict[str, dict],
+    range_start: date,
+    target_date_obj: date,
+) -> tuple[list[dict], list[str]]:
+    """Resolve each title-matched video's airing date and keep the ones inside
+    the window. Returns (matching_videos, resolved_dates) where resolved_dates
+    has one entry per title-matched video, in order (ISO date or "missing").
+    """
+    matching_videos: list[dict] = []
+    resolved_dates: list[str] = []
+
+    for video in title_matched:
+        video_id = video.get("video_id")
+        item = by_id.get(video_id)
+
+        iso_timestamp, key_name = _airing_timestamp(item)
+        if iso_timestamp is None:
+            logging.warning(
+                f"No airing time for {video_id}: liveStreamingDetails has neither actualEndTime nor "
+                "actualStartTime; excluding"
+            )
+            resolved_dates.append("missing")
+            continue
+
+        if key_name == "actualStartTime":
+            logging.warning(
+                f"Airing time for {video_id} falls back to actualStartTime ({iso_timestamp}); actualEndTime absent"
+            )
+
+        try:
+            airing_date = _airing_date(iso_timestamp)
+        except (ValueError, TypeError, AttributeError):
+            logging.warning(f"Unparseable airing time for {video_id}: {iso_timestamp!r}; excluding")
+            resolved_dates.append("missing")
+            continue
+
+        resolved_dates.append(airing_date.isoformat())
+
+        if range_start <= airing_date <= target_date_obj:
+            logging.info(f"Match found: {video['title']} - {video_id}")
+            live_details = (item or {}).get("liveStreamingDetails") or {}
+            matching_videos.append(
+                {
+                    **video,
+                    "actual_end_time": live_details.get("actualEndTime"),
+                    "actual_start_time": live_details.get("actualStartTime"),
+                }
+            )
+
+    return matching_videos, resolved_dates
 
 
 def filter_unprocessed_videos(plenary_videos: dict) -> dict:
@@ -248,8 +364,7 @@ def filter_finished_streams(
 
     # Single batched Data API call for all candidate ids (no per-candidate call).
     ids = [v["video_id"] for v in videos if v.get("video_id")]
-    resp = youtube.videos().list(part="snippet,contentDetails,liveStreamingDetails", id=",".join(ids)).execute()
-    by_id = {it["id"]: it for it in resp.get("items", [])}
+    by_id = _fetch_video_items_by_id(youtube, ids, "snippet,contentDetails,liveStreamingDetails")
 
     kept = []
 

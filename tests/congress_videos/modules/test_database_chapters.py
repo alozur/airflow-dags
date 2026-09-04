@@ -381,3 +381,120 @@ class TestTimelinePersistence:
 
         _sql, params = self._chapter_insert(cur)
         assert params[8] == json.dumps([])
+
+
+# --------------------------------------------------------------------------- #
+# 5. get_chapter_srt_context (issue #431 — PR1)
+# --------------------------------------------------------------------------- #
+
+
+class TestGetChapterSrtContext:
+    """db.get_chapter_srt_context(chapter_id) -> {video_id, start_time, end_time,
+    session_date} or None. Consumed by the PR1 short-sidecar hook and the PR3
+    upload-time content-analysis hook, neither of which can read chapter bounds
+    off the uploadable_turns row (see design F1)."""
+
+    def test_returns_context_dict_for_existing_chapter(self):
+        cur = _make_cursor()
+        db, _conn = _make_db(cur)
+        cur.fetchone.return_value = {
+            "video_id": "vidA",
+            "start_time": "00:05:00,000",
+            "end_time": "00:10:00,000",
+            "session_date": date(2024, 1, 15),
+        }
+
+        result = db.get_chapter_srt_context(chapter_id=7)
+
+        assert result == {
+            "video_id": "vidA",
+            "start_time": "00:05:00,000",
+            "end_time": "00:10:00,000",
+            "session_date": date(2024, 1, 15),
+        }
+
+    def test_returns_none_for_missing_chapter(self):
+        cur = _make_cursor()
+        db, _conn = _make_db(cur)
+        cur.fetchone.return_value = None
+
+        result = db.get_chapter_srt_context(chapter_id=9999)
+
+        assert result is None
+
+    def test_query_uses_left_join_to_source_videos(self):
+        cur = _make_cursor()
+        db, _conn = _make_db(cur)
+        cur.fetchone.return_value = None
+
+        db.get_chapter_srt_context(chapter_id=7)
+
+        sql = cur.execute.call_args[0][0]
+        assert "LEFT JOIN" in sql
+        assert "youtube_source_videos" in sql
+        assert "start_time" in sql
+        assert "end_time" in sql
+
+
+# --------------------------------------------------------------------------- #
+# 6. update_chapter_content_analysis (issue #432 — PR3)
+# --------------------------------------------------------------------------- #
+
+
+class TestUpdateChapterContentAnalysis:
+    """db.update_chapter_content_analysis(chapter_id, *, mentioned_slugs=None,
+    topics=None) writes only the columns whose analysis succeeded, one
+    statement, one round trip. Threat matrix control: LLM-derived values are
+    always bound parameters; only the SET column names come from a fixed
+    literal allow-list (design D10)."""
+
+    def test_update_uses_bound_parameters(self):
+        cur = _make_cursor()
+        db, _conn = _make_db(cur)
+
+        result = db.update_chapter_content_analysis(
+            7,
+            mentioned_slugs=["pedro-sanchez", "yolanda-diaz"],
+            topics=["sanidad"],
+        )
+
+        assert result is True
+        cur.execute.assert_called_once()
+        sql, params = cur.execute.call_args[0]
+        assert "mentioned_participant_slugs = %s" in sql
+        assert "topics = %s" in sql
+        assert "WHERE chapter_id = %s" in sql
+        assert params == (["pedro-sanchez", "yolanda-diaz"], ["sanidad"], 7)
+
+    def test_only_topics_provided_writes_only_that_column(self):
+        cur = _make_cursor()
+        db, _conn = _make_db(cur)
+
+        result = db.update_chapter_content_analysis(7, topics=["sanidad"])
+
+        assert result is True
+        sql, params = cur.execute.call_args[0]
+        assert "topics = %s" in sql
+        assert "mentioned_participant_slugs" not in sql
+        assert params == (["sanidad"], 7)
+
+    def test_only_mentioned_slugs_provided_writes_only_that_column(self):
+        cur = _make_cursor()
+        db, _conn = _make_db(cur)
+
+        result = db.update_chapter_content_analysis(7, mentioned_slugs=[])
+
+        assert result is True
+        sql, params = cur.execute.call_args[0]
+        assert "mentioned_participant_slugs = %s" in sql
+        assert "topics" not in sql
+        assert params == ([], 7)
+
+    def test_both_none_is_a_noop_no_statement_issued(self):
+        cur = _make_cursor()
+        db, _conn = _make_db(cur)
+
+        result = db.update_chapter_content_analysis(7)
+
+        assert result is False
+        cur.execute.assert_not_called()

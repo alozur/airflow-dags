@@ -73,8 +73,13 @@ independientes de YouTube.
   NAS montado en /opt/airflow/data/congress_videos/:
     downloads/{date}/{video_id}/audio_chunks/  (audio WebM)
     downloads/{date}/{video_id}/srt_files/     (subtitulos SRT)
+    {channel_slug}/{source_video_id}/video_chapters/{chapter_id}/subtitles.srt
+      (sidecar SRT del capitulo, #340: timestamps absolutos del video fuente)
     {channel_slug}/{source_video_id}/video_chapters/{chapter_id}/oradores/{output_turn_id}/{filename}
       (layout canonico #133: video.mp4, thumbnail.png, subtitles.srt)
+    {channel_slug}/{source_video_id}/video_chapters/{chapter_id}/shorts/{clip_id}.mp4 + {clip_id}.srt
+      (sidecar SRT del short, #431: aproximacion a la ventana de pre-recorte del
+      capitulo re-temporizada al origen del clip; Reap no expone tiempos por clip)
     assets/  (background, logo, fonts)
     congress_youtube_token.pickle
 
@@ -193,7 +198,20 @@ XCom keys en congress_youtube_chapter_uploader:
     relevance_score 0-5, speaker_relevance_points 0-2,
     topic_relevance_points 0-2, public_interest_points 0-1,
     scoring_reasoning, key_speakers[], is_current_topic,
-    is_uploaded_to_youtube, youtube_video_id
+    is_uploaded_to_youtube, youtube_video_id,
+    resolved_participant_slug, mentioned_participant_slugs[]
+
+    Tres conceptos distintos, resueltos por caminos independientes (issue #432):
+    - resolved_participant_slug: quien HABLA (orador del capítulo), issue #263.
+    - mentioned_participant_slugs[]: a quien se MENCIONA en la transcripción,
+      congress_videos/modules/mentioned_people_resolution.py, roster-gated,
+      migración 045. NULL = sin analizar; array vacío = analizado, sin menciones.
+    - topics[]: de que TRATA el capítulo. Escrito originalmente por
+      utils/ai_chapter_analyzer.py en la identificación de capítulos; desde el
+      issue #432 la fuente de verdad se refresca en tiempo de subida por
+      congress_videos/modules/topic_extraction.py (independiente de
+      mentioned_participant_slugs, propia llamada LLM y cache). Una extracción
+      exitosa sin temas NO sobrescribe un valor previo no vacío.
 
   Vistas:
     uploadable_chapters  relevance_score >= 2 AND is_uploaded = FALSE

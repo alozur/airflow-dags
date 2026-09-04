@@ -321,6 +321,123 @@ class TestReapJobSensor:
 
 
 # ---------------------------------------------------------------------------
+# TestShortSrtSidecarHook — issue #431 (PR1)
+# ---------------------------------------------------------------------------
+
+
+class TestShortSrtSidecarHook:
+    """The short SRT sidecar write is best-effort and must never fail the sensor."""
+
+    def _build_sensor(self):
+        from congress_videos.reap_processor_dag import ReapJobSensor
+
+        return ReapJobSensor(
+            task_id="wait_for_reap_test",
+            reap_project_id_key="reap_project_id_for_sensor",
+            chapter_id_key="chapter_id_for_sensor",
+            poke_interval=900,
+            timeout=7200,
+            mode="reschedule",
+        )
+
+    def _base_mocks(self, mocker, clips=None):
+        sensor = self._build_sensor()
+        context = _make_context(
+            {
+                "reap_project_id_for_sensor": "proj-abc",
+                "chapter_id_for_sensor": 42,
+            }
+        )
+
+        clips = (
+            clips
+            if clips is not None
+            else [
+                {"clip_id": "clip-1", "clip_url": "https://cdn.reap.video/c1.mp4", "virality_score": 0.8},
+            ]
+        )
+
+        mock_client_cls = mocker.patch("congress_videos.reap_processor_dag.ReapApiClient")
+        mock_client = mock_client_cls.return_value
+        mock_client.get_project_status.return_value = {"status": "completed"}
+        mock_client.get_project_clips.return_value = clips
+        mock_client.download_clip.return_value = None
+
+        mock_db_cls = mocker.patch("congress_videos.reap_processor_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.insert_video_short_clip.return_value = 1
+        mock_db.get_source_video_id_for_chapter.return_value = "src_vid_001"
+        mock_db.get_chapter_srt_context.return_value = {
+            "video_id": "src_vid_001",
+            "start_time": "00:05:00,000",
+            "end_time": "00:10:00,000",
+            "session_date": "2024-01-15",
+        }
+
+        mock_path = MagicMock()
+        mock_path.__str__ = MagicMock(side_effect=lambda: "/data/canonical/clip.mp4")
+        mock_path.parent = MagicMock()
+        mocker.patch(
+            "congress_videos.reap_processor_dag.get_chapter_short_file_path",
+            return_value=mock_path,
+        )
+
+        return sensor, context, mock_client, mock_db
+
+    def test_sensor_still_downloads_mp4_when_sidecar_raises(self, mocker):
+        sensor, context, mock_client, mock_db = self._base_mocks(mocker)
+        mocker.patch(
+            "congress_videos.reap_processor_dag.write_short_srt_sidecar",
+            side_effect=RuntimeError("boom"),
+        )
+
+        result = sensor.poke(context)
+
+        assert result is True
+        mock_db.insert_video_short_clip.assert_called_once()
+
+    def test_sidecar_called_with_chapter_bounds_and_pretrim_offsets(self, mocker):
+        sensor, context, mock_client, mock_db = self._base_mocks(mocker)
+        context["ti"].xcom_store["claimed_clip"] = {
+            "id": 1,
+            "chapter_id": 42,
+            "pretrim_start_secs": 30,
+            "pretrim_end_secs": 100,
+        }
+        mock_sidecar = mocker.patch("congress_videos.reap_processor_dag.write_short_srt_sidecar")
+
+        result = sensor.poke(context)
+
+        assert result is True
+        mock_sidecar.assert_called_once()
+        _args, kwargs = mock_sidecar.call_args
+        assert kwargs["pretrim_start_secs"] == 30
+        assert kwargs["pretrim_end_secs"] == 100
+
+    def test_missing_claimed_clip_xcom_falls_back_to_none_offsets(self, mocker):
+        sensor, context, mock_client, mock_db = self._base_mocks(mocker)
+        mock_sidecar = mocker.patch("congress_videos.reap_processor_dag.write_short_srt_sidecar")
+
+        result = sensor.poke(context)
+
+        assert result is True
+        _args, kwargs = mock_sidecar.call_args
+        assert kwargs["pretrim_start_secs"] is None
+        assert kwargs["pretrim_end_secs"] is None
+
+    def test_get_chapter_srt_context_failure_does_not_crash_sensor(self, mocker):
+        sensor, context, mock_client, mock_db = self._base_mocks(mocker)
+        mock_db.get_chapter_srt_context.side_effect = RuntimeError("db down")
+        mock_sidecar = mocker.patch("congress_videos.reap_processor_dag.write_short_srt_sidecar")
+
+        result = sensor.poke(context)
+
+        assert result is True
+        mock_db.insert_video_short_clip.assert_called_once()
+        mock_sidecar.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # TestUploadToReap
 # ---------------------------------------------------------------------------
 
