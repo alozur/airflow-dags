@@ -456,6 +456,215 @@ class TestFilterPlenarySessionVideos:
 
         service.videos.return_value.list.assert_called_once_with(part="liveStreamingDetails", id="A,B,C")
 
+    def test_missing_api_key_with_title_matches_raises(self, monkeypatch, mocker):
+        """Title matches need the Data API: an absent YOUTUBE_API_KEY fails loudly before any call."""
+        monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            side_effect=AssertionError("build should not be called"),
+        )
+        from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
+
+        videos = [self._make_video("Sesion Plenaria", "2025-05-22T09:00:00Z", "A")]
+
+        with pytest.raises(ValueError, match="YOUTUBE_API_KEY"):
+            filter_plenary_session_videos(
+                self._make_channel_videos(videos),
+                target_title="Sesion Plenaria",
+                target_date="2025-05-22",
+            )
+
+    # --- airing-time key resolution (design tests #4-#7) --------------------- #
+
+    def test_missing_live_streaming_details_excluded_with_warning(self, monkeypatch, mocker, caplog):
+        """Design test #4: item present but liveStreamingDetails has neither
+        timestamp -> excluded + WARNING naming the id. published_at alone
+        (in-window) is not enough to keep it."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        video = self._make_video(
+            title="Sesion Plenaria (original)",
+            published_at="2025-05-22T10:00:00Z",
+            video_id="vid-missing",
+        )
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"vid-missing": [_item()]}),
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
+
+        with caplog.at_level("WARNING"):
+            result = filter_plenary_session_videos(
+                self._make_channel_videos([video]),
+                target_title="Sesion Plenaria",
+                target_date="2025-05-22",
+            )
+
+        assert result["total_matches"] == 0
+        assert "vid-missing" in caplog.text
+
+    def test_actual_start_time_fallback_matches_with_warning(self, monkeypatch, mocker, caplog):
+        """Design test #5: only actualStartTime present -> matches via
+        fallback + WARNING naming the id. published_at alone is outside the
+        window, so a match here proves the airing key is driving the result."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        video = self._make_video(
+            title="Sesion Plenaria (original)",
+            published_at="2025-05-01T10:00:00Z",
+            video_id="vid-start-fallback",
+        )
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"vid-start-fallback": [_item(actual_start="2025-05-22T09:00:00Z")]}),
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
+
+        with caplog.at_level("WARNING"):
+            result = filter_plenary_session_videos(
+                self._make_channel_videos([video]),
+                target_title="Sesion Plenaria",
+                target_date="2025-05-22",
+            )
+
+        assert result["total_matches"] == 1
+        assert result["videos"][0]["video_id"] == "vid-start-fallback"
+        assert "vid-start-fallback" in caplog.text
+        assert "actualStartTime" in caplog.text
+
+    def test_unparseable_airing_timestamp_excluded_no_raise(self, monkeypatch, mocker, caplog):
+        """Design test #6: a string actualEndTime that fails ISO parsing is
+        excluded, never raises. published_at alone (in-window) is not enough
+        to keep it."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        video = self._make_video(
+            title="Sesion Plenaria (original)",
+            published_at="2025-05-22T10:00:00Z",
+            video_id="vid-unparseable",
+        )
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({"vid-unparseable": [_item(actual_end="not-a-real-timestamp")]}),
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
+
+        with caplog.at_level("WARNING"):
+            result = filter_plenary_session_videos(
+                self._make_channel_videos([video]),
+                target_title="Sesion Plenaria",
+                target_date="2025-05-22",
+            )
+
+        assert result["total_matches"] == 0
+        assert "vid-unparseable" in caplog.text
+
+    def test_id_absent_from_api_response_excluded_no_raise(self, monkeypatch, mocker, caplog):
+        """Design test #7: title-matched id never comes back from videos.list
+        -> excluded, never raises. published_at alone (in-window) is not
+        enough to keep it."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        video = self._make_video(
+            title="Sesion Plenaria (original)",
+            published_at="2025-05-22T10:00:00Z",
+            video_id="vid-absent",
+        )
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service({}),
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
+
+        with caplog.at_level("WARNING"):
+            result = filter_plenary_session_videos(
+                self._make_channel_videos([video]),
+                target_title="Sesion Plenaria",
+                target_date="2025-05-22",
+            )
+
+        assert result["total_matches"] == 0
+        assert "vid-absent" in caplog.text
+
+    # --- zero-survivor observability + key preservation (design tests #9-#10) #
+
+    def test_zero_survivors_after_title_matches_logs_one_warning(self, monkeypatch, mocker, caplog):
+        """Design test #9: one candidate outside the window and one with no
+        liveStreamingDetails -> total_matches 0, one WARNING naming both ids,
+        their dates ('missing' for the unresolved one), and the window."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service(
+                {
+                    "vid-outside": [_item(actual_end="2025-05-01T00:00:00Z")],
+                    "vid-no-data": [_item()],
+                }
+            ),
+        )
+        from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
+
+        videos = [
+            self._make_video("Sesion Plenaria Fuera", "2025-05-01T00:00:00Z", "vid-outside"),
+            self._make_video("Sesion Plenaria Sin Datos", "2025-05-22T00:00:00Z", "vid-no-data"),
+        ]
+
+        with caplog.at_level("WARNING"):
+            result = filter_plenary_session_videos(
+                self._make_channel_videos(videos),
+                target_title="Sesion Plenaria",
+                target_date="2025-05-22",
+                lookback_days=1,
+            )
+
+        assert result["total_matches"] == 0
+        summary_records = [r for r in caplog.records if r.message.startswith("No plenary matched:")]
+        assert len(summary_records) == 1
+        summary = summary_records[0].message
+        assert "vid-outside" in summary
+        assert "vid-no-data" in summary
+        assert "2025-05-01" in summary
+        assert "'missing'" in summary
+        assert "2025-05-21" in summary and "2025-05-22" in summary
+
+    def test_surviving_candidate_keeps_existing_keys_unchanged(self, monkeypatch, mocker):
+        """Design test #10: a surviving candidate keeps video_id, title,
+        published_at unchanged; enrichment only adds new keys."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=_service(
+                {
+                    "vid001": [
+                        _item(
+                            actual_start="2025-05-22T08:00:00Z",
+                            actual_end="2025-05-22T10:00:00Z",
+                        )
+                    ]
+                }
+            ),
+        )
+        from congress_videos.modules.youtube.youtube_channel import filter_plenary_session_videos
+
+        video = self._make_video(
+            title="Sesion Plenaria (original)",
+            published_at="2025-05-22T07:00:00Z",
+        )
+
+        result = filter_plenary_session_videos(
+            self._make_channel_videos([video]),
+            target_title="Sesion Plenaria",
+            target_date="2025-05-22",
+        )
+
+        assert result["total_matches"] == 1
+        kept = result["videos"][0]
+        assert kept["video_id"] == "vid001"
+        assert kept["title"] == "Sesion Plenaria (original)"
+        assert kept["published_at"] == "2025-05-22T07:00:00Z"
+        assert kept["actual_end_time"] == "2025-05-22T10:00:00Z"
+        assert kept["actual_start_time"] == "2025-05-22T08:00:00Z"
+
 
 # --------------------------------------------------------------------------- #
 # get_video_details — ISO 8601 duration parsing
