@@ -32,24 +32,24 @@ before opening its PR.
 
 ## Phase 1 — A1: Window Selection + Prompts (`feat/430-a1-window-selection`, base `dev`)
 
-- [ ] 1.1 RED: `tests/congress_videos/modules/test_monologue_speaker_window.py` (create) — 6 boundary
+- [x] 1.1 RED: `tests/congress_videos/modules/test_monologue_speaker_window.py` (create) — 6 boundary
       cases for *Preceding Window Selection* (anchor-120 in; anchor-120-0.001 out; at-anchor out;
       overlapping in; anchor<120 clamps to 0; `group_start_seconds` incl. `0.0` overrides
       `start_seconds`). Run: fails (module missing).
-- [ ] 1.2 GREEN: `congress_videos/modules/monologue_speaker_window.py` (create) —
+- [x] 1.2 GREEN: `congress_videos/modules/monologue_speaker_window.py` (create) —
       `MONOLOGUE_WINDOW_SECS`, `MONOLOGUE_RESOLUTION_METHOD`, `turn_anchor_seconds`,
       `select_preceding_window`. Same test passes.
-- [ ] 1.3 RED: prompt-contract tests — `MONOLOGUE_FLOOR_HOLDER_SYSTEM_PROMPT` carries the
+- [x] 1.3 RED: prompt-contract tests — `MONOLOGUE_FLOOR_HOLDER_SYSTEM_PROMPT` carries the
       addressee, `found=false`, and verbatim-evidence rules; user templates interpolate only
       `window_text` / `announced_name_or_role`+`evidence`+`participant_roster`.
-- [ ] 1.4 GREEN: `congress_videos/config/ai_prompts.py` (modify) — add the 4 prompt constants from
+- [x] 1.4 GREEN: `congress_videos/config/ai_prompts.py` (modify) — add the 4 prompt constants from
       design.md verbatim, after `SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE`.
-- [ ] 1.5 Quality: `uv run ruff check congress_videos/modules/monologue_speaker_window.py
+- [x] 1.5 Quality: `uv run ruff check congress_videos/modules/monologue_speaker_window.py
       congress_videos/config/ai_prompts.py tests/congress_videos/modules/test_monologue_speaker_window.py
       && uv run ruff format --check` (same paths).
-- [ ] 1.6 Targeted: `uv run pytest tests/congress_videos/modules/test_monologue_speaker_window.py -v`.
-- [ ] 1.7 Full: `uv run pytest -n auto`.
-- [ ] 1.8 Measure: `git diff --stat dev...HEAD -- . ':!openspec'` vs ~280-line forecast; resplit if
+- [x] 1.6 Targeted: `uv run pytest tests/congress_videos/modules/test_monologue_speaker_window.py -v`.
+- [x] 1.7 Full: `uv run pytest -n auto`.
+- [x] 1.8 Measure: `git diff --stat dev...HEAD -- . ':!openspec'` vs ~280-line forecast; resplit if
       it exceeds ~350.
 
 ## Phase 2 — A2a: LLM Steps (`feat/430-a2a-llm-steps`, base A1 branch)
