@@ -5,14 +5,14 @@ the turn's own transcript, so a person merely addressed early in the turn
 cannot win the attribution. Step 1 sees the window text alone; Step 2 sees
 only Step 1's small JSON plus the participant roster.
 
-Slice A1 added the window-selection primitives. Slice A2a (this file, as
-extended) adds the two LLM-step seam functions: `identify_floor_holder`
-(Step 1) and `resolve_announced_identity` (Step 2). Each is a pass-through
-seam — it validates and shapes whatever `completion_fn` returns but never
-catches an exception `completion_fn` raises; the never-raise contract is
-the orchestrator's job (`resolve_monologue_speaker`, added in A2b). Nothing
-imports this module's public functions yet, so it remains inert until A2b
-wires them together and C routes turns to it.
+Slice A1 added the window-selection primitives. Slice A2a added the two
+LLM-step seam functions: `identify_floor_holder` (Step 1) and
+`resolve_announced_identity` (Step 2) — pass-through seams that never catch
+an exception `completion_fn` raises. Slice A2b (this file, as extended)
+adds the never-raise orchestrator, `resolve_monologue_speaker`, that loads
+the turn's SRT, runs the announcement pre-gate, wires the two steps
+together, and builds the evidence audit JSON. Nothing calls this module
+from a caller yet, so it remains inert until slice C routes turns to it.
 
 Design constraints (see openspec/changes/monologue-speaker-window/design.md):
 - No import-time side effects — this module lives under the DAGs folder and
@@ -22,6 +22,7 @@ Design constraints (see openspec/changes/monologue-speaker-window/design.md):
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,7 +33,13 @@ from congress_videos.config.ai_prompts import (
     MONOLOGUE_IDENTITY_RESOLUTION_SYSTEM_PROMPT,
     MONOLOGUE_IDENTITY_RESOLUTION_USER_TEMPLATE,
 )
-from congress_videos.modules.speaker_resolution import SPEAKER_RESOLUTION_MIN_CONFIDENCE
+from congress_videos.config.paths import get_video_chapter_dir
+from congress_videos.modules.announcement_patterns import has_announcement_phrase
+from congress_videos.modules.speaker_resolution import (
+    SPEAKER_RESOLUTION_MIN_CONFIDENCE,
+    _evidence_supported_in_blocks,
+)
+from congress_videos.srt_helpers import _parse_srt_blocks, find_srt_for_chapter
 from utils.llm_config import LLM_CHEAP
 
 logger = logging.getLogger(__name__)
@@ -228,3 +235,134 @@ def _validate_announced_identity(data: dict, participants: list[dict]) -> Announ
         return AnnouncedIdentity()
 
     return AnnouncedIdentity(full_name=data.get("full_name") or "", participant_slug=slug, confidence=confidence)
+
+
+# ---------------------------------------------------------------------------
+# Evidence audit (issue #430: `speaker_resolution_evidence`, migration 046)
+# ---------------------------------------------------------------------------
+
+
+def build_resolution_audit(
+    floor_holder: FloorHolder,
+    identity: AnnouncedIdentity,
+    window_start_seconds: float,
+    anchor_seconds: float,
+) -> str:
+    """Compact JSON audit string, exactly seven keys, persisted alongside the
+    resolution result (migration 046, later slice)."""
+    payload = {
+        "announced_name_or_role": floor_holder.announced_name_or_role,
+        "evidence": floor_holder.evidence,
+        "step1_found": floor_holder.found,
+        "step2_confidence": identity.confidence,
+        "window_start_seconds": window_start_seconds,
+        "anchor_seconds": anchor_seconds,
+        "method": MONOLOGUE_RESOLUTION_METHOD,
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator (issue #430) — never-raise public entry point
+# ---------------------------------------------------------------------------
+
+
+def _load_turn_blocks(turn: dict) -> list[dict]:
+    """Locate and parse the turn's source SRT into blocks.
+
+    Duplicated from ``speaker_resolution._resolve_speaker_inner`` (design.md
+    D5): extracting a shared helper would modify that frozen module.
+    """
+    video_id = turn.get("video_id")
+    chapter_id = turn.get("chapter_id")
+    session_date = turn.get("session_date")
+
+    canonical_dir = (
+        str(get_video_chapter_dir(str(video_id), chapter_id)) if video_id is not None and chapter_id else None
+    )
+    srt_path = find_srt_for_chapter(
+        str(video_id) if video_id is not None else "",
+        chapter_id or 0,
+        str(session_date) if session_date else None,
+        canonical_dir,
+    )
+    if srt_path is None:
+        return []
+    return _parse_srt_blocks(srt_path)
+
+
+def _resolve_monologue_inner(
+    turn: dict,
+    participants: list[dict],
+    completion_fn: Callable | None = None,
+) -> dict | None:
+    """Never-raise contract belongs to `resolve_monologue_speaker` — this
+    function propagates any exception uncaught."""
+    turn_id = turn.get("turn_id")
+    anchor = turn_anchor_seconds(turn)
+    window_start = max(0.0, anchor - MONOLOGUE_WINDOW_SECS)
+    window_blocks = select_preceding_window(_load_turn_blocks(turn), anchor)
+    window_text = "\n".join(block["text"] for block in window_blocks) if window_blocks else ""
+
+    if not has_announcement_phrase(window_text):
+        logger.info(
+            "resolve_monologue_speaker: no announcement phrase in window text for turn_id=%s — skipping both LLM calls",
+            turn_id,
+        )
+        return None
+
+    floor_holder = identify_floor_holder(window_blocks, completion_fn=completion_fn)
+    if not floor_holder.found:
+        logger.info(
+            "resolve_monologue_speaker: step 1 found no announcement for turn_id=%s — skipping step 2",
+            turn_id,
+        )
+        return None
+
+    if not _evidence_supported_in_blocks(floor_holder.evidence, window_blocks):
+        logger.warning(
+            "resolve_monologue_speaker: step-1 evidence not locatable in the window for turn_id=%s — returning None",
+            turn_id,
+        )
+        return None
+
+    identity = resolve_announced_identity(floor_holder, participants, completion_fn=completion_fn)
+    if identity.participant_slug is None:
+        return None
+
+    audit = build_resolution_audit(floor_holder, identity, window_start, anchor)
+    return {
+        "participant_slug": identity.participant_slug,
+        "confidence": identity.confidence,
+        "evidence": floor_holder.evidence,
+        "audit": audit,
+    }
+
+
+def resolve_monologue_speaker(
+    turn: dict,
+    participants: list[dict],
+    completion_fn: Callable | None = None,
+) -> dict | None:
+    """Two-step monologue speaker resolution (issue #430).
+
+    Returns ``{participant_slug, confidence, evidence, audit}`` when both
+    steps resolve, roster/confidence gates pass, and Step 1's evidence is
+    locatable in the preceding announcement window (at most
+    `MONOLOGUE_WINDOW_SECS` before the turn anchor). Returns ``None`` on any
+    unresolved step, missing SRT, or failure.
+
+    This function NEVER raises — mirrors `resolve_speaker`'s never-raise
+    contract. All internal exceptions (SRT I/O, `completion_fn` raising in
+    either step) are caught and logged.
+    """
+    try:
+        return _resolve_monologue_inner(turn, participants, completion_fn)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "resolve_monologue_speaker: unexpected exception for turn_id=%s — returning None (%s: %s)",
+            turn.get("turn_id"),
+            type(exc).__name__,
+            exc,
+        )
+        return None

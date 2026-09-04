@@ -177,3 +177,95 @@ no `size:exception` needed.
 8/8 Phase-2 (A2a) tasks complete (16 cumulative across A1+A2a). Ready for `sdd-verify` on this
 slice, then PR against the A1 branch. Do NOT start A2b in this session — orchestrator launches it
 separately per the chain plan.
+
+## Phase 3 — A2b: Orchestrator
+
+**Status**: DONE (8/8 tasks — 3.1 through 3.9, numbered 3.1-3.9 in tasks.md). Branch
+`feat/430-a2b-orchestrator`, base A2a HEAD (`e80affb`). Commit `328ecfb`.
+
+### TDD Cycle Evidence
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 3.1-3.4/3.2/3.5 | `tests/congress_videos/modules/test_monologue_speaker_window.py` | Unit | ✅ 40/40 (A1+A2a tests, run before touching the module) | Written — `ImportError: cannot import name 'resolve_monologue_speaker'` | Passed — 47/47 on first implementation pass | 7 end-to-end cases: pre-gate no-call, payload-exclusion (sentinels before window_start and at/after anchor absent from every captured prompt across both steps), found=false stops before step 2, unlocatable evidence → None, successful resolution shape + 7-key audit, never-raise parametrized over `raising_step` in {1, 2} | Clean — `_resolve_monologue_inner` stays one straight-line function under 50 lines / C901=10; `resolve_monologue_speaker` is a 2-line try/except wrapper matching `resolve_speaker`'s shape exactly |
+
+### Test Summary
+- Total tests written this slice: 7 test functions (9 parametrized cases with the 2-case
+  never-raise parametrize; 47 cumulative with A1+A2a)
+- Total tests passing: 47/47 (targeted), 4521/4521 non-skipped (full suite)
+- Layers used: Unit (7 new test functions)
+- Approval tests: None — no refactoring of existing code, only additive
+- Pure functions created: `build_resolution_audit` (pure — no I/O, deterministic JSON from its
+  four inputs). `_load_turn_blocks` is I/O-bound by design (duplicated from the frozen module per
+  D5) and is exercised only through the patched `find_srt_for_chapter`/`_parse_srt_blocks` seam.
+
+### Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused test command and exact result | `uv run pytest tests/congress_videos/modules/test_monologue_speaker_window.py -v -o addopts=` → 47 passed |
+| Runtime harness command/scenario and exact result | N/A — still inert (no caller imports `resolve_monologue_speaker`; slice C wires routing). Import-safety proven by the full-suite run collecting and passing cleanly with the extended module present: `uv run pytest -n auto -q` → 4521 passed, 27 skipped |
+| Rollback boundary | Revert commit `328ecfb` (or delete `build_resolution_audit`, `_load_turn_blocks`, `_resolve_monologue_inner`, `resolve_monologue_speaker` from `monologue_speaker_window.py`, and their tests). A1's window-selection primitives and A2a's two LLM steps stay usable/tested untouched. |
+
+### Files Changed
+| File | Action | What Was Done |
+|------|--------|---------------|
+| `congress_videos/modules/monologue_speaker_window.py` | Modified | Added `build_resolution_audit`, `_load_turn_blocks`, `_resolve_monologue_inner`, `resolve_monologue_speaker`; imports `get_video_chapter_dir`, `has_announcement_phrase`, `_evidence_supported_in_blocks` (from the frozen `speaker_resolution.py`, unmodified), `find_srt_for_chapter`/`_parse_srt_blocks` (module-level, so tests patch this module's own namespace) |
+| `tests/congress_videos/modules/test_monologue_speaker_window.py` | Modified | +7 test functions: pre-gate no-call, payload-exclusion end-to-end, found=false stops before step 2, unlocatable evidence, successful-resolution shape+audit, 1 parametrized never-raise test (2 cases: raise on step 1, raise on step 2) |
+| `openspec/changes/monologue-speaker-window/tasks.md` | Modified | Phase 3 (9 tasks) marked `[x]`, with a note on the deferred `live_llm` marker and the first-pass 320-line measurement |
+
+### Deviations from Design
+Two documented deviations, both consistent with A2a's already-recorded pattern:
+
+1. **`live_llm` marker not added.** design.md's Testing Strategy describes an opt-in
+   `@pytest.mark.live_llm` test proving the addressee/floor-holder distinction against the real
+   model, but this test is not assigned to any task in tasks.md Phase 1, 2, or 3 — only mentioned
+   in design.md's prose. Per the launch instruction ("if the opt-in live test lands in this phase
+   per tasks.md"), it does NOT land in A2b (tasks.md never schedules it), so no `live_llm` marker
+   was registered in `[tool.pytest.ini_options].markers`. **Risk flagged for the orchestrator**:
+   this test may need to be added retroactively to A2a or A2b, or explicitly scoped into a later
+   phase, since no phase currently owns it.
+2. **Roster-miss/confidence-below-threshold WARNING/INFO still lack `turn_id`** at the
+   `resolve_announced_identity` level (A2a's documented deviation, unchanged — that function's
+   signature has no `turn_id` parameter). A2b's OWN log lines (pre-gate skip, step-1 found=false
+   skip, evidence-not-locatable, and the top-level never-raise catch) all carry `turn_id`, exactly
+   as design.md specifies, since the orchestrator has it. This satisfies the launch instruction's
+   "turn_id-qualified WARNING shapes (now that turn_id is available)" for every log line the
+   orchestrator itself emits.
+
+Otherwise implementation matches design.md's Interfaces/Contracts and Data Flow sections verbatim
+for the A2b-scoped subset.
+
+### Issues Found
+None.
+
+### Quality Gate
+`uv run ruff check congress_videos/modules/monologue_speaker_window.py tests/congress_videos/modules/test_monologue_speaker_window.py` → All checks passed.
+`uv run ruff format --check` (same paths) → clean, no reformatting needed.
+
+### Full Suite
+`uv run pytest -n auto -q` → 4521 passed, 27 skipped (same 27 pre-existing live-Postgres opt-in
+skips as A1/A2a — Postgres not running in this environment). `test_speaker_resolution.py` and
+`speaker_resolution.py` have a byte-identical (0-line) diff against A2a's HEAD (`e80affb`),
+confirming the frozen module and its suite are untouched.
+
+### Measured Diff
+`git diff --stat e80affb..HEAD -- . ':!openspec'` → 2 files changed, 308 insertions(+), 12
+deletions(-) = **320 authored lines**. Forecast was ~230; actual is 320 — over forecast but
+comfortably under the 400-line budget, landed on the FIRST pass with no collapsing needed. This
+validates the coordinator's directive to parametrize near-duplicate tests from the start: the
+never-raise test was written as one `@pytest.mark.parametrize("raising_step", [1, 2])` test
+rather than two separate functions from the outset, rather than being collapsed after the fact as
+in A2a.
+
+### Remaining Tasks (later slices — NOT started, per launch scope)
+- [ ] Phase 4 — B: Migration 046 + `mark_turn_resolved(evidence=)` (branch
+      `feat/430-b-evidence-migration`, base this A2b branch).
+- [ ] Phase 5 — C: Routing + caller-suite rewiring + docs (needs A2b and B).
+
+### Status
+9/9 Phase-3 (A2b) tasks complete (33 cumulative across A1+A2a+A2b). All four public module
+functions (`select_preceding_window`, `identify_floor_holder`, `resolve_announced_identity`,
+`resolve_monologue_speaker`) now exist and are fully tested; the module remains INERT — no
+caller imports it. Ready for `sdd-verify` on this slice, then PR against the A2a branch. Do NOT
+start Phase 4 (B) in this session — orchestrator launches it separately per the chain plan.
