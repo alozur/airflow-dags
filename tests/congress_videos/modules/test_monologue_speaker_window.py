@@ -1,14 +1,18 @@
 """Unit tests for congress_videos.modules.monologue_speaker_window (issue #430).
 
 Slice A1: window selection + prompt constants.
-Slice A2a (this file, extended): FloorHolder/AnnouncedIdentity dataclasses and
-the two LLM-step seam functions (identify_floor_holder, resolve_announced_identity).
-A2b adds the never-raise orchestrator that wires the two steps together.
+Slice A2a: FloorHolder/AnnouncedIdentity dataclasses and the two LLM-step seam
+functions (identify_floor_holder, resolve_announced_identity).
+Slice A2b (this file, extended): the never-raise orchestrator
+(resolve_monologue_speaker) that loads SRT blocks, runs the announcement
+pre-gate, wires the two steps together, and builds the audit JSON.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+from unittest.mock import patch
 
 import pytest
 
@@ -24,6 +28,7 @@ from congress_videos.modules.monologue_speaker_window import (
     FloorHolder,
     identify_floor_holder,
     resolve_announced_identity,
+    resolve_monologue_speaker,
     select_preceding_window,
     turn_anchor_seconds,
 )
@@ -412,3 +417,156 @@ def test_resolve_announced_identity_raise_propagates_uncaught():
 
     with pytest.raises(RuntimeError, match="OpenAI API error"):
         resolve_announced_identity(_floor_holder(), _participants(), completion_fn=fake_completion)
+
+
+# ---------------------------------------------------------------------------
+# resolve_monologue_speaker — never-raise orchestrator (slice A2b)
+# ---------------------------------------------------------------------------
+
+_MONOLOGUE_ANNOUNCEMENT_TEXT = "Tiene la palabra el señor García."
+
+
+def _monologue_turn(start_seconds=500.0, turn_id=1):
+    return {
+        "turn_id": turn_id,
+        "start_seconds": start_seconds,
+        "video_id": "vidABC",
+        "chapter_id": 10,
+        "session_date": "2026-01-01",
+    }
+
+
+def _monologue_participants():
+    return [{"slug": "pedro-garcia", "display_name": "Pedro García", "party": "TEST"}]
+
+
+def _patched_monologue(all_blocks):
+    """Context manager patching find_srt_for_chapter/_parse_srt_blocks on this
+    module's own namespace, matching the mocking idiom used by
+    test_speaker_resolution.py for the frozen module."""
+    return (
+        patch("congress_videos.modules.monologue_speaker_window.find_srt_for_chapter", return_value="/fake/src.srt"),
+        patch("congress_videos.modules.monologue_speaker_window._parse_srt_blocks", return_value=all_blocks),
+    )
+
+
+def test_resolve_monologue_speaker_pre_gate_no_call_when_no_announcement_phrase():
+    all_blocks = [_block(400.0, 410.0, "no handover text at all")]
+    call_count = []
+
+    def fake_completion(system, user, **kw):
+        call_count.append(1)
+        return _ok_step1("García", "irrelevant")
+
+    p1, p2 = _patched_monologue(all_blocks)
+    with p1, p2:
+        result = resolve_monologue_speaker(_monologue_turn(), _monologue_participants(), completion_fn=fake_completion)
+
+    assert result is None
+    assert len(call_count) == 0
+
+
+def test_resolve_monologue_speaker_payload_excludes_text_outside_the_window():
+    anchor = 500.0
+    all_blocks = [
+        _block(anchor - MONOLOGUE_WINDOW_SECS - 50, anchor - MONOLOGUE_WINDOW_SECS - 40, "SENTINEL_BEFORE_WINDOW"),
+        _block(anchor - 100, anchor - 90, _MONOLOGUE_ANNOUNCEMENT_TEXT),
+        _block(anchor, anchor + 10, "SENTINEL_AFTER_ANCHOR"),
+    ]
+    captured = []
+
+    def fake_completion(system, user, **kw):
+        captured.append(user)
+        if len(captured) == 1:
+            return _ok_step1("García", _MONOLOGUE_ANNOUNCEMENT_TEXT)
+        return _ok_step2("Pedro García", "pedro-garcia", 0.95)
+
+    p1, p2 = _patched_monologue(all_blocks)
+    with p1, p2:
+        resolve_monologue_speaker(_monologue_turn(), _monologue_participants(), completion_fn=fake_completion)
+
+    for prompt in captured:
+        assert "SENTINEL_BEFORE_WINDOW" not in prompt
+        assert "SENTINEL_AFTER_ANCHOR" not in prompt
+
+
+def test_resolve_monologue_speaker_found_false_stops_before_step_2():
+    all_blocks = [_block(400.0, 410.0, _MONOLOGUE_ANNOUNCEMENT_TEXT)]
+    call_count = []
+
+    def fake_completion(system, user, **kw):
+        call_count.append(1)
+        return _ok_step1(None, "", found=False)
+
+    p1, p2 = _patched_monologue(all_blocks)
+    with p1, p2:
+        result = resolve_monologue_speaker(_monologue_turn(), _monologue_participants(), completion_fn=fake_completion)
+
+    assert result is None
+    assert len(call_count) == 1
+
+
+def test_resolve_monologue_speaker_unlocatable_evidence_returns_none():
+    all_blocks = [_block(400.0, 410.0, _MONOLOGUE_ANNOUNCEMENT_TEXT)]
+    call_count = []
+
+    def fake_completion(system, user, **kw):
+        call_count.append(1)
+        return _ok_step1("García", "this quote does not appear anywhere in the window blocks")
+
+    p1, p2 = _patched_monologue(all_blocks)
+    with p1, p2:
+        result = resolve_monologue_speaker(_monologue_turn(), _monologue_participants(), completion_fn=fake_completion)
+
+    assert result is None
+    assert len(call_count) == 1
+
+
+def test_resolve_monologue_speaker_successful_resolution_shape_and_audit():
+    all_blocks = [_block(400.0, 410.0, _MONOLOGUE_ANNOUNCEMENT_TEXT)]
+
+    def fake_completion(system, user, **kw):
+        if "ANNOUNCEMENT WINDOW" in user:
+            return _ok_step1("García", _MONOLOGUE_ANNOUNCEMENT_TEXT)
+        return _ok_step2("Pedro García", "pedro-garcia", 0.95)
+
+    p1, p2 = _patched_monologue(all_blocks)
+    with p1, p2:
+        result = resolve_monologue_speaker(_monologue_turn(), _monologue_participants(), completion_fn=fake_completion)
+
+    assert result == {
+        "participant_slug": "pedro-garcia",
+        "confidence": 0.95,
+        "evidence": _MONOLOGUE_ANNOUNCEMENT_TEXT,
+        "audit": result["audit"],
+    }
+    audit = json.loads(result["audit"])
+    assert set(audit) == {
+        "announced_name_or_role",
+        "evidence",
+        "step1_found",
+        "step2_confidence",
+        "window_start_seconds",
+        "anchor_seconds",
+        "method",
+    }
+    assert audit["method"] == "monologue_window_v1"
+
+
+@pytest.mark.parametrize("raising_step", [1, 2])
+def test_resolve_monologue_speaker_never_raises_end_to_end(raising_step, caplog):
+    all_blocks = [_block(400.0, 410.0, _MONOLOGUE_ANNOUNCEMENT_TEXT)]
+    calls = []
+
+    def fake_completion(system, user, **kw):
+        calls.append(1)
+        if len(calls) == raising_step:
+            raise RuntimeError("OpenAI API error")
+        return _ok_step1("García", _MONOLOGUE_ANNOUNCEMENT_TEXT)
+
+    p1, p2 = _patched_monologue(all_blocks)
+    with caplog.at_level(logging.WARNING), p1, p2:
+        result = resolve_monologue_speaker(_monologue_turn(), _monologue_participants(), completion_fn=fake_completion)
+
+    assert result is None
+    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
