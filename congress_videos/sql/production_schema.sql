@@ -158,7 +158,10 @@ CREATE TABLE IF NOT EXISTS production.video_shorts (
     -- Added by migration 012 (upload failure tracking)
     upload_attempts         INTEGER DEFAULT 0,
     is_upload_abandoned     BOOLEAN DEFAULT FALSE,
-    last_upload_error       TEXT
+    last_upload_error       TEXT,
+
+    -- Added by migration 047 (turn-sourced reap clips, issue #467)
+    turn_id                 INTEGER REFERENCES production.speaker_turn_videos(turn_id) ON DELETE SET NULL
 );
 
 -- Table: llm_cache
@@ -389,6 +392,9 @@ CREATE INDEX idx_video_shorts_reap_status ON production.video_shorts(reap_status
 CREATE INDEX idx_video_shorts_reap_clip_id ON production.video_shorts(reap_clip_id);
 CREATE INDEX idx_video_shorts_uploaded_recent ON production.video_shorts(updated_at DESC) WHERE is_uploaded = TRUE;
 CREATE INDEX idx_video_shorts_pending_downloaded ON production.video_shorts(reap_virality_score DESC NULLS LAST) WHERE is_uploaded = FALSE AND is_upload_abandoned = FALSE AND local_file_path IS NOT NULL AND reap_status = 'downloaded';
+
+-- Migration 047 (issue #467)
+CREATE INDEX idx_video_shorts_turn_id ON production.video_shorts(turn_id);
 
 -- Migration 008 — live pg_indexes reports "UNIQUE, btree", i.e. a standalone
 -- UNIQUE INDEX, not a table-level UNIQUE CONSTRAINT
