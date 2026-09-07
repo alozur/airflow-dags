@@ -661,6 +661,7 @@ class CongressionalVideoDB:
         reap_clip_url: str,
         local_file_path: str,
         reap_status: str = "downloaded",
+        turn_id: int | None = None,
     ) -> int:
         """
         Insert one video_shorts row per downloaded Reap clip.
@@ -676,6 +677,11 @@ class CongressionalVideoDB:
             reap_clip_url: Reap-hosted URL of the clip
             local_file_path: Absolute path to the downloaded MP4 on disk
             reap_status: Status to set (default 'downloaded')
+            turn_id: FK to speaker_turn_videos.turn_id (issue #467), forwarded
+                from the claimed parent row; None for legacy chapter-sourced
+                rows. Without this, downloaded clips would carry
+                turn_id IS NULL and collapse into the per-chapter Tier-1
+                partition instead of the per-turn one.
 
         Returns:
             The id of the newly inserted video_shorts row
@@ -686,13 +692,14 @@ class CongressionalVideoDB:
             cur.execute(
                 f"""
                     INSERT INTO {shorts_table}
-                    (chapter_id, reap_project_id, reap_clip_id,
+                    (chapter_id, turn_id, reap_project_id, reap_clip_id,
                      reap_virality_score, reap_clip_url, local_file_path, reap_status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """,
                 (
                     chapter_id,
+                    turn_id,
                     reap_project_id,
                     reap_clip_id,
                     reap_virality_score,
@@ -759,39 +766,62 @@ class CongressionalVideoDB:
         a distinct row without blocking each other.
 
         Priority order: session_date DESC NULLS LAST, relevance_score DESC NULLS LAST
-        (most recent and most relevant chapters are processed first).
+        (most recent and most relevant chapters are processed first). Preserved
+        verbatim (issue #467) — turn-sourced and legacy chapter-sourced rows
+        both carry chapter_id, so ordering needs no turn_id branch.
+
+        RETURNING * on a bare UPDATE cannot project joined columns, so the
+        claim is wrapped in a ``claimed`` CTE and LEFT JOINed through
+        speaker_turn_videos/speaker_turns to surface the turn's group span
+        (design.md §4). Legacy rows (turn_id IS NULL) yield NULL spans through
+        the LEFT JOIN — the sidecar's chapter-fallback signal.
 
         Returns:
-            The claimed video_shorts row as a dict, or None if no pending rows exist.
+            The claimed video_shorts row as a dict (plus group_start_seconds /
+            group_end_seconds when turn-sourced), or None if no pending rows exist.
         """
         shorts_table = self.pg_conn.get_qualified_table("video_shorts")
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
         videos_table = self.pg_conn.get_qualified_table("youtube_source_videos")
+        stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
+        st_table = self.pg_conn.get_qualified_table("speaker_turns")
 
         with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
             cur.execute(f"""
-                    UPDATE {shorts_table} SET reap_status = 'processing', updated_at = CURRENT_TIMESTAMP
-                    WHERE id = (
-                        SELECT vs.id
-                        FROM {shorts_table} vs
-                        WHERE vs.reap_status = 'pending'
-                        ORDER BY (
-                            SELECT ysv.session_date
-                            FROM {chapters_table} vc
-                            LEFT JOIN {videos_table} ysv ON ysv.video_id = vc.video_id
-                            WHERE vc.chapter_id = vs.chapter_id
+                    WITH claimed AS (
+                        UPDATE {shorts_table} SET reap_status = 'processing', updated_at = CURRENT_TIMESTAMP
+                        WHERE id = (
+                            SELECT vs.id
+                            FROM {shorts_table} vs
+                            WHERE vs.reap_status = 'pending'
+                            ORDER BY (
+                                SELECT ysv.session_date
+                                FROM {chapters_table} vc
+                                LEFT JOIN {videos_table} ysv ON ysv.video_id = vc.video_id
+                                WHERE vc.chapter_id = vs.chapter_id
+                                LIMIT 1
+                            ) DESC NULLS LAST,
+                            (
+                                SELECT vc.relevance_score
+                                FROM {chapters_table} vc
+                                WHERE vc.chapter_id = vs.chapter_id
+                                LIMIT 1
+                            ) DESC NULLS LAST
                             LIMIT 1
-                        ) DESC NULLS LAST,
-                        (
-                            SELECT vc.relevance_score
-                            FROM {chapters_table} vc
-                            WHERE vc.chapter_id = vs.chapter_id
-                            LIMIT 1
-                        ) DESC NULLS LAST
-                        LIMIT 1
-                        FOR UPDATE SKIP LOCKED
+                            FOR UPDATE SKIP LOCKED
+                        )
+                        RETURNING *
                     )
-                    RETURNING *
+                    SELECT c.*, gs.group_start_seconds, gs.group_end_seconds
+                    FROM claimed c
+                    LEFT JOIN {stv_table} stv ON stv.turn_id = c.turn_id
+                    LEFT JOIN LATERAL (
+                        SELECT MIN(st.start_seconds) AS group_start_seconds,
+                               MAX(st.end_seconds)   AS group_end_seconds
+                        FROM {stv_table} sib
+                        JOIN {st_table} st ON st.turn_id = sib.turn_id
+                        WHERE sib.output_path = stv.output_path
+                    ) gs ON TRUE
                 """)
             row = cur.fetchone()
             if row is None:

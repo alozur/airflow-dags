@@ -341,6 +341,166 @@ class TestInsertVideoShortClip:
         assert "clip-xyz" in params
         assert 0.75 in params
 
+    def test_column_list_places_turn_id_after_chapter_id(self, db):
+        """issue #467: turn_id extends the column list right after chapter_id."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 1}
+
+        instance.insert_video_short_clip(
+            chapter_id=1,
+            reap_project_id="p",
+            reap_clip_id="clip-xyz",
+            reap_virality_score=0.75,
+            reap_clip_url="https://cdn.example.com/clip.mp4",
+            local_file_path="/data/clip.mp4",
+        )
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "(chapter_id, turn_id, reap_project_id" in sql
+
+    def test_turn_id_defaults_to_none(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 1}
+
+        instance.insert_video_short_clip(
+            chapter_id=1,
+            reap_project_id="p",
+            reap_clip_id="clip-xyz",
+            reap_virality_score=0.75,
+            reap_clip_url="https://cdn.example.com/clip.mp4",
+            local_file_path="/data/clip.mp4",
+        )
+
+        _, params = mock_cursor.execute.call_args[0]
+        assert params[0] == 1
+        assert params[1] is None
+
+    def test_passes_turn_id_when_given(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 1}
+
+        instance.insert_video_short_clip(
+            chapter_id=1,
+            reap_project_id="p",
+            reap_clip_id="clip-xyz",
+            reap_virality_score=0.75,
+            reap_clip_url="https://cdn.example.com/clip.mp4",
+            local_file_path="/data/clip.mp4",
+            turn_id=99,
+        )
+
+        _, params = mock_cursor.execute.call_args[0]
+        assert params[1] == 99
+
+    def test_existing_positional_call_shape_unaffected(self, db):
+        """A caller that never passes turn_id keeps working (backward compat)."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 99}
+
+        result = instance.insert_video_short_clip(
+            chapter_id=5,
+            reap_project_id="proj-abc",
+            reap_clip_id="clip-001",
+            reap_virality_score=0.85,
+            reap_clip_url="https://cdn.reap.video/c.mp4",
+            local_file_path="/data/clip.mp4",
+        )
+
+        assert result == 99
+
+
+# --------------------------------------------------------------------------- #
+# claim_pending_clip
+# --------------------------------------------------------------------------- #
+
+
+class TestClaimPendingClip:
+    """design.md §4: RETURNING * cannot project joined columns, so the atomic
+    claim UPDATE is wrapped in a ``claimed`` CTE, then LEFT JOINed through
+    speaker_turn_videos/speaker_turns to surface the turn's group span
+    alongside the claimed row. Ordering, FOR UPDATE SKIP LOCKED, and the two
+    priority subqueries are carried forward verbatim (issue #467)."""
+
+    def test_returns_none_when_no_pending_rows(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        result = instance.claim_pending_clip()
+
+        assert result is None
+
+    def test_returns_claimed_row_as_dict(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "id": 7,
+            "chapter_id": 3,
+            "turn_id": None,
+            "group_start_seconds": None,
+            "group_end_seconds": None,
+        }
+
+        result = instance.claim_pending_clip()
+
+        assert result["id"] == 7
+        assert result["chapter_id"] == 3
+
+    def test_query_wraps_update_in_claimed_cte(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.claim_pending_clip()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "WITH claimed AS" in sql
+        assert "UPDATE" in sql
+        assert "RETURNING *" in sql
+
+    def test_query_left_joins_speaker_turn_videos_on_turn_id(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.claim_pending_clip()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "LEFT JOIN" in sql
+        assert "stv.turn_id = c.turn_id" in sql
+
+    def test_query_uses_lateral_join_for_group_span(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.claim_pending_clip()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "LEFT JOIN LATERAL" in sql
+        assert "group_start_seconds" in sql
+        assert "group_end_seconds" in sql
+        assert "sib.output_path = stv.output_path" in sql
+
+    def test_ordering_and_locking_preserved_verbatim(self, db):
+        """Priority order and SKIP LOCKED must survive the CTE wrapping unchanged."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.claim_pending_clip()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "reap_status = 'pending'" in sql
+        assert "FOR UPDATE SKIP LOCKED" in sql
+        assert "DESC NULLS LAST" in sql
+        assert sql.count("DESC NULLS LAST") == 2
+
+    def test_no_params_used(self, db):
+        """The query has no %s placeholders — matches today's parameterless shape."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.claim_pending_clip()
+
+        call_args = mock_cursor.execute.call_args
+        sql = call_args[0][0]
+        assert "%s" not in sql
+
 
 # --------------------------------------------------------------------------- #
 # update_video_short_status
