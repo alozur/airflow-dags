@@ -67,10 +67,10 @@ Order is load-bearing (design.md "Migration / Rollout"). PR1 base `feat/467-reap
 
 ## Phase 4b: Tier-1 partition + gate drop (PR4b, `feat/467-e-tier1-partition`, base PR4a)
 
-- [ ] 4b.1 RED: `turn_id` fixture column, `youtube_upload_date=None` allowed, 3 new cases (independent per-turn caps, NULL-upload-date returned, mixed legacy+turn) in `test_get_pending_shorts_sql.py`
-- [ ] 4b.2 GREEN: `pending_shorts_candidate_sql` — `PARTITION BY COALESCE(vs.turn_id, -vs.chapter_id)` (design §5); drop `AND vc.youtube_upload_date IS NOT NULL`; keep `NULLS LAST`
-- [ ] 4b.3 REFACTOR: full `uv run pytest`; ruff check/format; `bash scripts/test-airflow-e2e.sh`
-- [ ] 4b.4 Commit: `feat(reap): partition tier-1 ranking by turn_id with legacy fallback`
+- [x] 4b.1 RED: `turn_id` fixture column, `youtube_upload_date=None` allowed, 3 new cases (independent per-turn caps, NULL-upload-date returned, mixed legacy+turn) in `test_get_pending_shorts_sql.py`
+- [x] 4b.2 GREEN: `pending_shorts_candidate_sql` — `PARTITION BY COALESCE(vs.turn_id, -vs.chapter_id)` (design §5); drop `AND vc.youtube_upload_date IS NOT NULL`; keep `NULLS LAST`
+- [x] 4b.3 REFACTOR: full `uv run pytest`; ruff check/format; `bash scripts/test-airflow-e2e.sh`
+- [x] 4b.4 Commit: `feat(reap): partition tier-1 ranking by turn_id with legacy fallback`
 
 ## Phase 5: Orchestrator-run ops (post-merge, not sdd-apply)
 

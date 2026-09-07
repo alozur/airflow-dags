@@ -812,7 +812,7 @@ class TestGetPendingShorts:
 
         candidate_sql = mock_cursor.execute.call_args_list[1][0][0]
         assert "ROW_NUMBER() OVER" in candidate_sql
-        assert "PARTITION BY vs.chapter_id" in candidate_sql
+        assert "PARTITION BY COALESCE(vs.turn_id, -vs.chapter_id)" in candidate_sql
         assert "AS chapter_rank" in candidate_sql
 
     def test_tier1_limit_is_first_candidate_param(self, db):
@@ -869,10 +869,23 @@ class TestGetPendingShorts:
             "local_file_path IS NOT NULL",
             "reap_status = 'downloaded'",
             "reap_virality_score >= %s OR",
-            "youtube_upload_date IS NOT NULL",
         ]
         for predicate in predicates:
             assert predicate in outer_sql
+
+    def test_parent_upload_date_gate_removed(self, db):
+        """A candidate whose parent chapter has no youtube_upload_date is no
+        longer excluded (#467 D-scenario "Unpublished parent no longer blocks
+        upload"); ordering stays NULL-safe via NULLS LAST."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.side_effect = [[], []]
+
+        instance.get_pending_shorts()
+
+        candidate_sql = mock_cursor.execute.call_args_list[1][0][0]
+        outer_sql = candidate_sql.split("FROM ranked", 1)[1]
+        assert "youtube_upload_date IS NOT NULL" not in outer_sql
+        assert "youtube_upload_date DESC NULLS LAST" in candidate_sql
 
     def test_tier2_row_returned_when_no_tier1_available(self, db):
         instance, mock_cursor = db
