@@ -30,11 +30,11 @@ Order is load-bearing (design.md "Migration / Rollout"). PR1 base `feat/467-reap
 
 ## Phase 1: Migration + Schema (PR1, `feat/467-a-turn-id-migration`)
 
-- [ ] 1.1 RED: add `turn_id` to `VIDEO_SHORTS_COLUMNS` (20→21), `test_turn_id_fk_is_production_qualified`, `TestVideoShortsIndexCompleteness` case for `idx_video_shorts_turn_id` in `tests/congress_videos/sql/test_production_schema.py`
-- [ ] 1.2 GREEN: create `congress_videos/sql/migrations/047_add_video_shorts_turn_id.sql` (column, index, comment; DOWN commented)
-- [ ] 1.3 GREEN: edit `congress_videos/sql/production_schema.sql:127,391`
-- [ ] 1.4 REFACTOR: `uv run pytest`; `uv run ruff check .`; `uv run ruff format --check .`
-- [ ] 1.5 Commit: `feat(db): add nullable turn_id fk to video_shorts (migration 047)`
+- [x] 1.1 RED: add `turn_id` to `VIDEO_SHORTS_COLUMNS` (20→21), `test_turn_id_fk_is_production_qualified`, `TestVideoShortsIndexCompleteness` case for `idx_video_shorts_turn_id` in `tests/congress_videos/sql/test_production_schema.py`
+- [x] 1.2 GREEN: create `congress_videos/sql/migrations/047_add_video_shorts_turn_id.sql` (column, index, comment; DOWN commented)
+- [x] 1.3 GREEN: edit `congress_videos/sql/production_schema.sql:127,391`
+- [x] 1.4 REFACTOR: `uv run pytest`; `uv run ruff check .`; `uv run ruff format --check .`
+- [x] 1.5 Commit: `feat(db): add nullable turn_id fk to video_shorts (migration 047)`
 
 ## Phase 2: Turn selection + insert (PR2, `feat/467-b-turn-selection`, base PR1)
 

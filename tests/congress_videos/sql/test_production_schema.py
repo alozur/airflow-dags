@@ -430,10 +430,11 @@ class TestUploadableTurnsUnaffectedByThumbnailRepublish:
 class TestVideoShortsTableSnapshot:
     """production.video_shorts must be present in the snapshot, folding
     migrations 004 (create) + 005 (staged_clip_path) + 006 (scoring_reasoning)
-    + 012 (upload failure tracking) — 20 columns total (issue #275).
+    + 012 (upload failure tracking) + 047 (turn_id, issue #467) — 21 columns
+    total.
 
     Column assertions are scoped to the extracted `CREATE TABLE ... (...)`
-    block only, never the whole file: 9 of the 20 column names also exist on
+    block only, never the whole file: 9 of the 21 column names also exist on
     `production.video_chapters`, so a whole-file substring search would stay
     green even if a column were deleted from `video_shorts` alone.
     """
@@ -459,6 +460,7 @@ class TestVideoShortsTableSnapshot:
         "upload_attempts",
         "is_upload_abandoned",
         "last_upload_error",
+        "turn_id",  # migration 047 (issue #467)
     )
 
     @staticmethod
@@ -477,6 +479,16 @@ class TestVideoShortsTableSnapshot:
         block = re.sub(r"\s+", " ", self._video_shorts_block()).upper()
         assert "REFERENCES PRODUCTION.VIDEO_CHAPTERS(CHAPTER_ID) ON DELETE CASCADE" in block, (
             "video_shorts.chapter_id must reference production.video_chapters with an explicit schema qualification"
+        )
+
+    def test_turn_id_fk_is_production_qualified(self):
+        """migration 047 (issue #467): turn_id must reference
+        production.speaker_turn_videos with ON DELETE SET NULL, so a deleted
+        turn video nulls the reference instead of removing the short row."""
+        block = re.sub(r"\s+", " ", self._video_shorts_block()).upper()
+        assert "REFERENCES PRODUCTION.SPEAKER_TURN_VIDEOS(TURN_ID) ON DELETE SET NULL" in block, (
+            "video_shorts.turn_id must reference production.speaker_turn_videos "
+            "with an explicit schema qualification and ON DELETE SET NULL"
         )
 
 
@@ -536,6 +548,21 @@ class TestVideoChaptersIndexCompleteness:
             sql,
             re.IGNORECASE,
         ), f"missing CREATE INDEX statement for {index_name} on production.video_chapters"
+
+
+class TestVideoShortsIndexCompleteness:
+    """The INDEXES section must contain a CREATE INDEX statement for
+    idx_video_shorts_turn_id (migration 047, issue #467). Column presence in
+    the CREATE TABLE block does not guarantee the index statement itself
+    wasn't dropped from the INDEXES section."""
+
+    def test_index_statement_present(self):
+        sql = SCHEMA_PATH.read_text(encoding="utf-8")
+        assert re.search(
+            r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+idx_video_shorts_turn_id\s+ON\s+production\.video_shorts",
+            sql,
+            re.IGNORECASE,
+        ), "missing CREATE INDEX statement for idx_video_shorts_turn_id on production.video_shorts"
 
 
 class TestSnapshotLockstepWithLatestMigration:
