@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS video_chapters (
 CREATE TABLE IF NOT EXISTS video_shorts (
     id SERIAL PRIMARY KEY,
     chapter_id INTEGER NOT NULL REFERENCES video_chapters(chapter_id) ON DELETE CASCADE,
+    turn_id INTEGER,
     reap_status VARCHAR(50) NOT NULL DEFAULT 'downloaded',
     reap_virality_score FLOAT,
     local_file_path VARCHAR(2048) DEFAULT '/tmp/clip.mp4',
@@ -139,7 +140,7 @@ def db(pg_conn):
 # --------------------------------------------------------------------------- #
 
 
-def _insert_chapter(cur, *, video_id: str = "vid", youtube_upload_date: str = "2026-01-01") -> int:
+def _insert_chapter(cur, *, video_id: str = "vid", youtube_upload_date: str | None = "2026-01-01") -> int:
     cur.execute(
         "INSERT INTO video_chapters (video_id, youtube_upload_date) VALUES (%s, %s) RETURNING chapter_id",
         (video_id, youtube_upload_date),
@@ -151,6 +152,7 @@ def _insert_clip(
     cur,
     chapter_id: int,
     *,
+    turn_id: int | None = None,
     virality_score: float | None = None,
     is_uploaded: bool = False,
     is_upload_abandoned: bool = False,
@@ -160,12 +162,12 @@ def _insert_clip(
     cur.execute(
         """
         INSERT INTO video_shorts
-            (chapter_id, reap_virality_score, is_uploaded, is_upload_abandoned,
+            (chapter_id, turn_id, reap_virality_score, is_uploaded, is_upload_abandoned,
              local_file_path, reap_status)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (chapter_id, virality_score, is_uploaded, is_upload_abandoned, local_file_path, reap_status),
+        (chapter_id, turn_id, virality_score, is_uploaded, is_upload_abandoned, local_file_path, reap_status),
     )
     return cur.fetchone()["id"]
 
@@ -377,3 +379,64 @@ def test_null_score_ties_break_deterministically_by_id(db):
     assert run_1[first_id] == 1
     assert run_1[second_id] == 2
     assert run_1 == run_2
+
+
+# --------------------------------------------------------------------------- #
+# Issue #467 — Tier-1 partitioning by turn with legacy fallback
+# --------------------------------------------------------------------------- #
+
+
+def test_two_turn_groups_in_one_chapter_get_independent_tier1_caps(db):
+    """Two turn groups sharing one chapter_id must rank and cap independently:
+    each group's own top-3 scores become Tier 1 for that group, regardless of
+    how the other group's scores compare (design D6 — `turn_id` partitions,
+    `chapter_id` no longer does when `turn_id` is present)."""
+    with db.cursor() as cur:
+        chapter_id = _insert_chapter(cur)
+        group_a_ids = [
+            _insert_clip(cur, chapter_id, turn_id=100, virality_score=score) for score in [9.0, 8.0, 7.0, 6.0]
+        ]
+        group_b_ids = [
+            _insert_clip(cur, chapter_id, turn_id=200, virality_score=score) for score in [5.0, 4.0, 3.0, 2.0]
+        ]
+
+        rows = _run_candidate_query(cur)
+
+    by_id = {r["id"]: r for r in rows}
+    assert {by_id[i]["tier"] for i in group_a_ids[:3]} == {1}
+    assert by_id[group_a_ids[3]]["tier"] == 2
+    assert {by_id[i]["tier"] for i in group_b_ids[:3]} == {1}
+    assert by_id[group_b_ids[3]]["tier"] == 2
+    assert sorted(by_id[i]["chapter_rank"] for i in group_a_ids) == [1, 2, 3, 4]
+    assert sorted(by_id[i]["chapter_rank"] for i in group_b_ids) == [1, 2, 3, 4]
+
+
+def test_unpublished_parent_chapter_is_still_returned(db):
+    """A chapter with youtube_upload_date IS NULL no longer blocks its clips
+    from being returned (#467 — the outer gate on the parent's publish date
+    is removed)."""
+    with db.cursor() as cur:
+        chapter_id = _insert_chapter(cur, youtube_upload_date=None)
+        clip_id = _insert_clip(cur, chapter_id, virality_score=9.0)
+
+        rows = _run_candidate_query(cur)
+
+    assert clip_id in {r["id"] for r in rows}
+
+
+def test_mixed_legacy_and_turn_rows_partition_independently_in_one_chapter(db):
+    """One chapter mixes legacy (turn_id NULL) and turn-sourced rows: the
+    legacy group partitions by -chapter_id and the turn group partitions by
+    turn_id, and neither group's ranks or Tier-1 cap bleed into the other."""
+    with db.cursor() as cur:
+        chapter_id = _insert_chapter(cur)
+        legacy_ids = [_insert_clip(cur, chapter_id, virality_score=score) for score in [9.0, 8.0, 7.0, 6.0]]
+        turn_ids = [_insert_clip(cur, chapter_id, turn_id=300, virality_score=score) for score in [9.5, 8.5, 7.5, 6.5]]
+
+        rows = _run_candidate_query(cur)
+
+    by_id = {r["id"]: r for r in rows}
+    assert {by_id[i]["tier"] for i in legacy_ids[:3]} == {1}
+    assert by_id[legacy_ids[3]]["tier"] == 2
+    assert {by_id[i]["tier"] for i in turn_ids[:3]} == {1}
+    assert by_id[turn_ids[3]]["tier"] == 2

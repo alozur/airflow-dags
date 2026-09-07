@@ -67,17 +67,28 @@ def filter_shorts_by_source_cooldown(
 def pending_shorts_candidate_sql(shorts_table: str, chapters_table: str) -> str:
     """Candidate query for get_pending_shorts. Params: (tier1_limit, min_virality_score, row_limit).
 
-    Ranks each chapter's downloaded, non-abandoned clips (uploaded and
+    Ranks each SOURCE UNIT's downloaded, non-abandoned clips (uploaded and
     pending alike) by virality score, then caps how many of them can be
-    Tier 1 per chapter. Only after tiers are computed does the outer query
-    filter down to the still-pending, upload-eligible rows.
+    Tier 1 per source unit. The source unit is the turn group for
+    turn-sourced rows (`turn_id` set, issue #467) or the chapter for legacy
+    rows (`turn_id IS NULL`). Only after tiers are computed does the outer
+    query filter down to the still-pending, upload-eligible rows. The outer
+    query no longer requires the parent chapter to already be published to
+    YouTube (#467) — a candidate is eligible regardless of the parent's
+    `youtube_upload_date`.
     """
     return f"""
                     WITH ranked AS (
                         SELECT
                             vs.*,
                             ROW_NUMBER() OVER (
-                                PARTITION BY vs.chapter_id
+                                -- Rank within the SOURCE UNIT: the turn group for
+                                -- turn-sourced rows (issue #467), the chapter for
+                                -- legacy turn_id IS NULL rows. turn_id > 0 and
+                                -- -chapter_id < 0 occupy disjoint domains, so the
+                                -- two partitioning schemes cannot collide.
+                                -- Alias kept as chapter_rank for consumer compatibility.
+                                PARTITION BY COALESCE(vs.turn_id, -vs.chapter_id)
                                 ORDER BY vs.reap_virality_score DESC NULLS LAST,
                                          vs.id ASC
                             ) AS chapter_rank
@@ -96,7 +107,6 @@ def pending_shorts_candidate_sql(shorts_table: str, chapters_table: str) -> str:
                       AND ranked.local_file_path IS NOT NULL
                       AND ranked.reap_status = 'downloaded'
                       AND (ranked.reap_virality_score >= %s OR ranked.reap_virality_score IS NULL)
-                      AND vc.youtube_upload_date IS NOT NULL
                     ORDER BY tier ASC,
                              vc.youtube_upload_date DESC NULLS LAST,
                              ranked.reap_virality_score DESC NULLS LAST,
@@ -872,22 +882,27 @@ class CongressionalVideoDB:
         """
         Get downloaded Shorts clips that are ready for YouTube upload.
 
-        Only returns clips whose parent long-form video (chapter) is already
-        uploaded to YouTube. Each chapter's downloaded, non-abandoned clips
-        are ranked by virality score and capped at SHORTS_TIER1_PER_CHAPTER_LIMIT
-        Tier-1 slots; the rest fall to Tier 2. Tier is the PRIMARY sort key,
-        then the chapter's YouTube upload date descending (most recently
-        uploaded long-form video first), then virality score descending as a
-        tie-breaker within the same tier and long-form video. Only clips with
-        a local file present are returned.
+        Does NOT require the parent long-form video (chapter) to already be
+        uploaded to YouTube (issue #467) — a candidate whose parent has no
+        `youtube_upload_date` yet is still eligible. Each SOURCE UNIT's
+        downloaded, non-abandoned clips are ranked by virality score and
+        capped at SHORTS_TIER1_PER_CHAPTER_LIMIT Tier-1 slots; the rest fall
+        to Tier 2. The source unit is the turn group for turn-sourced rows
+        (`turn_id` set) or the chapter for legacy rows (`turn_id IS NULL`),
+        so two turn groups sharing one chapter get independent Tier-1 caps.
+        Tier is the PRIMARY sort key, then the parent chapter's YouTube
+        upload date descending NULLS LAST (most recently uploaded long-form
+        video first, unpublished parents last), then virality score
+        descending as a tie-breaker within the same tier and source unit.
+        Only clips with a local file present are returned.
 
-        The per-chapter ranking universe deliberately INCLUDES clips that are
-        already uploaded (`is_uploaded = TRUE`): an upload permanently
-        consumes its chapter's Tier-1 slot. Ranking pending-only clips would
-        make the cap inert, since ranks would recompute after every upload
-        and the chapter would perpetually re-present 3 fresh Tier-1
-        candidates, draining its whole batch before other chapters get a
-        turn — the exact bug this method fixes. `local_file_path` and
+        The ranking universe deliberately INCLUDES clips that are already
+        uploaded (`is_uploaded = TRUE`): an upload permanently consumes its
+        source unit's Tier-1 slot. Ranking pending-only clips would make the
+        cap inert, since ranks would recompute after every upload and the
+        source unit would perpetually re-present 3 fresh Tier-1 candidates,
+        draining its whole batch before other source units get a turn — the
+        exact bug this method fixes. `local_file_path` and
         `min_virality_score` are applied only in the OUTER query, after tiers
         are computed, so tier assignment stays independent of the runtime
         virality threshold. Tier-2 rows are never abandoned, deleted, or

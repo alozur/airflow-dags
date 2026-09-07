@@ -506,3 +506,81 @@ Phase 4b (Tier-1 partition + parent-gate drop) and Phase 5 (post-merge ops)
 are untouched — this batch is PR4a only, per the orchestrator's work-unit
 scope. The orchestrator settles the native attempt ledger; this batch does
 not call `sdd-attempt settle`.
+
+## Batch 4b (PR4b, `feat/467-e-tier1-partition`, base PR4a `0570027`) — last code slice
+
+**Status**: Phase 4b complete (tasks 4b.1-4b.4). Commit `47e29d7`. Only
+Phase 5 (orchestrator-run ops) remains.
+
+### What landed
+
+- `congress_videos/modules/database.py` — `pending_shorts_candidate_sql`:
+  partition key `PARTITION BY COALESCE(vs.turn_id, -vs.chapter_id)` (design
+  D6); dropped `AND vc.youtube_upload_date IS NOT NULL`; kept
+  `chapter_rank` alias + `youtube_upload_date DESC NULLS LAST` (design D7).
+  Updated `get_pending_shorts`/`pending_shorts_candidate_sql` docstrings to
+  drop the parent-publish-gate claim and describe per-source-unit ranking.
+- `tests/congress_videos/modules/test_reap_db_methods.py`: updated the
+  partition-expression assertion, removed the dropped-gate predicate from
+  the outer-WHERE list, added `test_parent_upload_date_gate_removed`.
+- `tests/congress_videos/modules/test_get_pending_shorts_sql.py`: added
+  `turn_id INTEGER` (no FK) to the fixture schema and `_insert_clip`,
+  allowed `youtube_upload_date=None` in `_insert_chapter`, added 3 cases
+  (independent per-turn Tier-1 caps, unpublished-parent now returned, mixed
+  legacy+turn partitioning) — 10 pre-existing cases unchanged (legacy
+  regression suite), 13 total, all skip cleanly without Postgres here.
+- `congress_videos/reap_shorts_uploader_dag.py`: audited — no docstring
+  describes the parent-publish gate, no drift to fix (module docstring and
+  `_get_pending_shorts` only reference the method name).
+
+### TDD Cycle Evidence
+
+| Task | RED | GREEN | REFACTOR |
+|---|---|---|---|
+| 4b.1/4b.2 partition + gate drop | 2 tests fail (`test_candidate_query_ranks_clips_per_chapter` on old partition text; new `test_parent_upload_date_gate_removed`) | SQL rewrite lands, both pass | ruff clean |
+
+- RED: `uv run pytest tests/congress_videos/modules/test_reap_db_methods.py -o addopts= -k "test_candidate_query_ranks_clips_per_chapter or test_outer_where_predicates_unchanged or test_parent_upload_date_gate_removed"` → 2 failed, 1 passed.
+- GREEN: `uv run pytest tests/congress_videos/modules/test_get_pending_shorts_sql.py tests/congress_videos/modules/test_reap_db_methods.py -o addopts=` → 87 passed, 13 skipped.
+- Full suite: `uv run pytest -n auto` → 4613 passed, 32 skipped, 0 failed.
+- `uv run ruff check .` → All checks passed. `uv run ruff format --check .` → 301 files formatted.
+- DagBag: `uv run python -c "from airflow.models import DagBag; ..."` → `16 {}`.
+- `bash scripts/test-airflow-e2e.sh` → `unavailable` (Docker daemon unreachable).
+
+### Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused test command and exact result | `uv run pytest tests/congress_videos/modules/test_get_pending_shorts_sql.py tests/congress_videos/modules/test_reap_db_methods.py -o addopts=` → 87 passed, 13 skipped |
+| Runtime harness command/scenario and exact result | `bash scripts/test-airflow-e2e.sh` → `unavailable`; live-Postgres suite in `test_get_pending_shorts_sql.py` skips without a DB (exercised by the orchestrator on the NAS later) |
+| Rollback boundary | Revert commit `47e29d7`; ranking degrades to chapter-only partitioning and the parent-publish gate returns — no other PR4a/PR4b behavior is touched |
+
+### Changed lines
+
+`git diff --numstat 0570027..HEAD` (code + tests):
+
+```
+congress_videos/modules/database.py                        | 35 +20
+tests/congress_videos/modules/test_get_pending_shorts_sql.py | 67 +4
+tests/congress_videos/modules/test_reap_db_methods.py       | 15 +2
+```
+
+Code+tests total: 117 additions + 26 deletions = **143 changed lines**
+(ledger cap 450, budget 330). Plus `tasks.md` (4 lines) and this
+`apply-progress.md` section — both docs, well under the 50-line docs note.
+
+### Issues Found
+
+None. Design followed exactly; `chapter_rank` alias kept per D7 with the
+in-SQL comment the design specifies.
+
+### Remaining Tasks
+
+- [ ] Phase 5: Orchestrator-run ops (migration 047 on NAS dev+prod,
+  git_sync, validation query, manual trigger of `congress_reap_clip_preparer`)
+
+### Not in scope for this batch
+
+Phase 5 (post-merge ops) is orchestrator-owned, not `sdd-apply` work. The
+orchestrator settles the native attempt ledger; this batch does not call
+`sdd-attempt settle`. This is the last code slice for `reap-turn-video-source`
+(issue #467) — Phases 1 through 4b are all `[x]` in `tasks.md`.
