@@ -57,13 +57,13 @@ Order is load-bearing (design.md "Migration / Rollout"). PR1 base `feat/467-reap
 
 ## Phase 4a: Processor + sidecar wiring (PR4a, `feat/467-d-processor-sidecar`, base PR3)
 
-- [ ] 4a.1 RED (threat matrix — path traversal, existing coverage): confirm `_SAFE_CLIP_ID_RE` tests in sensor + `write_short_srt_sidecar` stay green after wiring
-- [ ] 4a.2 RED (threat matrix — subprocess timeout): confirm adaptive `compute_ffmpeg_timeout`/ffprobe `timeout=30` assertion stays green
-- [ ] 4a.3 RED: `claim_pending_clip` CTE returns group span via LEFT JOIN LATERAL (design §4); `insert_video_short_clip(turn_id=)`; `ReapJobSensor.poke` forwards `turn_id=claimed_clip.get("turn_id")`
-- [ ] 4a.4 RED: `write_short_srt_sidecar` turn branch — window math with both spans set, no-pretrim falls back to group span (not chapter span), `None` spans byte-identical to today — in `test_srt_helpers*.py`
-- [ ] 4a.5 GREEN: implement `claim_pending_clip` CTE + `insert_video_short_clip` in `database.py`; forward turn_id/span in `reap_processor_dag.py`; extend `write_short_srt_sidecar` (`srt_helpers.py:494`, design §7)
-- [ ] 4a.6 REFACTOR: `uv run pytest`; ruff check/format; `bash scripts/test-airflow-e2e.sh`
-- [ ] 4a.7 Commit: `feat(reap): propagate turn context through claim and srt sidecar`
+- [x] 4a.1 RED (threat matrix — path traversal, existing coverage): confirm `_SAFE_CLIP_ID_RE` tests in sensor + `write_short_srt_sidecar` stay green after wiring
+- [x] 4a.2 RED (threat matrix — subprocess timeout): confirm adaptive `compute_ffmpeg_timeout`/ffprobe `timeout=30` assertion stays green
+- [x] 4a.3 RED: `claim_pending_clip` CTE returns group span via LEFT JOIN LATERAL (design §4); `insert_video_short_clip(turn_id=)`; `ReapJobSensor.poke` forwards `turn_id=claimed_clip.get("turn_id")`
+- [x] 4a.4 RED: `write_short_srt_sidecar` turn-sourced guard — per `specs/short-video-srt-artifacts/spec.md`'s authoritative contract, `turn_id is not None` ALWAYS falls back to the full chapter span regardless of pretrim offsets (superseding the group-span window math sketched in design.md §7) — in `test_srt_helpers.py`
+- [x] 4a.5 GREEN: implement `claim_pending_clip` CTE + `insert_video_short_clip(turn_id=)` in `database.py`; forward `turn_id` in `reap_processor_dag.py`; extend `write_short_srt_sidecar` (`srt_helpers.py:494`) per the spec contract
+- [x] 4a.6 REFACTOR: `uv run pytest`; ruff check/format; `bash scripts/test-airflow-e2e.sh`
+- [x] 4a.7 Commit: `feat(reap): propagate turn context through claim and srt sidecar`
 
 ## Phase 4b: Tier-1 partition + gate drop (PR4b, `feat/467-e-tier1-partition`, base PR4a)
 

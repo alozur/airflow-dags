@@ -78,11 +78,18 @@ def _write_short_sidecar_best_effort(
     chapter_ctx: dict | None,
     pretrim_start_secs,
     pretrim_end_secs,
+    turn_id=None,
 ) -> None:
     """Best-effort SRT sidecar write beside a downloaded Reap clip (issue #431).
 
     ``write_short_srt_sidecar`` never raises by contract; this try/except is
     belt-and-braces so no future edit to it can ever fail the sensor.
+
+    ``turn_id`` (issue #467) tells the sidecar writer whether the parent
+    ``video_shorts`` row was turn-sourced (file-relative pretrim offsets) or
+    chapter-sourced (chapter-relative pretrim offsets) — see
+    ``write_short_srt_sidecar``'s module docstring for the resulting window
+    derivation contract.
     """
     try:
         write_short_srt_sidecar(
@@ -94,6 +101,7 @@ def _write_short_sidecar_best_effort(
             pretrim_start_secs=pretrim_start_secs,
             pretrim_end_secs=pretrim_end_secs,
             session_date=chapter_ctx["session_date"] if chapter_ctx else None,
+            turn_id=turn_id,
         )
     except Exception:
         logging.warning(
@@ -155,6 +163,11 @@ class ReapJobSensor(BaseSensorOperator):
             claimed_clip = ti.xcom_pull(key="claimed_clip") or {}
             pretrim_start_secs = claimed_clip.get("pretrim_start_secs")
             pretrim_end_secs = claimed_clip.get("pretrim_end_secs")
+            # issue #467: forwarded to every downloaded clip row and the sidecar
+            # writer — without it, downloaded clips would carry turn_id IS NULL
+            # and collapse into the per-chapter Tier-1 partition instead of the
+            # per-turn one (the partition is computed on downloaded rows).
+            turn_id = claimed_clip.get("turn_id")
 
             for clip in clips:
                 clip_id = clip["clip_id"]
@@ -190,11 +203,18 @@ class ReapJobSensor(BaseSensorOperator):
                     reap_virality_score=virality,
                     reap_clip_url=clip_url,
                     local_file_path=str(dest_path),
+                    turn_id=turn_id,
                 )
 
                 # NEW (issue #431): best-effort SRT sidecar beside the downloaded clip.
                 _write_short_sidecar_best_effort(
-                    source_video_id, chapter_id, clip_id, chapter_ctx, pretrim_start_secs, pretrim_end_secs
+                    source_video_id,
+                    chapter_id,
+                    clip_id,
+                    chapter_ctx,
+                    pretrim_start_secs,
+                    pretrim_end_secs,
+                    turn_id=turn_id,
                 )
 
             return True

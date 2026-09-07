@@ -436,6 +436,59 @@ class TestShortSrtSidecarHook:
         mock_db.insert_video_short_clip.assert_called_once()
         mock_sidecar.assert_called_once()
 
+    def test_turn_id_forwarded_to_insert_video_short_clip(self, mocker):
+        """design.md §3: without this, downloaded clips would carry
+        turn_id IS NULL and collapse into the per-chapter Tier-1 partition."""
+        sensor, context, mock_client, mock_db = self._base_mocks(mocker)
+        context["ti"].xcom_store["claimed_clip"] = {
+            "id": 1,
+            "chapter_id": 42,
+            "turn_id": 7,
+        }
+        mocker.patch("congress_videos.reap_processor_dag.write_short_srt_sidecar")
+
+        result = sensor.poke(context)
+
+        assert result is True
+        insert_kwargs = mock_db.insert_video_short_clip.call_args.kwargs
+        assert insert_kwargs["turn_id"] == 7
+
+    def test_legacy_claim_forwards_none_turn_id_to_insert(self, mocker):
+        sensor, context, mock_client, mock_db = self._base_mocks(mocker)
+        context["ti"].xcom_store["claimed_clip"] = {"id": 1, "chapter_id": 42}
+        mocker.patch("congress_videos.reap_processor_dag.write_short_srt_sidecar")
+
+        result = sensor.poke(context)
+
+        assert result is True
+        insert_kwargs = mock_db.insert_video_short_clip.call_args.kwargs
+        assert insert_kwargs["turn_id"] is None
+
+    def test_turn_id_forwarded_to_sidecar_writer(self, mocker):
+        sensor, context, mock_client, mock_db = self._base_mocks(mocker)
+        context["ti"].xcom_store["claimed_clip"] = {
+            "id": 1,
+            "chapter_id": 42,
+            "turn_id": 7,
+        }
+        mock_sidecar = mocker.patch("congress_videos.reap_processor_dag.write_short_srt_sidecar")
+
+        result = sensor.poke(context)
+
+        assert result is True
+        _args, kwargs = mock_sidecar.call_args
+        assert kwargs["turn_id"] == 7
+
+    def test_legacy_claim_forwards_none_turn_id_to_sidecar_writer(self, mocker):
+        sensor, context, mock_client, mock_db = self._base_mocks(mocker)
+        mock_sidecar = mocker.patch("congress_videos.reap_processor_dag.write_short_srt_sidecar")
+
+        result = sensor.poke(context)
+
+        assert result is True
+        _args, kwargs = mock_sidecar.call_args
+        assert kwargs["turn_id"] is None
+
 
 # ---------------------------------------------------------------------------
 # TestUploadToReap

@@ -342,3 +342,167 @@ Phases 4a–5 (processor/sidecar wiring, Tier-1 partition, and post-merge ops)
 are untouched — this batch is PR3 only, per the orchestrator's work-unit scope.
 The orchestrator settles the native attempt ledger; this batch does not call
 `sdd-attempt settle`.
+
+## Batch 4a (PR4a, `feat/467-d-processor-sidecar`, base PR3 @ `b339a12`)
+
+**Status**: Phase 4a complete (tasks 4a.1–4a.7). Ready for `sdd-verify`.
+
+### What landed
+
+- `congress_videos/modules/database.py`:
+  - `insert_video_short_clip`: added trailing `turn_id: int | None = None`
+    (backward compatible), inserted right after `chapter_id` in the column
+    list — `(chapter_id, turn_id, reap_project_id, reap_clip_id, ...)`,
+    8 placeholders.
+  - `claim_pending_clip`: wrapped the atomic `UPDATE ... RETURNING *` in a
+    `claimed` CTE (per design §4) — ordering, `FOR UPDATE SKIP LOCKED`, and
+    the two priority subqueries (`session_date`, `relevance_score`) carried
+    forward byte-identical. The outer `SELECT` `LEFT JOIN`s
+    `speaker_turn_videos` on `stv.turn_id = c.turn_id` and `LEFT JOIN
+    LATERAL`s a sibling aggregate (`MIN`/`MAX(start/end_seconds)` over rows
+    sharing `output_path`) to surface `group_start_seconds`/
+    `group_end_seconds` alongside the claimed row. Legacy rows
+    (`turn_id IS NULL`) yield `NULL` spans through the `LEFT JOIN`, exactly
+    the sidecar's chapter-fallback signal.
+- `congress_videos/reap_processor_dag.py`:
+  - `ReapJobSensor.poke` reads `turn_id = claimed_clip.get("turn_id")` and
+    forwards it to **both** `db.insert_video_short_clip(..., turn_id=turn_id)`
+    and `_write_short_sidecar_best_effort(..., turn_id=turn_id)` — the
+    design-flagged risk #3 fix: without this, downloaded clips would carry
+    `turn_id IS NULL` and collapse into the per-chapter Tier-1 partition
+    (PR4b), since that partition is computed over downloaded rows, not the
+    pending parent.
+  - `_write_short_sidecar_best_effort` gained a `turn_id=None` parameter,
+    forwarded to `write_short_srt_sidecar`.
+- `congress_videos/srt_helpers.py`:
+  - `write_short_srt_sidecar` gained a trailing `turn_id: int | None = None`
+    parameter. When `turn_id is not None`, the function now ALWAYS falls back
+    to the full chapter span — it never reaches the existing
+    pretrim-offset/window-validity branch — regardless of whether
+    `pretrim_start_secs`/`pretrim_end_secs` are present. When `turn_id is
+    None` (default), behaviour is byte-identical to before this change.
+  - Module docstring extended to document the turn-sourced approximation
+    (issue #422 docs-drift policy: the change reads differently now, so the
+    docstring must too).
+
+### Deviation from design.md §7 (flagged, not silently absorbed)
+
+design.md §7 sketches window math for a turn-sourced clip using two
+`turn_group_start_secs`/`turn_group_end_secs` parameters: with both pretrim
+offsets present, derive `origin = chapter_start + turn_base` and use
+`[origin + pretrim_start, origin + pretrim_end]`; with no pretrim, fall back
+to the **group span** (`[origin, chapter_start + turn_end]`) — narrower than
+the full chapter span.
+
+The orchestrator's launch prompt explicitly named
+`specs/short-video-srt-artifacts/spec.md`'s "Short SRT window derivation with
+fallback" requirement **the contract** for this behaviour, overriding
+design.md/tasks.md 4a.4's group-span text. That requirement (and both its
+"Turn-sourced clip ignores chapter-relative pretrim offsets" /
+"Turn-sourced clip with no pretrim offsets" scenarios) mandates the **full
+chapter span unconditionally** for any turn-sourced clip, never the group
+span, regardless of whether pretrim offsets are present. Implemented per the
+spec: `turn_id is not None` → full chapter span always. The `group_span`
+plumbing added to `claim_pending_clip` (design §4, task 4a.3, still required
+by name) is therefore not consumed by the sidecar's window computation in
+this batch — it is exposed on `claimed_clip` for any future caller, but
+`write_short_srt_sidecar` intentionally ignores it per the spec's explicit
+"regardless of whether pretrim offsets are present" language. No test asserts
+group-span-based window math; tests instead assert the full-chapter-span
+outcome for both the pretrim-present and pretrim-absent turn-sourced cases
+(see `TestWriteShortSrtSidecar::test_turn_sourced_clip_ignores_pretrim_offsets`
+and `::test_turn_sourced_clip_with_no_pretrim_offsets_uses_full_chapter_span`).
+
+### TDD Cycle Evidence
+
+| Task | RED | GREEN | REFACTOR |
+|---|---|---|---|
+| 4a.1/4a.2 threat-matrix regressions | N/A — confirmation only, no new test | `_SAFE_CLIP_ID_RE` (sensor + sidecar) and adaptive-timeout tests re-run post-wiring | Both still pass unmodified |
+| 4a.3 `claim_pending_clip` CTE + `insert_video_short_clip(turn_id=)` | 6 new tests fail (`TestClaimPendingClip` × 3 SQL-shape assertions on the bare `UPDATE...RETURNING *`; `TestInsertVideoShortClip` × 3 `turn_id` assertions with `TypeError`) | CTE + column-list changes land; all pass | ruff clean |
+| 4a.3 sensor forwards `turn_id` | 4 new tests fail (`KeyError: 'turn_id'` — kwarg absent) | `poke` reads and forwards `turn_id` to both call sites | ruff clean |
+| 4a.4 sidecar turn-sourced guard | 2 new tests fail (`TypeError: unexpected keyword argument 'turn_id'`) | guard branch added; all pass, including 1 added regression test for the `turn_id=None` default path | ruff clean |
+
+- RED (db): `uv run pytest tests/congress_videos/modules/test_reap_db_methods.py -o addopts=`
+  → 6 failed, 80 passed.
+- GREEN (db): same command → 86 passed.
+- RED (sensor): `uv run pytest tests/congress_videos/test_reap_processor_dag.py -o addopts= -k TestShortSrtSidecarHook`
+  → 4 failed, 4 passed.
+- GREEN (sensor): `uv run pytest tests/congress_videos/test_reap_processor_dag.py -o addopts=`
+  → 45 passed.
+- RED (sidecar): `uv run pytest tests/congress_videos/test_srt_helpers.py -o addopts= -k TestWriteShortSrtSidecar`
+  → 2 failed, 16 passed.
+- GREEN (sidecar): `uv run pytest tests/congress_videos/test_srt_helpers.py tests/congress_videos/test_srt_helpers_multi_window.py -o addopts=`
+  → 126 passed, 1 skipped.
+- Scoped work-unit command (per tasks.md's Suggested Work Units table):
+  `uv run pytest tests/congress_videos/modules/test_reap_db_methods.py tests/congress_videos/test_reap_processor_dag.py tests/congress_videos/test_srt_helpers*.py -o addopts=`
+  → 257 passed, 1 skipped.
+- Full suite: `uv run pytest -n auto` → 4612 passed, 29 skipped (Postgres-dependent
+  live tests skip without a DB, as expected in this environment), 0 failed.
+  `--cov-fail-under=80` enforced by `pyproject.toml` addopts and the run passed.
+- `uv run ruff check .` → All checks passed.
+- `uv run ruff format --check .` → 301 files already formatted.
+- DagBag: `uv run python -c "from airflow.models import DagBag; ..."` → `16 {}`.
+- `bash scripts/test-airflow-e2e.sh` → reported `unavailable` (Docker daemon not
+  reachable in this environment) — not a failure per repo policy; run manually
+  before merge.
+
+### Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused test command and exact result | `uv run pytest tests/congress_videos/modules/test_reap_db_methods.py tests/congress_videos/test_reap_processor_dag.py tests/congress_videos/test_srt_helpers*.py -o addopts=` → 257 passed, 1 skipped |
+| Runtime harness command/scenario and exact result | `bash scripts/test-airflow-e2e.sh` → `unavailable` (Docker daemon unreachable); DagBag import check run as fallback → `16 {}` |
+| Rollback boundary | Revert this commit; legacy rows (`turn_id IS NULL`) keep working via the `LEFT JOIN`/default-`None` guards added in this batch — reverting removes only the turn-context propagation, not PR1–PR3 |
+
+### Changed lines
+
+`git diff --numstat b339a12..HEAD` (code + tests):
+
+```
+congress_videos/modules/database.py                    |  54 +24
+congress_videos/reap_processor_dag.py                  |  21 +1
+congress_videos/srt_helpers.py                          |  53 +19
+tests/congress_videos/modules/test_reap_db_methods.py  | 160 +0
+tests/congress_videos/test_reap_processor_dag.py        |  53 +0
+tests/congress_videos/test_srt_helpers.py                |  64 +0
+```
+
+Code+tests total: 405 additions + 44 deletions = **449 changed lines**
+(ledger cap: 450). Plus `tasks.md` (7+7=14 lines) and this `apply-progress.md`
+section — both docs, over the orchestrator's "docs delta ≤ 50" note once this
+section is included, consistent with the same "implement honestly, report the
+final count, do not force-fit" guidance `sdd-apply`'s SKILL.md gives and PR3
+already exercised for its own overage. No test, comment, or doc line was cut
+to chase the number.
+
+### Issues Found
+
+None.
+
+### Remaining Tasks
+
+- [ ] Phase 4b: `pending_shorts_candidate_sql` partition + parent-gate drop
+- [ ] Phase 5: Orchestrator-run ops (migration 047 on NAS dev+prod, git_sync,
+  validation query, manual trigger)
+
+### Workload / PR Boundary
+
+- Mode: stacked PR slice (auto-chain, `stacked-to-main`) — code+tests at 449
+  changed lines sits at the ledger's 450 cap before docs; flagged for the
+  orchestrator, not silently absorbed (same pattern as PR3)
+- Current work unit: PR4a — `claim_pending_clip` CTE + turn_id propagation +
+  sidecar guard, branch `feat/467-d-processor-sidecar`, base `feat/467-c-preparer-rewrite` @ `b339a12`
+- Boundary: starts from PR3's `b339a12`, ends at this batch's commit — claimed
+  clips and downloaded rows now carry `turn_id`, and the sidecar correctly
+  refuses to apply chapter-relative pretrim math to turn-relative offsets
+- Estimated review budget impact: 449 changed lines (code+tests) before docs —
+  at or slightly over the 450-line ledger cap once `tasks.md`/
+  `apply-progress.md` are included; recommend the orchestrator apply
+  `size:exception` if the ledger settle requires it
+
+### Not in scope for this batch
+
+Phase 4b (Tier-1 partition + parent-gate drop) and Phase 5 (post-merge ops)
+are untouched — this batch is PR4a only, per the orchestrator's work-unit
+scope. The orchestrator settles the native attempt ledger; this batch does
+not call `sdd-attempt settle`.
