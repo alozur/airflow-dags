@@ -38,12 +38,12 @@ Order is load-bearing (design.md "Migration / Rollout"). PR1 base `feat/467-reap
 
 ## Phase 2: Turn selection + insert (PR2, `feat/467-b-turn-selection`, base PR1)
 
-- [ ] 2.1 RED: `get_turn_videos_for_shorts` SQL-text tests (group_spans, DISTINCT ON, dedup on turn_id, floor 120, no ceiling, LIMIT-only-if-max_turns, ordering) in `tests/congress_videos/modules/test_reap_db_methods.py`
-- [ ] 2.2 RED: `insert_video_short(turn_id=)` 9-placeholder column-list test
-- [ ] 2.3 RED: swap `get_chapters_for_shorts`→`DEAD_METHOD_NAMES`, add `get_turn_videos_for_shorts`→`LIVE_METHOD_NAMES` in `test_database_surface.py`
-- [ ] 2.4 GREEN: `congress_videos/modules/database.py` — delete `get_chapters_for_shorts` (507-554), add `get_turn_videos_for_shorts` (design §1), extend `insert_video_short` (design §3)
-- [ ] 2.5 REFACTOR: `uv run pytest`; ruff check/format
-- [ ] 2.6 Commit: `feat(reap): source turn-video candidate selection from speaker turns`
+- [x] 2.1 RED: `get_turn_videos_for_shorts` SQL-text tests (group_spans, DISTINCT ON, dedup on turn_id, floor 120, no ceiling, LIMIT-only-if-max_turns, ordering) in `tests/congress_videos/modules/test_reap_db_methods.py`
+- [x] 2.2 RED: `insert_video_short(turn_id=)` 9-placeholder column-list test
+- [x] 2.3 RED: swap `get_chapters_for_shorts`→`DEAD_METHOD_NAMES`, add `get_turn_videos_for_shorts`→`LIVE_METHOD_NAMES` in `test_database_surface.py`
+- [x] 2.4 GREEN: `congress_videos/modules/database.py` — delete `get_chapters_for_shorts` (507-554), add `get_turn_videos_for_shorts` (design §1), extend `insert_video_short` (design §3)
+- [x] 2.5 REFACTOR: `uv run pytest`; ruff check/format
+- [x] 2.6 Commit: `feat(reap): source turn-video candidate selection from speaker turns`
 
 ## Phase 3: Preparer rewrite (PR3, `feat/467-c-preparer-rewrite`, base PR2)
 
