@@ -52,19 +52,19 @@ def db(mocker):
 
 
 # --------------------------------------------------------------------------- #
-# get_chapters_for_shorts
+# get_turn_videos_for_shorts (issue #467 — replaces get_chapters_for_shorts)
 # --------------------------------------------------------------------------- #
 
 
-class TestGetChaptersForShorts:
-    def test_returns_list_of_chapters(self, db):
+class TestGetTurnVideosForShorts:
+    def test_returns_list_of_turns(self, db):
         instance, mock_cursor = db
         mock_cursor.fetchall.return_value = [
-            {"chapter_id": 1, "relevance_score": 4},
-            {"chapter_id": 2, "relevance_score": 5},
+            {"turn_id": 1, "relevance_score": 4},
+            {"turn_id": 2, "relevance_score": 5},
         ]
 
-        result = instance.get_chapters_for_shorts()
+        result = instance.get_turn_videos_for_shorts()
 
         assert len(result) == 2
 
@@ -72,28 +72,134 @@ class TestGetChaptersForShorts:
         instance, mock_cursor = db
         mock_cursor.fetchall.return_value = []
 
-        result = instance.get_chapters_for_shorts()
+        result = instance.get_turn_videos_for_shorts()
 
         assert result == []
 
-    def test_passes_limit_and_min_score_params(self, db):
+    def test_no_limit_when_max_turns_none(self, db):
         instance, mock_cursor = db
         mock_cursor.fetchall.return_value = []
 
-        instance.get_chapters_for_shorts(limit=5, min_relevance_score=4)
+        instance.get_turn_videos_for_shorts()
 
-        _, params = mock_cursor.execute.call_args[0]
-        assert params == [4, 5]
+        sql, params = mock_cursor.execute.call_args[0]
+        assert "LIMIT" not in sql, "no LIMIT clause when max_turns is None"
+        assert params == []
 
-    def test_query_contains_not_exists_subquery(self, db):
+    def test_limit_appended_when_max_turns_given(self, db):
         instance, mock_cursor = db
         mock_cursor.fetchall.return_value = []
 
-        instance.get_chapters_for_shorts()
+        instance.get_turn_videos_for_shorts(max_turns=5)
+
+        sql, params = mock_cursor.execute.call_args[0]
+        assert "LIMIT %s" in sql
+        assert params == [5]
+
+    def test_query_contains_group_spans_cte(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "WITH group_spans AS" in sql
+        assert "GROUP BY stv.output_path" in sql
+
+    def test_group_spans_cte_is_unfiltered_by_procedural(self, db):
+        """issue #151 trap: is_procedural must only be summed inside
+        group_spans, never used to filter which rows enter the aggregate."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        cte_start = sql.index("WITH group_spans AS")
+        cte_end = sql.index("GROUP BY stv.output_path") + len("GROUP BY stv.output_path")
+        cte_body = sql[cte_start:cte_end]
+        assert "WHERE" not in cte_body, f"group_spans CTE must have no WHERE gate; got: {cte_body}"
+        assert "SUM(CASE WHEN st.is_procedural" in cte_body
+
+    def test_query_uses_distinct_on_output_path(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "DISTINCT ON (stv.output_path)" in sql
+
+    def test_query_dedups_on_turn_id_not_chapter_id(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
 
         sql = mock_cursor.execute.call_args[0][0]
         assert "NOT EXISTS" in sql
-        assert "video_shorts" in sql
+        assert "vs.turn_id = stv.turn_id" in sql
+        assert "vs.chapter_id" not in sql, "dedup must key on turn_id, not chapter_id"
+
+    def test_query_excludes_procedural_representative(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "NOT COALESCE(st.is_procedural, FALSE)" in sql
+
+    def test_query_floor_is_120_seconds(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "dedup.group_duration_seconds >= 120" in sql
+
+    def test_query_has_no_upper_duration_bound(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "<= 900" not in sql
+        assert "<=" not in sql, "no upper ceiling gate on group_duration_seconds"
+
+    def test_query_does_not_filter_prepared_at(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "prepared_at" not in sql
+
+    def test_query_does_not_require_parent_upload_date(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "youtube_upload_date" not in sql
+        assert "is_uploaded_to_youtube" not in sql
+
+    def test_query_orders_by_editorial_keys(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        order_clause = sql[sql.rindex("ORDER BY") :]
+        assert "COALESCE(dedup.interest_score, 1) DESC" in order_clause
+        assert "dedup.relevance_score DESC" in order_clause
+        assert "dedup.session_date DESC" in order_clause
+        assert "dedup.turn_id ASC" in order_clause
 
 
 # --------------------------------------------------------------------------- #
@@ -143,6 +249,58 @@ class TestInsertVideoShort:
         sql = mock_cursor.execute.call_args[0][0]
         assert "INSERT" in sql
         assert "RETURNING" in sql
+
+    def test_query_has_nine_placeholders(self, db):
+        """issue #467: turn_id extends the column list to 9 placeholders."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 1}
+
+        instance.insert_video_short(chapter_id=1)
+
+        sql, params = mock_cursor.execute.call_args[0]
+        assert sql.count("%s") == 9
+        assert len(params) == 9
+
+    def test_column_list_places_turn_id_after_chapter_id(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 1}
+
+        instance.insert_video_short(chapter_id=1)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "(chapter_id, turn_id, reap_project_id" in sql
+
+    def test_turn_id_defaults_to_none(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 1}
+
+        instance.insert_video_short(chapter_id=1)
+
+        _, params = mock_cursor.execute.call_args[0]
+        assert params[0] == 1
+        assert params[1] is None
+
+    def test_passes_turn_id_when_given(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 1}
+
+        instance.insert_video_short(chapter_id=1, turn_id=99)
+
+        _, params = mock_cursor.execute.call_args[0]
+        assert params[1] == 99
+
+    def test_existing_positional_call_shape_unaffected(self, db):
+        """A caller that never passes turn_id keeps working (backward compat)."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 42}
+
+        result = instance.insert_video_short(
+            chapter_id=10,
+            reap_project_id="proj-001",
+            reap_status="processing",
+        )
+
+        assert result == 42
 
 
 # --------------------------------------------------------------------------- #

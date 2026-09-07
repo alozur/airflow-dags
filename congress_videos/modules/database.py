@@ -504,54 +504,88 @@ class CongressionalVideoDB:
 
     # ==================== Video Shorts (Reap Pipeline) ====================
 
-    def get_chapters_for_shorts(self, limit: int | None = None, min_relevance_score: int = 3) -> list[dict]:
-        """
-        Get video chapters eligible for Reap Shorts processing.
+    def get_turn_videos_for_shorts(self, max_turns: int | None = None) -> list[dict]:
+        """Materialized turn videos eligible for Reap clip generation (issue #467).
 
-        A chapter qualifies when ALL of the following hold:
-        - is_uploaded_to_youtube = TRUE (only already-published chapters)
-        - relevance_score >= min_relevance_score
-        - Duration between 120 and 900 seconds (2-15 min)
-        - No existing video_shorts row for the chapter (any reap_status)
+        Replaces the removed chapter-only `get_chapters_for_shorts`. Mirrors
+        `uploadable_turns`'s `group_spans` CTE and `DISTINCT ON (output_path)`
+        representative-row selection, minus the long-form publish gates.
+
+        Explicit NON-gates: `stv.prepared_at` (a long-form slot gate, #146),
+        any relevance threshold (Reap scores virality itself), and any
+        parent-published flag on `video_chapters` or `speaker_turn_videos`.
+        No upper duration bound — the preparer pre-trims above the Reap
+        ceiling.
 
         Args:
-            limit: Maximum number of chapters to return (None = no limit, default None)
-            min_relevance_score: Minimum relevance score threshold (default 3)
+            max_turns: Maximum number of turn videos to return (None = no limit)
 
         Returns:
-            List of chapter records ordered by relevance_score DESC, created_at DESC
+            List of turn-video candidate records ordered by
+            COALESCE(interest_score, 1) DESC, relevance_score DESC,
+            session_date DESC, turn_id ASC.
         """
-        chapters_table = self.pg_conn.get_qualified_table("video_chapters")
+        stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
+        st_table = self.pg_conn.get_qualified_table("speaker_turns")
+        vc_table = self.pg_conn.get_qualified_table("video_chapters")
+        ysv_table = self.pg_conn.get_qualified_table("youtube_source_videos")
         shorts_table = self.pg_conn.get_qualified_table("video_shorts")
 
         with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
             query = f"""
-                    SELECT vc.*
-                    FROM {chapters_table} vc
-                    WHERE vc.is_uploaded_to_youtube = TRUE
-                      AND vc.relevance_score >= %s
-                      AND (
-                          EXTRACT(EPOCH FROM (
-                              REPLACE(vc.end_time, ',', '.')::interval
-                              - REPLACE(vc.start_time, ',', '.')::interval
-                          )) >= 120
-                      )
-                      AND NOT EXISTS (
-                          SELECT 1 FROM {shorts_table} vs
-                          WHERE vs.chapter_id = vc.chapter_id
-                      )
-                    ORDER BY vc.relevance_score DESC, vc.created_at DESC
+                    WITH group_spans AS (
+                        -- DELIBERATELY UNFILTERED over every sibling row of an output_path
+                        -- (issue #151 trap): gating before the aggregate collapses the span
+                        -- to one turn's window. is_procedural is read only to sum excised
+                        -- seconds.
+                        SELECT stv.output_path,
+                               MIN(st.start_seconds) AS group_start_seconds,
+                               MAX(st.end_seconds)   AS group_end_seconds,
+                               SUM(CASE WHEN st.is_procedural THEN st.end_seconds - st.start_seconds ELSE 0 END)
+                                   AS procedural_seconds
+                        FROM {stv_table} stv
+                        JOIN {st_table} st ON stv.turn_id = st.turn_id
+                        GROUP BY stv.output_path
+                    )
+                    SELECT * FROM (
+                        SELECT DISTINCT ON (stv.output_path)
+                            stv.turn_id, stv.output_path, stv.turn_type, stv.keep_intervals,
+                            st.chapter_id, st.resolved_name, st.interest_score,
+                            gs.group_start_seconds, gs.group_end_seconds, gs.procedural_seconds,
+                            (gs.group_end_seconds - gs.group_start_seconds - gs.procedural_seconds)
+                                AS group_duration_seconds,
+                            vc.video_id, vc.relevance_score, vc.scoring_reasoning,
+                            ysv.session_number, ysv.session_date
+                        FROM {stv_table} stv
+                        JOIN {st_table} st  ON stv.turn_id = st.turn_id
+                        JOIN {vc_table} vc  ON st.chapter_id = vc.chapter_id
+                        JOIN {ysv_table} ysv ON vc.video_id = ysv.video_id
+                        JOIN group_spans gs ON gs.output_path = stv.output_path
+                        WHERE stv.output_path IS NOT NULL
+                          AND NOT COALESCE(st.is_procedural, FALSE)   -- issue #143
+                          AND NOT EXISTS (                            -- dedup on the turn, not the chapter
+                              SELECT 1 FROM {shorts_table} vs WHERE vs.turn_id = stv.turn_id
+                          )
+                        ORDER BY stv.output_path, stv.turn_id          -- deterministic representative
+                    ) dedup
+                    WHERE dedup.group_duration_seconds >= 120          -- REAP_MIN_CLIP_SECONDS
+                    ORDER BY COALESCE(dedup.interest_score, 1) DESC,
+                             dedup.relevance_score DESC,
+                             dedup.session_date DESC,
+                             dedup.turn_id ASC                          -- total-order backstop
                 """
-            params: list = [min_relevance_score]
-            if limit is not None:
+            params: list = []
+            if max_turns is not None:
                 query += " LIMIT %s"
-                params.append(limit)
+                params.append(max_turns)
             cur.execute(query, params)
-            chapters = cur.fetchall()
+            turns = cur.fetchall()
             logger.info(
-                f"Found {len(chapters)} chapters eligible for Shorts (min_score={min_relevance_score}, limit={limit})"
+                "get_turn_videos_for_shorts: %d eligible turn videos (max_turns=%s)",
+                len(turns),
+                max_turns,
             )
-            return chapters
+            return turns
 
     def insert_video_short(
         self,
@@ -563,6 +597,7 @@ class CongressionalVideoDB:
         pretrim_used_srt: bool = False,
         staged_clip_path: str | None = None,
         scoring_reasoning: str | None = None,
+        turn_id: int | None = None,
     ) -> int:
         """
         Insert a video_shorts row.
@@ -580,6 +615,8 @@ class CongressionalVideoDB:
             pretrim_used_srt: True if an SRT file was used for AI window selection
             staged_clip_path: Local path to the pre-trimmed clip file (set by DAG 1)
             scoring_reasoning: AI scoring reasoning text (optional)
+            turn_id: FK to speaker_turn_videos.turn_id (issue #467); None for
+                legacy chapter-sourced rows
 
         Returns:
             The id of the newly inserted video_shorts row
@@ -590,14 +627,15 @@ class CongressionalVideoDB:
             cur.execute(
                 f"""
                     INSERT INTO {shorts_table}
-                    (chapter_id, reap_project_id, reap_status,
+                    (chapter_id, turn_id, reap_project_id, reap_status,
                      pretrim_start_secs, pretrim_end_secs, pretrim_used_srt,
                      staged_clip_path, scoring_reasoning)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """,
                 (
                     chapter_id,
+                    turn_id,
                     reap_project_id,
                     reap_status,
                     pretrim_start_secs,

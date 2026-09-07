@@ -37,13 +37,16 @@ DEAD_METHOD_NAMES = [
     "get_video_topics_by_session",
     "update_session_total_topics",
     "get_top_videos_for_upload",
+    # issue #467 — chapter-only Reap candidate selection replaced by
+    # get_turn_videos_for_shorts; no remaining caller.
+    "get_chapters_for_shorts",
 ]
 
 LIVE_METHOD_NAMES = [
     "get_uploadable_chapters",
     "get_uploadable_turns",
     "mark_short_uploaded",
-    "get_chapters_for_shorts",
+    "get_turn_videos_for_shorts",
     "mark_upload_verified",
     "record_upload_verification_failure",
 ]
