@@ -47,13 +47,13 @@ Order is load-bearing (design.md "Migration / Rollout"). PR1 base `feat/467-reap
 
 ## Phase 3: Preparer rewrite (PR3, `feat/467-c-preparer-rewrite`, base PR2)
 
-- [ ] 3.1 RED (threat matrix — command injection): assert ffmpeg subprocess call is a list, never `shell=True`
-- [ ] 3.2 RED (threat matrix — destructive fs op): assert `staged_clip_path != output_path` whenever pre-trim ran
-- [ ] 3.3 RED: zero-eligible WARNING with count; no-pretrim stages `output_path` unmodified; over-threshold writes `turn_{id}_reap.mp4` offsets `(0.0, 900.0)`; <120s actual-duration skip; `turn_id` reaches `insert_video_short` — in `test_reap_clip_preparer_dag.py`
-- [ ] 3.4 GREEN: rewrite `congress_videos/reap_clip_preparer_dag.py` — `_query_turns`/`_stage_and_pretrim_clip` (design §6); `max_chapters→max_turns`; drop `min_relevance_score`; threshold `600→900`
-- [ ] 3.5 GREEN: delete `_find_source_video`, `split_video_chapter` import, `_interval_to_srt`, `DOWNLOADS_DIR`, unused SRT-window imports; keep `_ffmpeg_extract_window`
-- [ ] 3.6 REFACTOR: `uv run pytest`; ruff check/format; `bash scripts/test-airflow-e2e.sh`
-- [ ] 3.7 Commit: `feat(reap): stage materialized turn output directly with leading pre-trim`
+- [x] 3.1 RED (threat matrix — command injection): assert ffmpeg subprocess call is a list, never `shell=True`
+- [x] 3.2 RED (threat matrix — destructive fs op): assert `staged_clip_path != output_path` whenever pre-trim ran
+- [x] 3.3 RED: zero-eligible WARNING with count; no-pretrim stages `output_path` unmodified; over-threshold writes `turn_{id}_reap.mp4` offsets `(0.0, 900.0)`; <120s actual-duration skip; `turn_id` reaches `insert_video_short` — in `test_reap_clip_preparer_dag.py`
+- [x] 3.4 GREEN: rewrite `congress_videos/reap_clip_preparer_dag.py` — `_query_turns`/`_stage_and_pretrim_clip` (design §6); `max_chapters→max_turns`; drop `min_relevance_score`; threshold `600→900`
+- [x] 3.5 GREEN: delete `_find_source_video`, `split_video_chapter` import, `_interval_to_srt`, `DOWNLOADS_DIR`, unused SRT-window imports; keep `_ffmpeg_extract_window`
+- [x] 3.6 REFACTOR: `uv run pytest`; ruff check/format; `bash scripts/test-airflow-e2e.sh`
+- [x] 3.7 Commit: `feat(reap): stage materialized turn output directly with leading pre-trim`
 
 ## Phase 4a: Processor + sidecar wiring (PR4a, `feat/467-d-processor-sidecar`, base PR3)
 

@@ -214,3 +214,131 @@ Phases 3–5 (preparer rewrite, processor/sidecar wiring, Tier-1 partition, and
 post-merge ops) are untouched — this batch is PR2 only, per the orchestrator's
 work-unit scope. The orchestrator settles the native attempt ledger; this batch
 does not call `sdd-attempt settle`.
+
+## Batch 3 (PR3, `feat/467-c-preparer-rewrite`, base PR2 @ `6d4691c`)
+
+**Status**: Phase 3 complete (tasks 3.1–3.7). Ready for `sdd-verify`.
+
+**Commit**: `88c4d80` — `feat(reap): stage materialized turn output directly with leading pre-trim`
+
+### What landed
+
+- `congress_videos/reap_clip_preparer_dag.py`: rewrote `_query_chapters`→`_query_turns`
+  and `_extract_and_pretrim_clip`→`_stage_and_pretrim_clip` per design §6.
+  `_query_turns` calls `get_turn_videos_for_shorts(max_turns=...)` and logs the
+  zero-eligible WARNING. `_stage_and_pretrim_clip` ffprobes `output_path`
+  (authoritative), skips <120s, stages `output_path` unmodified under
+  threshold, or pre-trims a leading `[0, target_secs]` window to
+  `turn_{turn_id}_reap.mp4` over threshold, re-probes the staged file for the
+  unchanged-shape safety gate, and passes `turn_id` through to
+  `insert_video_short`. Task ids/count/schedule/chain kept unchanged (design
+  explicit). Params: `max_chapters`→`max_turns`, `min_relevance_score` dropped,
+  threshold/target `600→900`. Deleted `_find_source_video`, `_interval_to_srt`,
+  the `split_video_chapter`/`DOWNLOADS_DIR`/`find_srt_for_chapter`/
+  `select_pretrim_window` imports; kept `_ffmpeg_extract_window` unchanged; added
+  `_probe_duration_secs` helper. Module docstring rewritten for the turn-based
+  flow (issue #422 docs policy).
+- `tests/congress_videos/test_reap_clip_preparer_dag.py`: rebuilt surgically —
+  `TestCongressReapClipPreparerDAGLoads` and `TestFfmpegExtractWindow` kept
+  byte-identical (plus one added param-rename test and a 2-line command-injection
+  assertion) to minimize diff noise; `TestQueryChapters`/`TestExtractAndPretrimClip`
+  (chapter-based, ~500 lines testing now-deleted functions) replaced with
+  `TestQueryTurns` (5 tests) and `TestStageAndPretrimClip` (6 tests) covering the
+  threat-matrix and Testing-Strategy-mandated scenarios: command injection (list,
+  no `shell=True`), destructive-fs-op (`staged_clip_path != output_path` on
+  pre-trim), zero-eligible WARNING text, no-pretrim/over-threshold staging paths
+  and offsets, <120s skip, ffprobe-failure block, safety-gate block, and
+  partial-success (good clip inserted, then `AirflowException`).
+
+### TDD evidence
+
+| Task | RED | GREEN | REFACTOR |
+|---|---|---|---|
+| 3.1–3.3 preparer behavior | New test file written first against the not-yet-rewritten module; old test suite already failed on import of removed `get_chapters_for_shorts`/`_find_source_video` symbols, confirming the old contract was gone | Rewrote `reap_clip_preparer_dag.py`; all 21 new/kept tests pass | ruff clean |
+
+- Scoped: `uv run pytest tests/congress_videos/test_reap_clip_preparer_dag.py -o addopts=`
+  → 21 passed.
+- Full suite: `uv run pytest -n auto` → 4594 passed, 29 skipped (Postgres-dependent
+  live tests skip without a DB), 0 failed. `--cov-fail-under=80` enforced and passed.
+- `uv run ruff check .` → All checks passed. `uv run ruff format --check .` → 301
+  files formatted.
+- DagBag: `uv run python -c "from airflow.models import DagBag; ..."` → `16 {}`.
+- `bash scripts/test-airflow-e2e.sh` → reported `unavailable` (Docker daemon not
+  reachable in this environment) — not a failure per repo policy; run manually
+  before merge.
+
+### Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused test command and exact result | `uv run pytest tests/congress_videos/test_reap_clip_preparer_dag.py -o addopts=` → 21 passed |
+| Runtime harness command/scenario and exact result | `bash scripts/test-airflow-e2e.sh` → `unavailable` (Docker daemon unreachable); DagBag import check run as fallback → `16 {}` |
+| Rollback boundary | Revert this commit; pauses `congress_reap_clip_preparer` back to the PR2 state (module still imports, task bodies would `AttributeError` on run until PR3 lands — same as documented in Batch 2) |
+
+### Changed lines
+
+`git diff --numstat 6d4691c..HEAD` (code files only):
+
+```
+congress_videos/reap_clip_preparer_dag.py               |  92 +180
+tests/congress_videos/test_reap_clip_preparer_dag.py     | 117 +389
+```
+
+Total (code+tests): 209 additions + 569 deletions = **778 changed lines**
+(ledger cap: 400). Plus `tasks.md`/`apply-progress.md` doc deltas.
+
+### Deviations from design
+
+None functionally — `_query_turns`/`_stage_and_pretrim_clip`, params, deletions,
+and the staged-path/offset shape match design §6 verbatim, including the
+"safety gate (unchanged shape)" re-probe of the staged file before insert.
+
+**Budget deviation (flagged, not silently absorbed)**: this slice is **778**
+changed lines against the ledger's 400-line cap, not the ~280 forecast in
+`tasks.md`. Root cause: the old chapter-based test suite for this DAG
+(`TestQueryChapters` + `TestExtractAndPretrimClip`, ~495 lines) tests functions
+this rewrite deletes outright (`_find_source_video`, SRT-window pre-trim,
+codec-cache-sharing across two probes, chapter-cut safety gate) — none of it
+carries over to the turn-based flow, so removing it is mandatory dead-code
+cleanup (task 3.5 in spirit, same "delete tests for deleted code" logic as PR2's
+`get_chapters_for_shorts` surface-guard swap), not discretionary trimming. That
+deletion alone is ~495 lines, which exceeds the 400 cap **before any new test
+is added**. The production file's 272-line diff is the minimum needed to swap
+chapter-lookup+cut for ffprobe-first+stage (kept `_ffmpeg_extract_window`
+untouched to avoid inflating it further). Per `sdd-apply`'s explicit guidance
+("implement it honestly... report the final authored line count... do not
+iterate trying to reach the number"), this was not force-fit smaller by cutting
+tests or comments. Recommend the orchestrator apply `size:exception` to this
+slice; the alternative (splitting PR3 further) would still require deleting the
+same ~495 obsolete test lines in whichever sub-slice ships the rewrite, so
+splitting does not by itself bring any single slice under 400.
+
+### Issues Found
+
+None.
+
+### Remaining Tasks
+
+- [ ] Phase 4a: `claim_pending_clip` CTE + `insert_video_short_clip(turn_id=)` +
+  processor/sidecar wiring
+- [ ] Phase 4b: `pending_shorts_candidate_sql` partition + parent-gate drop
+- [ ] Phase 5: Orchestrator-run ops (migration 047 on NAS dev+prod, git_sync,
+  validation query, manual trigger)
+
+### Workload / PR Boundary
+
+- Mode: stacked PR slice (auto-chain, `stacked-to-main`) — **budget exceeded,
+  size:exception recommended** (see "Deviations from design" above)
+- Current work unit: PR3 — preparer rewrite, branch `feat/467-c-preparer-rewrite`,
+  base `feat/467-b-turn-selection` @ `6d4691c`
+- Boundary: starts from PR2's `6d4691c`, ends at this batch's commit — the
+  preparer now stages `output_path` directly and pre-trims file-relative
+- Estimated review budget impact: 778 changed lines (code+tests), over the
+  400-line budget — flagged for orchestrator decision, not silently absorbed
+
+### Not in scope for this batch
+
+Phases 4a–5 (processor/sidecar wiring, Tier-1 partition, and post-merge ops)
+are untouched — this batch is PR3 only, per the orchestrator's work-unit scope.
+The orchestrator settles the native attempt ledger; this batch does not call
+`sdd-attempt settle`.
