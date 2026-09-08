@@ -30,6 +30,7 @@ import wave
 import numpy as np
 
 from congress_videos.config.constants import (
+    CHAPTER_SPLIT_MIN_GAP_SECS,
     VAD_BACKEND,
     VAD_ENABLED,
     VAD_END_MARGIN_SECS,
@@ -313,6 +314,37 @@ def _silero_segments(audio_path: str, sample_rate: int) -> list[tuple[float, flo
     return [(ts["start"], ts["end"]) for ts in timestamps]
 
 
+def detect_speech_segments(
+    audio_path: str,
+    backend: str = VAD_BACKEND,
+    *,
+    sample_rate: int = VAD_SAMPLE_RATE,
+) -> list[tuple[float, float]] | None:
+    """Run the selected VAD backend once and return its voiced segments.
+
+    Owns the single backend dispatch shared by :func:`detect_speech_bounds` (edge
+    trim) and the chapter-split gap finder: both need the SAME raw voiced
+    ``(start, end)`` segments, just consumed differently.
+
+    Args:
+        audio_path: Path to a mono WAV at ``sample_rate``.
+        backend: ``"webrtc"`` (default, stdlib ``wave`` + numpy + ``webrtcvad``,
+            no torch) or ``"silero"`` (opt-in, lazy-imports ``silero_vad``/``torch``).
+        sample_rate: WAV sample rate in Hz.
+
+    Returns:
+        Voiced ``(start, end)`` segments relative to the start of ``audio_path``.
+        An empty list means the backend ran and found no voice. ``None`` means the
+        backend name is unknown or a backend dependency is unavailable.
+    """
+    if backend == "webrtc":
+        return _webrtc_segments(audio_path, sample_rate)
+    if backend == "silero":
+        return _silero_segments(audio_path, sample_rate)
+    log.warning("vad.unknown_backend backend=%s", backend)
+    return None
+
+
 def detect_speech_bounds(
     audio_path: str,
     backend: str = VAD_BACKEND,
@@ -325,13 +357,11 @@ def detect_speech_bounds(
 ) -> tuple[float | None, float | None]:
     """Detect both sustained-speech edges from a SINGLE backend pass.
 
-    Runs the selected backend VAD EXACTLY ONCE to obtain the voiced segments, then
-    derives BOTH edges from those same segments:
-    ``first_sustained_speech_start`` for the start offset and
+    Runs the selected backend VAD EXACTLY ONCE (via :func:`detect_speech_segments`)
+    to obtain the voiced segments, then derives BOTH edges from those same
+    segments: ``first_sustained_speech_start`` for the start offset and
     ``last_sustained_speech_end`` for the end offset. Both offsets are RELATIVE to
-    the start of the analysed slice. The ``webrtc`` backend uses stdlib ``wave`` +
-    numpy + ``webrtcvad`` (no torch); the ``silero`` backend is opt-in and
-    lazy-imports ``silero_vad``/``torch`` inside its branch.
+    the start of the analysed slice.
 
     Args:
         audio_path: Path to a mono WAV at ``sample_rate``.
@@ -347,14 +377,8 @@ def detect_speech_bounds(
         ``None`` if no sustained speech defines that edge. ``(None, None)`` when
         the backend is unknown or a backend dependency is unavailable.
     """
-    if backend == "webrtc":
-        segments = _webrtc_segments(audio_path, sample_rate)
-    elif backend == "silero":
-        segments = _silero_segments(audio_path, sample_rate)
-        if segments is None:
-            return None, None
-    else:
-        log.warning("vad.unknown_backend backend=%s", backend)
+    segments = detect_speech_segments(audio_path, backend, sample_rate=sample_rate)
+    if segments is None:
         return None, None
 
     start = first_sustained_speech_start(
@@ -377,6 +401,70 @@ def detect_speech_bounds(
         end,
     )
     return start, end
+
+
+# ---------------------------------------------------------------------------
+# Chapter-duration split (issue #466) — pure planning cores.
+#
+# These functions never touch audio or a VAD backend directly; they operate on
+# already-detected ``(start, end)`` segments (or an injected ``segments_for``
+# callable), which is what makes them fully unit-testable and the coverage
+# anchor for the split feature, mirroring ``first_sustained_speech_start`` /
+# ``last_sustained_speech_end`` above.
+# ---------------------------------------------------------------------------
+
+
+def find_split_gap(
+    segments: list[tuple[float, float]],
+    target_secs: float,
+    *,
+    lo_secs: float,
+    hi_secs: float,
+    gap_merge_secs: float = VAD_GAP_MERGE_SECS,
+    min_gap_secs: float = CHAPTER_SPLIT_MIN_GAP_SECS,
+) -> float | None:
+    """Midpoint of the admissible inter-block gap nearest ``target_secs``.
+
+    Walks the SAME sustained-speech blocks as :func:`_merge_speech_blocks` and
+    takes the complement: for consecutive blocks, the gap is
+    ``(prev_block_end, next_block_start)``. A gap is admissible when its width is
+    ``>= min_gap_secs`` AND its midpoint falls inside ``[lo_secs, hi_secs]``.
+
+    Tie-break (D1, total order so the result is deterministic): nearest midpoint
+    to ``target_secs`` wins; ties broken by the WIDER gap, then by the EARLIER
+    midpoint.
+
+    Args:
+        segments: Voiced ``(start, end)`` intervals, in the same time base as
+            ``target_secs``/``lo_secs``/``hi_secs``.
+        target_secs: The arithmetic target cut point.
+        lo_secs: Lower bound of the admissible search interval (inclusive).
+        hi_secs: Upper bound of the admissible search interval (inclusive).
+        gap_merge_secs: Forwarded to :func:`_merge_speech_blocks`.
+        min_gap_secs: Minimum gap width to count as a real boundary.
+
+    Returns:
+        The nearest admissible gap's midpoint, or ``None`` if none qualifies.
+    """
+    blocks = _merge_speech_blocks(segments, gap_merge_secs)
+    if len(blocks) < 2:
+        return None
+
+    candidates: list[tuple[float, float]] = []  # (midpoint, width)
+    for (_start_a, end_a, _voiced_a), (start_b, _end_b, _voiced_b) in zip(blocks, blocks[1:], strict=False):
+        width = start_b - end_a
+        if width < min_gap_secs:
+            continue
+        midpoint = (end_a + start_b) / 2.0
+        if midpoint < lo_secs or midpoint > hi_secs:
+            continue
+        candidates.append((midpoint, width))
+
+    if not candidates:
+        return None
+
+    midpoint, _width = min(candidates, key=lambda c: (abs(c[0] - target_secs), -c[1], c[0]))
+    return midpoint
 
 
 def _chapter_span_ok(new_start: float, new_end: float, min_chapter_secs: float) -> bool:
