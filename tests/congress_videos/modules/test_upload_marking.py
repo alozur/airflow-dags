@@ -52,6 +52,18 @@ class TestMarkChapterUploads:
         assert result["updated_chapters"] == 1
         mock_db.mark_chapter_uploaded.assert_called_once_with("ch-01", "yt-xyz")
 
+    def test_successful_turn_upload_never_marks_its_parent_chapter(self, mock_db):
+        """turn_id is the discriminator even though turn details retain chapter_id."""
+        upload_results = {
+            "upload_details": [{"turn_id": 0, "chapter_id": "ch-01", "youtube_video_id": "yt-xyz", "success": True}]
+        }
+
+        result = mark_chapter_uploads(mock_db, upload_results)
+
+        mock_db.mark_chapter_uploaded.assert_not_called()
+        assert result["updated_chapters"] == 0
+        assert result["details"] == [{"chapter_id": "ch-01", "status": "skipped", "reason": "turn_upload"}]
+
     def test_failed_upload_records_failure(self, mock_db):
         """Failed upload with a resolvable chapter_id records the failure via the DB."""
         upload_results = {"upload_details": [{"chapter_id": "ch-02", "youtube_video_id": None, "success": False}]}
