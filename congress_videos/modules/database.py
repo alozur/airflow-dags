@@ -64,7 +64,7 @@ def filter_shorts_by_source_cooldown(
     return eligible
 
 
-def pending_shorts_candidate_sql(shorts_table: str, chapters_table: str) -> str:
+def pending_shorts_candidate_sql(shorts_table: str, chapters_table: str, turns_table: str) -> str:
     """Candidate query for get_pending_shorts. Params: (tier1_limit, min_virality_score, row_limit).
 
     Ranks each SOURCE UNIT's downloaded, non-abandoned clips (uploaded and
@@ -75,7 +75,9 @@ def pending_shorts_candidate_sql(shorts_table: str, chapters_table: str) -> str:
     query filter down to the still-pending, upload-eligible rows. The outer
     query no longer requires the parent chapter to already be published to
     YouTube (#467) — a candidate is eligible regardless of the parent's
-    `youtube_upload_date`.
+    `youtube_upload_date`. Within each tier, a candidate whose parent has no
+    `youtube_upload_date` derives its publish-order key from its own turn's
+    materialization timestamp instead of sorting last (#476).
     """
     return f"""
                     WITH ranked AS (
@@ -102,13 +104,22 @@ def pending_shorts_candidate_sql(shorts_table: str, chapters_table: str) -> str:
                         vc.video_id
                     FROM ranked
                     JOIN {chapters_table} vc ON vc.chapter_id = ranked.chapter_id
+                    -- #476 recency fallback. LEFT, not INNER: legacy turn_id IS
+                    -- NULL rows survive with a NULL materialized_at, so COALESCE
+                    -- degrades to today's key. turn_id is UNIQUE
+                    -- (uq_speaker_turn_videos_turn), so this matches at most one
+                    -- row and cannot fan out the candidate set. Nothing from stv
+                    -- is projected: stv.video_id is a SERIAL int and would
+                    -- collide with vc.video_id, the YouTube id the cool-down
+                    -- filter reads.
+                    LEFT JOIN {turns_table} stv ON stv.turn_id = ranked.turn_id
                     WHERE ranked.is_uploaded = FALSE
                       AND ranked.is_upload_abandoned = FALSE
                       AND ranked.local_file_path IS NOT NULL
                       AND ranked.reap_status = 'downloaded'
                       AND (ranked.reap_virality_score >= %s OR ranked.reap_virality_score IS NULL)
                     ORDER BY tier ASC,
-                             vc.youtube_upload_date DESC NULLS LAST,
+                             COALESCE(vc.youtube_upload_date, stv.materialized_at) DESC NULLS LAST,
                              ranked.reap_virality_score DESC NULLS LAST,
                              ranked.id ASC
                     LIMIT %s
@@ -897,11 +908,16 @@ class CongressionalVideoDB:
         to Tier 2. The source unit is the turn group for turn-sourced rows
         (`turn_id` set) or the chapter for legacy rows (`turn_id IS NULL`),
         so two turn groups sharing one chapter get independent Tier-1 caps.
-        Tier is the PRIMARY sort key, then the parent chapter's YouTube
-        upload date descending NULLS LAST (most recently uploaded long-form
-        video first, unpublished parents last), then virality score
-        descending as a tie-breaker within the same tier and source unit.
-        Only clips with a local file present are returned.
+        Tier is the PRIMARY sort key, then
+        `COALESCE(parent chapter youtube_upload_date, own turn's
+        speaker_turn_videos.materialized_at)` descending NULLS LAST (issue
+        #476): a candidate with a published parent sorts by that publish
+        date; a turn-sourced candidate with an unpublished parent falls back
+        to its own turn materialization timestamp instead of sorting last;
+        a legacy candidate with an unpublished parent has no fallback and
+        keeps sorting last. Virality score is the tie-breaker within the
+        same tier and source unit. Only clips with a local file present are
+        returned.
 
         The ranking universe deliberately INCLUDES clips that are already
         uploaded (`is_uploaded = TRUE`): an upload permanently consumes its
@@ -933,11 +949,13 @@ class CongressionalVideoDB:
 
         Returns:
             List of video_shorts records (each including `video_id`,
-            `chapter_rank`, and `tier` keys) ordered by tier ASC, then parent
-            chapter youtube_upload_date DESC, then reap_virality_score DESC
+            `chapter_rank`, and `tier` keys) ordered by tier ASC, then
+            COALESCE(parent chapter youtube_upload_date, own turn's
+            materialized_at) DESC, then reap_virality_score DESC
         """
         shorts_table = self.pg_conn.get_qualified_table("video_shorts")
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
+        turns_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
 
         min_virality_score = min_virality_score if min_virality_score is not None else 0.0
 
@@ -960,7 +978,7 @@ class CongressionalVideoDB:
             upload_history = cur.fetchall()
 
             cur.execute(
-                pending_shorts_candidate_sql(shorts_table, chapters_table),
+                pending_shorts_candidate_sql(shorts_table, chapters_table, turns_table),
                 (SHORTS_TIER1_PER_CHAPTER_LIMIT, min_virality_score, SHORTS_PENDING_CANDIDATE_LIMIT),
             )
             candidates = cur.fetchall()

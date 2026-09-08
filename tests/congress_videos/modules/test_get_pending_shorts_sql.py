@@ -62,6 +62,17 @@ CREATE TABLE IF NOT EXISTS video_shorts (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+-- #476: only the columns pending_shorts_candidate_sql's outer LEFT JOIN
+-- touches. turn_id is UNIQUE, matching the production
+-- uq_speaker_turn_videos_turn constraint the no-fan-out guarantee rests
+-- on. Deliberately NO FK to video_shorts.turn_id: three existing tests
+-- insert turn_id 100/200/300 with no matching row here.
+CREATE TABLE IF NOT EXISTS speaker_turn_videos (
+    video_id SERIAL PRIMARY KEY,
+    turn_id INTEGER NOT NULL UNIQUE,
+    materialized_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 """
 
 
@@ -173,7 +184,7 @@ def _insert_clip(
 
 
 def _run_candidate_query(cur, min_virality_score: float = 0.0):
-    sql = pending_shorts_candidate_sql("video_shorts", "video_chapters")
+    sql = pending_shorts_candidate_sql("video_shorts", "video_chapters", "speaker_turn_videos")
     cur.execute(
         sql,
         (SHORTS_TIER1_PER_CHAPTER_LIMIT, min_virality_score, SHORTS_PENDING_CANDIDATE_LIMIT),

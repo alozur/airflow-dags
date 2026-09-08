@@ -893,7 +893,40 @@ class TestGetPendingShorts:
         candidate_sql = mock_cursor.execute.call_args_list[1][0][0]
         outer_sql = candidate_sql.split("FROM ranked", 1)[1]
         assert "youtube_upload_date IS NOT NULL" not in outer_sql
-        assert "youtube_upload_date DESC NULLS LAST" in candidate_sql
+
+        order_by_clause = candidate_sql[candidate_sql.rfind("ORDER BY") :]
+        # The parent-recency term is still present and still NULL-safe after
+        # the #476 COALESCE wrap; the exact key expression is asserted by
+        # test_unpublished_parent_falls_back_to_turn_materialized_at.
+        assert "youtube_upload_date" in order_by_clause
+        descending_terms = [t for t in order_by_clause.split(",") if "DESC" in t]
+        assert descending_terms
+        assert all("NULLS LAST" in t for t in descending_terms)
+
+    def test_unpublished_parent_falls_back_to_turn_materialized_at(self, db):
+        """#476: the outer query LEFT JOINs speaker_turn_videos so a
+        candidate with no parent youtube_upload_date can still resolve a
+        recency key from its own turn's materialization timestamp. The join
+        and its ordering term must live in the outer query only — the
+        ranked CTE stays a single-table scan (design Decision B)."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.side_effect = [[], []]
+
+        instance.get_pending_shorts()
+
+        candidate_sql = mock_cursor.execute.call_args_list[1][0][0]
+        cte_sql = candidate_sql.split("FROM ranked", 1)[0]
+        outer_sql = candidate_sql.split("FROM ranked", 1)[1]
+
+        assert "speaker_turn_videos" not in cte_sql
+        assert "LEFT JOIN" not in cte_sql
+
+        assert "LEFT JOIN" in outer_sql
+        assert "speaker_turn_videos" in outer_sql
+        assert "stv.turn_id = ranked.turn_id" in outer_sql
+
+        order_by_clause = candidate_sql[candidate_sql.rfind("ORDER BY") :]
+        assert "COALESCE(vc.youtube_upload_date, stv.materialized_at) DESC NULLS LAST" in order_by_clause
 
     def test_tier2_row_returned_when_no_tier1_available(self, db):
         instance, mock_cursor = db
