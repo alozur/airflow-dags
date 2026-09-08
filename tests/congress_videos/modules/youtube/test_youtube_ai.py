@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from congress_videos.modules.youtube.youtube_ai import (
     build_youtube_chapters_block,
     generate_youtube_description,
+    generate_youtube_metadata_for_selected_videos,
     score_chapters_relevance,
 )
 
@@ -78,6 +81,47 @@ def _make_top_video(chapter_id: int = 1) -> dict:
     }
 
 
+def _make_turn_video(
+    turn_id: int = 1,
+    *,
+    start_seconds=Decimal(100),
+    end_seconds=Decimal(700),
+    group_start_seconds=Decimal(100),
+    group_end_seconds=Decimal(700),
+    procedural_seconds=Decimal(0),
+) -> dict:
+    """Mirror migration 044's uploadable_turns column list verbatim.
+
+    Seconds fields default to Decimal (as psycopg2 returns for SQL NUMERIC
+    columns) so a regression to raw-Decimal arithmetic fails loudly. No
+    `duration_minutes` key — that field belongs only to the chapter shape.
+    """
+    return {
+        "turn_id": turn_id,
+        "output_path": f"/videos/turn-{turn_id}.mp4",
+        "chapter_id": 1,
+        "resolved_name": "Speaker One",
+        "start_seconds": start_seconds,
+        "end_seconds": end_seconds,
+        "interest_score": 3,
+        "group_start_seconds": group_start_seconds,
+        "group_end_seconds": group_end_seconds,
+        "procedural_seconds": procedural_seconds,
+        "video_id": "vid-1",
+        "chapter_title": "Debate sobre educación",
+        "description": "Descripción del capítulo",
+        "relevance_score": 4,
+        "key_speakers": ["Speaker One"],
+        "session_number": 42,
+        "session_date": "2026-06-01",
+        "materialized_at": "2026-06-01T00:00:00",
+        "prepared_at": "2026-06-01T00:00:00",
+        "resolved_participant_slug": "speaker-one",
+        "speaker_resolution_confidence": 0.9,
+        "speaker_resolution_method": "exact",
+    }
+
+
 class TestGenerateYoutubeMetadataForSelectedVideosDescriptionOnly:
     def test_topic_metadata_has_no_title_key(self, mocker):
         from congress_videos.modules.youtube.youtube_ai import (
@@ -127,6 +171,94 @@ def test_generate_youtube_title_removed_from_module():
 
     assert not hasattr(youtube_pkg, "generate_youtube_title")
     assert "generate_youtube_title" not in youtube_pkg.__all__
+
+
+# ---------------------------------------------------------------------------
+# generate_youtube_metadata_for_selected_videos — turn-row duration (issue #514)
+#
+# Turn rows (uploadable_turns view, the only live long-form upload path per
+# issue #171) carry no duration_minutes field. The system derives a real
+# published duration from fields the row already carries instead of silently
+# defaulting to zero.
+# ---------------------------------------------------------------------------
+
+
+class TestTurnRowDurationDerivation:
+    def _generate(self, mocker, video: dict) -> str:
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_ai.generate_chat_completion",
+            return_value=_make_chat_result("A generated description"),
+        )
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_ai.construct_session_link",
+            return_value="https://www.congreso.es/link",
+        )
+        metadata_results = generate_youtube_metadata_for_selected_videos([video])
+        return metadata_results["topic_metadata"][0]["description"]["description"]
+
+    def test_group_span_uses_half_away_from_zero_rounding(self, mocker):
+        # 400 - 10 - 0 = 390s = 6.5 minutes. Banker's rounding (round(6.5) == 6)
+        # would silently under-report; the contract demands half away from zero.
+        video = _make_turn_video(
+            group_start_seconds=Decimal(10),
+            group_end_seconds=Decimal(400),
+            procedural_seconds=Decimal(0),
+        )
+        description = self._generate(mocker, video)
+        assert "⏱️ Duración: 7 minutos" in description
+
+    def test_missing_group_fields_fall_back_to_individual_span(self, mocker):
+        video = _make_turn_video(
+            group_start_seconds=None,
+            group_end_seconds=None,
+            procedural_seconds=None,
+            start_seconds=Decimal(100),
+            end_seconds=Decimal(560),
+        )
+        description = self._generate(mocker, video)
+        assert "⏱️ Duración: 8 minutos" in description
+
+    def test_all_span_fields_missing_omits_duration_line(self, mocker):
+        video = _make_turn_video(
+            group_start_seconds=None,
+            group_end_seconds=None,
+            procedural_seconds=None,
+            start_seconds=None,
+            end_seconds=None,
+        )
+        description = self._generate(mocker, video)
+        assert "⏱️ Duración:" not in description
+
+    def test_non_positive_group_span_omits_duration_line(self, mocker):
+        video = _make_turn_video(
+            group_start_seconds=Decimal(500),
+            group_end_seconds=Decimal(500),
+            procedural_seconds=Decimal(0),
+        )
+        description = self._generate(mocker, video)
+        assert "⏱️ Duración:" not in description
+
+    def test_sub_minute_span_rounds_up_to_one_minute_never_zero(self, mocker):
+        video = _make_turn_video(
+            group_start_seconds=Decimal(0),
+            group_end_seconds=Decimal(45),
+            procedural_seconds=Decimal(0),
+        )
+        description = self._generate(mocker, video)
+        assert "⏱️ Duración: 1 minutos" in description
+        assert "0 minutos" not in description
+
+    def test_non_numeric_span_field_does_not_raise_and_omits_line(self, mocker):
+        video = _make_turn_video(group_start_seconds="bad")
+        # Must not raise despite the non-numeric coercion input.
+        description = self._generate(mocker, video)
+        assert "⏱️ Duración:" not in description
+
+    def test_chapter_row_keeps_duration_minutes_unchanged(self, mocker):
+        # Regression pin: the chapter branch (duration_minutes=10) must still
+        # render "10 minutos" through the same public entry point.
+        description = self._generate(mocker, _make_top_video())
+        assert "⏱️ Duración: 10 minutos" in description
 
 
 # ---------------------------------------------------------------------------
