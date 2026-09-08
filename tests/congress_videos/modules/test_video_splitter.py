@@ -417,6 +417,102 @@ class TestExtractChaptersFromVideo:
 
 
 # ---------------------------------------------------------------------------
+# _find_chapter_source_video (lifted out of extract_chapters_from_video, issue #272)
+# ---------------------------------------------------------------------------
+
+
+class TestFindChapterSourceVideo:
+    def test_missing_downloads_folder_returns_none(self, tmp_path):
+        from congress_videos.modules.video_splitter import _find_chapter_source_video
+
+        assert _find_chapter_source_video(str(tmp_path / "downloads"), "abc123") is None
+
+    def test_first_listed_date_folder_with_a_match_wins_and_later_folders_are_not_scanned(self, tmp_path, monkeypatch):
+        from congress_videos.modules.video_splitter import _find_chapter_source_video
+
+        downloads = tmp_path / "downloads"
+        for date_folder in ("2025-01-01", "2025-02-02"):
+            video_folder = downloads / date_folder / "vid"
+            video_folder.mkdir(parents=True)
+            (video_folder / "session.mp4").write_bytes(b"\x00")
+
+        real_listdir = os.listdir
+        listed: list[str] = []
+
+        def recording_listdir(path):
+            listed.append(str(path))
+            entries = real_listdir(path)
+            # Force a deterministic, non-sorted order for the date folders.
+            return sorted(entries, reverse=True) if str(path) == str(downloads) else entries
+
+        monkeypatch.setattr(os, "listdir", recording_listdir)
+
+        result = _find_chapter_source_video(str(downloads), "vid")
+
+        assert result == os.path.join(str(downloads), "2025-02-02", "vid", "session.mp4")
+        assert str(downloads / "2025-01-01" / "vid") not in listed
+
+    def test_chapter_video_files_are_skipped_even_with_a_video_extension(self, tmp_path):
+        from congress_videos.modules.video_splitter import _find_chapter_source_video
+
+        video_folder = tmp_path / "downloads" / "2025-01-01" / "vid"
+        video_folder.mkdir(parents=True)
+        (video_folder / "chapter_video.mp4").write_bytes(b"\x00")
+        (video_folder / "my_chapter_video_copy.mkv").write_bytes(b"\x00")
+
+        assert _find_chapter_source_video(str(tmp_path / "downloads"), "vid") is None
+
+    @pytest.mark.parametrize("filename", ["session.mp4", "session.mkv", "session.webm"])
+    def test_supported_video_extensions_match(self, tmp_path, filename):
+        from congress_videos.modules.video_splitter import _find_chapter_source_video
+
+        video_folder = tmp_path / "downloads" / "2025-01-01" / "vid"
+        video_folder.mkdir(parents=True)
+        (video_folder / filename).write_bytes(b"\x00")
+
+        assert _find_chapter_source_video(str(tmp_path / "downloads"), "vid") == str(video_folder / filename)
+
+    @pytest.mark.parametrize("filename", ["session.avi", "session.mp4.part", "session.srt", "notes.txt"])
+    def test_other_extensions_do_not_match(self, tmp_path, filename):
+        from congress_videos.modules.video_splitter import _find_chapter_source_video
+
+        video_folder = tmp_path / "downloads" / "2025-01-01" / "vid"
+        video_folder.mkdir(parents=True)
+        (video_folder / filename).write_bytes(b"\x00")
+
+        assert _find_chapter_source_video(str(tmp_path / "downloads"), "vid") is None
+
+    def test_date_folder_with_only_chapter_video_is_skipped_and_search_continues(self, tmp_path, monkeypatch):
+        from congress_videos.modules.video_splitter import _find_chapter_source_video
+
+        downloads = tmp_path / "downloads"
+        only_chapter = downloads / "2025-01-01" / "vid"
+        only_chapter.mkdir(parents=True)
+        (only_chapter / "chapter_video.mp4").write_bytes(b"\x00")
+        real_source = downloads / "2025-02-02" / "vid"
+        real_source.mkdir(parents=True)
+        (real_source / "session.mp4").write_bytes(b"\x00")
+
+        real_listdir = os.listdir
+        monkeypatch.setattr(
+            os,
+            "listdir",
+            lambda path: sorted(real_listdir(path)) if str(path) == str(downloads) else real_listdir(path),
+        )
+
+        assert _find_chapter_source_video(str(downloads), "vid") == str(real_source / "session.mp4")
+
+    def test_video_id_is_stringified_when_joining_the_path(self, tmp_path):
+        from congress_videos.modules.video_splitter import _find_chapter_source_video
+
+        video_folder = tmp_path / "downloads" / "2025-01-01" / "123"
+        video_folder.mkdir(parents=True)
+        (video_folder / "session.mp4").write_bytes(b"\x00")
+
+        assert _find_chapter_source_video(str(tmp_path / "downloads"), 123) == str(video_folder / "session.mp4")
+
+
+# ---------------------------------------------------------------------------
 # build_ffmpeg_cut_cmd (default: frame-accurate re-encode, input-seek)
 # ---------------------------------------------------------------------------
 

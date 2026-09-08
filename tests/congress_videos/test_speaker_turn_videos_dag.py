@@ -882,6 +882,100 @@ class TestMaterializeTurns:
 
 
 # ---------------------------------------------------------------------------
+# Interest scoring lifted out of _materialize_task (issue #272): quirks the
+# lift must preserve.
+# ---------------------------------------------------------------------------
+
+
+class TestScorePlanTurns:
+    def _plan(self, turn_ids=(7,), keep_intervals=None):
+        plan = MagicMock()
+        plan.turn_ids = turn_ids
+        plan.keep_intervals = keep_intervals or (MagicMock(start=600.0, end=700.0),)
+        return plan
+
+    def _db(self):
+        pg = MagicMock()
+        conn = MagicMock()
+        cur = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+        pg.get_qualified_table.side_effect = lambda n: f"test.{n}"
+        return pg, conn, cur
+
+    def test_none_score_writes_nothing_and_never_commits(self, monkeypatch):
+        mod = _fresh()
+        monkeypatch.setattr(mod, "_window_srt_text", lambda *a: "some text")
+        monkeypatch.setattr(mod, "score_turn_interest", lambda text: None)
+        pg, conn, cur = self._db()
+
+        mod._score_plan_turns(conn, pg, self._plan(), "vid1")
+
+        cur.execute.assert_not_called()
+        conn.commit.assert_not_called()
+
+    def test_zero_score_is_written_not_treated_as_missing(self, monkeypatch):
+        mod = _fresh()
+        monkeypatch.setattr(mod, "_window_srt_text", lambda *a: "some text")
+        monkeypatch.setattr(mod, "score_turn_interest", lambda text: 0)
+        pg, conn, cur = self._db()
+
+        mod._score_plan_turns(conn, pg, self._plan(turn_ids=(7,)), "vid1")
+
+        cur.execute.assert_called_once()
+        sql, params = cur.execute.call_args.args
+        assert "UPDATE test.speaker_turns SET interest_score" in sql
+        assert params == (0, 7)
+        conn.commit.assert_called_once()
+
+    def test_window_failure_is_swallowed_with_a_warning_and_the_next_tid_is_still_scored(self, monkeypatch, caplog):
+        mod = _fresh()
+        calls = []
+
+        def window(video_id, start, end):
+            calls.append((video_id, start, end))
+            if len(calls) == 1:
+                raise RuntimeError("no SRT on disk")
+            return "second window text"
+
+        monkeypatch.setattr(mod, "_window_srt_text", window)
+        monkeypatch.setattr(mod, "score_turn_interest", lambda text: 5)
+        pg, conn, cur = self._db()
+
+        with caplog.at_level("WARNING", logger=mod.logger.name):
+            mod._score_plan_turns(conn, pg, self._plan(turn_ids=(7, 8)), "vid1")
+
+        assert len(calls) == 2
+        cur.execute.assert_called_once()
+        assert cur.execute.call_args.args[1] == (5, 8)
+        assert any("interest scoring failed for turn_id=7" in r.getMessage() for r in caplog.records)
+
+    def test_window_spans_first_keep_interval_start_to_last_keep_interval_end_as_floats(self, monkeypatch):
+        mod = _fresh()
+        seen = []
+        monkeypatch.setattr(mod, "_window_srt_text", lambda vid, start, end: seen.append((vid, start, end)) or "t")
+        monkeypatch.setattr(mod, "score_turn_interest", lambda text: 1)
+        pg, conn, cur = self._db()
+        intervals = (MagicMock(start=600, end=650), MagicMock(start=660, end=680), MagicMock(start=690, end=700))
+
+        mod._score_plan_turns(conn, pg, self._plan(turn_ids=(7,), keep_intervals=intervals), "vid1")
+
+        assert seen == [("vid1", 600.0, 700.0)]
+        assert isinstance(seen[0][1], float) and isinstance(seen[0][2], float)
+
+    def test_one_commit_per_successfully_scored_tid(self, monkeypatch):
+        mod = _fresh()
+        monkeypatch.setattr(mod, "_window_srt_text", lambda *a: "some text")
+        monkeypatch.setattr(mod, "score_turn_interest", lambda text: 3)
+        pg, conn, cur = self._db()
+
+        mod._score_plan_turns(conn, pg, self._plan(turn_ids=(7, 8, 9)), "vid1")
+
+        assert cur.execute.call_count == 3
+        assert [c.args[1] for c in cur.execute.call_args_list] == [(3, 7), (3, 8), (3, 9)]
+        assert conn.commit.call_count == 3
+
+
+# ---------------------------------------------------------------------------
 # Degenerate all-procedural group: no plan, but every turn still gets a row
 # (issue #143 D5) — otherwise a permanently pending turn would block
 # _select_automatic_chapter's MIN(turn_id) forever.
