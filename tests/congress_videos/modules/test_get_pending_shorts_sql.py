@@ -183,6 +183,16 @@ def _insert_clip(
     return cur.fetchone()["id"]
 
 
+def _insert_turn_video(cur, *, turn_id: int, materialized_at: str) -> None:
+    # materialized_at is required (no default) precisely because the
+    # production column defaults to NOW(); a defaulted fixture value would
+    # make ordering assertions wall-clock dependent.
+    cur.execute(
+        "INSERT INTO speaker_turn_videos (turn_id, materialized_at) VALUES (%s, %s)",
+        (turn_id, materialized_at),
+    )
+
+
 def _run_candidate_query(cur, min_virality_score: float = 0.0):
     sql = pending_shorts_candidate_sql("video_shorts", "video_chapters", "speaker_turn_videos")
     cur.execute(
@@ -451,3 +461,55 @@ def test_mixed_legacy_and_turn_rows_partition_independently_in_one_chapter(db):
     assert by_id[legacy_ids[3]]["tier"] == 2
     assert {by_id[i]["tier"] for i in turn_ids[:3]} == {1}
     assert by_id[turn_ids[3]]["tier"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# Issue #476 — turn-sourced recency fallback for unpublished parents
+# --------------------------------------------------------------------------- #
+
+
+def test_unpublished_parent_falls_back_to_turn_materialization(db):
+    """Full COALESCE truth table across three Tier-1 rows (one per source
+    unit, so tier never confounds the assertion): A is legacy with a
+    published parent (2026-01-01); B is turn-sourced with an unpublished
+    parent but a more recent turn materialization (2026-06-01); C is legacy
+    with an unpublished parent and no fallback at all. Effective keys
+    2026-06-01 > 2026-01-01 > NULL give the fully determined order
+    [B, A, C]. Pure score order would give [C, A, B] (scores 9.5, 9.0, 1.0),
+    so only the #476 recency key can produce the expected order."""
+    with db.cursor() as cur:
+        chapter_a = _insert_chapter(cur, video_id="a", youtube_upload_date="2026-01-01")
+        clip_a = _insert_clip(cur, chapter_a, virality_score=9.0)
+
+        chapter_b = _insert_chapter(cur, video_id="b", youtube_upload_date=None)
+        clip_b = _insert_clip(cur, chapter_b, turn_id=900, virality_score=1.0)
+        _insert_turn_video(cur, turn_id=900, materialized_at="2026-06-01")
+
+        chapter_c = _insert_chapter(cur, video_id="c", youtube_upload_date=None)
+        clip_c = _insert_clip(cur, chapter_c, virality_score=9.5)
+
+        rows = _run_candidate_query(cur)
+
+    ids = {clip_a, clip_b, clip_c}
+    ordered_ids = [r["id"] for r in rows if r["id"] in ids]
+    assert ordered_ids == [clip_b, clip_a, clip_c]
+
+
+def test_legacy_rows_keep_parent_recency_order(db):
+    """With no speaker_turn_videos rows at all, the LEFT JOIN yields NULL for
+    every legacy row and COALESCE degrades to today's key
+    (youtube_upload_date alone). The older-parent chapter is inserted FIRST
+    (lower id) so an id ASC fallback would invert the expectation; equal
+    scores keep the recency key as the only distinguishing factor."""
+    with db.cursor() as cur:
+        chapter_old = _insert_chapter(cur, video_id="old-parent", youtube_upload_date="2020-01-01")
+        clip_old = _insert_clip(cur, chapter_old, virality_score=5.0)
+
+        chapter_new = _insert_chapter(cur, video_id="new-parent", youtube_upload_date="2026-01-01")
+        clip_new = _insert_clip(cur, chapter_new, virality_score=5.0)
+
+        rows = _run_candidate_query(cur)
+
+    ids = {clip_old, clip_new}
+    ordered_ids = [r["id"] for r in rows if r["id"] in ids]
+    assert ordered_ids == [clip_new, clip_old]
