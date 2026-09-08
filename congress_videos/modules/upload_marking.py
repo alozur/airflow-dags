@@ -40,7 +40,19 @@ def mark_chapter_uploads(db, upload_results: dict | None) -> dict:
         youtube_video_id = upload_detail.get("youtube_video_id")
         success = upload_detail.get("success", False)
 
-        if success and chapter_id and youtube_video_id:
+        if success and upload_detail.get("turn_id") is not None:
+            # Turn results deliberately retain chapter_id for tracking, but the
+            # turn marker owns their persistence. Marking the parent here hides
+            # every still-pending sibling from uploadable_turns (issue #499).
+            details.append(
+                {
+                    "chapter_id": chapter_id,
+                    "status": "skipped",
+                    "reason": "turn_upload",
+                }
+            )
+            logger.info("Skipping chapter mark for turn upload (chapter_id=%s)", chapter_id)
+        elif success and chapter_id and youtube_video_id:
             try:
                 db.mark_chapter_uploaded(chapter_id, youtube_video_id)
                 updated_count += 1
