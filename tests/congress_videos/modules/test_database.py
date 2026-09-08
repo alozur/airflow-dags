@@ -565,6 +565,70 @@ class TestGetChapterMetadataSessionData:
         assert result["session_number"] is None
         assert result["session_date"] is None
 
+    def test_sql_selects_mentioned_participant_slugs_and_updated_at(self, db):
+        """T2 — the query gains mentioned_participant_slugs and updated_at (issue #433)."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.get_chapter_metadata(chapter_id=1)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "mentioned_participant_slugs" in sql
+        assert "updated_at" in sql
+
+    def test_returns_multi_slug_mentioned_participants(self, db):
+        """T2 — a populated mentioned_participant_slugs array passes through unchanged."""
+        from datetime import datetime as dt_datetime
+
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "chapter_id": 8,
+            "title": "Debate energía",
+            "description": "desc",
+            "speakers": ["Ana Pérez"],
+            "key_speakers": ["Ana Pérez"],
+            "topics": ["energía"],
+            "scoring_reasoning": "high",
+            "relevance_score": 4,
+            "source_video_title": "Sesion 90",
+            "source_video_url": "https://youtube.com/watch?v=uvw",
+            "session_number": 90,
+            "session_date": None,
+            "mentioned_participant_slugs": ["ana-perez", "luis-gomez"],
+            "updated_at": dt_datetime(2026, 9, 1, 12, 0, 0),
+        }
+
+        result = instance.get_chapter_metadata(chapter_id=8)
+
+        assert result is not None
+        assert result["mentioned_participant_slugs"] == ["ana-perez", "luis-gomez"]
+        assert result["updated_at"] == dt_datetime(2026, 9, 1, 12, 0, 0)
+
+    def test_null_mentioned_participant_slugs_stays_none(self, db):
+        """T2 — a never-analysed chapter returns None, distinct from an empty list."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "chapter_id": 9,
+            "title": "Sin analizar",
+            "description": "desc",
+            "speakers": [],
+            "key_speakers": [],
+            "topics": [],
+            "scoring_reasoning": "",
+            "relevance_score": 2,
+            "source_video_title": None,
+            "source_video_url": None,
+            "session_number": None,
+            "session_date": None,
+            "mentioned_participant_slugs": None,
+            "updated_at": None,
+        }
+
+        result = instance.get_chapter_metadata(chapter_id=9)
+
+        assert result is not None
+        assert result["mentioned_participant_slugs"] is None
+
 
 # --------------------------------------------------------------------------- #
 # get_processed_video_ids — idempotency pre-download lookup
