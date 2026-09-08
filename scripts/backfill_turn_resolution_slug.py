@@ -95,6 +95,31 @@ class BackfillEntry:
     new_slug: str
 
 
+def _parse_plan_entry(index: int, item, seen_turn_ids: set[int]) -> BackfillEntry:
+    """Validate one plan item into a `BackfillEntry`, recording its turn_id in `seen_turn_ids`."""
+    if not isinstance(item, dict):
+        raise BackfillInputError(f"entry {index}: must be a JSON object")
+    missing = [f for f in ("turn_id", "new_slug") if f not in item]
+    if missing:
+        raise BackfillInputError(f"entry {index}: missing required field(s) {missing}")
+
+    turn_id = item["turn_id"]
+    if not isinstance(turn_id, int) or isinstance(turn_id, bool):
+        raise BackfillInputError(f"entry {index}: turn_id must be an integer, got {turn_id!r}")
+    if turn_id in seen_turn_ids:
+        raise BackfillInputError(f"entry {index}: duplicate turn_id {turn_id}")
+    seen_turn_ids.add(turn_id)
+
+    expected = item.get("expected_current_slug")
+    if expected is not None and not isinstance(expected, str):
+        raise BackfillInputError(f"entry {index}: expected_current_slug must be a string or null, got {expected!r}")
+    new_slug = item["new_slug"]
+    if not isinstance(new_slug, str) or not new_slug:
+        raise BackfillInputError(f"entry {index}: new_slug must be a non-empty string")
+
+    return BackfillEntry(turn_id=turn_id, expected_current_slug=expected, new_slug=new_slug)
+
+
 def load_plan(path) -> list[BackfillEntry]:
     """Parse+validate the JSON plan file into `BackfillEntry` objects."""
     try:
@@ -116,27 +141,7 @@ def load_plan(path) -> list[BackfillEntry]:
     entries: list[BackfillEntry] = []
     seen_turn_ids: set[int] = set()
     for index, item in enumerate(raw):
-        if not isinstance(item, dict):
-            raise BackfillInputError(f"entry {index}: must be a JSON object")
-        missing = [f for f in ("turn_id", "new_slug") if f not in item]
-        if missing:
-            raise BackfillInputError(f"entry {index}: missing required field(s) {missing}")
-
-        turn_id = item["turn_id"]
-        if not isinstance(turn_id, int) or isinstance(turn_id, bool):
-            raise BackfillInputError(f"entry {index}: turn_id must be an integer, got {turn_id!r}")
-        if turn_id in seen_turn_ids:
-            raise BackfillInputError(f"entry {index}: duplicate turn_id {turn_id}")
-        seen_turn_ids.add(turn_id)
-
-        expected = item.get("expected_current_slug")
-        if expected is not None and not isinstance(expected, str):
-            raise BackfillInputError(f"entry {index}: expected_current_slug must be a string or null, got {expected!r}")
-        new_slug = item["new_slug"]
-        if not isinstance(new_slug, str) or not new_slug:
-            raise BackfillInputError(f"entry {index}: new_slug must be a non-empty string")
-
-        entries.append(BackfillEntry(turn_id=turn_id, expected_current_slug=expected, new_slug=new_slug))
+        entries.append(_parse_plan_entry(index, item, seen_turn_ids))
     return entries
 
 
