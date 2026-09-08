@@ -1,0 +1,18 @@
+# Allow only the immutable DAG snapshot and build inputs into the builder.
+**
+!pyproject.toml
+!uv.lock
+!.airflowignore
+!utils/
+!utils/**
+!congress_videos/
+!congress_videos/**
+!examples/
+!examples/**
+!deploy/
+!deploy/vps-dev/
+!deploy/vps-dev/**
+**/.env*
+**/__pycache__/
+**/*.pickle
+**/youtube_tokens/

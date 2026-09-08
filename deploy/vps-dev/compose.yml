@@ -1,0 +1,103 @@
+# Standalone foundation: no inheritance from the NAS Compose files.
+x-airflow: &airflow
+  image: ${AIRFLOW_IMAGE:?An immutable release image is required}
+  user: "50000:0"
+  restart: unless-stopped
+  networks: [runtime]
+  environment: &environment
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${METADATA_PASSWORD:?Required}@metadata:5432/airflow_dev
+    AIRFLOW__CORE__FERNET_KEY: ${FERNET_KEY:?Required}
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${WEBSERVER_SECRET:?Required}
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags/repo
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__PARALLELISM: "2"
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "1"
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "120"
+    # Nonfunctional application credentials: never point these at metadata.
+    POSTGRES_HOST: application-db-disabled.invalid
+    POSTGRES_PORT: "5432"
+    POSTGRES_DB: application_dev_disabled
+    POSTGRES_USER: disabled
+    POSTGRES_PASSWORD: disabled-not-a-credential
+    POSTGRES_SCHEMA: public
+    OPENAI_API_KEY: dev-disabled-not-a-credential
+    YOUTUBE_API_KEY: dev-disabled-not-a-credential
+    REAP_API_KEY: dev-disabled-not-a-credential
+    PIKZELS_API_KEY: dev-disabled-not-a-credential
+  volumes:
+    - logs:/opt/airflow/logs
+    - data:/opt/airflow/data
+  mem_limit: 2g
+  cpus: 2
+  security_opt: [no-new-privileges:true]
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+services:
+  metadata:
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    restart: unless-stopped
+    networks: [runtime]
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${METADATA_PASSWORD:?Required}
+      POSTGRES_DB: airflow_dev
+    volumes: [metadata:/var/lib/postgresql/data]
+    mem_limit: 1g
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U airflow -d airflow_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  init:
+    <<: *airflow
+    restart: "no"
+    environment:
+      <<: *environment
+      DEV_ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Required}
+    depends_on:
+      metadata: {condition: service_healthy}
+    command: [python, /opt/dev-tools/init.py]
+
+  scheduler:
+    <<: *airflow
+    depends_on:
+      metadata: {condition: service_healthy}
+    command: scheduler
+    healthcheck:
+      test: [CMD-SHELL, 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 20s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+
+  webserver:
+    <<: *airflow
+    depends_on:
+      metadata: {condition: service_healthy}
+    # Fixed address: the host loopback relay targets it; Docker publishes nothing.
+    networks:
+      runtime:
+        ipv4_address: ${UI_UPSTREAM:?Required}
+    command: webserver
+    healthcheck:
+      test: [CMD, curl, -f, http://localhost:8080/health]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+
+networks:
+  runtime:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${RUNTIME_SUBNET:?Required}
+volumes:
+  metadata:
+  logs:
+  data:
