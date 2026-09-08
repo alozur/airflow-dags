@@ -6,6 +6,7 @@ and to evaluate video interest scores for upload prioritization.
 """
 
 import logging
+import math
 from datetime import UTC, datetime
 
 from congress_videos.config.ai_prompts import (
@@ -169,6 +170,49 @@ y el Ejecutivo responde sobre diversos asuntos de interés público.
         }
 
 
+def _turn_duration_metadata(video: dict) -> dict:
+    """Derive published-duration metadata for a turn row (uploadable_turns).
+
+    Total function: never raises, never returns None. Prefers the grouped
+    span (the same formula uploadable_turns uses for its 300s eligibility
+    gate, see migration 044), falling back to the individual turn span when
+    any group field is missing or None. When neither span is derivable, or
+    the derived span is <= 0, returns the non-derivable ("N/A") result.
+
+    Seconds fields come from SQL NUMERIC columns, so psycopg2 yields
+    decimal.Decimal; coerce to float exactly once here, guarded against a
+    bad input type, before any arithmetic.
+
+    Returns:
+        {"duration_seconds": int, "duration_estimated": str}.
+    """
+    non_derivable = {"duration_seconds": 0, "duration_estimated": "N/A"}
+
+    try:
+        group_start = video.get("group_start_seconds")
+        group_end = video.get("group_end_seconds")
+        procedural = video.get("procedural_seconds")
+        if group_start is not None and group_end is not None and procedural is not None:
+            raw_span = group_end - group_start - procedural
+        else:
+            start, end = video.get("start_seconds"), video.get("end_seconds")
+            if start is None or end is None:
+                return non_derivable
+            raw_span = end - start
+        # Single named coercion point: the SQL NUMERIC columns behind these
+        # fields yield decimal.Decimal via psycopg2, so this is the only
+        # place the derivation touches float — always before division.
+        seconds = float(raw_span)
+    except (TypeError, ValueError):
+        return non_derivable
+
+    if seconds <= 0:
+        return non_derivable
+
+    minutes = max(1, math.floor(seconds / 60.0 + 0.5))
+    return {"duration_seconds": int(seconds), "duration_estimated": f"{minutes} minutos"}
+
+
 # YouTube chapter requirements (https://support.google.com/youtube/answer/9884579):
 # first marker must be 00:00, at least 3 markers, each chapter >= 10 seconds.
 _YT_MIN_CHAPTERS = 3
@@ -291,12 +335,16 @@ def generate_youtube_metadata_for_selected_videos(top_videos):
         key_speakers = video.get("key_speakers", speakers)
         speakers_info = [{"speaker_name": name, "role": ""} for name in (key_speakers or speakers)]
 
-        # Get duration from duration_minutes
-        duration_minutes = video.get("duration_minutes", 0)
-        video_metadata = {
-            "duration_seconds": int(duration_minutes * 60),
-            "duration_estimated": f"{int(duration_minutes)} minutos",
-        }
+        # Turn rows (uploadable_turns, issue #171) carry no duration_minutes;
+        # derive the published span instead of silently defaulting to zero.
+        if "turn_id" in video:
+            video_metadata = _turn_duration_metadata(video)
+        else:
+            duration_minutes = video.get("duration_minutes", 0)
+            video_metadata = {
+                "duration_seconds": int(duration_minutes * 60),
+                "duration_estimated": f"{int(duration_minutes)} minutos",
+            }
 
         # Generate description (issue #245: title is no longer generated here —
         # the turn upload path sources its title from the thumbnail pipeline).
