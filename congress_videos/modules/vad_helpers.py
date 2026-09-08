@@ -22,10 +22,12 @@ Design notes:
 from __future__ import annotations
 
 import logging
+import math
 import os
 import subprocess
 import tempfile
 import wave
+from collections.abc import Callable
 
 import numpy as np
 
@@ -465,6 +467,158 @@ def find_split_gap(
 
     midpoint, _width = min(candidates, key=lambda c: (abs(c[0] - target_secs), -c[1], c[0]))
     return midpoint
+
+
+def plan_split_points(
+    duration_secs: float,
+    *,
+    max_chapter_secs: float,
+    min_child_secs: float,
+) -> list[float]:
+    """Equal-interval arithmetic targets for splitting a chapter.
+
+    ``N = ceil(duration_secs / max_chapter_secs)`` children are needed; this
+    returns their ``N - 1`` cut targets at ``duration_secs * i / N``.
+
+    Args:
+        duration_secs: The chapter's total span.
+        max_chapter_secs: Maximum allowed span per child.
+        min_child_secs: Minimum allowed span per child (accepted for interface
+            symmetry with :func:`snap_split_points`; the equal-interval targets
+            already respect it by construction — see D2).
+
+    Returns:
+        ``[]`` when ``duration_secs <= max_chapter_secs`` (the idempotence
+        short-circuit — an already-compliant chapter is never touched).
+    """
+    del min_child_secs  # not needed for equal-interval targets (kept for symmetry)
+    if duration_secs <= max_chapter_secs:
+        return []
+    n = math.ceil(duration_secs / max_chapter_secs)
+    return [duration_secs * i / n for i in range(1, n)]
+
+
+def _admissible_interval(
+    prev_cut_secs: float,
+    duration_secs: float,
+    max_chapter_secs: float,
+    min_child_secs: float,
+    remaining_cuts: int,
+) -> tuple[float, float]:
+    """D2's per-cut admissible interval — bounds every child by MAX and MIN.
+
+    For cut ``i`` (1-based) with ``remaining_cuts = N - i`` cuts still to place
+    after this one:
+        ``lo = max(prev_cut + MIN, duration - remaining_cuts * MAX)``
+        ``hi = min(prev_cut + MAX, duration - remaining_cuts * MIN)``
+
+    This guarantees, by construction, that no child ever exceeds
+    ``max_chapter_secs`` and no child ever falls below ``min_child_secs`` —
+    proven for both the current child (bounded by ``hi``) and the final child
+    (bounded by the next cut's ``lo``).
+    """
+    lo = max(prev_cut_secs + min_child_secs, duration_secs - remaining_cuts * max_chapter_secs)
+    hi = min(prev_cut_secs + max_chapter_secs, duration_secs - remaining_cuts * min_child_secs)
+    return lo, hi
+
+
+def _snap_one_cut(
+    target_secs: float,
+    prev_cut_secs: float,
+    duration_secs: float,
+    segments_for: Callable[[float, float], list[tuple[float, float]] | None],
+    *,
+    window_secs: float,
+    widen_factor: float,
+    max_chapter_secs: float,
+    min_child_secs: float,
+    gap_merge_secs: float,
+    min_gap_secs: float,
+    remaining_cuts: int,
+) -> tuple[float, str]:
+    """Snap ONE cut: try the base window, widen ONCE, else clamp to arithmetic."""
+    lo, hi = _admissible_interval(prev_cut_secs, duration_secs, max_chapter_secs, min_child_secs, remaining_cuts)
+
+    for half_window, reason in ((window_secs, "gap"), (window_secs * widen_factor, "gap_widened")):
+        search_lo = max(lo, target_secs - half_window)
+        search_hi = min(hi, target_secs + half_window)
+        segments = segments_for(search_lo, search_hi)
+        if segments is None:
+            continue
+        gap = find_split_gap(
+            segments,
+            target_secs,
+            lo_secs=search_lo,
+            hi_secs=search_hi,
+            gap_merge_secs=gap_merge_secs,
+            min_gap_secs=min_gap_secs,
+        )
+        if gap is not None:
+            return gap, reason
+
+    return min(max(target_secs, lo), hi), "arithmetic"
+
+
+def snap_split_points(
+    targets: list[float],
+    segments_for: Callable[[float, float], list[tuple[float, float]] | None],
+    duration_secs: float,
+    *,
+    window_secs: float,
+    widen_factor: float,
+    max_chapter_secs: float,
+    min_child_secs: float,
+    gap_merge_secs: float,
+    min_gap_secs: float,
+) -> list[tuple[float, str]]:
+    """Sequentially snap every arithmetic target to a nearby speech gap (D2).
+
+    Each cut is snapped in order (cut 1 first) so the admissible interval for
+    cut ``i`` can depend on the PREVIOUS cut's actual (snapped) value, not its
+    arithmetic target — this is what keeps the ``N`` exact and every child
+    bounded by ``[min_child_secs, max_chapter_secs]`` by construction (D2).
+
+    Args:
+        targets: The ``N - 1`` arithmetic targets from :func:`plan_split_points`.
+        segments_for: Injected ``(lo_secs, hi_secs) -> segments | None`` callable.
+            Returns voiced segments for that slice, or ``None`` on failure
+            (missing video, extraction error, VAD unavailable) — this keeps the
+            planner itself pure/audio-free and fully unit-testable.
+        duration_secs: The chapter's total span.
+        window_secs: Initial half-window search radius around each target.
+        widen_factor: Multiplier applied ONCE to ``window_secs`` when no gap is
+            found in the base window.
+        max_chapter_secs: Maximum allowed span per child.
+        min_child_secs: Minimum allowed span per child.
+        gap_merge_secs: Forwarded to :func:`find_split_gap`.
+        min_gap_secs: Forwarded to :func:`find_split_gap`.
+
+    Returns:
+        One ``(cut_secs, reason)`` per target, in order. ``reason`` is one of
+        ``"gap"`` (found in the base window), ``"gap_widened"`` (found after
+        widening once), or ``"arithmetic"`` (fallback, clamped into the
+        admissible interval).
+    """
+    n = len(targets) + 1
+    results: list[tuple[float, str]] = []
+    prev_cut = 0.0
+    for i, target in enumerate(targets, start=1):
+        cut, reason = _snap_one_cut(
+            target,
+            prev_cut,
+            duration_secs,
+            segments_for,
+            window_secs=window_secs,
+            widen_factor=widen_factor,
+            max_chapter_secs=max_chapter_secs,
+            min_child_secs=min_child_secs,
+            gap_merge_secs=gap_merge_secs,
+            min_gap_secs=min_gap_secs,
+            remaining_cuts=n - i,
+        )
+        results.append((cut, reason))
+        prev_cut = cut
+    return results
 
 
 def _chapter_span_ok(new_start: float, new_end: float, min_chapter_secs: float) -> bool:

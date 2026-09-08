@@ -20,6 +20,8 @@ from congress_videos.modules.vad_helpers import (
     find_split_gap,
     first_sustained_speech_start,
     last_sustained_speech_end,
+    plan_split_points,
+    snap_split_points,
 )
 from congress_videos.modules.video_splitter import compute_ffmpeg_timeout
 
@@ -364,6 +366,146 @@ class TestFindSplitGap:
         segments = [(0.0, 40.0), (45.0, 90.0), (95.0, 200.0)]
         result = find_split_gap(segments, target_secs=67.5, lo_secs=0.0, hi_secs=200.0)
         assert result == pytest.approx(42.5)
+
+
+# ---------------------------------------------------------------------------
+# plan_split_points — equal-interval targets from ceil(D/MAX) (idempotence)
+# ---------------------------------------------------------------------------
+
+
+class TestPlanSplitPoints:
+    def test_duration_at_threshold_returns_no_targets(self):
+        assert plan_split_points(2400.0, max_chapter_secs=2400.0, min_child_secs=300.0) == []
+
+    def test_duration_one_second_over_threshold_yields_one_target(self):
+        result = plan_split_points(2401.0, max_chapter_secs=2400.0, min_child_secs=300.0)
+        assert result == pytest.approx([1200.5])
+
+    def test_64_minutes_yields_target_at_32_minutes(self):
+        duration = 64 * 60
+        result = plan_split_points(duration, max_chapter_secs=2400.0, min_child_secs=300.0)
+        assert result == pytest.approx([32 * 60])
+
+    def test_100_minutes_yields_two_targets(self):
+        duration = 100 * 60
+        result = plan_split_points(duration, max_chapter_secs=2400.0, min_child_secs=300.0)
+        assert result == pytest.approx([duration / 3, 2 * duration / 3])
+
+    def test_duration_under_threshold_returns_no_targets(self):
+        assert plan_split_points(1000.0, max_chapter_secs=2400.0, min_child_secs=300.0) == []
+
+
+# ---------------------------------------------------------------------------
+# snap_split_points — D2 sequential admissible-interval snap
+# ---------------------------------------------------------------------------
+
+
+class TestSnapSplitPoints:
+    def test_cut_never_exceeds_prev_plus_max_nor_leaves_tail_over_max(self):
+        duration = 6000.0  # 100 min, N=3, targets=[2000, 4000]
+        targets = [2000.0, 4000.0]
+
+        def segments_for(_lo, _hi):
+            return []  # backend ran, detected no gaps anywhere
+
+        results = snap_split_points(
+            targets,
+            segments_for,
+            duration,
+            window_secs=120.0,
+            widen_factor=2.0,
+            max_chapter_secs=2400.0,
+            min_child_secs=300.0,
+            gap_merge_secs=2.0,
+            min_gap_secs=3.0,
+        )
+        cuts = [cut for cut, _reason in results]
+        assert cuts[0] <= 2400.0  # first child stays <= MAX
+        assert duration - cuts[-1] <= 2400.0  # last child stays <= MAX
+        assert all(reason == "arithmetic" for _cut, reason in results)
+
+    def test_widen_once_path_returns_gap_widened(self):
+        duration = 2401.0  # just over threshold, N=2, target=1200.5
+
+        def segments_for(lo, hi):
+            if hi - lo <= 250.0:  # base ±120s window: one continuous block, no gap
+                return [(lo, hi)]
+            return [(lo, 995.0), (1005.0, hi)]  # widened ±240s window: real gap at 995-1005
+
+        results = snap_split_points(
+            [1200.5],
+            segments_for,
+            duration,
+            window_secs=120.0,
+            widen_factor=2.0,
+            max_chapter_secs=2400.0,
+            min_child_secs=300.0,
+            gap_merge_secs=2.0,
+            min_gap_secs=3.0,
+        )
+        cut, reason = results[0]
+        assert reason == "gap_widened"
+        assert cut == pytest.approx(1000.0)
+
+    def test_no_gap_anywhere_falls_back_to_arithmetic(self):
+        duration = 4800.0  # 80 min exactly, N=2, target=2400.0 (interval collapses to a point)
+
+        def segments_for(_lo, _hi):
+            return []
+
+        results = snap_split_points(
+            [2400.0],
+            segments_for,
+            duration,
+            window_secs=120.0,
+            widen_factor=2.0,
+            max_chapter_secs=2400.0,
+            min_child_secs=300.0,
+            gap_merge_secs=2.0,
+            min_gap_secs=3.0,
+        )
+        cut, reason = results[0]
+        assert reason == "arithmetic"
+        assert cut == pytest.approx(2400.0)
+
+    def test_backend_failure_none_falls_back_to_arithmetic(self):
+        duration = 2401.0
+
+        def segments_for(_lo, _hi):
+            return None  # backend/extract failure signal
+
+        results = snap_split_points(
+            [1200.5],
+            segments_for,
+            duration,
+            window_secs=120.0,
+            widen_factor=2.0,
+            max_chapter_secs=2400.0,
+            min_child_secs=300.0,
+            gap_merge_secs=2.0,
+            min_gap_secs=3.0,
+        )
+        cut, reason = results[0]
+        assert reason == "arithmetic"
+        assert cut == pytest.approx(1200.5)
+
+
+class TestAdmissibleInterval:
+    """D2's per-cut interval, tested directly (min-child guard clamp)."""
+
+    def test_boundary_case_collapses_to_a_point(self):
+        from congress_videos.modules import vad_helpers
+
+        lo, hi = vad_helpers._admissible_interval(0.0, 4800.0, 2400.0, 300.0, remaining_cuts=1)
+        assert lo == pytest.approx(2400.0)
+        assert hi == pytest.approx(2400.0)
+
+    def test_normal_case_has_positive_width(self):
+        from congress_videos.modules import vad_helpers
+
+        lo, hi = vad_helpers._admissible_interval(0.0, 5000.0, 2400.0, 300.0, remaining_cuts=2)
+        assert lo == pytest.approx(300.0)
+        assert hi == pytest.approx(2400.0)
 
 
 class TestWebrtcSegments:
