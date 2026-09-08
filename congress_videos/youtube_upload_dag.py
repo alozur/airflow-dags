@@ -76,12 +76,17 @@ _THUMBNAIL_DAG_ID = "generic_thumbnail_generator"
 _THUMBNAIL_RESULT_TASK_ID = "thumbnail_result"
 
 
-def _counts_toward_daily_quota(dag_run) -> bool:
-    """Only scheduled runs consume the scheduled daily publishing slot (issue #500)."""
+def _is_scheduled_run(dag_run) -> bool:
+    """True for scheduler-created runs; a missing dag_run is treated as scheduled."""
     if dag_run is None:
         return True  # Backward-compatible for direct callable invocation.
     run_type = getattr(dag_run, "run_type", None)
     return getattr(run_type, "value", run_type) == "scheduled"
+
+
+def _counts_toward_daily_quota(dag_run) -> bool:
+    """Only scheduled runs consume the scheduled daily publishing slot (issue #500)."""
+    return _is_scheduled_run(dag_run)
 
 
 def should_upload(**context):
@@ -89,9 +94,15 @@ def should_upload(**context):
 
     Used as the python_callable for t1_skip (ShortCircuitOperator).
     Receives full Airflow context via **context (REQ-GATE-01).
+
+    The staleness guard exists to drop scheduled runs replayed by a git_sync
+    re-parse. A manual run is an operator decision: it inherits the previous
+    cron interval as data_interval_end, so the guard would reject every manual
+    run started more than the tolerance after the schedule tick (issue #500).
     """
+    dag_run = context.get("dag_run")
     data_interval_end = context.get("data_interval_end")
-    if data_interval_end:
+    if data_interval_end and _is_scheduled_run(dag_run):
         now = datetime.now(UTC)
         staleness = now - data_interval_end
         if staleness > timedelta(minutes=STALE_RUN_TOLERANCE_MINUTES):
@@ -107,7 +118,7 @@ def should_upload(**context):
     upload_quota = ti.xcom_pull(key="upload_quota") or {}
     queue_size = upload_quota.get("queue_size", 0)
     uploads_today = upload_quota.get("uploads_today", 0)
-    if uploads_today >= DAILY_LONG_FORM_UPLOAD_LIMIT and _counts_toward_daily_quota(context.get("dag_run")):
+    if uploads_today >= DAILY_LONG_FORM_UPLOAD_LIMIT and _counts_toward_daily_quota(dag_run):
         logging.info(
             "Skipping upload: %d long-form chapter upload(s) already recorded today (daily limit=%d)",
             uploads_today,
