@@ -534,7 +534,7 @@ COMMENT ON COLUMN production.video_chapters.last_upload_error IS 'Last recorded 
 COMMENT ON VIEW production.uploadable_chapters IS 'Shows chapters eligible for YouTube upload (relevance_score >= 2)';
 COMMENT ON VIEW production.chapter_statistics IS 'Provides aggregate statistics about chapters by source video';
 
--- View: uploadable_turns (migration 044)
+-- View: uploadable_turns (migration 049)
 -- Shows speaker_turn_videos rows that are PREPARED and not yet uploaded.
 -- Cumulative lineage — this block must stay in lockstep with the LATEST view migration
 -- under congress_videos/sql/migrations/ (guarded by tests/congress_videos/sql/test_production_schema.py):
@@ -550,6 +550,10 @@ COMMENT ON VIEW production.chapter_statistics IS 'Provides aggregate statistics 
 --   044 FIFO tie-break appended to the outer ORDER BY (materialized_at ASC,
 --       turn_id ASC) — the three editorial keys can tie completely, so LIMIT 1
 --       was returning an arbitrary row; the order is now total (issue #328)
+--   049 freshness bucket prepended to the outer ORDER BY
+--       ((session_date >= CURRENT_DATE - INTERVAL '14 days') DESC) — congressional
+--       content decays, so any turn from a session in the last 14 days outranks every
+--       older turn; within-bucket order is unchanged from 044 (issue #513)
 
 DROP VIEW IF EXISTS production.uploadable_turns;
 CREATE VIEW production.uploadable_turns AS
@@ -615,7 +619,13 @@ SELECT * FROM (
 -- the PUBLISHED clip (group span minus excised procedural seconds), not the raw
 -- span (issue #143).
 WHERE dedup.group_end_seconds - dedup.group_start_seconds - dedup.procedural_seconds >= 300
-ORDER BY COALESCE(dedup.interest_score, 1) DESC,  -- PRIMARY: interest score (NULL → INTEREST_NEUTRAL=1)
+-- FRESHNESS BUCKET (issue #513). Congressional content is news-shaped and its value
+-- decays: ranking purely on the editorial keys below parked a 2026-09-04 turn behind
+-- three 2026-06-10 turns. TRUE sorts before FALSE under DESC, so any turn from a
+-- session in the last 14 days outranks every older turn. The 14-day cliff is
+-- deliberate, and within each bucket the 044 keys below are byte-for-byte unchanged.
+ORDER BY (dedup.session_date >= CURRENT_DATE - INTERVAL '14 days') DESC,  -- freshness bucket (issue #513)
+         COALESCE(dedup.interest_score, 1) DESC,  -- PRIMARY: interest score (NULL → INTEREST_NEUTRAL=1)
          dedup.relevance_score DESC,
          dedup.session_date DESC,
          -- FIFO tie-break (issue #328). Once the three editorial keys are exhausted
@@ -630,4 +640,4 @@ ORDER BY COALESCE(dedup.interest_score, 1) DESC,  -- PRIMARY: interest score (NU
          -- output_path, so this key makes LIMIT 1 deterministic by contract.
          dedup.turn_id ASC;
 
-COMMENT ON VIEW production.uploadable_turns IS 'Speaker turn videos eligible for YouTube upload — prepared_at IS NOT NULL (issue #146), NOT is_upload_abandoned (issue #141), NOT is_procedural (issue #143), and published clip duration (span minus excised procedural seconds) >= 300s (issue #234/#143)';
+COMMENT ON VIEW production.uploadable_turns IS 'Speaker turn videos eligible for YouTube upload — prepared_at IS NOT NULL (issue #146), NOT is_upload_abandoned (issue #141), NOT is_procedural (issue #143), and published clip duration (span minus excised procedural seconds) >= 300s (issue #234/#143). Publish order: freshness bucket (session_date within 14 days, issue #513), then interest_score, relevance_score, session_date, materialized_at FIFO, turn_id backstop (issue #328)';
