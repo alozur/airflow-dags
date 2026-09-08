@@ -573,8 +573,15 @@ class CongressionalVideoDB:
                         JOIN group_spans gs ON gs.output_path = stv.output_path
                         WHERE stv.output_path IS NOT NULL
                           AND NOT COALESCE(st.is_procedural, FALSE)   -- issue #143
-                          AND NOT EXISTS (                            -- dedup on the turn, not the chapter
-                              SELECT 1 FROM {shorts_table} vs WHERE vs.turn_id = stv.turn_id
+                          AND NOT EXISTS (                            -- dedup on the FILE: any queued sibling
+                              -- turn of this output_path excludes it. Keyed on turn_id
+                              -- alone, a queued representative would let the next
+                              -- sibling become the representative and re-queue the
+                              -- same file on the following run.
+                              SELECT 1
+                              FROM {shorts_table} vs
+                              JOIN {stv_table} queued ON queued.turn_id = vs.turn_id
+                              WHERE queued.output_path = stv.output_path
                           )
                         ORDER BY stv.output_path, stv.turn_id          -- deterministic representative
                     ) dedup

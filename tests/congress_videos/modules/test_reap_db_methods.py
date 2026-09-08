@@ -130,7 +130,13 @@ class TestGetTurnVideosForShorts:
         sql = mock_cursor.execute.call_args[0][0]
         assert "DISTINCT ON (stv.output_path)" in sql
 
-    def test_query_dedups_on_turn_id_not_chapter_id(self, db):
+    def test_query_dedups_on_output_path_via_queued_sibling_turns(self, db):
+        """Any queued sibling turn of the same output_path excludes the file.
+
+        A dedup keyed on ``vs.turn_id = stv.turn_id`` inside the DISTINCT ON
+        subquery lets the next sibling become the representative once the
+        first one is queued, re-queuing the same file on the following run.
+        """
         instance, mock_cursor = db
         mock_cursor.fetchall.return_value = []
 
@@ -138,8 +144,10 @@ class TestGetTurnVideosForShorts:
 
         sql = mock_cursor.execute.call_args[0][0]
         assert "NOT EXISTS" in sql
-        assert "vs.turn_id = stv.turn_id" in sql
-        assert "vs.chapter_id" not in sql, "dedup must key on turn_id, not chapter_id"
+        assert "speaker_turn_videos queued ON queued.turn_id = vs.turn_id" in sql
+        assert "WHERE queued.output_path = stv.output_path" in sql
+        assert "vs.turn_id = stv.turn_id" not in sql, "dedup must key on the file, not the representative turn"
+        assert "vs.chapter_id" not in sql, "dedup must not key on chapter_id"
 
     def test_query_excludes_procedural_representative(self, db):
         instance, mock_cursor = db
