@@ -318,3 +318,121 @@ class TestWriteOradorSidecars:
         prepare_chapter_upload_config(extraction, metadata, dry_run=True)
 
         assert not (tmp_path / "title.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# Lookup helpers (lifted out of prepare_chapter_upload_config, issue #272)
+# ---------------------------------------------------------------------------
+
+
+class TestMetadataLookupByChapter:
+    @pytest.mark.parametrize("results", [None, {}, {"topic_metadata": None}, {"topic_metadata": []}])
+    def test_missing_or_empty_topic_metadata_yields_empty_lookup(self, results):
+        from congress_videos.modules.youtube.youtube_upload import _metadata_lookup_by_chapter
+
+        assert _metadata_lookup_by_chapter(results) == {}
+
+    def test_maps_chapter_id_to_the_whole_metadata_entry(self):
+        from congress_videos.modules.youtube.youtube_upload import _metadata_lookup_by_chapter
+
+        entry = _make_topic_metadata(7, "Title", "Desc")
+
+        lookup = _metadata_lookup_by_chapter(_make_metadata_results([entry]))
+
+        assert lookup == {7: entry}
+        assert lookup[7] is entry
+
+    @pytest.mark.parametrize("bad_entry", [{"chapter_id": 0}, {"chapter_id": None}, {"title": "no id"}])
+    def test_entries_with_falsy_or_missing_chapter_id_are_dropped(self, bad_entry):
+        from congress_videos.modules.youtube.youtube_upload import _metadata_lookup_by_chapter
+
+        lookup = _metadata_lookup_by_chapter(_make_metadata_results([bad_entry, _make_topic_metadata(3, "T", "D")]))
+
+        assert list(lookup) == [3]
+
+    def test_later_duplicate_chapter_id_overwrites_earlier_entry(self):
+        from congress_videos.modules.youtube.youtube_upload import _metadata_lookup_by_chapter
+
+        first = _make_topic_metadata(5, "First", "D")
+        second = _make_topic_metadata(5, "Second", "D")
+
+        lookup = _metadata_lookup_by_chapter(_make_metadata_results([first, second]))
+
+        assert lookup[5] is second
+
+
+class TestThumbnailLookupByChapter:
+    @pytest.mark.parametrize("results", [None, {}, {"results": None}, {"results": []}])
+    def test_missing_or_empty_results_yield_empty_lookup(self, results):
+        from congress_videos.modules.youtube.youtube_upload import _thumbnail_lookup_by_chapter
+
+        assert _thumbnail_lookup_by_chapter(results) == {}
+
+    def test_maps_chapter_id_to_output_path(self):
+        from congress_videos.modules.youtube.youtube_upload import _thumbnail_lookup_by_chapter
+
+        results = _make_thumbnail_results([{"chapter_id": 2, "success": True, "output_path": "/thumbs/2.png"}])
+
+        assert _thumbnail_lookup_by_chapter(results) == {2: "/thumbs/2.png"}
+
+    @pytest.mark.parametrize(
+        "bad_entry",
+        [
+            {"chapter_id": 2, "success": False, "output_path": "/thumbs/2.png"},
+            {"chapter_id": 2, "output_path": "/thumbs/2.png"},
+            {"chapter_id": 0, "success": True, "output_path": "/thumbs/0.png"},
+            {"success": True, "output_path": "/thumbs/none.png"},
+        ],
+    )
+    def test_unsuccessful_or_unidentified_thumbnails_are_dropped(self, bad_entry):
+        from congress_videos.modules.youtube.youtube_upload import _thumbnail_lookup_by_chapter
+
+        assert _thumbnail_lookup_by_chapter(_make_thumbnail_results([bad_entry])) == {}
+
+    def test_successful_thumbnail_without_output_path_maps_to_none(self):
+        from congress_videos.modules.youtube.youtube_upload import _thumbnail_lookup_by_chapter
+
+        lookup = _thumbnail_lookup_by_chapter(_make_thumbnail_results([{"chapter_id": 4, "success": True}]))
+
+        assert 4 in lookup
+        assert lookup[4] is None
+
+    def test_later_duplicate_chapter_id_overwrites_earlier_path(self):
+        from congress_videos.modules.youtube.youtube_upload import _thumbnail_lookup_by_chapter
+
+        results = _make_thumbnail_results(
+            [
+                {"chapter_id": 9, "success": True, "output_path": "/thumbs/old.png"},
+                {"chapter_id": 9, "success": True, "output_path": "/thumbs/new.png"},
+            ]
+        )
+
+        assert _thumbnail_lookup_by_chapter(results) == {9: "/thumbs/new.png"}
+
+
+class TestPikzelsOverride:
+    @pytest.mark.parametrize(
+        "thumbnail_result",
+        [None, {}, {"success": False, "chapter_id": 1, "output_path": "/t.png", "title": "T"}],
+    )
+    def test_missing_or_unsuccessful_result_yields_no_override(self, thumbnail_result):
+        from congress_videos.modules.youtube.youtube_upload import _pikzels_override
+
+        assert _pikzels_override(thumbnail_result) == (None, None, None)
+
+    def test_successful_result_passes_through_chapter_id_path_and_title(self):
+        from congress_videos.modules.youtube.youtube_upload import _pikzels_override
+
+        result = {"success": True, "chapter_id": 12, "output_path": "/thumbs/12.png", "title": "Override"}
+
+        assert _pikzels_override(result) == (12, "/thumbs/12.png", "Override")
+
+    def test_successful_result_with_missing_fields_passes_through_none(self):
+        from congress_videos.modules.youtube.youtube_upload import _pikzels_override
+
+        assert _pikzels_override({"success": True}) == (None, None, None)
+
+    def test_successful_result_with_only_title_keeps_chapter_id_and_path_none(self):
+        from congress_videos.modules.youtube.youtube_upload import _pikzels_override
+
+        assert _pikzels_override({"success": True, "title": "Only title"}) == (None, None, "Only title")
