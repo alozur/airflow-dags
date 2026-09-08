@@ -12,6 +12,9 @@
 - `uv run pytest`: **4811 passed, 32 skipped**, coverage **90.78%**.
 - `bash scripts/test-airflow-e2e.sh`: Docker daemon unavailable; script exited **4** as the documented non-failure path.
 
-## Slice 2 — pending
+## Slice 2 — guarded repair command
 
-The guarded repair command and its tests are intentionally held for a second, review-bounded PR. It will be stack-based on Slice 1 and is not an executable production action until an exact preflight result receives separate approval.
+- Added `scripts/repair_orphaned_turn_chapters.py`; dry run is the default and `--execute` repeats the full safety predicate inside its transaction.
+- Unit tests cover the exact allowlist, candidate predicate, execute predicate, dry-run default and opt-in execution.
+- A production read-only preflight using the same command found exactly four qualified chapters: 263 (`195–204, 210–211` pending), 265 (`236, 242`), 266 (`244, 245, 248`) and 519 (`320–322`). Chapter 264 has no prepared pending turn, so it correctly does not qualify.
+- This is not an authorization to mutate production. The final operational task remains open until the exact four-id set receives explicit approval.
