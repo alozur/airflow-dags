@@ -20,11 +20,13 @@ from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 from airflow.operators.python import PythonOperator
 
 from congress_videos.config.ai_prompts import (
+    SHORTS_METADATA_MENTIONED_PEOPLE_INSTRUCTION,
     SHORTS_METADATA_SYSTEM_PROMPT,
     SHORTS_METADATA_USER_PROMPT_TEMPLATE,
 )
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
 from congress_videos.modules.database import CongressionalVideoDB
+from congress_videos.modules.participants_db import lookup_participant_by_slug
 from utils.ai_helpers import generate_json_completion, truncate_text
 from utils.env_loader import load_env_if_local
 from utils.llm_config import LLM_DEFAULT
@@ -35,12 +37,19 @@ load_env_if_local()
 POSTGRES_SCHEMA = os.getenv("POSTGRES_SCHEMA", "development")
 
 
-def _resolve_speakers(ch: dict) -> tuple[str, str]:
+def _resolve_speakers(ch: dict, preferred_primary: str = "") -> tuple[str, str]:
     """Return (primary_speaker, rest_speakers) filtering placeholders.
 
     Priority: key_speakers (placeholder-filtered) before speakers
     (placeholder-filtered). Deduplicates order-preserving. Returns ("", "")
     when the combined pool is empty after filtering.
+
+    Args:
+        preferred_primary: when non-empty (issue #433, design D4), promotes
+            this name to the front of the pool ahead of key_speakers/speakers,
+            de-duplicating so no name is lost. Used to render a turn's
+            resolved speaker slug ahead of the chapter-level heuristic. The
+            default keeps every existing caller's behaviour unchanged.
     """
     from congress_videos.modules.speaker_placeholders import is_placeholder
 
@@ -54,9 +63,97 @@ def _resolve_speakers(ch: dict) -> tuple[str, str]:
             pool.append(name)
             seen.add(name)
 
+    if preferred_primary:
+        pool = [preferred_primary] + [n for n in pool if n.strip() != preferred_primary]
+
     if not pool:
         return ("", "")
     return (pool[0].strip(), ", ".join(pool[1:]))
+
+
+def build_shorts_metadata_context(
+    chapter: dict,
+    turn_speaker_slug: str | None,
+    participants_lookup,
+) -> dict:
+    """Resolve speaker, mentioned people and topics as three separate prompt inputs.
+
+    Speaker precedence (issue #433, design D4; spec "Speaker identity
+    precedence"): the turn's resolved_participant_slug, rendered via
+    participants_lookup, wins over the chapter-level _resolve_speakers
+    heuristic — that promotion happens at the call site, this function only
+    resolves the display name. Mentioned people are resolved the same way,
+    excluding the resolved speaker (by slug identity and by case-folded
+    display-name equality) and dropping any slug that does not resolve.
+    Topics pass through unmodified and are never merged into either people
+    list (spec "A topic never renders as a person"). Every
+    participants_lookup call is individually guarded — this function never
+    raises.
+
+    Args:
+        chapter: row from CongressionalVideoDB.get_chapter_metadata.
+        turn_speaker_slug: speaker_turn_videos.resolved_participant_slug for
+            the short's turn, or None when unavailable.
+        participants_lookup: callable slug -> row|None (injected, mirrors
+            thumbnail_config.py's participants_lookup convention).
+
+    Returns:
+        {"speaker_display_name": str, "mentioned_display_names": list[str],
+         "topics": list[str]}
+    """
+    speaker_display_name = ""
+    if turn_speaker_slug:
+        try:
+            participant = participants_lookup(turn_speaker_slug)
+        except Exception as exc:
+            logging.warning(
+                "build_shorts_metadata_context: speaker slug lookup failed for "
+                "turn_speaker_slug=%r: %s — speaker_display_name stays empty",
+                turn_speaker_slug,
+                exc,
+            )
+            participant = None
+        if participant and participant.get("display_name"):
+            speaker_display_name = participant["display_name"]
+
+    speaker_slug_key = (turn_speaker_slug or "").strip().lower()
+    speaker_name_key = speaker_display_name.strip().lower()
+
+    mentioned_display_names: list[str] = []
+    seen_names: set[str] = set()
+    for slug in chapter.get("mentioned_participant_slugs") or []:
+        if slug and slug.strip().lower() == speaker_slug_key:
+            continue
+        try:
+            participant = participants_lookup(slug)
+        except Exception as exc:
+            logging.info(
+                "build_shorts_metadata_context: mentioned slug lookup failed for "
+                "slug=%r: %s — dropped from mentioned people",
+                slug,
+                exc,
+            )
+            continue
+        if not participant or not participant.get("display_name"):
+            logging.info(
+                "build_shorts_metadata_context: mentioned slug %r did not resolve — dropped from mentioned people",
+                slug,
+            )
+            continue
+        display_name = participant["display_name"]
+        name_key = display_name.strip().lower()
+        if name_key == speaker_name_key and speaker_name_key:
+            continue
+        if name_key in seen_names:
+            continue
+        seen_names.add(name_key)
+        mentioned_display_names.append(display_name)
+
+    return {
+        "speaker_display_name": speaker_display_name,
+        "mentioned_display_names": mentioned_display_names,
+        "topics": chapter.get("topics") or [],
+    }
 
 
 _MONTHS = [
@@ -158,9 +255,45 @@ with DAG(
             ch = db.get_chapter_metadata(chapter_id) if chapter_id else {}
             ch = ch or {}
 
+            if chapter_id:
+                # AC5/design D1 (option A): the analysis marker is operator-visible in
+                # the task log. This is a single get_chapter_metadata read — no XCom
+                # hop, no cached copy — so mentioned_participant_slugs and topics
+                # always originate from the same row snapshot.
+                logging.info(
+                    "generate_metadata: chapter_id=%s content_analysis snapshot "
+                    "updated_at=%s mentioned_participant_slugs=%s topics=%s",
+                    chapter_id,
+                    ch.get("updated_at"),
+                    ch.get("mentioned_participant_slugs"),
+                    ch.get("topics"),
+                )
+
+            turn_id = short.get("turn_id")
+            turn_speaker_slug = None
+            if turn_id:
+                try:
+                    turn_speaker_row = db.get_turn_speaker_slug(turn_id)
+                except Exception as exc:
+                    logging.warning(
+                        "generate_metadata: turn speaker lookup failed for short_id=%s "
+                        "turn_id=%s: %s — falls back to the chapter-level heuristic",
+                        short_id,
+                        turn_id,
+                        exc,
+                    )
+                    turn_speaker_row = None
+                if turn_speaker_row:
+                    turn_speaker_slug = turn_speaker_row.get("resolved_participant_slug")
+
+            metadata_context = build_shorts_metadata_context(ch, turn_speaker_slug, lookup_participant_by_slug)
+            mentioned_display_names = metadata_context["mentioned_display_names"]
+
             chapter_title = ch.get("title") or f"Short clip {short_id}"
-            primary_speaker, secondary_speakers = _resolve_speakers(ch)
-            topics = ", ".join(ch.get("topics") or []) or "Debate parlamentario"
+            primary_speaker, secondary_speakers = _resolve_speakers(
+                ch, preferred_primary=metadata_context["speaker_display_name"]
+            )
+            topics = ", ".join(metadata_context["topics"]) or "Debate parlamentario"
             scoring_reasoning = ch.get("scoring_reasoning") or ""
 
             # Fallback metadata — used if Whisper or GPT fail
@@ -221,6 +354,9 @@ with DAG(
                     topics=topics,
                     scoring_reasoning=scoring_reasoning[:500],
                 )
+                if mentioned_display_names:
+                    mentioned_list = "\n".join(f"- {name}" for name in mentioned_display_names)
+                    user_prompt += SHORTS_METADATA_MENTIONED_PEOPLE_INSTRUCTION.format(mentioned_list=mentioned_list)
                 ai_result = generate_json_completion(
                     system_prompt=SHORTS_METADATA_SYSTEM_PROMPT,
                     user_prompt=user_prompt,

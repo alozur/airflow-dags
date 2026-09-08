@@ -56,6 +56,20 @@ REQUISITOS DESCRIPCIÓN:
 
 Devuelve SOLO el JSON, sin markdown."""
 
+# Mentioned-people injection block: appended to the shorts user prompt when
+# at least one mentioned participant slug resolves to a display name (issue
+# #433, design D3). Deliberately NOT a placeholder in the base template above
+# — an unconditional placeholder would change the base prompt bytes for
+# every short, making the empty-metadata byte-compatibility guarantee
+# unachievable by construction.
+SHORTS_METADATA_MENTIONED_PEOPLE_INSTRUCTION = (
+    "\n\nPERSONAS MENCIONADAS (se habla DE ellas en el debate):\n{mentioned_list}\n"
+    "REGLA: estas personas NO son el ponente y no puedes atribuirles la intervención "
+    "ni ponerlas como sujeto del título. El ponente es únicamente "
+    '"PONENTE PRINCIPAL". Las entradas de "Temas" son materias tratadas, '
+    "nunca personas."
+)
+
 
 # YouTube Description Generation
 YOUTUBE_DESCRIPTION_SYSTEM_PROMPT = (
