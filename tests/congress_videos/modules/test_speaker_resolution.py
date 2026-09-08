@@ -955,7 +955,10 @@ class TestAnchoredEvidenceGateIntegration:
     @pytest.mark.parametrize("turn_type", ["monologue", "qa"])
     def test_gate_uniform_across_turn_types(self, turn_type):
         """The anchored evidence gate has no turn_type branch: in-region
-        evidence resolves for monologue and qa alike."""
+        evidence resolves for monologue and qa alike. The monologue
+        parametrization is a dead call shape (post-#430 only turn_type ==
+        'qa' reaches this module in production), kept precisely to prove
+        the gate has no turn_type branch."""
         result = _run_anchored_gate_case(evidence_offset=-500, turn_type=turn_type)
         assert result is not None
         assert result["participant_slug"] == "pedro-sanchez"
@@ -991,9 +994,11 @@ class TestAnchoredEvidenceGateIntegration:
 
 class TestPreGateUnchangedSlice1:
     """Slice 1 only anchors the EVIDENCE gate; the pre-gate keeps reading
-    the narrow intro+turn text for every turn_type (D4's rebind is
+    the intro+turn text for every turn_type (D4's rebind is
     slice-2/qa-only) — proves slice 1 does not widen which turns reach the
-    LLM, for monologue AND qa turn types alike."""
+    LLM. The monologue/None parametrizations are a dead call shape kept
+    for byte identity (post-#430, only turn_type == 'qa' is live in
+    production); the qa parametrization stays a live production shape."""
 
     @pytest.mark.parametrize("turn_type", ["monologue", "qa", None])
     def test_still_vetoed_announcement_300s_back(self, turn_type):
@@ -1083,10 +1088,14 @@ class TestWideUserTemplate:
 
 
 class TestNonQaPromptUnchanged:
-    """Approval test (issue #322 D4): non-qa turn_type keeps today's narrow
-    SPEAKER_RESOLUTION_USER_TEMPLATE prompt, byte-identical, both BEFORE and
-    AFTER the qa-gated wide-context branch is wired into the resolver.
-    Uses the _run_qa_case harness defined below (resolved at call time)."""
+    """Approval test (issue #322 D4): the monologue/None turn_type call
+    shape is dead in production since #430 (every live caller reaches
+    resolve_speaker with turn_type == 'qa'), but the
+    SPEAKER_RESOLUTION_USER_TEMPLATE prompt it pins is live — it renders
+    the qa-unparseable-chapter-span fallback and the kill-switch path.
+    Byte-identical, both BEFORE and AFTER the qa-gated wide-context branch
+    was wired into the resolver. Uses the _run_qa_case harness defined
+    below (resolved at call time)."""
 
     @pytest.mark.parametrize("turn_type", ["monologue", None])
     def test_narrow_prompt_byte_identical_for_non_qa(self, turn_type):
@@ -1197,8 +1206,8 @@ def _run_qa_case(
 class TestQaGatedWideContext:
     """turn_type == 'qa' + a parseable chapter span widens BOTH the prompt
     and the announcement pre-gate in lockstep (D1/D4/D7), dropping text
-    at/after the forward edge; unparseable spans fail back to narrow,
-    logging loudly (D7)."""
+    at/after the forward edge; unparseable spans fall back to the
+    intro+turn prompt, logging loudly (D7)."""
 
     def test_qa_turn_widens_prompt_and_pre_gate_dropping_forward_edge(self):
         future_text = "Este texto pertenece a un turno futuro fuera de la region."
@@ -1242,7 +1251,8 @@ class TestQaGatedWideContext:
 
 class TestD4PreGateRebind:
     """has_announcement_phrase reads the SAME text as the prompt; every
-    non-qa turn_type stays vetoed on the narrow window it always used."""
+    non-qa turn_type stays vetoed on the intro+turn window it always used
+    — a dead call shape (post-#430) retained for byte identity."""
 
     @pytest.mark.parametrize("turn_type", ["monologue", None])
     def test_non_qa_pre_gate_still_vetoed(self, turn_type):

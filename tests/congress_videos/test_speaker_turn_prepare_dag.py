@@ -1913,6 +1913,7 @@ class TestQaPromotionReresolution:
         message = audit_records[0].getMessage()
         assert audit_records[0].name == "congress_videos.speaker_turn_prepare_dag"
         assert "maria-lopez" in message and "carlos-ruiz" in message and "promoted=" in message
+        assert "primary_slug=" in message  # issue #463: audit key renamed from narrow_slug
 
     def test_wide_none_falls_back_to_narrow(self):
         """Wide pass returns None -> narrow slug persisted, promotion still fires."""
