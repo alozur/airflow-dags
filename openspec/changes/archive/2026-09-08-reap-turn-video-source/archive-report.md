@@ -155,4 +155,11 @@ Per launch prompt and verify-report:
 
 ## Deployment
 
-Pending: orchestrator appends NAS evidence after release.
+Executed 2026-09-08 (UTC) by the orchestrator after release PR #475 (main a898e53):
+
+- `git_sync_dag` on prod: success, `HEAD is now at a898e53`; `airflow dags list-import-errors` → `No data found`.
+- Migration 047 first failed in both schemas with `permission denied for table speaker_turn_videos`: after the infra-security cutover the owner roles (`airflow_prod`/`airflow_dev`) had explicit ACLs without `REFERENCES`. Fixed as `admin` with `GRANT REFERENCES ON ALL TABLES IN SCHEMA … TO <owner>` plus matching default privileges; `run_migrations` then applied 047 on `production` (success) and a transactional script applied it on `development` as `airflow_dev` (dev stack is stopped on purpose since 2026-09-04). `schema_migrations` last row = 047 in both schemas.
+- Read-only selection check on prod before the run: 32 eligible turn groups (28 in window, 4 to pre-trim).
+- Manual `congress_reap_clip_preparer` run on prod (`manual__2026-09-08T06:50:10+00:00`): `get_turn_videos_for_shorts: 32 eligible`, all 4 over-ceiling turns pre-trimmed (324, 323, 135, 262; h264 re-encode ≈5 min each), 26 `video_shorts` rows queued `pending` with `turn_id` across 10 chapters (26 distinct files). The task then received SIGTERM from the scheduler's zombie detection: the NAS was at load 56 (a post-reboot `btrfs scrub` of /volume1 plus the re-encodes), so the run ended failed after 26/32. The remaining 6 candidates are picked up idempotently by the next scheduled run.
+- Hotfix found during that check and shipped right after: the dedup `NOT EXISTS` keyed on the representative `turn_id` inside the `DISTINCT ON` subquery let a sibling turn of an already-queued `output_path` re-qualify the same file; the dedup now excludes any `output_path` with a queued sibling (validated read-only on prod: remaining 16 → 6, no duplicate files among the 26 queued).
+- Follow-up filed: #476 (turn-sourced shorts with an unpublished parent sort last within their tier).
