@@ -1444,6 +1444,70 @@ class TestWriteShortSrtSidecar:
         if shorts_dir.exists():
             assert list(shorts_dir.iterdir()) == []
 
+    def test_turn_sourced_clip_ignores_pretrim_offsets(self, source_srt):
+        """issue #467: pretrim_* on a turn-sourced short are file-relative
+        offsets into the turn's own output_path media, not chapter-relative —
+        applying the chapter-relative formula would produce a wrong window.
+        turn_id not None MUST fall back to the full chapter span even when
+        both pretrim offsets are present."""
+        result = write_short_srt_sidecar(
+            self.VIDEO_ID,
+            self.CHAPTER_ID,
+            self.CLIP_ID,
+            self.CHAPTER_START,
+            self.CHAPTER_END,
+            pretrim_start_secs=self.PRETRIM_START,
+            pretrim_end_secs=self.PRETRIM_END,
+            turn_id=7,
+        )
+
+        assert result is not None
+        content = result.read_text(encoding="utf-8")
+        # Full chapter span [300s, 600s) covers all four blocks — NOT the
+        # narrower pretrim window [330s, 400s) that a chapter-sourced clip
+        # with the same offsets would produce.
+        assert "fuera antes de todo" not in content  # 60-65s, outside [300,600)
+        assert "dentro del pretrim inicio" in content
+        assert "dentro del pretrim medio" in content
+        assert "fuera del pretrim final" in content  # 420-425s, inside [300,600)
+
+    def test_turn_sourced_clip_with_no_pretrim_offsets_uses_full_chapter_span(self, source_srt):
+        result = write_short_srt_sidecar(
+            self.VIDEO_ID,
+            self.CHAPTER_ID,
+            self.CLIP_ID,
+            self.CHAPTER_START,
+            self.CHAPTER_END,
+            pretrim_start_secs=None,
+            pretrim_end_secs=None,
+            turn_id=7,
+        )
+
+        assert result is not None
+        content = result.read_text(encoding="utf-8")
+        assert "dentro del pretrim inicio" in content
+        assert "dentro del pretrim medio" in content
+        assert "fuera del pretrim final" in content
+
+    def test_chapter_sourced_clip_unaffected_by_turn_id_default(self, source_srt):
+        """turn_id defaults to None — byte-identical to today's chapter path."""
+        result = write_short_srt_sidecar(
+            self.VIDEO_ID,
+            self.CHAPTER_ID,
+            self.CLIP_ID,
+            self.CHAPTER_START,
+            self.CHAPTER_END,
+            pretrim_start_secs=self.PRETRIM_START,
+            pretrim_end_secs=self.PRETRIM_END,
+        )
+
+        assert result is not None
+        content = result.read_text(encoding="utf-8")
+        # Narrow pretrim window [330s, 400s) — the chapter-sourced path.
+        assert "dentro del pretrim inicio" in content
+        assert "dentro del pretrim medio" in content
+        assert "fuera del pretrim final" not in content
+
     def test_oserror_on_write_returns_none_and_leaves_no_tmp(self, source_srt, mocker, caplog):
         mocker.patch("os.replace", side_effect=OSError("disk full"))
 

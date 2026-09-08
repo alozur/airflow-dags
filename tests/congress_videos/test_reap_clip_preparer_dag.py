@@ -80,6 +80,15 @@ class TestCongressReapClipPreparerDAGLoads:
         assert t2.task_id in {t.task_id for t in t1.downstream_list}
         assert t3.task_id in {t.task_id for t in t2.downstream_list}
 
+    def test_dag_params_are_turn_based(self):
+        from congress_videos.reap_clip_preparer_dag import dag
+
+        assert "max_turns" in dag.params
+        assert "max_chapters" not in dag.params
+        assert "min_relevance_score" not in dag.params
+        assert dag.params["pre_trim_threshold_secs"] == 900
+        assert dag.params["pre_trim_target_secs"] == 900
+
 
 # ---------------------------------------------------------------------------
 # _ffmpeg_extract_window (#10 precise cut + #12 adaptive timeout wiring)
@@ -104,6 +113,8 @@ class TestFfmpegExtractWindow:
 
         run.assert_called_once()
         cmd = run.call_args[0][0]
+        assert isinstance(cmd, list)
+        assert "shell" not in run.call_args.kwargs
         # Frame accuracy: -ss before -i (input seek + accurate_seek), full re-encode (no stream copy).
         assert cmd.index("-ss") < cmd.index("-i"), (
             "-ss before -i with accurate_seek gives frame accuracy without full-prefix decode"
@@ -174,508 +185,225 @@ class TestFfmpegExtractWindow:
 
 
 # ---------------------------------------------------------------------------
-# TestQueryChapters
+# TestQueryTurns
 # ---------------------------------------------------------------------------
 
 
-class TestQueryChapters:
-    def test_empty_result_returns_false(self, mocker):
-        from congress_videos.reap_clip_preparer_dag import _query_chapters
+class TestQueryTurns:
+    def test_empty_result_returns_false_and_logs_warning(self, mocker, caplog):
+        from congress_videos.reap_clip_preparer_dag import _query_turns
 
         mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
-        mock_db_cls.return_value.get_chapters_for_shorts.return_value = []
+        mock_db_cls.return_value.get_turn_videos_for_shorts.return_value = []
 
         ti = _make_ti()
-        result = _query_chapters(ti, params={"max_chapters": 100, "min_relevance_score": 3})
+        with caplog.at_level("WARNING"):
+            result = _query_turns(ti, params={"max_turns": 100})
 
         # ShortCircuitOperator contract: returns False to skip downstream when
-        # there are no chapters. It does NOT push to XCom — extract re-queries the DB.
+        # there are no turns. It does NOT push to XCom — staging re-queries the DB.
         assert result is False
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("No eligible turn videos for Reap" in msg and "0" in msg for msg in warnings)
 
     def test_non_empty_result_returns_true(self, mocker):
-        from congress_videos.reap_clip_preparer_dag import _query_chapters
+        from congress_videos.reap_clip_preparer_dag import _query_turns
 
-        chapters = [{"chapter_id": 1}, {"chapter_id": 2}]
+        turns = [{"turn_id": 1}, {"turn_id": 2}]
         mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
-        mock_db_cls.return_value.get_chapters_for_shorts.return_value = chapters
+        mock_db_cls.return_value.get_turn_videos_for_shorts.return_value = turns
 
         ti = _make_ti()
-        result = _query_chapters(ti, params={"max_chapters": 100, "min_relevance_score": 3})
+        result = _query_turns(ti, params={"max_turns": 100})
 
-        # Returns True so the ShortCircuitOperator lets downstream tasks run.
         assert result is True
 
     def test_does_not_push_to_xcom(self, mocker):
-        from congress_videos.reap_clip_preparer_dag import _query_chapters
+        from congress_videos.reap_clip_preparer_dag import _query_turns
 
-        chapters = [{"chapter_id": 1}, {"chapter_id": 2}]
+        turns = [{"turn_id": 1}, {"turn_id": 2}]
         mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
-        mock_db_cls.return_value.get_chapters_for_shorts.return_value = chapters
+        mock_db_cls.return_value.get_turn_videos_for_shorts.return_value = turns
 
         ti = _make_ti()
-        _query_chapters(ti, params={"max_chapters": 100, "min_relevance_score": 3})
+        _query_turns(ti, params={"max_turns": 100})
 
-        # query_chapters is a pure short-circuit gate: it must NOT push chapters.
-        # The downstream extract task re-queries the DB on its own.
         ti.xcom_push.assert_not_called()
         assert ti.xcom_store == {}
 
-    def test_passes_params_to_db(self, mocker):
-        from congress_videos.reap_clip_preparer_dag import _query_chapters
+    @pytest.mark.parametrize(("max_turns", "expected"), [(5, 5), (0, None)])
+    def test_passes_max_turns_to_db(self, mocker, max_turns, expected):
+        from congress_videos.reap_clip_preparer_dag import _query_turns
 
         mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
-        mock_db.get_chapters_for_shorts.return_value = []
+        mock_db.get_turn_videos_for_shorts.return_value = []
 
         ti = _make_ti()
-        _query_chapters(ti, params={"max_chapters": 5, "min_relevance_score": 4})
+        _query_turns(ti, params={"max_turns": max_turns})
 
-        mock_db.get_chapters_for_shorts.assert_called_once_with(limit=5, min_relevance_score=4)
+        mock_db.get_turn_videos_for_shorts.assert_called_once_with(max_turns=expected)
 
 
 # ---------------------------------------------------------------------------
-# TestExtractAndPretrimClip
+# TestStageAndPretrimClip
 # ---------------------------------------------------------------------------
 
 
-class TestExtractAndPretrimClip:
+class TestStageAndPretrimClip:
     def _params(self, **overrides):
-        """Build the DAG params dict for the extract callable, with per-test overrides."""
-        base = {
-            "max_chapters": 0,
-            "min_relevance_score": 3,
-            "pre_trim_threshold_secs": 480,
-            "pre_trim_target_secs": 360,
-        }
+        base = {"max_turns": 0, "pre_trim_threshold_secs": 480, "pre_trim_target_secs": 360}
         return {**base, **overrides}
 
-    def _default_chapter(self):
-        return {
+    def _default_turn(self, **overrides):
+        turn = {
+            "turn_id": 55,
+            "output_path": "/data/output/turn55.mp4",
+            "turn_type": "monologue",
+            "keep_intervals": None,
             "chapter_id": 10,
+            "resolved_name": "Jane Doe",
+            "interest_score": 5,
+            "group_start_seconds": 60.0,
+            "group_end_seconds": 600.0,
+            "procedural_seconds": 0.0,
+            "group_duration_seconds": 540.0,
             "video_id": "vid-abc",
-            "start_time": "00:01:00",
-            "end_time": "00:05:00",
-            "session_date": "2025-10-08",
+            "relevance_score": 4,
             "scoring_reasoning": "Good debate",
+            "session_number": 12,
+            "session_date": "2025-10-08",
         }
+        turn.update(overrides)
+        return turn
 
-    def _setup_mocks(self, mocker, *, source_video="/data/video.mp4", duration_seconds=240, source_codec="h264"):
-        mocker.patch(
-            "congress_videos.reap_clip_preparer_dag._find_source_video",
-            return_value=source_video,
-        )
-        mocker.patch("os.makedirs")
-        mocker.patch(
-            "congress_videos.reap_clip_preparer_dag.split_video_chapter",
-            return_value={"success": True, "error": None, "duration_seconds": duration_seconds},
-        )
-        # Mock codec detection so the loop's own get_cached_codec call doesn't hit
-        # the real ffprobe (or collide with the shared "subprocess.run" ffprobe
-        # safety-gate mock used by _patch_ffprobe_ok/_patch_ffprobe_blocked).
-        return mocker.patch("utils.codec_detection.detect_video_codec", return_value=source_codec)
+    def _patch_ffprobe(self, mocker, durations: list[float]):
+        """Mock ffprobe to return the given durations in sequence, one per call."""
+        outputs = [MagicMock(stdout=json.dumps({"format": {"duration": str(d)}}), returncode=0) for d in durations]
+        mocker.patch("subprocess.run", side_effect=outputs)
 
-    def _patch_ffprobe_ok(self, mocker, duration_secs: float = 240.0):
-        """Mock ffprobe returning a valid duration within safe limits."""
-        fake_output = json.dumps({"format": {"duration": str(duration_secs)}})
-        mocker.patch(
-            "subprocess.run",
-            return_value=MagicMock(stdout=fake_output, returncode=0),
-        )
+    def test_short_turn_stages_output_path_unmodified(self, mocker):
+        """Under-threshold clip: no pre-trim, staged path is output_path itself."""
+        from congress_videos.reap_clip_preparer_dag import _stage_and_pretrim_clip
 
-    def _patch_ffprobe_blocked(self, mocker, duration_secs: float = 1800.0):
-        """Mock ffprobe returning a duration that exceeds the safety gate."""
-        fake_output = json.dumps({"format": {"duration": str(duration_secs)}})
-        mocker.patch(
-            "subprocess.run",
-            return_value=MagicMock(stdout=fake_output, returncode=0),
-        )
-
-    def test_short_chapter_no_pretrim(self, mocker):
-        """Short chapter (below threshold) should insert a pending row without pre-trim."""
-        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
-
-        self._setup_mocks(mocker)
-        self._patch_ffprobe_ok(mocker, duration_secs=240.0)
-
+        self._patch_ffprobe(mocker, [240.0])
         mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
-        mock_db.get_chapters_for_shorts.return_value = [self._default_chapter()]
+        turn = self._default_turn()
+        mock_db.get_turn_videos_for_shorts.return_value = [turn]
         mock_db.insert_video_short.return_value = 1
 
         ti = _make_ti()
-        _extract_and_pretrim_clip(
-            ti,
-            params=self._params(),
-        )
+        _stage_and_pretrim_clip(ti, params=self._params())
 
         mock_db.insert_video_short.assert_called_once()
         call_kwargs = mock_db.insert_video_short.call_args.kwargs
-        assert call_kwargs["reap_status"] == "pending"
-        assert call_kwargs["staged_clip_path"] is not None
-        assert call_kwargs.get("reap_project_id") is None
+        assert call_kwargs["staged_clip_path"] == turn["output_path"]
+        assert call_kwargs["pretrim_start_secs"] is None
+        assert call_kwargs["pretrim_end_secs"] is None
         assert call_kwargs["pretrim_used_srt"] is False
+        assert call_kwargs["turn_id"] == 55
+        assert call_kwargs["chapter_id"] == 10
         assert ti.xcom_store["clips_queued"] == 1
 
-    def test_long_chapter_with_srt_window(self, mocker):
-        """Long chapter with SRT available should call ffmpeg, then insert pending row."""
-        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
+    def test_over_threshold_writes_turn_reap_path_with_leading_window(self, mocker):
+        """Over-threshold clip: staged to turn_{id}_reap.mp4 with offsets (0.0, target_secs)."""
+        from congress_videos.reap_clip_preparer_dag import PROJECT_DATA_DIR, _stage_and_pretrim_clip
 
-        self._setup_mocks(mocker, duration_seconds=720)
-        self._patch_ffprobe_ok(mocker, duration_secs=360.0)
-
-        chapter = self._default_chapter()
-        chapter["start_time"] = "00:00:00"
-        chapter["end_time"] = "00:12:00"  # 720s > threshold 480
-
-        mocker.patch(
-            "congress_videos.reap_clip_preparer_dag.find_srt_for_chapter",
-            return_value="/data/srt.srt",
-        )
-        mocker.patch(
-            "congress_videos.reap_clip_preparer_dag.select_pretrim_window",
-            return_value={"start_seconds": 60.0, "end_seconds": 420.0},
-        )
+        self._patch_ffprobe(mocker, [720.0, 360.0])  # pre-probe over threshold, post-trim at target
+        mocker.patch("os.makedirs")
+        mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
         mock_ffmpeg = mocker.patch("congress_videos.reap_clip_preparer_dag._ffmpeg_extract_window")
 
         mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
-        mock_db.get_chapters_for_shorts.return_value = [chapter]
+        turn = self._default_turn()
+        mock_db.get_turn_videos_for_shorts.return_value = [turn]
         mock_db.insert_video_short.return_value = 2
 
         ti = _make_ti()
-        _extract_and_pretrim_clip(
-            ti,
-            params=self._params(),
-        )
+        _stage_and_pretrim_clip(ti, params=self._params())
 
         mock_ffmpeg.assert_called_once()
+        ffmpeg_kwargs = mock_ffmpeg.call_args.kwargs
+        assert ffmpeg_kwargs["source_path"] == turn["output_path"]
+        assert ffmpeg_kwargs["start_secs"] == 0.0
+        assert ffmpeg_kwargs["end_secs"] == 360.0
+
         mock_db.insert_video_short.assert_called_once()
         call_kwargs = mock_db.insert_video_short.call_args.kwargs
-        assert call_kwargs["reap_status"] == "pending"
-        assert call_kwargs["pretrim_used_srt"] is True
-        assert call_kwargs["pretrim_start_secs"] == 60.0
-        assert call_kwargs["pretrim_end_secs"] == 420.0
-        assert ti.xcom_store["clips_queued"] == 1
+        expected_path = f"{PROJECT_DATA_DIR}/vid-abc/10/turn_55_reap.mp4"
+        assert call_kwargs["staged_clip_path"] == expected_path
+        assert call_kwargs["staged_clip_path"] != turn["output_path"]
+        assert call_kwargs["pretrim_start_secs"] == 0.0
+        assert call_kwargs["pretrim_end_secs"] == 360.0
+        assert call_kwargs["pretrim_used_srt"] is False
+        assert call_kwargs["turn_id"] == 55
 
-    def test_long_chapter_no_srt_fallback(self, mocker):
-        """Long chapter without SRT should fallback to first target_secs and insert pending row."""
-        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
+    def test_below_120s_actual_duration_is_skipped(self, mocker):
+        from congress_videos.reap_clip_preparer_dag import _stage_and_pretrim_clip
 
-        self._setup_mocks(mocker, duration_seconds=720)
-        self._patch_ffprobe_ok(mocker, duration_secs=360.0)
-
-        chapter = self._default_chapter()
-        chapter["start_time"] = "00:00:00"
-        chapter["end_time"] = "00:12:00"  # 720s > threshold 480
-
-        mocker.patch(
-            "congress_videos.reap_clip_preparer_dag.find_srt_for_chapter",
-            return_value=None,
-        )
-        mock_ffmpeg = mocker.patch("congress_videos.reap_clip_preparer_dag._ffmpeg_extract_window")
-
+        self._patch_ffprobe(mocker, [90.0])
         mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
-        mock_db.get_chapters_for_shorts.return_value = [chapter]
-        mock_db.insert_video_short.return_value = 3
+        mock_db.get_turn_videos_for_shorts.return_value = [self._default_turn()]
 
         ti = _make_ti()
-        _extract_and_pretrim_clip(
-            ti,
-            params=self._params(),
-        )
-
-        mock_ffmpeg.assert_called_once()
-        call_kwargs = mock_ffmpeg.call_args
-        assert call_kwargs.kwargs["start_secs"] == 0.0
-        assert call_kwargs.kwargs["end_secs"] == 360.0
-
-        mock_db.insert_video_short.assert_called_once()
-        db_kwargs = mock_db.insert_video_short.call_args.kwargs
-        assert db_kwargs["reap_status"] == "pending"
-        assert db_kwargs["pretrim_used_srt"] is False
-        assert ti.xcom_store["clips_queued"] == 1
-
-    def test_blocked_clip_not_inserted(self, mocker):
-        """When ffprobe reports excessive duration, clip must NOT be inserted and AirflowException raised."""
-        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
-
-        self._setup_mocks(mocker)
-        self._patch_ffprobe_blocked(mocker, duration_secs=1800.0)
-
-        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
-        mock_db = mock_db_cls.return_value
-        mock_db.get_chapters_for_shorts.return_value = [self._default_chapter()]
-
-        ti = _make_ti()
-        with pytest.raises(AirflowException, match="blocked"):
-            _extract_and_pretrim_clip(
-                ti,
-                params=self._params(pre_trim_target_secs=300),
-            )
+        _stage_and_pretrim_clip(ti, params=self._params())
 
         mock_db.insert_video_short.assert_not_called()
+        assert ti.xcom_store.get("clips_queued") == 0
 
     def test_ffprobe_failure_blocks_clip(self, mocker):
-        """When ffprobe raises an exception, clip must NOT be inserted and AirflowException raised."""
-        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
+        from congress_videos.reap_clip_preparer_dag import _stage_and_pretrim_clip
 
-        self._setup_mocks(mocker)
         mocker.patch("subprocess.run", side_effect=Exception("ffprobe not found"))
-
         mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
-        mock_db.get_chapters_for_shorts.return_value = [self._default_chapter()]
+        mock_db.get_turn_videos_for_shorts.return_value = [self._default_turn()]
 
         ti = _make_ti()
         with pytest.raises(AirflowException, match="blocked"):
-            _extract_and_pretrim_clip(
-                ti,
-                params=self._params(pre_trim_target_secs=300),
-            )
+            _stage_and_pretrim_clip(ti, params=self._params())
 
         mock_db.insert_video_short.assert_not_called()
 
-    def test_no_source_video_skips_chapter(self, mocker):
-        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
+    def test_safety_gate_blocks_when_staged_duration_exceeds_tolerance(self, mocker):
+        """If the post-trim probe still exceeds target + tolerance, block without inserting."""
+        from congress_videos.reap_clip_preparer_dag import _stage_and_pretrim_clip
 
-        mocker.patch(
-            "congress_videos.reap_clip_preparer_dag._find_source_video",
-            return_value=None,
-        )
-        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
-        mock_db = mock_db_cls.return_value
-        mock_db.get_chapters_for_shorts.return_value = [self._default_chapter()]
-
-        ti = _make_ti()
-        _extract_and_pretrim_clip(
-            ti,
-            params=self._params(),
-        )
-
-        mock_db.insert_video_short.assert_not_called()
-        assert ti.xcom_store.get("clips_queued") == 0
-
-    def test_extraction_failure_skips_chapter(self, mocker):
-        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
-
-        self._setup_mocks(mocker)
-        mocker.patch(
-            "congress_videos.reap_clip_preparer_dag.split_video_chapter",
-            return_value={"success": False, "error": "ffmpeg error"},
-        )
-        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
-        mock_db = mock_db_cls.return_value
-        mock_db.get_chapters_for_shorts.return_value = [self._default_chapter()]
-
-        ti = _make_ti()
-        _extract_and_pretrim_clip(
-            ti,
-            params=self._params(),
-        )
-
-        mock_db.insert_video_short.assert_not_called()
-        assert ti.xcom_store.get("clips_queued") == 0
-
-    def test_post_trim_clip_below_120s_skipped(self, mocker):
-        """Clip that ends up below 120s after trim should be skipped — not inserted."""
-        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
-
-        self._setup_mocks(mocker, duration_seconds=720)
-
-        chapter = self._default_chapter()
-        chapter["start_time"] = "00:00:00"
-        chapter["end_time"] = "00:12:00"  # long enough to trigger pre-trim
-
-        mocker.patch(
-            "congress_videos.reap_clip_preparer_dag.find_srt_for_chapter",
-            return_value="/data/srt.srt",
-        )
-        # Window is only 60s — below 120s minimum
-        mocker.patch(
-            "congress_videos.reap_clip_preparer_dag.select_pretrim_window",
-            return_value={"start_seconds": 0.0, "end_seconds": 60.0},
-        )
+        self._patch_ffprobe(mocker, [720.0, 900.0])  # post-trim probe still too long
+        mocker.patch("os.makedirs")
+        mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
         mocker.patch("congress_videos.reap_clip_preparer_dag._ffmpeg_extract_window")
 
         mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
-        mock_db.get_chapters_for_shorts.return_value = [chapter]
+        mock_db.get_turn_videos_for_shorts.return_value = [self._default_turn()]
 
         ti = _make_ti()
-        _extract_and_pretrim_clip(
-            ti,
-            params=self._params(),
-        )
+        with pytest.raises(AirflowException, match="blocked"):
+            _stage_and_pretrim_clip(ti, params=self._params())
 
         mock_db.insert_video_short.assert_not_called()
-        assert ti.xcom_store.get("clips_queued") == 0
 
     def test_partial_success_blocked_raises_after_inserting_good_clips(self, mocker):
-        """Batch with 1 good + 1 blocked clip: good clip is inserted, then AirflowException raised."""
-        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
+        """Batch with 1 good + 1 blocked turn: good turn is inserted, then AirflowException raised."""
+        from congress_videos.reap_clip_preparer_dag import _stage_and_pretrim_clip
 
-        chapter_good = {**self._default_chapter(), "chapter_id": 1}
-        chapter_blocked = {**self._default_chapter(), "chapter_id": 2}
+        turn_good = self._default_turn(turn_id=1, output_path="/data/output/turn1.mp4")
+        turn_blocked = self._default_turn(turn_id=2, output_path="/data/output/turn2.mp4")
 
-        mocker.patch(
-            "congress_videos.reap_clip_preparer_dag._find_source_video",
-            return_value="/data/video.mp4",
-        )
-        mocker.patch("os.makedirs")
-        mocker.patch(
-            "congress_videos.reap_clip_preparer_dag.split_video_chapter",
-            return_value={"success": True, "error": None, "duration_seconds": 240},
-        )
-        mocker.patch("utils.codec_detection.detect_video_codec", return_value="h264")
-
-        call_count = {"n": 0}
-
-        def fake_subprocess_run(cmd, *args, **kwargs):
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                # First chapter: OK duration
-                return MagicMock(stdout=json.dumps({"format": {"duration": "240.0"}}), returncode=0)
-            else:
-                # Second chapter: blocked duration
-                return MagicMock(stdout=json.dumps({"format": {"duration": "1800.0"}}), returncode=0)
-
-        mocker.patch("subprocess.run", side_effect=fake_subprocess_run)
+        self._patch_ffprobe(mocker, [240.0, 1800.0])  # first OK, second exceeds threshold+tolerance
 
         mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
         mock_db = mock_db_cls.return_value
-        mock_db.get_chapters_for_shorts.return_value = [chapter_good, chapter_blocked]
+        mock_db.get_turn_videos_for_shorts.return_value = [turn_good, turn_blocked]
         mock_db.insert_video_short.return_value = 1
 
         ti = _make_ti()
         with pytest.raises(AirflowException, match="blocked"):
-            _extract_and_pretrim_clip(
-                ti,
-                params=self._params(pre_trim_target_secs=300),
-            )
+            _stage_and_pretrim_clip(ti, params=self._params(pre_trim_threshold_secs=1900))
 
-        # Good clip was inserted before the exception
         mock_db.insert_video_short.assert_called_once()
         assert ti.xcom_store.get("clips_queued") == 1
-
-    def test_pretrim_uses_raw_source_codec_not_clip_path(self, mocker):
-        """The pre-trim's reencode decision must come from the raw source_video_path
-        already in loop scope, NOT a fresh probe of clip_path (the just-cut chapter)."""
-        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
-
-        self._setup_mocks(mocker, duration_seconds=720, source_codec="av1")
-        self._patch_ffprobe_ok(mocker, duration_secs=360.0)
-
-        chapter = self._default_chapter()
-        chapter["start_time"] = "00:00:00"
-        chapter["end_time"] = "00:12:00"  # 720s > threshold 480
-
-        mocker.patch(
-            "congress_videos.reap_clip_preparer_dag.find_srt_for_chapter",
-            return_value=None,
-        )
-        mock_ffmpeg = mocker.patch("congress_videos.reap_clip_preparer_dag._ffmpeg_extract_window")
-
-        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
-        mock_db = mock_db_cls.return_value
-        mock_db.get_chapters_for_shorts.return_value = [chapter]
-        mock_db.insert_video_short.return_value = 1
-
-        ti = _make_ti()
-        _extract_and_pretrim_clip(ti, params=self._params())
-
-        mock_ffmpeg.assert_called_once()
-        # av1 raw source -> reencode=False must be threaded into the pre-trim call.
-        assert mock_ffmpeg.call_args.kwargs["reencode"] is False
-
-    def test_pretrim_reencode_true_for_h264_raw_source(self, mocker):
-        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
-
-        self._setup_mocks(mocker, duration_seconds=720, source_codec="h264")
-        self._patch_ffprobe_ok(mocker, duration_secs=360.0)
-
-        chapter = self._default_chapter()
-        chapter["start_time"] = "00:00:00"
-        chapter["end_time"] = "00:12:00"
-
-        mocker.patch(
-            "congress_videos.reap_clip_preparer_dag.find_srt_for_chapter",
-            return_value=None,
-        )
-        mock_ffmpeg = mocker.patch("congress_videos.reap_clip_preparer_dag._ffmpeg_extract_window")
-
-        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
-        mock_db = mock_db_cls.return_value
-        mock_db.get_chapters_for_shorts.return_value = [chapter]
-        mock_db.insert_video_short.return_value = 1
-
-        ti = _make_ti()
-        _extract_and_pretrim_clip(ti, params=self._params())
-
-        mock_ffmpeg.assert_called_once()
-        assert mock_ffmpeg.call_args.kwargs["reencode"] is True
-
-    def test_pretrim_log_line_extended_with_source_codec_and_cut_mode(self, mocker, caplog):
-        """The existing pre-trim info log line must be extended with
-        source_codec/cut_mode; no DB schema / result-dict field is added at this
-        site (pre-trim has no returned result dict)."""
-        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
-
-        self._setup_mocks(mocker, duration_seconds=720, source_codec="h264")
-        self._patch_ffprobe_ok(mocker, duration_secs=360.0)
-
-        chapter = self._default_chapter()
-        chapter["start_time"] = "00:00:00"
-        chapter["end_time"] = "00:12:00"
-
-        mocker.patch(
-            "congress_videos.reap_clip_preparer_dag.find_srt_for_chapter",
-            return_value=None,
-        )
-        mocker.patch("congress_videos.reap_clip_preparer_dag._ffmpeg_extract_window")
-
-        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
-        mock_db = mock_db_cls.return_value
-        mock_db.get_chapters_for_shorts.return_value = [chapter]
-        mock_db.insert_video_short.return_value = 1
-
-        ti = _make_ti()
-        with caplog.at_level("INFO"):
-            _extract_and_pretrim_clip(ti, params=self._params())
-
-        pretrim_logs = [r.getMessage() for r in caplog.records if "pre-trimmed" in r.message]
-        assert pretrim_logs, "expected a pre-trimmed info log line"
-        assert "source_codec=h264" in pretrim_logs[0]
-        assert "cut_mode=reencode" in pretrim_logs[0]
-
-    def test_chapter_cut_and_pretrim_share_one_probe_for_same_source(self, mocker):
-        """When split_video_chapter and the pre-trim step process the SAME source
-        video within the same DAG task run, they must share the same codec_cache
-        instance so only one probe occurs total across both call sites."""
-        from congress_videos.reap_clip_preparer_dag import _extract_and_pretrim_clip
-
-        mock_detect = self._setup_mocks(mocker, duration_seconds=720, source_codec="h264")
-        self._patch_ffprobe_ok(mocker, duration_secs=360.0)
-
-        chapter = self._default_chapter()
-        chapter["start_time"] = "00:00:00"
-        chapter["end_time"] = "00:12:00"
-
-        mocker.patch(
-            "congress_videos.reap_clip_preparer_dag.find_srt_for_chapter",
-            return_value=None,
-        )
-        mocker.patch("congress_videos.reap_clip_preparer_dag._ffmpeg_extract_window")
-
-        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
-        mock_db = mock_db_cls.return_value
-        mock_db.get_chapters_for_shorts.return_value = [chapter]
-        mock_db.insert_video_short.return_value = 1
-
-        ti = _make_ti()
-        _extract_and_pretrim_clip(ti, params=self._params())
-
-        # split_video_chapter is mocked away entirely (its own internal probe
-        # doesn't run), so this confirms the loop-scoped probe for the pre-trim
-        # decision happens exactly once per chapter/source.
-        assert mock_detect.call_count == 1

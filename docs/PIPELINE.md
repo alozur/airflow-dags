@@ -107,8 +107,13 @@ descarta el resultado válido del otro, y un resultado vacío de temas deja
 
 ## Fase 3 — Shorts · pipeline Reap
 
-1. **`reap_clip_preparer`** (diario 15:00 UTC): selecciona capítulos elegibles,
-   pre-recorta clips largos con IA + contexto SRT y los encola.
+1. **`reap_clip_preparer`** (diario 15:00 UTC): selecciona vídeos de turno
+   materializados por la diarización (`speaker_turn_videos.output_path`, un
+   representante por fichero, sin turnos procedimentales, span efectivo
+   ≥ 120 s, sin exigir que el largo esté publicado; #467), usa el fichero tal
+   cual y solo pre-recorta con una ventana inicial de ffmpeg los que superan
+   900 s, y los encola en `video_shorts` con `chapter_id` y `turn_id`. Si no
+   hay candidatos, deja un WARNING en el log antes de saltar el run.
 2. **`reap_processor`** (14:30 y 17:30 UTC): reclama exactamente un clip por
    run y lo procesa vía Reap a formato short. Al descargar cada clip, el
    sensor escribe además `{clip_id}.srt` junto al `.mp4` (#431), best-effort:

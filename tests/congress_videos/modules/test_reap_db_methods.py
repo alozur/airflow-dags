@@ -52,19 +52,19 @@ def db(mocker):
 
 
 # --------------------------------------------------------------------------- #
-# get_chapters_for_shorts
+# get_turn_videos_for_shorts (issue #467 — replaces get_chapters_for_shorts)
 # --------------------------------------------------------------------------- #
 
 
-class TestGetChaptersForShorts:
-    def test_returns_list_of_chapters(self, db):
+class TestGetTurnVideosForShorts:
+    def test_returns_list_of_turns(self, db):
         instance, mock_cursor = db
         mock_cursor.fetchall.return_value = [
-            {"chapter_id": 1, "relevance_score": 4},
-            {"chapter_id": 2, "relevance_score": 5},
+            {"turn_id": 1, "relevance_score": 4},
+            {"turn_id": 2, "relevance_score": 5},
         ]
 
-        result = instance.get_chapters_for_shorts()
+        result = instance.get_turn_videos_for_shorts()
 
         assert len(result) == 2
 
@@ -72,28 +72,134 @@ class TestGetChaptersForShorts:
         instance, mock_cursor = db
         mock_cursor.fetchall.return_value = []
 
-        result = instance.get_chapters_for_shorts()
+        result = instance.get_turn_videos_for_shorts()
 
         assert result == []
 
-    def test_passes_limit_and_min_score_params(self, db):
+    def test_no_limit_when_max_turns_none(self, db):
         instance, mock_cursor = db
         mock_cursor.fetchall.return_value = []
 
-        instance.get_chapters_for_shorts(limit=5, min_relevance_score=4)
+        instance.get_turn_videos_for_shorts()
 
-        _, params = mock_cursor.execute.call_args[0]
-        assert params == [4, 5]
+        sql, params = mock_cursor.execute.call_args[0]
+        assert "LIMIT" not in sql, "no LIMIT clause when max_turns is None"
+        assert params == []
 
-    def test_query_contains_not_exists_subquery(self, db):
+    def test_limit_appended_when_max_turns_given(self, db):
         instance, mock_cursor = db
         mock_cursor.fetchall.return_value = []
 
-        instance.get_chapters_for_shorts()
+        instance.get_turn_videos_for_shorts(max_turns=5)
+
+        sql, params = mock_cursor.execute.call_args[0]
+        assert "LIMIT %s" in sql
+        assert params == [5]
+
+    def test_query_contains_group_spans_cte(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "WITH group_spans AS" in sql
+        assert "GROUP BY stv.output_path" in sql
+
+    def test_group_spans_cte_is_unfiltered_by_procedural(self, db):
+        """issue #151 trap: is_procedural must only be summed inside
+        group_spans, never used to filter which rows enter the aggregate."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        cte_start = sql.index("WITH group_spans AS")
+        cte_end = sql.index("GROUP BY stv.output_path") + len("GROUP BY stv.output_path")
+        cte_body = sql[cte_start:cte_end]
+        assert "WHERE" not in cte_body, f"group_spans CTE must have no WHERE gate; got: {cte_body}"
+        assert "SUM(CASE WHEN st.is_procedural" in cte_body
+
+    def test_query_uses_distinct_on_output_path(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "DISTINCT ON (stv.output_path)" in sql
+
+    def test_query_dedups_on_turn_id_not_chapter_id(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
 
         sql = mock_cursor.execute.call_args[0][0]
         assert "NOT EXISTS" in sql
-        assert "video_shorts" in sql
+        assert "vs.turn_id = stv.turn_id" in sql
+        assert "vs.chapter_id" not in sql, "dedup must key on turn_id, not chapter_id"
+
+    def test_query_excludes_procedural_representative(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "NOT COALESCE(st.is_procedural, FALSE)" in sql
+
+    def test_query_floor_is_120_seconds(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "dedup.group_duration_seconds >= 120" in sql
+
+    def test_query_has_no_upper_duration_bound(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "<= 900" not in sql
+        assert "<=" not in sql, "no upper ceiling gate on group_duration_seconds"
+
+    def test_query_does_not_filter_prepared_at(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "prepared_at" not in sql
+
+    def test_query_does_not_require_parent_upload_date(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "youtube_upload_date" not in sql
+        assert "is_uploaded_to_youtube" not in sql
+
+    def test_query_orders_by_editorial_keys(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.get_turn_videos_for_shorts()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        order_clause = sql[sql.rindex("ORDER BY") :]
+        assert "COALESCE(dedup.interest_score, 1) DESC" in order_clause
+        assert "dedup.relevance_score DESC" in order_clause
+        assert "dedup.session_date DESC" in order_clause
+        assert "dedup.turn_id ASC" in order_clause
 
 
 # --------------------------------------------------------------------------- #
@@ -144,6 +250,58 @@ class TestInsertVideoShort:
         assert "INSERT" in sql
         assert "RETURNING" in sql
 
+    def test_query_has_nine_placeholders(self, db):
+        """issue #467: turn_id extends the column list to 9 placeholders."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 1}
+
+        instance.insert_video_short(chapter_id=1)
+
+        sql, params = mock_cursor.execute.call_args[0]
+        assert sql.count("%s") == 9
+        assert len(params) == 9
+
+    def test_column_list_places_turn_id_after_chapter_id(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 1}
+
+        instance.insert_video_short(chapter_id=1)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "(chapter_id, turn_id, reap_project_id" in sql
+
+    def test_turn_id_defaults_to_none(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 1}
+
+        instance.insert_video_short(chapter_id=1)
+
+        _, params = mock_cursor.execute.call_args[0]
+        assert params[0] == 1
+        assert params[1] is None
+
+    def test_passes_turn_id_when_given(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 1}
+
+        instance.insert_video_short(chapter_id=1, turn_id=99)
+
+        _, params = mock_cursor.execute.call_args[0]
+        assert params[1] == 99
+
+    def test_existing_positional_call_shape_unaffected(self, db):
+        """A caller that never passes turn_id keeps working (backward compat)."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 42}
+
+        result = instance.insert_video_short(
+            chapter_id=10,
+            reap_project_id="proj-001",
+            reap_status="processing",
+        )
+
+        assert result == 42
+
 
 # --------------------------------------------------------------------------- #
 # insert_video_short_clip
@@ -182,6 +340,166 @@ class TestInsertVideoShortClip:
         _, params = mock_cursor.execute.call_args[0]
         assert "clip-xyz" in params
         assert 0.75 in params
+
+    def test_column_list_places_turn_id_after_chapter_id(self, db):
+        """issue #467: turn_id extends the column list right after chapter_id."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 1}
+
+        instance.insert_video_short_clip(
+            chapter_id=1,
+            reap_project_id="p",
+            reap_clip_id="clip-xyz",
+            reap_virality_score=0.75,
+            reap_clip_url="https://cdn.example.com/clip.mp4",
+            local_file_path="/data/clip.mp4",
+        )
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "(chapter_id, turn_id, reap_project_id" in sql
+
+    def test_turn_id_defaults_to_none(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 1}
+
+        instance.insert_video_short_clip(
+            chapter_id=1,
+            reap_project_id="p",
+            reap_clip_id="clip-xyz",
+            reap_virality_score=0.75,
+            reap_clip_url="https://cdn.example.com/clip.mp4",
+            local_file_path="/data/clip.mp4",
+        )
+
+        _, params = mock_cursor.execute.call_args[0]
+        assert params[0] == 1
+        assert params[1] is None
+
+    def test_passes_turn_id_when_given(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 1}
+
+        instance.insert_video_short_clip(
+            chapter_id=1,
+            reap_project_id="p",
+            reap_clip_id="clip-xyz",
+            reap_virality_score=0.75,
+            reap_clip_url="https://cdn.example.com/clip.mp4",
+            local_file_path="/data/clip.mp4",
+            turn_id=99,
+        )
+
+        _, params = mock_cursor.execute.call_args[0]
+        assert params[1] == 99
+
+    def test_existing_positional_call_shape_unaffected(self, db):
+        """A caller that never passes turn_id keeps working (backward compat)."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {"id": 99}
+
+        result = instance.insert_video_short_clip(
+            chapter_id=5,
+            reap_project_id="proj-abc",
+            reap_clip_id="clip-001",
+            reap_virality_score=0.85,
+            reap_clip_url="https://cdn.reap.video/c.mp4",
+            local_file_path="/data/clip.mp4",
+        )
+
+        assert result == 99
+
+
+# --------------------------------------------------------------------------- #
+# claim_pending_clip
+# --------------------------------------------------------------------------- #
+
+
+class TestClaimPendingClip:
+    """design.md §4: RETURNING * cannot project joined columns, so the atomic
+    claim UPDATE is wrapped in a ``claimed`` CTE, then LEFT JOINed through
+    speaker_turn_videos/speaker_turns to surface the turn's group span
+    alongside the claimed row. Ordering, FOR UPDATE SKIP LOCKED, and the two
+    priority subqueries are carried forward verbatim (issue #467)."""
+
+    def test_returns_none_when_no_pending_rows(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        result = instance.claim_pending_clip()
+
+        assert result is None
+
+    def test_returns_claimed_row_as_dict(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "id": 7,
+            "chapter_id": 3,
+            "turn_id": None,
+            "group_start_seconds": None,
+            "group_end_seconds": None,
+        }
+
+        result = instance.claim_pending_clip()
+
+        assert result["id"] == 7
+        assert result["chapter_id"] == 3
+
+    def test_query_wraps_update_in_claimed_cte(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.claim_pending_clip()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "WITH claimed AS" in sql
+        assert "UPDATE" in sql
+        assert "RETURNING *" in sql
+
+    def test_query_left_joins_speaker_turn_videos_on_turn_id(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.claim_pending_clip()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "LEFT JOIN" in sql
+        assert "stv.turn_id = c.turn_id" in sql
+
+    def test_query_uses_lateral_join_for_group_span(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.claim_pending_clip()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "LEFT JOIN LATERAL" in sql
+        assert "group_start_seconds" in sql
+        assert "group_end_seconds" in sql
+        assert "sib.output_path = stv.output_path" in sql
+
+    def test_ordering_and_locking_preserved_verbatim(self, db):
+        """Priority order and SKIP LOCKED must survive the CTE wrapping unchanged."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.claim_pending_clip()
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "reap_status = 'pending'" in sql
+        assert "FOR UPDATE SKIP LOCKED" in sql
+        assert "DESC NULLS LAST" in sql
+        assert sql.count("DESC NULLS LAST") == 2
+
+    def test_no_params_used(self, db):
+        """The query has no %s placeholders — matches today's parameterless shape."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.claim_pending_clip()
+
+        call_args = mock_cursor.execute.call_args
+        sql = call_args[0][0]
+        assert "%s" not in sql
 
 
 # --------------------------------------------------------------------------- #
@@ -494,7 +812,7 @@ class TestGetPendingShorts:
 
         candidate_sql = mock_cursor.execute.call_args_list[1][0][0]
         assert "ROW_NUMBER() OVER" in candidate_sql
-        assert "PARTITION BY vs.chapter_id" in candidate_sql
+        assert "PARTITION BY COALESCE(vs.turn_id, -vs.chapter_id)" in candidate_sql
         assert "AS chapter_rank" in candidate_sql
 
     def test_tier1_limit_is_first_candidate_param(self, db):
@@ -551,10 +869,23 @@ class TestGetPendingShorts:
             "local_file_path IS NOT NULL",
             "reap_status = 'downloaded'",
             "reap_virality_score >= %s OR",
-            "youtube_upload_date IS NOT NULL",
         ]
         for predicate in predicates:
             assert predicate in outer_sql
+
+    def test_parent_upload_date_gate_removed(self, db):
+        """A candidate whose parent chapter has no youtube_upload_date is no
+        longer excluded (#467 D-scenario "Unpublished parent no longer blocks
+        upload"); ordering stays NULL-safe via NULLS LAST."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.side_effect = [[], []]
+
+        instance.get_pending_shorts()
+
+        candidate_sql = mock_cursor.execute.call_args_list[1][0][0]
+        outer_sql = candidate_sql.split("FROM ranked", 1)[1]
+        assert "youtube_upload_date IS NOT NULL" not in outer_sql
+        assert "youtube_upload_date DESC NULLS LAST" in candidate_sql
 
     def test_tier2_row_returned_when_no_tier1_available(self, db):
         instance, mock_cursor = db

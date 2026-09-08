@@ -67,17 +67,28 @@ def filter_shorts_by_source_cooldown(
 def pending_shorts_candidate_sql(shorts_table: str, chapters_table: str) -> str:
     """Candidate query for get_pending_shorts. Params: (tier1_limit, min_virality_score, row_limit).
 
-    Ranks each chapter's downloaded, non-abandoned clips (uploaded and
+    Ranks each SOURCE UNIT's downloaded, non-abandoned clips (uploaded and
     pending alike) by virality score, then caps how many of them can be
-    Tier 1 per chapter. Only after tiers are computed does the outer query
-    filter down to the still-pending, upload-eligible rows.
+    Tier 1 per source unit. The source unit is the turn group for
+    turn-sourced rows (`turn_id` set, issue #467) or the chapter for legacy
+    rows (`turn_id IS NULL`). Only after tiers are computed does the outer
+    query filter down to the still-pending, upload-eligible rows. The outer
+    query no longer requires the parent chapter to already be published to
+    YouTube (#467) — a candidate is eligible regardless of the parent's
+    `youtube_upload_date`.
     """
     return f"""
                     WITH ranked AS (
                         SELECT
                             vs.*,
                             ROW_NUMBER() OVER (
-                                PARTITION BY vs.chapter_id
+                                -- Rank within the SOURCE UNIT: the turn group for
+                                -- turn-sourced rows (issue #467), the chapter for
+                                -- legacy turn_id IS NULL rows. turn_id > 0 and
+                                -- -chapter_id < 0 occupy disjoint domains, so the
+                                -- two partitioning schemes cannot collide.
+                                -- Alias kept as chapter_rank for consumer compatibility.
+                                PARTITION BY COALESCE(vs.turn_id, -vs.chapter_id)
                                 ORDER BY vs.reap_virality_score DESC NULLS LAST,
                                          vs.id ASC
                             ) AS chapter_rank
@@ -96,7 +107,6 @@ def pending_shorts_candidate_sql(shorts_table: str, chapters_table: str) -> str:
                       AND ranked.local_file_path IS NOT NULL
                       AND ranked.reap_status = 'downloaded'
                       AND (ranked.reap_virality_score >= %s OR ranked.reap_virality_score IS NULL)
-                      AND vc.youtube_upload_date IS NOT NULL
                     ORDER BY tier ASC,
                              vc.youtube_upload_date DESC NULLS LAST,
                              ranked.reap_virality_score DESC NULLS LAST,
@@ -504,54 +514,88 @@ class CongressionalVideoDB:
 
     # ==================== Video Shorts (Reap Pipeline) ====================
 
-    def get_chapters_for_shorts(self, limit: int | None = None, min_relevance_score: int = 3) -> list[dict]:
-        """
-        Get video chapters eligible for Reap Shorts processing.
+    def get_turn_videos_for_shorts(self, max_turns: int | None = None) -> list[dict]:
+        """Materialized turn videos eligible for Reap clip generation (issue #467).
 
-        A chapter qualifies when ALL of the following hold:
-        - is_uploaded_to_youtube = TRUE (only already-published chapters)
-        - relevance_score >= min_relevance_score
-        - Duration between 120 and 900 seconds (2-15 min)
-        - No existing video_shorts row for the chapter (any reap_status)
+        Replaces the removed chapter-only `get_chapters_for_shorts`. Mirrors
+        `uploadable_turns`'s `group_spans` CTE and `DISTINCT ON (output_path)`
+        representative-row selection, minus the long-form publish gates.
+
+        Explicit NON-gates: `stv.prepared_at` (a long-form slot gate, #146),
+        any relevance threshold (Reap scores virality itself), and any
+        parent-published flag on `video_chapters` or `speaker_turn_videos`.
+        No upper duration bound — the preparer pre-trims above the Reap
+        ceiling.
 
         Args:
-            limit: Maximum number of chapters to return (None = no limit, default None)
-            min_relevance_score: Minimum relevance score threshold (default 3)
+            max_turns: Maximum number of turn videos to return (None = no limit)
 
         Returns:
-            List of chapter records ordered by relevance_score DESC, created_at DESC
+            List of turn-video candidate records ordered by
+            COALESCE(interest_score, 1) DESC, relevance_score DESC,
+            session_date DESC, turn_id ASC.
         """
-        chapters_table = self.pg_conn.get_qualified_table("video_chapters")
+        stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
+        st_table = self.pg_conn.get_qualified_table("speaker_turns")
+        vc_table = self.pg_conn.get_qualified_table("video_chapters")
+        ysv_table = self.pg_conn.get_qualified_table("youtube_source_videos")
         shorts_table = self.pg_conn.get_qualified_table("video_shorts")
 
         with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
             query = f"""
-                    SELECT vc.*
-                    FROM {chapters_table} vc
-                    WHERE vc.is_uploaded_to_youtube = TRUE
-                      AND vc.relevance_score >= %s
-                      AND (
-                          EXTRACT(EPOCH FROM (
-                              REPLACE(vc.end_time, ',', '.')::interval
-                              - REPLACE(vc.start_time, ',', '.')::interval
-                          )) >= 120
-                      )
-                      AND NOT EXISTS (
-                          SELECT 1 FROM {shorts_table} vs
-                          WHERE vs.chapter_id = vc.chapter_id
-                      )
-                    ORDER BY vc.relevance_score DESC, vc.created_at DESC
+                    WITH group_spans AS (
+                        -- DELIBERATELY UNFILTERED over every sibling row of an output_path
+                        -- (issue #151 trap): gating before the aggregate collapses the span
+                        -- to one turn's window. is_procedural is read only to sum excised
+                        -- seconds.
+                        SELECT stv.output_path,
+                               MIN(st.start_seconds) AS group_start_seconds,
+                               MAX(st.end_seconds)   AS group_end_seconds,
+                               SUM(CASE WHEN st.is_procedural THEN st.end_seconds - st.start_seconds ELSE 0 END)
+                                   AS procedural_seconds
+                        FROM {stv_table} stv
+                        JOIN {st_table} st ON stv.turn_id = st.turn_id
+                        GROUP BY stv.output_path
+                    )
+                    SELECT * FROM (
+                        SELECT DISTINCT ON (stv.output_path)
+                            stv.turn_id, stv.output_path, stv.turn_type, stv.keep_intervals,
+                            st.chapter_id, st.resolved_name, st.interest_score,
+                            gs.group_start_seconds, gs.group_end_seconds, gs.procedural_seconds,
+                            (gs.group_end_seconds - gs.group_start_seconds - gs.procedural_seconds)
+                                AS group_duration_seconds,
+                            vc.video_id, vc.relevance_score, vc.scoring_reasoning,
+                            ysv.session_number, ysv.session_date
+                        FROM {stv_table} stv
+                        JOIN {st_table} st  ON stv.turn_id = st.turn_id
+                        JOIN {vc_table} vc  ON st.chapter_id = vc.chapter_id
+                        JOIN {ysv_table} ysv ON vc.video_id = ysv.video_id
+                        JOIN group_spans gs ON gs.output_path = stv.output_path
+                        WHERE stv.output_path IS NOT NULL
+                          AND NOT COALESCE(st.is_procedural, FALSE)   -- issue #143
+                          AND NOT EXISTS (                            -- dedup on the turn, not the chapter
+                              SELECT 1 FROM {shorts_table} vs WHERE vs.turn_id = stv.turn_id
+                          )
+                        ORDER BY stv.output_path, stv.turn_id          -- deterministic representative
+                    ) dedup
+                    WHERE dedup.group_duration_seconds >= 120          -- REAP_MIN_CLIP_SECONDS
+                    ORDER BY COALESCE(dedup.interest_score, 1) DESC,
+                             dedup.relevance_score DESC,
+                             dedup.session_date DESC,
+                             dedup.turn_id ASC                          -- total-order backstop
                 """
-            params: list = [min_relevance_score]
-            if limit is not None:
+            params: list = []
+            if max_turns is not None:
                 query += " LIMIT %s"
-                params.append(limit)
+                params.append(max_turns)
             cur.execute(query, params)
-            chapters = cur.fetchall()
+            turns = cur.fetchall()
             logger.info(
-                f"Found {len(chapters)} chapters eligible for Shorts (min_score={min_relevance_score}, limit={limit})"
+                "get_turn_videos_for_shorts: %d eligible turn videos (max_turns=%s)",
+                len(turns),
+                max_turns,
             )
-            return chapters
+            return turns
 
     def insert_video_short(
         self,
@@ -563,6 +607,7 @@ class CongressionalVideoDB:
         pretrim_used_srt: bool = False,
         staged_clip_path: str | None = None,
         scoring_reasoning: str | None = None,
+        turn_id: int | None = None,
     ) -> int:
         """
         Insert a video_shorts row.
@@ -580,6 +625,8 @@ class CongressionalVideoDB:
             pretrim_used_srt: True if an SRT file was used for AI window selection
             staged_clip_path: Local path to the pre-trimmed clip file (set by DAG 1)
             scoring_reasoning: AI scoring reasoning text (optional)
+            turn_id: FK to speaker_turn_videos.turn_id (issue #467); None for
+                legacy chapter-sourced rows
 
         Returns:
             The id of the newly inserted video_shorts row
@@ -590,14 +637,15 @@ class CongressionalVideoDB:
             cur.execute(
                 f"""
                     INSERT INTO {shorts_table}
-                    (chapter_id, reap_project_id, reap_status,
+                    (chapter_id, turn_id, reap_project_id, reap_status,
                      pretrim_start_secs, pretrim_end_secs, pretrim_used_srt,
                      staged_clip_path, scoring_reasoning)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """,
                 (
                     chapter_id,
+                    turn_id,
                     reap_project_id,
                     reap_status,
                     pretrim_start_secs,
@@ -623,6 +671,7 @@ class CongressionalVideoDB:
         reap_clip_url: str,
         local_file_path: str,
         reap_status: str = "downloaded",
+        turn_id: int | None = None,
     ) -> int:
         """
         Insert one video_shorts row per downloaded Reap clip.
@@ -638,6 +687,11 @@ class CongressionalVideoDB:
             reap_clip_url: Reap-hosted URL of the clip
             local_file_path: Absolute path to the downloaded MP4 on disk
             reap_status: Status to set (default 'downloaded')
+            turn_id: FK to speaker_turn_videos.turn_id (issue #467), forwarded
+                from the claimed parent row; None for legacy chapter-sourced
+                rows. Without this, downloaded clips would carry
+                turn_id IS NULL and collapse into the per-chapter Tier-1
+                partition instead of the per-turn one.
 
         Returns:
             The id of the newly inserted video_shorts row
@@ -648,13 +702,14 @@ class CongressionalVideoDB:
             cur.execute(
                 f"""
                     INSERT INTO {shorts_table}
-                    (chapter_id, reap_project_id, reap_clip_id,
+                    (chapter_id, turn_id, reap_project_id, reap_clip_id,
                      reap_virality_score, reap_clip_url, local_file_path, reap_status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """,
                 (
                     chapter_id,
+                    turn_id,
                     reap_project_id,
                     reap_clip_id,
                     reap_virality_score,
@@ -721,39 +776,62 @@ class CongressionalVideoDB:
         a distinct row without blocking each other.
 
         Priority order: session_date DESC NULLS LAST, relevance_score DESC NULLS LAST
-        (most recent and most relevant chapters are processed first).
+        (most recent and most relevant chapters are processed first). Preserved
+        verbatim (issue #467) — turn-sourced and legacy chapter-sourced rows
+        both carry chapter_id, so ordering needs no turn_id branch.
+
+        RETURNING * on a bare UPDATE cannot project joined columns, so the
+        claim is wrapped in a ``claimed`` CTE and LEFT JOINed through
+        speaker_turn_videos/speaker_turns to surface the turn's group span
+        (design.md §4). Legacy rows (turn_id IS NULL) yield NULL spans through
+        the LEFT JOIN — the sidecar's chapter-fallback signal.
 
         Returns:
-            The claimed video_shorts row as a dict, or None if no pending rows exist.
+            The claimed video_shorts row as a dict (plus group_start_seconds /
+            group_end_seconds when turn-sourced), or None if no pending rows exist.
         """
         shorts_table = self.pg_conn.get_qualified_table("video_shorts")
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
         videos_table = self.pg_conn.get_qualified_table("youtube_source_videos")
+        stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
+        st_table = self.pg_conn.get_qualified_table("speaker_turns")
 
         with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
             cur.execute(f"""
-                    UPDATE {shorts_table} SET reap_status = 'processing', updated_at = CURRENT_TIMESTAMP
-                    WHERE id = (
-                        SELECT vs.id
-                        FROM {shorts_table} vs
-                        WHERE vs.reap_status = 'pending'
-                        ORDER BY (
-                            SELECT ysv.session_date
-                            FROM {chapters_table} vc
-                            LEFT JOIN {videos_table} ysv ON ysv.video_id = vc.video_id
-                            WHERE vc.chapter_id = vs.chapter_id
+                    WITH claimed AS (
+                        UPDATE {shorts_table} SET reap_status = 'processing', updated_at = CURRENT_TIMESTAMP
+                        WHERE id = (
+                            SELECT vs.id
+                            FROM {shorts_table} vs
+                            WHERE vs.reap_status = 'pending'
+                            ORDER BY (
+                                SELECT ysv.session_date
+                                FROM {chapters_table} vc
+                                LEFT JOIN {videos_table} ysv ON ysv.video_id = vc.video_id
+                                WHERE vc.chapter_id = vs.chapter_id
+                                LIMIT 1
+                            ) DESC NULLS LAST,
+                            (
+                                SELECT vc.relevance_score
+                                FROM {chapters_table} vc
+                                WHERE vc.chapter_id = vs.chapter_id
+                                LIMIT 1
+                            ) DESC NULLS LAST
                             LIMIT 1
-                        ) DESC NULLS LAST,
-                        (
-                            SELECT vc.relevance_score
-                            FROM {chapters_table} vc
-                            WHERE vc.chapter_id = vs.chapter_id
-                            LIMIT 1
-                        ) DESC NULLS LAST
-                        LIMIT 1
-                        FOR UPDATE SKIP LOCKED
+                            FOR UPDATE SKIP LOCKED
+                        )
+                        RETURNING *
                     )
-                    RETURNING *
+                    SELECT c.*, gs.group_start_seconds, gs.group_end_seconds
+                    FROM claimed c
+                    LEFT JOIN {stv_table} stv ON stv.turn_id = c.turn_id
+                    LEFT JOIN LATERAL (
+                        SELECT MIN(st.start_seconds) AS group_start_seconds,
+                               MAX(st.end_seconds)   AS group_end_seconds
+                        FROM {stv_table} sib
+                        JOIN {st_table} st ON st.turn_id = sib.turn_id
+                        WHERE sib.output_path = stv.output_path
+                    ) gs ON TRUE
                 """)
             row = cur.fetchone()
             if row is None:
@@ -804,22 +882,27 @@ class CongressionalVideoDB:
         """
         Get downloaded Shorts clips that are ready for YouTube upload.
 
-        Only returns clips whose parent long-form video (chapter) is already
-        uploaded to YouTube. Each chapter's downloaded, non-abandoned clips
-        are ranked by virality score and capped at SHORTS_TIER1_PER_CHAPTER_LIMIT
-        Tier-1 slots; the rest fall to Tier 2. Tier is the PRIMARY sort key,
-        then the chapter's YouTube upload date descending (most recently
-        uploaded long-form video first), then virality score descending as a
-        tie-breaker within the same tier and long-form video. Only clips with
-        a local file present are returned.
+        Does NOT require the parent long-form video (chapter) to already be
+        uploaded to YouTube (issue #467) — a candidate whose parent has no
+        `youtube_upload_date` yet is still eligible. Each SOURCE UNIT's
+        downloaded, non-abandoned clips are ranked by virality score and
+        capped at SHORTS_TIER1_PER_CHAPTER_LIMIT Tier-1 slots; the rest fall
+        to Tier 2. The source unit is the turn group for turn-sourced rows
+        (`turn_id` set) or the chapter for legacy rows (`turn_id IS NULL`),
+        so two turn groups sharing one chapter get independent Tier-1 caps.
+        Tier is the PRIMARY sort key, then the parent chapter's YouTube
+        upload date descending NULLS LAST (most recently uploaded long-form
+        video first, unpublished parents last), then virality score
+        descending as a tie-breaker within the same tier and source unit.
+        Only clips with a local file present are returned.
 
-        The per-chapter ranking universe deliberately INCLUDES clips that are
-        already uploaded (`is_uploaded = TRUE`): an upload permanently
-        consumes its chapter's Tier-1 slot. Ranking pending-only clips would
-        make the cap inert, since ranks would recompute after every upload
-        and the chapter would perpetually re-present 3 fresh Tier-1
-        candidates, draining its whole batch before other chapters get a
-        turn — the exact bug this method fixes. `local_file_path` and
+        The ranking universe deliberately INCLUDES clips that are already
+        uploaded (`is_uploaded = TRUE`): an upload permanently consumes its
+        source unit's Tier-1 slot. Ranking pending-only clips would make the
+        cap inert, since ranks would recompute after every upload and the
+        source unit would perpetually re-present 3 fresh Tier-1 candidates,
+        draining its whole batch before other source units get a turn — the
+        exact bug this method fixes. `local_file_path` and
         `min_virality_score` are applied only in the OUTER query, after tiers
         are computed, so tier assignment stays independent of the runtime
         virality threshold. Tier-2 rows are never abandoned, deleted, or
