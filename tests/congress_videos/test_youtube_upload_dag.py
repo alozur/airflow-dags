@@ -765,6 +765,28 @@ class TestShouldUpload:
         ctx["data_interval_end"] = datetime.now(UTC) - timedelta(hours=2)
         assert should_upload(**ctx) is False
 
+    def test_stale_scheduled_run_returns_false(self):
+        """An explicitly scheduled run with a stale data_interval_end is still dropped."""
+        from datetime import datetime, timedelta
+
+        from congress_videos.youtube_upload_dag import should_upload
+
+        ctx = _make_context_for_should_upload(queue_size=11, hour=11)
+        ctx["data_interval_end"] = datetime.now(UTC) - timedelta(hours=2)
+        ctx["dag_run"] = MagicMock(run_type="scheduled")
+        assert should_upload(**ctx) is False
+
+    def test_stale_manual_run_is_not_dropped(self):
+        """A manual run inherits the previous cron interval; the staleness guard must not reject it."""
+        from datetime import datetime, timedelta
+
+        from congress_videos.youtube_upload_dag import should_upload
+
+        ctx = _make_context_for_should_upload(queue_size=11, hour=11, uploads_today=1)
+        ctx["data_interval_end"] = datetime.now(UTC) - timedelta(hours=3)
+        ctx["dag_run"] = MagicMock(run_type="manual")
+        assert should_upload(**ctx) is True
+
     def test_fresh_run_proceeds_to_threshold(self):
         """data_interval_end ~1 min in the past, queue above threshold → True (threshold applies)."""
         from datetime import datetime, timedelta
