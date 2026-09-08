@@ -76,6 +76,14 @@ _THUMBNAIL_DAG_ID = "generic_thumbnail_generator"
 _THUMBNAIL_RESULT_TASK_ID = "thumbnail_result"
 
 
+def _counts_toward_daily_quota(dag_run) -> bool:
+    """Only scheduled runs consume the scheduled daily publishing slot (issue #500)."""
+    if dag_run is None:
+        return True  # Backward-compatible for direct callable invocation.
+    run_type = getattr(dag_run, "run_type", None)
+    return getattr(run_type, "value", run_type) == "scheduled"
+
+
 def should_upload(**context):
     """Return True only when the run is current, the daily cap is unspent and the queue is non-empty.
 
@@ -1175,7 +1183,7 @@ with DAG(
     )
 
     # Step 8: Update database to mark chapters as uploaded
-    def _run_mark_chapters_uploaded(ti):
+    def _run_mark_chapters_uploaded(ti, **context):
         """Mark chapters as uploaded to YouTube after a successful upload.
 
         Pushes XCom key 'chapter_upload_updates'.
@@ -1184,7 +1192,11 @@ with DAG(
 
         db = CongressionalVideoDB()
         upload_results = ti.xcom_pull(key="upload_results")
-        result = mark_chapter_uploads(db, upload_results)
+        result = mark_chapter_uploads(
+            db,
+            upload_results,
+            counts_toward_daily_quota=_counts_toward_daily_quota(context.get("dag_run")),
+        )
         ti.xcom_push(key="chapter_upload_updates", value=result)
         return result
 
@@ -1194,7 +1206,7 @@ with DAG(
     )
 
     # Step 8c: Mark turn videos as uploaded (runs in parallel with mark_chapters_uploaded)
-    def _run_mark_turns_uploaded(ti):
+    def _run_mark_turns_uploaded(ti, **context):
         """Mark speaker turn videos as uploaded to YouTube after a successful upload.
 
         Pushes XCom key 'turn_upload_updates'.
@@ -1203,7 +1215,11 @@ with DAG(
 
         db = CongressionalVideoDB()
         upload_results = ti.xcom_pull(key="upload_results")
-        result = mark_turn_uploads(db, upload_results)
+        result = mark_turn_uploads(
+            db,
+            upload_results,
+            counts_toward_daily_quota=_counts_toward_daily_quota(context.get("dag_run")),
+        )
         ti.xcom_push(key="turn_upload_updates", value=result)
         return result
 

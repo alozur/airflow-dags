@@ -681,6 +681,15 @@ def _make_context_for_should_upload(queue_size: int, hour: int, uploads_today: i
 
 
 class TestShouldUpload:
+    def test_only_scheduled_runs_consume_the_daily_quota(self):
+        from congress_videos.youtube_upload_dag import _counts_toward_daily_quota
+
+        scheduled = MagicMock(run_type="scheduled")
+        manual = MagicMock(run_type="manual")
+
+        assert _counts_toward_daily_quota(scheduled) is True
+        assert _counts_toward_daily_quota(manual) is False
+
     def test_queue_above_zero_is_true_regardless_of_hour(self):
         """queue=5 at hour=11 → True (gate is queue_size > 0, no hour lookup) (REQ-GATE-01)."""
         from congress_videos.youtube_upload_dag import should_upload

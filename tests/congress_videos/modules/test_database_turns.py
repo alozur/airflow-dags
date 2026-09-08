@@ -280,7 +280,7 @@ class TestMarkTurnsUploadedSiblingMarking:
 
         call_args = cursor.execute.call_args
         params = call_args[0][1]
-        assert params == ("vid_abc", 7), f"Params must be (youtube_video_id, turn_id) = ('vid_abc', 7), got {params}"
+        assert params == ("vid_abc", True, 7), f"Params must include the scheduled-quota flag: got {params}"
 
 
 class TestMarkTurnsUploadedByOutputPath:
@@ -329,7 +329,9 @@ class TestMarkTurnsUploadedByOutputPath:
 
         call_args = cursor.execute.call_args
         params = call_args[0][1]
-        assert params == ("vid_abc", "/path/turn1.mp4"), f"Params must be (youtube_video_id, output_path), got {params}"
+        assert params == ("vid_abc", True, "/path/turn1.mp4"), (
+            f"Params must include the scheduled-quota flag: got {params}"
+        )
 
     def test_returns_cursor_rowcount(self):
         """Return value must be cur.rowcount, so callers can distinguish 0 rows matched."""
