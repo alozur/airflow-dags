@@ -233,6 +233,75 @@ class TestNormalizeSpeakersTask:
 
 
 # ---------------------------------------------------------------------------
+# Issue #466 — split_long_chapters topology and passthrough (D7)
+# ---------------------------------------------------------------------------
+
+
+class TestSplitLongChaptersTask:
+    """split_long_chapters sits between trim_chapter_silence and
+    save_chapters_to_db, with the default all_success trigger_rule (D7)."""
+
+    def test_split_long_chapters_task_exists(self):
+        from congress_videos.youtube_channel_monitor_dag import dag
+
+        task_ids = {t.task_id for t in dag.tasks}
+        assert "split_long_chapters" in task_ids
+
+    def test_split_long_chapters_trigger_rule_is_all_success(self):
+        from congress_videos.youtube_channel_monitor_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        t = tasks_by_id["split_long_chapters"]
+        assert str(t.trigger_rule) == "all_success", f"Expected trigger_rule='all_success', got {t.trigger_rule!r}"
+
+    def test_split_long_chapters_is_direct_downstream_of_trim_chapter_silence(self):
+        from congress_videos.youtube_channel_monitor_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        t_trim = tasks_by_id["trim_chapter_silence"]
+        t_split = tasks_by_id["split_long_chapters"]
+
+        downstream_ids = {t.task_id for t in t_trim.downstream_list}
+        assert t_split.task_id in downstream_ids, (
+            "'split_long_chapters' must be a direct downstream of 'trim_chapter_silence'"
+        )
+
+    def test_save_chapters_to_db_is_direct_downstream_of_split_long_chapters(self):
+        from congress_videos.youtube_channel_monitor_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        t_split = tasks_by_id["split_long_chapters"]
+        t9_db = tasks_by_id["save_chapters_to_db"]
+
+        downstream_ids = {t.task_id for t in t_split.downstream_list}
+        assert t9_db.task_id in downstream_ids, (
+            "'save_chapters_to_db' must be a direct downstream of 'split_long_chapters'"
+        )
+
+    def test_trim_chapter_silence_no_longer_directly_upstream_of_save_chapters_to_db(self):
+        from congress_videos.youtube_channel_monitor_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        t_trim = tasks_by_id["trim_chapter_silence"]
+        t9_db = tasks_by_id["save_chapters_to_db"]
+
+        downstream_ids = {t.task_id for t in t_trim.downstream_list}
+        assert t9_db.task_id not in downstream_ids, (
+            "'save_chapters_to_db' must no longer be a direct downstream of 'trim_chapter_silence'"
+        )
+
+    def test_split_long_chapters_passthrough_when_xcom_absent(self, mock_task_instance):
+        from congress_videos.youtube_channel_monitor_dag import _split_long_chapters
+
+        ti = mock_task_instance
+        # "scored_chapters" key absent -> xcom_pull returns None
+
+        result = _split_long_chapters(ti)
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
 # Phase 4 — Monitor cleanup: trigger_refinement removed, normalize_speakers terminal
 # ---------------------------------------------------------------------------
 

@@ -58,6 +58,21 @@ VAD_MIN_CHAPTER_SECS = 5.0  # never trim an edge so far the chapter is shorter t
 VAD_TURN_TRIM_EPSILON_SECS = 0.5  # skip rewrite when both start AND end trims are below this
 
 # -------------------------
+# Chapter-duration split (issue #466) — enforce MAX_CHAPTER_DURATION_MINUTES
+# -------------------------
+# A chapter longer than MAX_CHAPTER_DURATION_MINUTES is replaced by
+# ceil(duration / MAX) contiguous children, cut at a real speech gap near each
+# equal-interval target when one is found, or at the arithmetic target
+# otherwise (never left whole). Runs AFTER the VAD silence trim, BEFORE the DB
+# save, from its own VAD pass per candidate cut (see vad_helpers.py).
+MAX_CHAPTER_DURATION_MINUTES = 40
+CHAPTER_SPLIT_ENABLED = True  # kill switch mirroring VAD_ENABLED
+CHAPTER_SPLIT_WINDOW_SECS = 120.0  # initial half-window (±) around each target
+CHAPTER_SPLIT_WINDOW_WIDEN_FACTOR = 2.0  # widen ONCE to this multiple when no gap is found
+CHAPTER_SPLIT_MIN_GAP_SECS = 3.0  # a gap must be >= this to count as a real boundary
+CHAPTER_SPLIT_MIN_CHILD_SECS = 300.0  # minimum child span (5 min) — a "worth diarizing" floor
+
+# -------------------------
 # Congress Participants Sync (opendataExport portlet + Wikidata enrichment)
 # -------------------------
 # Liferay opendataExport portlet — single POST replaces the old directory-scrape.
