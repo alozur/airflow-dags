@@ -21,6 +21,7 @@ Design notes:
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import os
@@ -989,3 +990,164 @@ def trim_turn_silence_with_vad(
                 os.unlink(tmp_video)
             except OSError:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Chapter-duration split (issue #466) — audio wrapper + public entry point.
+# ---------------------------------------------------------------------------
+
+
+def _timeline_within(timeline: list[dict] | None, lo_secs: float, hi_secs: float) -> list[dict]:
+    """Keep timeline moments whose ABSOLUTE ``time`` falls inside ``[lo_secs, hi_secs]``.
+
+    Local counterpart to
+    ``congress_videos.modules.youtube.download._filter_timeline_by_range`` (D5) —
+    NOT an import of that private symbol: importing it would pull the heavy
+    youtube package (yt-dlp/OpenAI) into a module the turn-prepare DAG also
+    imports, and this caller already holds numeric bounds so it needs neither
+    the SRT re-parse nor that helper's unparseable-bounds fallback.
+    ``build_youtube_chapters_block`` (youtube_ai.py) short-circuits cleanly on
+    an empty timeline, so an empty result here degrades safely.
+    """
+    if not timeline:
+        return []
+    kept: list[dict] = []
+    for moment in timeline:
+        if not isinstance(moment, dict):
+            continue
+        raw_time = moment.get("time")
+        if not raw_time:
+            continue
+        try:
+            secs = parse_timestamp(str(raw_time))
+        except (ValueError, TypeError):
+            continue
+        if lo_secs <= secs <= hi_secs:
+            kept.append(moment)
+    return kept
+
+
+def _segments_for_cut(
+    source_video: str | None,
+    chapter_start: float,
+    *,
+    backend: str,
+    sample_rate: int,
+) -> Callable[[float, float], list[tuple[float, float]] | None]:
+    """Build the ``segments_for`` callable injected into :func:`snap_split_points`.
+
+    Extracts ONE candidate-cut slice per call (not the whole chapter) and runs
+    the VAD backend once over it. Never raises — any failure returns ``None``,
+    driving that cut's D4 arithmetic fallback; sibling cuts may still snap.
+    """
+
+    def segments_for(lo_secs: float, hi_secs: float) -> list[tuple[float, float]] | None:
+        if source_video is None:
+            return None
+        wav_path: str | None = None
+        try:
+            fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="vad_split_")
+            os.close(fd)
+            extract_audio_wav(
+                source_video,
+                wav_path,
+                sample_rate=sample_rate,
+                start_secs=chapter_start + lo_secs,
+                duration_secs=hi_secs - lo_secs,
+            )
+            slice_segments = detect_speech_segments(wav_path, backend, sample_rate=sample_rate)
+        except Exception as exc:  # noqa: BLE001 — best-effort per-cut, D4 falls back to arithmetic
+            log.warning(
+                "chapter_split.cut_extract_failed lo_secs=%.2f hi_secs=%.2f error=%s",
+                lo_secs,
+                hi_secs,
+                exc,
+            )
+            return None
+        finally:
+            if wav_path and os.path.exists(wav_path):
+                os.unlink(wav_path)
+        if slice_segments is None:
+            log.warning("chapter_split.cut_vad_unavailable lo_secs=%.2f hi_secs=%.2f", lo_secs, hi_secs)
+            return None
+        # Segments come back slice-relative; rebase to chapter-relative (D2/D1 share this basis).
+        return [(start + lo_secs, end + lo_secs) for start, end in slice_segments]
+
+    return segments_for
+
+
+def _split_one_chapter(
+    chapter: dict,
+    source_video: str | None,
+    *,
+    max_chapter_secs: float,
+    min_child_secs: float,
+    window_secs: float,
+    widen_factor: float,
+    gap_merge_secs: float,
+    min_gap_secs: float,
+    backend: str = VAD_BACKEND,
+    sample_rate: int = VAD_SAMPLE_RATE,
+) -> list[dict]:
+    """Split ONE chapter into contiguous children, or return it unchanged.
+
+    ``source_video=None`` forces every cut to the arithmetic fallback (D4).
+    Idempotence: :func:`plan_split_points` returns ``[]`` under threshold, so
+    the chapter comes back as the SAME dict object — no copy, no re-suffix.
+    """
+    start_raw = chapter.get("start_time")
+    end_raw = chapter.get("end_time")
+    if not start_raw or not end_raw:
+        return [chapter]
+
+    chapter_start = parse_timestamp(str(start_raw))
+    chapter_end = parse_timestamp(str(end_raw))
+    duration = chapter_end - chapter_start
+    if duration <= 0:
+        return [chapter]
+
+    targets = plan_split_points(duration, max_chapter_secs=max_chapter_secs, min_child_secs=min_child_secs)
+    if not targets:
+        return [chapter]
+
+    cuts = snap_split_points(
+        targets,
+        _segments_for_cut(source_video, chapter_start, backend=backend, sample_rate=sample_rate),
+        duration,
+        window_secs=window_secs,
+        widen_factor=widen_factor,
+        max_chapter_secs=max_chapter_secs,
+        min_child_secs=min_child_secs,
+        gap_merge_secs=gap_merge_secs,
+        min_gap_secs=min_gap_secs,
+    )
+    for cut_secs, reason in cuts:
+        if reason == "arithmetic":
+            log.warning(
+                "chapter_split.cut_fallback reason=no_gap cut_secs=%.2f start_time=%s",
+                cut_secs,
+                start_raw,
+            )
+        else:
+            log.info(
+                "chapter_split.cut_snapped reason=%s cut_secs=%.2f start_time=%s",
+                reason,
+                cut_secs,
+                start_raw,
+            )
+
+    boundaries = [0.0, *(cut_secs for cut_secs, _reason in cuts), duration]
+    total_children = len(boundaries) - 1
+    parent_title = chapter.get("title", "Untitled Chapter")
+
+    children: list[dict] = []
+    for idx in range(total_children):
+        lo, hi = boundaries[idx], boundaries[idx + 1]
+        child = copy.deepcopy(chapter)
+        child["start_time"] = format_timestamp(chapter_start + lo, with_ms=True)
+        child["end_time"] = format_timestamp(chapter_start + hi, with_ms=True)
+        child["duration_minutes"] = round((hi - lo) / 60.0, 2)
+        child["title"] = f"{parent_title} (Parte {idx + 1}/{total_children})"
+        child["timeline"] = _timeline_within(chapter.get("timeline"), chapter_start + lo, chapter_start + hi)
+        children.append(child)
+    return children
