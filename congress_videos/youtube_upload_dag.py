@@ -294,6 +294,56 @@ def _analyze_chapter_content(chapter_id: int, blocks: list[dict], db) -> None:
         )
 
 
+def _turn_speaker_fields(chapter: dict) -> tuple[list[str], str | None]:
+    """Resolve ``(key_speakers, slug)`` for a turn row.
+
+    Lifted verbatim out of ``_prepare_thumbnail_config`` (issue #272): anchors
+    key_speakers to the turn's own ``resolved_name`` and fuzzy-resolves its slug,
+    falling back to the persisted ``resolved_participant_slug`` (and its
+    display_name) when the name is empty. Lookup failures degrade, never raise.
+    """
+    # Turn path: anchor key_speakers to the turn's own speaker (resolved_name).
+    # Use resolved_name directly for the fuzzy slug lookup.
+    resolved_name = chapter.get("resolved_name") or ""
+    if resolved_name:
+        key_speakers = [resolved_name]
+        slug = None
+        try:
+            participant = lookup_participant_fuzzy(resolved_name)
+            slug = participant.get("slug") if participant else None
+        except Exception as exc:
+            logging.warning(
+                "_prepare_thumbnail_config: turn speaker resolution failed for "
+                "turn_id=%s resolved_name=%r: %s — setting slug=None",
+                chapter.get("turn_id"),
+                resolved_name,
+                exc,
+            )
+            slug = None
+    else:
+        # Fallback to the AI-resolved slug persisted on the turn row
+        # (resolved_participant_slug, issue #131 LLM name resolution) —
+        # mirrors the chapter branch's slug-first precedence below.
+        fallback_slug = chapter.get("resolved_participant_slug") or None
+        slug = fallback_slug
+        key_speakers = []
+        if fallback_slug:
+            try:
+                participant = lookup_participant_by_slug(fallback_slug)
+                if participant and participant.get("display_name"):
+                    key_speakers = [participant["display_name"]]
+            except Exception as exc:
+                logging.warning(
+                    "_prepare_thumbnail_config: turn slug lookup failed for "
+                    "turn_id=%s resolved_participant_slug=%r: %s — "
+                    "key_speakers stays empty",
+                    chapter.get("turn_id"),
+                    fallback_slug,
+                    exc,
+                )
+    return key_speakers, slug
+
+
 def _prepare_thumbnail_config(chapter: dict, db) -> dict:
     """Build the thumbnail-generation config dict for a single chapter or turn.
 
@@ -330,45 +380,7 @@ def _prepare_thumbnail_config(chapter: dict, db) -> dict:
         session = str(session_date) if session_date else None
 
     if is_turn:
-        # Turn path: anchor key_speakers to the turn's own speaker (resolved_name).
-        # Use resolved_name directly for the fuzzy slug lookup.
-        resolved_name = chapter.get("resolved_name") or ""
-        if resolved_name:
-            key_speakers = [resolved_name]
-            slug = None
-            try:
-                participant = lookup_participant_fuzzy(resolved_name)
-                slug = participant.get("slug") if participant else None
-            except Exception as exc:
-                logging.warning(
-                    "_prepare_thumbnail_config: turn speaker resolution failed for "
-                    "turn_id=%s resolved_name=%r: %s — setting slug=None",
-                    chapter.get("turn_id"),
-                    resolved_name,
-                    exc,
-                )
-                slug = None
-        else:
-            # Fallback to the AI-resolved slug persisted on the turn row
-            # (resolved_participant_slug, issue #131 LLM name resolution) —
-            # mirrors the chapter branch's slug-first precedence below.
-            fallback_slug = chapter.get("resolved_participant_slug") or None
-            slug = fallback_slug
-            key_speakers = []
-            if fallback_slug:
-                try:
-                    participant = lookup_participant_by_slug(fallback_slug)
-                    if participant and participant.get("display_name"):
-                        key_speakers = [participant["display_name"]]
-                except Exception as exc:
-                    logging.warning(
-                        "_prepare_thumbnail_config: turn slug lookup failed for "
-                        "turn_id=%s resolved_participant_slug=%r: %s — "
-                        "key_speakers stays empty",
-                        chapter.get("turn_id"),
-                        fallback_slug,
-                        exc,
-                    )
+        key_speakers, slug = _turn_speaker_fields(chapter)
     else:
         # Chapter path: read the authoritative slug written by monitor-time
         # resolution first (issue #263). Only when it is NULL does this seam

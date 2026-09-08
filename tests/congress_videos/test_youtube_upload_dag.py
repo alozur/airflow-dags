@@ -3486,3 +3486,116 @@ class TestDocsScheduleConsistency:
 
         with pytest.raises(AssertionError, match="exactly one '## ...' section"):
             _documented_schedule(markdown, DAG_ID)
+
+
+# ---------------------------------------------------------------------------
+# _turn_speaker_fields (lifted out of _prepare_thumbnail_config, issue #272)
+# ---------------------------------------------------------------------------
+
+
+class TestTurnSpeakerFields:
+    """Turn-branch speaker resolution: (key_speakers, slug) for one turn row."""
+
+    def test_resolved_name_anchors_key_speakers_and_slug_comes_from_fuzzy_lookup(self):
+        from congress_videos.youtube_upload_dag import _turn_speaker_fields
+
+        turn = _make_turn_row(resolved_name="Ana García")
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+            return_value={"slug": "garcia-ana"},
+        ) as fuzzy:
+            key_speakers, slug = _turn_speaker_fields(turn)
+
+        fuzzy.assert_called_once_with("Ana García")
+        assert key_speakers == ["Ana García"]
+        assert slug == "garcia-ana"
+
+    def test_fuzzy_lookup_returning_none_leaves_slug_none(self):
+        from congress_videos.youtube_upload_dag import _turn_speaker_fields
+
+        turn = _make_turn_row(resolved_name="Ana García")
+
+        with patch("congress_videos.youtube_upload_dag.lookup_participant_fuzzy", return_value=None):
+            assert _turn_speaker_fields(turn) == (["Ana García"], None)
+
+    def test_fuzzy_lookup_raising_keeps_key_speakers_and_sets_slug_none(self, caplog):
+        from congress_videos.youtube_upload_dag import _turn_speaker_fields
+
+        turn = _make_turn_row(turn_id=9, resolved_name="Ana García")
+
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_fuzzy",
+                side_effect=RuntimeError("db down"),
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            key_speakers, slug = _turn_speaker_fields(turn)
+
+        assert key_speakers == ["Ana García"]
+        assert slug is None
+        assert any("turn speaker resolution failed" in r.message and "turn_id=9" in r.message for r in caplog.records)
+
+    def test_empty_resolved_name_uses_fallback_slug_and_its_display_name(self):
+        from congress_videos.youtube_upload_dag import _turn_speaker_fields
+
+        turn = _make_turn_row(resolved_name="", resolved_participant_slug="lopez-pedro")
+
+        with (
+            patch("congress_videos.youtube_upload_dag.lookup_participant_fuzzy") as fuzzy,
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_by_slug",
+                return_value={"slug": "lopez-pedro", "display_name": "Pedro López"},
+            ) as by_slug,
+        ):
+            key_speakers, slug = _turn_speaker_fields(turn)
+
+        fuzzy.assert_not_called()
+        by_slug.assert_called_once_with("lopez-pedro")
+        assert slug == "lopez-pedro"
+        assert key_speakers == ["Pedro López"]
+
+    def test_slug_lookup_raising_keeps_key_speakers_empty_and_slug_as_fallback(self, caplog):
+        from congress_videos.youtube_upload_dag import _turn_speaker_fields
+
+        turn = _make_turn_row(turn_id=9, resolved_name=None, resolved_participant_slug="lopez-pedro")
+
+        with (
+            patch(
+                "congress_videos.youtube_upload_dag.lookup_participant_by_slug",
+                side_effect=RuntimeError("db down"),
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            key_speakers, slug = _turn_speaker_fields(turn)
+
+        assert key_speakers == []
+        assert slug == "lopez-pedro"
+        assert any("turn slug lookup failed" in r.message and "turn_id=9" in r.message for r in caplog.records)
+
+    def test_no_resolved_name_and_no_fallback_slug_calls_no_lookup(self):
+        from congress_videos.youtube_upload_dag import _turn_speaker_fields
+
+        turn = _make_turn_row(resolved_name="", resolved_participant_slug="")
+
+        with (
+            patch("congress_videos.youtube_upload_dag.lookup_participant_fuzzy") as fuzzy,
+            patch("congress_videos.youtube_upload_dag.lookup_participant_by_slug") as by_slug,
+        ):
+            result = _turn_speaker_fields(turn)
+
+        assert result == ([], None)
+        fuzzy.assert_not_called()
+        by_slug.assert_not_called()
+
+    def test_participant_without_display_name_leaves_key_speakers_empty(self):
+        from congress_videos.youtube_upload_dag import _turn_speaker_fields
+
+        turn = _make_turn_row(resolved_name="", resolved_participant_slug="lopez-pedro")
+
+        with patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_by_slug",
+            return_value={"slug": "lopez-pedro", "display_name": ""},
+        ):
+            assert _turn_speaker_fields(turn) == ([], "lopez-pedro")
