@@ -498,6 +498,74 @@ def _coerce_pretrim_offset(value) -> float | None:
         return None
 
 
+def _resolve_short_srt_window(
+    chapter_start_secs: float,
+    chapter_end_secs: float,
+    pretrim_start_secs,
+    pretrim_end_secs,
+    turn_id: int | None,
+    video_id: str,
+    chapter_id: int,
+    clip_id: str,
+) -> tuple[float, float]:
+    """Resolve the ``[window_start, window_end]`` span for one Reap short clip.
+
+    Lifted verbatim out of ``write_short_srt_sidecar`` (issue #272); see its
+    docstring for the approximation and every fallback to the full chapter
+    span (``video_id``/``chapter_id``/``clip_id`` are only used for logging).
+    """
+    if turn_id is not None:
+        # Turn-sourced short (issue #467): pretrim_* on the parent video_shorts
+        # row are file-relative offsets into the turn's own output_path media,
+        # not chapter-relative. Applying the chapter-relative pretrim formula
+        # here would silently derive a wrong window, so this branch ALWAYS
+        # falls back to the full chapter span, regardless of whether the
+        # pretrim offsets are present (see module docstring).
+        window_start, window_end = chapter_start_secs, chapter_end_secs
+        logger.info(
+            "write_short_srt_sidecar: turn-sourced clip — using full chapter span "
+            "(video_id=%r chapter_id=%r clip_id=%r turn_id=%r)",
+            video_id,
+            chapter_id,
+            clip_id,
+            turn_id,
+        )
+    else:
+        pretrim_start = _coerce_pretrim_offset(pretrim_start_secs)
+        pretrim_end = _coerce_pretrim_offset(pretrim_end_secs)
+
+        if pretrim_start is None or pretrim_end is None:
+            window_start, window_end = chapter_start_secs, chapter_end_secs
+            logger.info(
+                "write_short_srt_sidecar: no pre-trim offsets — using full chapter span "
+                "(video_id=%r chapter_id=%r clip_id=%r)",
+                video_id,
+                chapter_id,
+                clip_id,
+            )
+        else:
+            window_start = chapter_start_secs + pretrim_start
+            window_end = chapter_start_secs + pretrim_end
+            # D3/F2: the derived window must actually overlap the chapter span.
+            window_valid = (
+                window_end > window_start and window_start < chapter_end_secs and window_end > chapter_start_secs
+            )
+            if not window_valid:
+                logger.warning(
+                    "write_short_srt_sidecar: derived window %.1f..%.1f outside chapter span %.1f..%.1f "
+                    "— falling back (video_id=%r chapter_id=%r clip_id=%r)",
+                    window_start,
+                    window_end,
+                    chapter_start_secs,
+                    chapter_end_secs,
+                    video_id,
+                    chapter_id,
+                    clip_id,
+                )
+                window_start, window_end = chapter_start_secs, chapter_end_secs
+    return window_start, window_end
+
+
 def write_short_srt_sidecar(
     video_id: str,
     chapter_id: int,
@@ -579,55 +647,16 @@ def write_short_srt_sidecar(
         )
         return None
 
-    if turn_id is not None:
-        # Turn-sourced short (issue #467): pretrim_* on the parent video_shorts
-        # row are file-relative offsets into the turn's own output_path media,
-        # not chapter-relative. Applying the chapter-relative pretrim formula
-        # here would silently derive a wrong window, so this branch ALWAYS
-        # falls back to the full chapter span, regardless of whether the
-        # pretrim offsets are present (see module docstring).
-        window_start, window_end = chapter_start_secs, chapter_end_secs
-        logger.info(
-            "write_short_srt_sidecar: turn-sourced clip — using full chapter span "
-            "(video_id=%r chapter_id=%r clip_id=%r turn_id=%r)",
-            video_id,
-            chapter_id,
-            clip_id,
-            turn_id,
-        )
-    else:
-        pretrim_start = _coerce_pretrim_offset(pretrim_start_secs)
-        pretrim_end = _coerce_pretrim_offset(pretrim_end_secs)
-
-        if pretrim_start is None or pretrim_end is None:
-            window_start, window_end = chapter_start_secs, chapter_end_secs
-            logger.info(
-                "write_short_srt_sidecar: no pre-trim offsets — using full chapter span "
-                "(video_id=%r chapter_id=%r clip_id=%r)",
-                video_id,
-                chapter_id,
-                clip_id,
-            )
-        else:
-            window_start = chapter_start_secs + pretrim_start
-            window_end = chapter_start_secs + pretrim_end
-            # D3/F2: the derived window must actually overlap the chapter span.
-            window_valid = (
-                window_end > window_start and window_start < chapter_end_secs and window_end > chapter_start_secs
-            )
-            if not window_valid:
-                logger.warning(
-                    "write_short_srt_sidecar: derived window %.1f..%.1f outside chapter span %.1f..%.1f "
-                    "— falling back (video_id=%r chapter_id=%r clip_id=%r)",
-                    window_start,
-                    window_end,
-                    chapter_start_secs,
-                    chapter_end_secs,
-                    video_id,
-                    chapter_id,
-                    clip_id,
-                )
-                window_start, window_end = chapter_start_secs, chapter_end_secs
+    window_start, window_end = _resolve_short_srt_window(
+        chapter_start_secs,
+        chapter_end_secs,
+        pretrim_start_secs,
+        pretrim_end_secs,
+        turn_id,
+        video_id,
+        chapter_id,
+        clip_id,
+    )
 
     canonical_dir = str(get_video_chapter_dir(video_id, chapter_id, channel_slug))
     srt_path = find_srt_for_chapter(video_id, chapter_id, session_date, canonical_dir=canonical_dir)
