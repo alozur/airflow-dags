@@ -15,7 +15,9 @@ import pytest
 
 from congress_videos.modules.vad_helpers import (
     detect_speech_bounds,
+    detect_speech_segments,
     extract_audio_wav,
+    find_split_gap,
     first_sustained_speech_start,
     last_sustained_speech_end,
 )
@@ -282,6 +284,86 @@ class TestExtractAudioWav:
 # ---------------------------------------------------------------------------
 # _webrtc_segments — lazy import + WAV reading (webrtcvad faked, no torch/audio)
 # ---------------------------------------------------------------------------
+
+
+class TestDetectSpeechSegments:
+    def test_webrtc_dispatches_to_webrtc_segments(self, mocker):
+        mocker.patch(
+            "congress_videos.modules.vad_helpers._webrtc_segments",
+            return_value=[(1.0, 2.0)],
+        )
+        assert detect_speech_segments("/tmp/a.wav", backend="webrtc") == [(1.0, 2.0)]
+
+    def test_silero_dispatches_to_silero_segments(self, mocker):
+        mocker.patch(
+            "congress_videos.modules.vad_helpers._silero_segments",
+            return_value=[(3.0, 4.0)],
+        )
+        assert detect_speech_segments("/tmp/a.wav", backend="silero") == [(3.0, 4.0)]
+
+    def test_silero_missing_dep_returns_none(self, mocker):
+        mocker.patch(
+            "congress_videos.modules.vad_helpers._silero_segments",
+            return_value=None,
+        )
+        assert detect_speech_segments("/tmp/a.wav", backend="silero") is None
+
+    def test_unknown_backend_returns_none(self):
+        assert detect_speech_segments("/tmp/a.wav", backend="bogus") is None
+
+    def test_no_voice_returns_empty_list(self, mocker):
+        mocker.patch(
+            "congress_videos.modules.vad_helpers._webrtc_segments",
+            return_value=[],
+        )
+        assert detect_speech_segments("/tmp/a.wav", backend="webrtc") == []
+
+
+# ---------------------------------------------------------------------------
+# find_split_gap — nearest-to-target admissible inter-block gap (D1)
+# ---------------------------------------------------------------------------
+
+
+class TestFindSplitGap:
+    def test_gap_at_target_is_selected(self):
+        segments = [(0.0, 100.0), (110.0, 200.0)]  # gap (100, 110), midpoint 105
+        result = find_split_gap(segments, target_secs=105.0, lo_secs=0.0, hi_secs=200.0)
+        assert result == pytest.approx(105.0)
+
+    def test_nearer_narrower_beats_farther_wider(self):
+        # gap1 (40,50) width10 mid45 — farther from target(63) but wider
+        # gap2 (60,65) width5 mid62.5 — nearer to target but narrower
+        segments = [(0.0, 40.0), (50.0, 60.0), (65.0, 200.0)]
+        result = find_split_gap(segments, target_secs=63.0, lo_secs=0.0, hi_secs=200.0)
+        assert result == pytest.approx(62.5)
+
+    def test_sub_min_gap_secs_is_rejected(self):
+        segments = [(0.0, 100.0), (101.5, 200.0)]  # gap width 1.5s < min_gap_secs
+        result = find_split_gap(segments, target_secs=100.75, lo_secs=0.0, hi_secs=200.0, min_gap_secs=3.0)
+        assert result is None
+
+    def test_gap_outside_search_window_returns_none(self):
+        segments = [(0.0, 100.0), (110.0, 200.0)]  # gap midpoint 105
+        result = find_split_gap(segments, target_secs=105.0, lo_secs=0.0, hi_secs=102.0)
+        assert result is None
+
+    def test_empty_segments_returns_none(self):
+        assert find_split_gap([], target_secs=50.0, lo_secs=0.0, hi_secs=100.0) is None
+
+    def test_single_block_has_no_internal_gap(self):
+        assert find_split_gap([(0.0, 200.0)], target_secs=100.0, lo_secs=0.0, hi_secs=200.0) is None
+
+    def test_tie_break_equal_distance_wider_gap_wins(self):
+        # gap1 (40,44) width4 mid42; gap2 (90,95) width5 mid92.5 — symmetric around 67.25
+        segments = [(0.0, 40.0), (44.0, 90.0), (95.0, 200.0)]
+        result = find_split_gap(segments, target_secs=67.25, lo_secs=0.0, hi_secs=200.0)
+        assert result == pytest.approx(92.5)
+
+    def test_tie_break_equal_distance_equal_width_earlier_midpoint_wins(self):
+        # gap1 (40,45) width5 mid42.5; gap2 (90,95) width5 mid92.5 — symmetric around 67.5
+        segments = [(0.0, 40.0), (45.0, 90.0), (95.0, 200.0)]
+        result = find_split_gap(segments, target_secs=67.5, lo_secs=0.0, hi_secs=200.0)
+        assert result == pytest.approx(42.5)
 
 
 class TestWebrtcSegments:
