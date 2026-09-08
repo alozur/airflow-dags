@@ -59,7 +59,7 @@ DAG_ID = SPEAKER_TURN_PREPARE_DAG_ID
 
 def _display_name_for(participants: list[dict], slug: str) -> str | None:
     """Look up a participant's canonical display_name by slug (issue #342:
-    shared by both the narrow and the wide resolution pass)."""
+    shared by both the primary and the wide resolution pass)."""
     return next((p["display_name"] for p in participants if p["slug"] == slug), None)
 
 
@@ -310,35 +310,35 @@ def _prepare_turns_callable() -> None:
                 # combined/wide resolver (#322), and so does the
                 # qa-promotion re-pass below (#342).
                 if (turn.get("turn_type") or "monologue") != "qa":
-                    narrow = resolve_monologue_speaker(turn, participants)
+                    primary = resolve_monologue_speaker(turn, participants)
                 else:
-                    narrow = resolve_speaker(turn, participants)
-                if narrow is not None:
-                    narrow_slug = narrow["participant_slug"]
-                    narrow_name = _display_name_for(participants, narrow_slug)
+                    primary = resolve_speaker(turn, participants)
+                if primary is not None:
+                    primary_slug = primary["participant_slug"]
+                    primary_name = _display_name_for(participants, primary_slug)
 
                     # issue #342: compute the qa-promotion signal ONCE, from
-                    # the narrow result, before any write. Promotion is
+                    # the primary result, before any write. Promotion is
                     # STICKY on this signal — the (possibly widened) winner
                     # below only decides which slug is persisted, never
                     # whether promotion fires (preserves #282 rule 4 exactly).
-                    promote_signal = _is_qa_promotion_signal(previous_name, narrow_name)
+                    promote_signal = _is_qa_promotion_signal(previous_name, primary_name)
                     mentions = chapter_roster_mentions(turn.get("key_speakers"), turn.get("speakers"))
 
-                    winner, winner_name, winner_verdict = narrow, narrow_name, None
+                    winner, winner_name, winner_verdict = primary, primary_name, None
                     wide_slug = None
                     if promote_signal and QA_WIDE_CONTEXT_ENABLED:
                         # Re-resolve with turn_type='qa' on a shallow copy
                         # (never mutate turn) so speaker_resolution's
                         # qa-widened prompt path can disambiguate a
-                        # monologue-truncated narrow pass.
+                        # monologue-truncated primary pass.
                         try:
                             wide = resolve_speaker({**turn, "turn_type": "qa"}, participants)
                         except Exception as exc:
                             logger.warning(
                                 "_prepare_turns_callable: turn_id=%d wide qa "
                                 "re-resolution raised (%s) — falling back to "
-                                "the narrow result",
+                                "the primary result",
                                 turn_id,
                                 exc,
                             )
@@ -348,7 +348,7 @@ def _prepare_turns_callable() -> None:
                             wide_name = _display_name_for(participants, wide_slug)
                             # A wide-reject is silent (audit line below
                             # records it) — the WARNING is reserved for the
-                            # final (narrow) verdict below.
+                            # final (primary) verdict below.
                             if wide_name and crosscheck_slug(wide_name, mentions) != "reject":
                                 winner, winner_name, winner_verdict = wide, wide_name, "ok"
 
@@ -405,12 +405,12 @@ def _prepare_turns_callable() -> None:
                         # issue #342: one audit INFO line per re-pass event.
                         logger.info(
                             "_prepare_turns_callable: qa_reresolution turn_id=%d "
-                            "output_path=%s previous_name=%r narrow_slug=%r "
+                            "output_path=%s previous_name=%r primary_slug=%r "
                             "wide_slug=%r winner_slug=%r verdict=%s promoted=%s",
                             turn_id,
                             output_path,
                             previous_name,
-                            narrow_slug,
+                            primary_slug,
                             wide_slug,
                             winner["participant_slug"],
                             winner_verdict,
