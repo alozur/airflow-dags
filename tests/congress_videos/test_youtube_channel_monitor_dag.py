@@ -525,6 +525,54 @@ class TestSlimTranscriptionsForXcom:
         assert slimmed["videos"][0]["video_id"] == "err1"
 
 
+class TestSlimVideo:
+    """Issue #272: ``_slim_video`` is the per-video loop body lifted out of
+    ``_slim_transcriptions_for_xcom``. These pin the quirks the lift must
+    preserve: presence/absence of keys is decided by truthiness of the
+    source fields, exactly as before."""
+
+    def test_chunked_key_always_present_and_defaults_to_false(self):
+        from congress_videos.youtube_channel_monitor_dag import _slim_video
+
+        slim = _slim_video({"video_id": "v1"})
+
+        assert slim == {"video_id": "v1", "chunked": False}
+
+    def test_chunked_video_whose_chunks_lack_srt_path_gets_no_srt_paths_key(self):
+        from congress_videos.youtube_channel_monitor_dag import _slim_video
+
+        slim = _slim_video(
+            {
+                "video_id": "v1",
+                "chunked": True,
+                "total_chunks": 2,
+                "chunks": [{"success": False, "text": ""}, {"success": True, "srt_path": ""}],
+            }
+        )
+
+        assert slim["chunked"] is True
+        assert slim["total_chunks"] == 2
+        assert "srt_paths" not in slim
+        assert "successful_transcriptions" not in slim
+
+    def test_unchunked_video_with_empty_srt_path_gets_no_srt_path_key(self):
+        from congress_videos.youtube_channel_monitor_dag import _slim_video
+
+        slim = _slim_video({"video_id": "v1", "chunked": False, "srt_path": "", "transcription_success": False})
+
+        assert slim["transcription_success"] is False
+        assert "srt_path" not in slim
+
+    def test_falsy_per_video_error_is_dropped_but_video_title_none_is_kept(self):
+        from congress_videos.youtube_channel_monitor_dag import _slim_video
+
+        slim = _slim_video({"video_id": "v1", "video_title": None, "error": None})
+
+        assert "error" not in slim
+        assert "video_title" in slim
+        assert slim["video_title"] is None
+
+
 class TestTargetDateGuardrail:
     """Source-scan guardrails for issue #206: every params-override read site
     must go through _resolve_target_date; the data-field read inside

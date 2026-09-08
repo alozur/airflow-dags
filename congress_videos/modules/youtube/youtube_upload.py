@@ -87,6 +87,56 @@ def prepare_orador_upload_config(
     }
 
 
+def _metadata_lookup_by_chapter(youtube_metadata_results) -> dict:
+    """Index ``topic_metadata`` entries by ``chapter_id``.
+
+    Lifted verbatim out of ``prepare_chapter_upload_config`` (issue #272):
+    entries without a truthy ``chapter_id`` are dropped and a later duplicate
+    overwrites an earlier one. ``None`` or a missing ``topic_metadata`` yields
+    an empty lookup.
+    """
+    metadata_lookup = {}
+    if youtube_metadata_results and youtube_metadata_results.get("topic_metadata"):
+        for metadata in youtube_metadata_results["topic_metadata"]:
+            chapter_id = metadata.get("chapter_id")
+            if chapter_id:
+                metadata_lookup[chapter_id] = metadata
+    return metadata_lookup
+
+
+def _thumbnail_lookup_by_chapter(thumbnail_results) -> dict:
+    """Index legacy batch thumbnail ``results`` by ``chapter_id`` -> ``output_path``.
+
+    Lifted verbatim out of ``prepare_chapter_upload_config`` (issue #272):
+    entries without a truthy ``chapter_id`` or with a falsy ``success`` are
+    dropped; a successful entry without ``output_path`` maps to ``None``.
+    """
+    thumbnail_lookup = {}
+    if thumbnail_results and thumbnail_results.get("results"):
+        for thumbnail in thumbnail_results["results"]:
+            chapter_id = thumbnail.get("chapter_id")
+            if chapter_id and thumbnail.get("success"):
+                thumbnail_lookup[chapter_id] = thumbnail.get("output_path")
+    return thumbnail_lookup
+
+
+def _pikzels_override(thumbnail_result) -> tuple:
+    """Parse the single-chapter Pikzels result into ``(chapter_id, path, title)``.
+
+    Lifted verbatim out of ``prepare_chapter_upload_config`` (issue #272):
+    ``(None, None, None)`` unless ``thumbnail_result`` is truthy with a truthy
+    ``success``; each field passes through as-is (possibly ``None``).
+    """
+    pikzels_chapter_id = None
+    pikzels_thumbnail_path = None
+    pikzels_title = None
+    if thumbnail_result and thumbnail_result.get("success"):
+        pikzels_chapter_id = thumbnail_result.get("chapter_id")
+        pikzels_thumbnail_path = thumbnail_result.get("output_path")
+        pikzels_title = thumbnail_result.get("title")
+    return pikzels_chapter_id, pikzels_thumbnail_path, pikzels_title
+
+
 def prepare_chapter_upload_config(
     chapter_extraction_results,
     youtube_metadata_results,
@@ -167,29 +217,13 @@ def prepare_chapter_upload_config(
         return None
 
     # Create metadata lookup by chapter_id
-    metadata_lookup = {}
-    if youtube_metadata_results and youtube_metadata_results.get("topic_metadata"):
-        for metadata in youtube_metadata_results["topic_metadata"]:
-            chapter_id = metadata.get("chapter_id")
-            if chapter_id:
-                metadata_lookup[chapter_id] = metadata
+    metadata_lookup = _metadata_lookup_by_chapter(youtube_metadata_results)
 
     # Create thumbnail lookup by chapter_id (legacy batch path)
-    thumbnail_lookup = {}
-    if thumbnail_results and thumbnail_results.get("results"):
-        for thumbnail in thumbnail_results["results"]:
-            chapter_id = thumbnail.get("chapter_id")
-            if chapter_id and thumbnail.get("success"):
-                thumbnail_lookup[chapter_id] = thumbnail.get("output_path")
+    thumbnail_lookup = _thumbnail_lookup_by_chapter(thumbnail_results)
 
     # Parse single-chapter Pikzels thumbnail result
-    pikzels_chapter_id = None
-    pikzels_thumbnail_path = None
-    pikzels_title = None
-    if thumbnail_result and thumbnail_result.get("success"):
-        pikzels_chapter_id = thumbnail_result.get("chapter_id")
-        pikzels_thumbnail_path = thumbnail_result.get("output_path")
-        pikzels_title = thumbnail_result.get("title")
+    pikzels_chapter_id, pikzels_thumbnail_path, pikzels_title = _pikzels_override(thumbnail_result)
 
     # Build videos list for generic uploader
     videos = []

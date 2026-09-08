@@ -64,6 +64,41 @@ _SEARCH_PORTLET_FORM_FIELDS: dict[str, object] = {
 }
 
 
+def _parse_deputy_entry(entry: dict) -> tuple[str, str] | None:
+    """Extract ``(normalized_name, codParlamentario)`` from one searchDiputados entry.
+
+    Candidate keys are tried in ``_COD_CANDIDATE_KEYS`` / ``_NAME_CANDIDATE_KEYS``
+    order; the first non-empty value wins. Returns ``None`` (after a DEBUG log)
+    when either the cod or the name cannot be resolved.
+    """
+    # Extract codParlamentario using candidate keys; first non-empty wins.
+    cod = None
+    for key in _COD_CANDIDATE_KEYS:
+        value = entry.get(key)
+        if value:
+            cod = str(value)
+            break
+
+    if not cod:
+        logger.debug("fetch_congreso_cod_parlamentario: skipping entry with no cod key — %r", entry)
+        return None
+
+    # Extract deputy name using candidate keys; first non-empty wins.
+    raw_name = None
+    for key in _NAME_CANDIDATE_KEYS:
+        value = entry.get(key)
+        if value:
+            raw_name = str(value)
+            break
+
+    if not raw_name:
+        logger.debug("fetch_congreso_cod_parlamentario: skipping entry with no name key — %r", entry)
+        return None
+
+    normalized = normalize_member_name(raw_name)
+    return normalized, cod
+
+
 def fetch_congreso_cod_parlamentario() -> dict[str, str]:
     """Bulk searchDiputados POST → {normalized_name: codParlamentario}.
 
@@ -117,31 +152,10 @@ def fetch_congreso_cod_parlamentario() -> dict[str, str]:
 
     result: dict[str, str] = {}
     for entry in entries:
-        # Extract codParlamentario using candidate keys; first non-empty wins.
-        cod = None
-        for key in _COD_CANDIDATE_KEYS:
-            value = entry.get(key)
-            if value:
-                cod = str(value)
-                break
-
-        if not cod:
-            logger.debug("fetch_congreso_cod_parlamentario: skipping entry with no cod key — %r", entry)
+        parsed = _parse_deputy_entry(entry)
+        if parsed is None:
             continue
-
-        # Extract deputy name using candidate keys; first non-empty wins.
-        raw_name = None
-        for key in _NAME_CANDIDATE_KEYS:
-            value = entry.get(key)
-            if value:
-                raw_name = str(value)
-                break
-
-        if not raw_name:
-            logger.debug("fetch_congreso_cod_parlamentario: skipping entry with no name key — %r", entry)
-            continue
-
-        normalized = normalize_member_name(raw_name)
+        normalized, cod = parsed
         result[normalized] = cod
 
     logger.info("fetch_congreso_cod_parlamentario: resolved %d deputies", len(result))

@@ -507,6 +507,61 @@ def _make_participant_row(**overrides) -> dict:
     return base
 
 
+class TestParseDeputyEntry:
+    """Quirks of the per-entry parser lifted out of fetch_congreso_cod_parlamentario (issue #272)."""
+
+    def test_first_non_empty_cod_candidate_key_wins_in_declared_order(self):
+        """An empty earlier candidate is skipped; the first NON-EMPTY key in list order wins."""
+        from congress_videos.modules.participants_enrichment import _parse_deputy_entry
+
+        entry = {"codParlamentario": "", "codigo": "C2", "cod": "C3", "id": "C4", "nombre": "Pérez Ruiz, Juan"}
+
+        assert _parse_deputy_entry(entry) == ("juan perez ruiz", "C2")
+
+    def test_first_non_empty_name_candidate_key_wins_in_declared_order(self):
+        """apellidosNombre empty → nombreCompleto wins over the given-name-only nombre."""
+        from congress_videos.modules.participants_enrichment import _parse_deputy_entry
+
+        entry = {"codParlamentario": "1", "apellidosNombre": "", "nombreCompleto": "Pérez Ruiz, Juan", "nombre": "Juan"}
+
+        assert _parse_deputy_entry(entry) == ("juan perez ruiz", "1")
+
+    @pytest.mark.parametrize("cod", [0, "", None, False])
+    def test_falsy_cod_is_treated_as_missing(self, cod):
+        """Truthiness, not key presence, decides: a present-but-falsy cod skips the entry."""
+        from congress_videos.modules.participants_enrichment import _parse_deputy_entry
+
+        assert _parse_deputy_entry({"codParlamentario": cod, "nombre": "Pérez Ruiz, Juan"}) is None
+
+    def test_int_cod_is_stringified(self):
+        """The live portlet returns codParlamentario as an int; the mapping value is always str."""
+        from congress_videos.modules.participants_enrichment import _parse_deputy_entry
+
+        parsed = _parse_deputy_entry({"codParlamentario": 160, "apellidosNombre": "Abades Martínez, Cristina"})
+
+        assert parsed == ("cristina abades martinez", "160")
+        assert isinstance(parsed[1], str)
+
+    @pytest.mark.parametrize("entry", [{"codParlamentario": "1"}, {"codParlamentario": "1", "nombre": ""}])
+    def test_cod_without_a_name_returns_none(self, entry):
+        """A resolvable cod is not enough: an entry with no non-empty name key is skipped."""
+        from congress_videos.modules.participants_enrichment import _parse_deputy_entry
+
+        assert _parse_deputy_entry(entry) is None
+
+    def test_returned_name_is_normalize_member_name_of_the_raw_name(self):
+        """The key is exactly normalize_member_name(raw_name), not the raw portlet string."""
+        from congress_videos.modules.participants_enrichment import _parse_deputy_entry
+        from congress_videos.modules.participants_ingestion import normalize_member_name
+
+        raw_name = "Gómez-Álvarez de la Torre, María José"
+
+        parsed = _parse_deputy_entry({"codParlamentario": "9", "apellidosNombre": raw_name})
+
+        assert parsed == (normalize_member_name(raw_name), "9")
+        assert parsed[0] != raw_name
+
+
 class TestFillCongresoPhotoFallback:
     """Tests for fill_congreso_photo_fallback() — RED phase."""
 

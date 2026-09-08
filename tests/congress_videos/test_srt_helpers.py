@@ -666,6 +666,86 @@ class TestFindSrtForChapterCanonical:
 
 
 # ---------------------------------------------------------------------------
+# _srt_candidate_paths — the probe list lifted out of find_srt_for_chapter
+# (issue #272). Pure list construction: order and membership are behaviour.
+# ---------------------------------------------------------------------------
+
+
+class TestSrtCandidatePaths:
+    def test_order_is_canonical_then_project_merged_then_plain_then_downloads(self, mocker):
+        from congress_videos.srt_helpers import _srt_candidate_paths
+
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", "/p")
+        mocker.patch("congress_videos.srt_helpers.DOWNLOADS_DIR", "/d")
+
+        candidates = _srt_candidate_paths("vid1", "2025-01-01", "/c")
+
+        assert candidates == [
+            "/c/subtitles.srt",
+            "/p/vid1/srt_files/vid1_merged.srt",
+            "/p/vid1/srt_files/vid1.srt",
+            "/d/2025-01-01/vid1/srt_files/vid1_merged.srt",
+            "/d/2025-01-01/vid1/srt_files/vid1.srt",
+        ]
+
+    def test_empty_canonical_dir_adds_no_canonical_candidate(self, mocker):
+        from congress_videos.srt_helpers import _srt_candidate_paths
+
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", "/p")
+        mocker.patch("congress_videos.srt_helpers.DOWNLOADS_DIR", "/d")
+
+        candidates = _srt_candidate_paths("vid1", "2025-01-01", "")
+
+        assert candidates[0] == "/p/vid1/srt_files/vid1_merged.srt"
+        assert not any(c.endswith("subtitles.srt") for c in candidates)
+
+    def test_no_session_date_and_missing_downloads_dir_adds_no_downloads_candidates(self, mocker):
+        from congress_videos.srt_helpers import _srt_candidate_paths
+
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", "/p")
+        mocker.patch("congress_videos.srt_helpers.DOWNLOADS_DIR", "/d")
+        mocker.patch("os.path.isdir", return_value=False)
+        listdir = mocker.patch("os.listdir")
+
+        candidates = _srt_candidate_paths("vid1", None, None)
+
+        assert candidates == [
+            "/p/vid1/srt_files/vid1_merged.srt",
+            "/p/vid1/srt_files/vid1.srt",
+        ]
+        listdir.assert_not_called()
+
+    def test_no_session_date_walks_every_date_folder_in_listdir_order(self, mocker):
+        from congress_videos.srt_helpers import _srt_candidate_paths
+
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", "/p")
+        mocker.patch("congress_videos.srt_helpers.DOWNLOADS_DIR", "/d")
+        mocker.patch("os.path.isdir", return_value=True)
+        mocker.patch("os.listdir", return_value=["2025-02-02", "2025-01-01"])
+
+        candidates = _srt_candidate_paths("vid1", None, None)
+
+        assert candidates[2:] == [
+            "/d/2025-02-02/vid1/srt_files/vid1_merged.srt",
+            "/d/2025-02-02/vid1/srt_files/vid1.srt",
+            "/d/2025-01-01/vid1/srt_files/vid1_merged.srt",
+            "/d/2025-01-01/vid1/srt_files/vid1.srt",
+        ]
+
+    def test_candidate_construction_never_probes_existence(self, mocker):
+        """Existence is find_srt_for_chapter's job; the list builder stays pure."""
+        from congress_videos.srt_helpers import _srt_candidate_paths
+
+        mocker.patch("congress_videos.srt_helpers.PROJECT_DATA_DIR", "/p")
+        mocker.patch("congress_videos.srt_helpers.DOWNLOADS_DIR", "/d")
+        exists = mocker.patch("os.path.exists")
+
+        _srt_candidate_paths("vid1", "2025-01-01", "/c")
+
+        exists.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # score_turn_interest
 # ---------------------------------------------------------------------------
 
@@ -1528,6 +1608,63 @@ class TestWriteShortSrtSidecar:
         assert not target_path.with_name(target_path.name + ".tmp").exists()
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert any(r.exc_info is not None for r in warnings)
+
+
+class TestResolveShortSrtWindow:
+    """Window-resolution helper lifted out of ``write_short_srt_sidecar``
+    (issue #272). Chapter span is [300.0, 600.0]; the helper returns the
+    chapter-relative window or the full span on every fallback."""
+
+    CHAPTER_START = 300.0
+    CHAPTER_END = 600.0
+    VIDEO_ID = "vidshort"
+    CHAPTER_ID = 9
+    CLIP_ID = "clip01"
+
+    def _resolve(self, pretrim_start_secs, pretrim_end_secs, turn_id=None):
+        from congress_videos.srt_helpers import _resolve_short_srt_window
+
+        return _resolve_short_srt_window(
+            self.CHAPTER_START,
+            self.CHAPTER_END,
+            pretrim_start_secs,
+            pretrim_end_secs,
+            turn_id,
+            self.VIDEO_ID,
+            self.CHAPTER_ID,
+            self.CLIP_ID,
+        )
+
+    def test_turn_id_forces_full_chapter_span_even_with_valid_offsets(self):
+        assert self._resolve(30, 100, turn_id=7) == (300.0, 600.0)
+
+    @pytest.mark.parametrize(
+        "pretrim_start_secs,pretrim_end_secs",
+        [
+            (None, None),
+            (None, 100),
+            (30, None),
+            ("not-a-number", 100),
+            (30, "not-a-number"),
+        ],
+    )
+    def test_missing_or_non_numeric_offset_falls_back_to_full_span(self, pretrim_start_secs, pretrim_end_secs):
+        assert self._resolve(pretrim_start_secs, pretrim_end_secs) == (300.0, 600.0)
+
+    def test_zero_start_offset_is_a_valid_offset_not_a_fallback(self):
+        # `is None` check, not truthiness: 0.0 keeps the derived window.
+        assert self._resolve(0.0, 100) == (300.0, 400.0)
+
+    @pytest.mark.parametrize("pretrim_start_secs,pretrim_end_secs", [(100, 100), (100, 30)])
+    def test_inverted_or_empty_window_falls_back_to_full_span(self, pretrim_start_secs, pretrim_end_secs):
+        assert self._resolve(pretrim_start_secs, pretrim_end_secs) == (300.0, 600.0)
+
+    @pytest.mark.parametrize("pretrim_start_secs,pretrim_end_secs", [(-100, -50), (300, 400)])
+    def test_window_disjoint_from_chapter_span_falls_back_to_full_span(self, pretrim_start_secs, pretrim_end_secs):
+        assert self._resolve(pretrim_start_secs, pretrim_end_secs) == (300.0, 600.0)
+
+    def test_valid_window_is_chapter_relative(self):
+        assert self._resolve(30, 100) == (330.0, 400.0)
 
 
 class TestChapterAndShortSidecarsCoexist:

@@ -270,6 +270,39 @@ def _poll_thumbnail_dag_run(
     }
 
 
+def _build_child_conf(row: dict, chosen: dict, is_title_checkpoint: bool) -> dict:
+    """Build the thumbnail DAG conf for one regenerate-decision row.
+
+    Lifted verbatim out of :func:`_apply_one_action` (issue #272).
+    ``previous_brief`` is forwarded only for a non-empty dict brief and
+    ``previous_title`` only at a title checkpoint with a truthy prior title.
+    """
+    child_conf = {
+        "youtube_video_id": str(row["youtube_video_id"]),
+        "chapter_id": row["chapter_id"],
+        "debate_summary": (
+            f"{row.get('chapter_title', '')}\n{row.get('description', '')}"
+            if row.get("description")
+            else row.get("chapter_title", "")
+        ),
+        "session": (
+            f"Sesión {row['session_number']}"
+            if row.get("session_number") is not None
+            else (str(row.get("session_date")) if row.get("session_date") else None)
+        ),
+        "domain": "congreso",
+        "slug": row.get("resolved_participant_slug"),
+        "key_speakers": row.get("key_speakers") or [],
+        "previous_archetype": chosen.get("archetype"),
+    }
+    prior_brief = chosen.get("art_direction_brief")
+    if isinstance(prior_brief, dict) and prior_brief:
+        child_conf["previous_brief"] = prior_brief
+    if is_title_checkpoint and chosen.get("openai_title"):
+        child_conf["previous_title"] = chosen["openai_title"]
+    return child_conf
+
+
 def _apply_one_action(db, row: dict, run_id: str) -> dict:
     """Claim, regenerate, publish, and finalize a single regenerate-decision row.
 
@@ -320,29 +353,7 @@ def _apply_one_action(db, row: dict, run_id: str) -> dict:
 
     is_title_checkpoint = row["checkpoint"] in TITLE_UPDATE_CHECKPOINTS
 
-    child_conf = {
-        "youtube_video_id": str(row["youtube_video_id"]),
-        "chapter_id": row["chapter_id"],
-        "debate_summary": (
-            f"{row.get('chapter_title', '')}\n{row.get('description', '')}"
-            if row.get("description")
-            else row.get("chapter_title", "")
-        ),
-        "session": (
-            f"Sesión {row['session_number']}"
-            if row.get("session_number") is not None
-            else (str(row.get("session_date")) if row.get("session_date") else None)
-        ),
-        "domain": "congreso",
-        "slug": row.get("resolved_participant_slug"),
-        "key_speakers": row.get("key_speakers") or [],
-        "previous_archetype": chosen.get("archetype"),
-    }
-    prior_brief = chosen.get("art_direction_brief")
-    if isinstance(prior_brief, dict) and prior_brief:
-        child_conf["previous_brief"] = prior_brief
-    if is_title_checkpoint and chosen.get("openai_title"):
-        child_conf["previous_title"] = chosen["openai_title"]
+    child_conf = _build_child_conf(row, chosen, is_title_checkpoint)
 
     child_run_id = f"analytics_action_{snapshot_id}_{run_id}"
     try:

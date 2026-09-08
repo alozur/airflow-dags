@@ -270,6 +270,36 @@ def split_video_chapter(source_video_path, output_path, start_time, end_time, co
         }
 
 
+def _find_chapter_source_video(downloads_folder: str, video_id) -> str | None:
+    """Locate the downloaded source video for ``video_id`` under ``downloads_folder``.
+
+    Lifted verbatim out of ``extract_chapters_from_video`` (issue #272): scans
+    every date folder in ``os.listdir`` order, returns the first .mp4/.mkv/.webm
+    that is not an extracted ``chapter_video``, or ``None`` when nothing matches.
+    """
+    source_video_path = None
+
+    if os.path.exists(downloads_folder):
+        # Search through all date folders for this video_id
+        for date_folder in os.listdir(downloads_folder):
+            video_folder = os.path.join(downloads_folder, date_folder, str(video_id))
+
+            if os.path.exists(video_folder):
+                # Look for video files (mp4, mkv, webm)
+                video_extensions = [".mp4", ".mkv", ".webm"]
+
+                for file in os.listdir(video_folder):
+                    if any(file.endswith(ext) for ext in video_extensions):
+                        # Skip chapter videos (to avoid using extracted chapters as source)
+                        if "chapter_video" not in file:
+                            source_video_path = os.path.join(video_folder, file)
+                            break
+
+                if source_video_path:
+                    break  # Found the video, stop searching
+    return source_video_path
+
+
 def extract_chapters_from_video(uploadable_chapters, data_directory):
     """
     Extract chapter videos from source YouTube videos.
@@ -330,26 +360,7 @@ def extract_chapters_from_video(uploadable_chapters, data_directory):
             # We need to search for the video across all dates in downloads folder
             downloads_folder = os.path.join(data_directory, "downloads")
 
-            source_video_path = None
-
-            if os.path.exists(downloads_folder):
-                # Search through all date folders for this video_id
-                for date_folder in os.listdir(downloads_folder):
-                    video_folder = os.path.join(downloads_folder, date_folder, str(video_id))
-
-                    if os.path.exists(video_folder):
-                        # Look for video files (mp4, mkv, webm)
-                        video_extensions = [".mp4", ".mkv", ".webm"]
-
-                        for file in os.listdir(video_folder):
-                            if any(file.endswith(ext) for ext in video_extensions):
-                                # Skip chapter videos (to avoid using extracted chapters as source)
-                                if "chapter_video" not in file:
-                                    source_video_path = os.path.join(video_folder, file)
-                                    break
-
-                        if source_video_path:
-                            break  # Found the video, stop searching
+            source_video_path = _find_chapter_source_video(downloads_folder, video_id)
 
             if not source_video_path:
                 raise FileNotFoundError(

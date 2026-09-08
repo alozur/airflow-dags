@@ -93,17 +93,18 @@ class TestPerFileIgnoresCodeLists:
 
 
 class TestC901BaselineCoverage:
-    """T4: the baseline records the measured C901 offender-file count.
+    """T4: the baseline tracks the live count of C901 per-file-ignores entries.
 
-    Measured directly against the change tip (post-autofix) with
-    `uv run ruff check . --output-format json --select C90` grouped by file:
-    26 distinct files carry at least one C901 diagnostic. The proposal's
-    "38 offenders across 32 files" figure was measured before later,
-    unrelated `dev` commits landed; this test locks the value actually
-    observed at this change's tip, not the stale proposal-time snapshot.
+    `EXPECTED_C901_FILE_COUNT` is the number of `per-file-ignores` entries
+    carrying `"C901"` in `pyproject.toml`, measured at this change's tip —
+    not a fixed historical snapshot. Each C901 backlog slice (issue #272)
+    prunes one or more entries and decrements this constant in the same
+    commit that removes the corresponding `C901` ignore, so the number moves
+    down over time as the backlog is paid off; it is owned by issue #272,
+    not by any single slice.
     """
 
-    EXPECTED_C901_FILE_COUNT = 23
+    EXPECTED_C901_FILE_COUNT = 13
 
     def test_exactly_the_measured_number_of_entries_carry_c901(self):
         per_file_ignores = _load_pyproject()["tool"]["ruff"]["lint"]["per-file-ignores"]

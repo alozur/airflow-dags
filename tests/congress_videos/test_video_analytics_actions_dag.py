@@ -1372,3 +1372,79 @@ class TestApplyActionsPreviousBriefForwarded:
 
         conf = mock_trigger.call_args.kwargs["conf"]
         assert conf["previous_brief"] == brief
+
+
+# ---------------------------------------------------------------------------
+# _build_child_conf — the child DAG conf construction lifted out of
+# _apply_one_action (issue #272). Pins the field derivations the lift must
+# preserve; called directly, no DAG run machinery involved.
+# ---------------------------------------------------------------------------
+
+
+class TestBuildChildConf:
+    def test_previous_brief_only_when_brief_is_a_non_empty_dict(self):
+        from congress_videos.video_analytics_actions_dag import _build_child_conf
+
+        row = _decision_row()
+
+        assert _build_child_conf(row, {"art_direction_brief": {"text": "x"}}, False)["previous_brief"] == {"text": "x"}
+        assert "previous_brief" not in _build_child_conf(row, {"art_direction_brief": {}}, False)
+        assert "previous_brief" not in _build_child_conf(row, {"art_direction_brief": '{"text": "x"}'}, False)
+        assert "previous_brief" not in _build_child_conf(row, {}, False)
+
+    def test_previous_title_requires_title_checkpoint_and_truthy_title(self):
+        from congress_videos.video_analytics_actions_dag import _build_child_conf
+
+        row = _decision_row()
+
+        assert _build_child_conf(row, {"openai_title": "Old"}, True)["previous_title"] == "Old"
+        assert "previous_title" not in _build_child_conf(row, {"openai_title": "Old"}, False)
+        assert "previous_title" not in _build_child_conf(row, {"openai_title": ""}, True)
+        assert "previous_title" not in _build_child_conf(row, {}, True)
+
+    def test_session_falls_back_to_session_date_only_when_number_is_none(self):
+        from congress_videos.video_analytics_actions_dag import _build_child_conf
+
+        numbered = _decision_row()
+        numbered["session_number"] = 0
+        numbered["session_date"] = datetime(2025, 1, 1, tzinfo=UTC).date()
+        assert _build_child_conf(numbered, {}, False)["session"] == "Sesión 0"
+
+        dated = _decision_row()
+        dated["session_number"] = None
+        dated["session_date"] = datetime(2025, 1, 1, tzinfo=UTC).date()
+        assert _build_child_conf(dated, {}, False)["session"] == "2025-01-01"
+
+        neither = _decision_row()
+        neither["session_number"] = None
+        neither["session_date"] = None
+        assert _build_child_conf(neither, {}, False)["session"] is None
+
+    def test_debate_summary_joins_description_only_when_truthy(self):
+        from congress_videos.video_analytics_actions_dag import _build_child_conf
+
+        with_desc = _decision_row()
+        assert _build_child_conf(with_desc, {}, False)["debate_summary"] == "Título\nDesc"
+
+        empty_desc = _decision_row()
+        empty_desc["description"] = ""
+        assert _build_child_conf(empty_desc, {}, False)["debate_summary"] == "Título"
+
+        no_desc = _decision_row()
+        del no_desc["description"]
+        assert _build_child_conf(no_desc, {}, False)["debate_summary"] == "Título"
+
+    def test_youtube_video_id_is_stringified_and_static_fields_filled(self):
+        from congress_videos.video_analytics_actions_dag import _build_child_conf
+
+        row = _decision_row(youtube_video_id=12345, chapter_id=7)
+        row["key_speakers"] = None
+
+        conf = _build_child_conf(row, {"archetype": "denuncia"}, False)
+
+        assert conf["youtube_video_id"] == "12345"
+        assert conf["chapter_id"] == 7
+        assert conf["domain"] == "congreso"
+        assert conf["slug"] is None
+        assert conf["key_speakers"] == []
+        assert conf["previous_archetype"] == "denuncia"
