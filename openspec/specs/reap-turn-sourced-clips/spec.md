@@ -35,7 +35,7 @@ turn_id ASC`.
 | Source | `output_path IS NULL` |
 | Procedural | representative `is_procedural = TRUE` |
 | Floor | effective span (group span minus the summed procedural seconds of its turns, mirroring `uploadable_turns`) `< 120` seconds |
-| Dedup | a `video_shorts` row already has that `turn_id` |
+| Dedup | a `video_shorts` row already references any turn of that `output_path` (sibling turns share the file) |
 
 Span `> 900`s, `prepared_at IS NULL`, any relevance threshold, and a missing
 parent YouTube upload date MUST NOT exclude a candidate.
