@@ -1195,3 +1195,74 @@ class TestGetSourceVideoIdForChapter:
 
         _, params = mock_cursor.execute.call_args[0]
         assert 42 in params
+
+
+# --------------------------------------------------------------------------- #
+# get_turn_speaker_slug (issue #433 — turn resolved-speaker accessor, design D2)
+# --------------------------------------------------------------------------- #
+
+
+class TestGetTurnSpeakerSlug:
+    def test_returns_slug_confidence_and_method_for_resolved_turn(self, db):
+        """T1a — a resolved turn returns the roster slug plus resolution metadata."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "turn_id": 42,
+            "resolved_participant_slug": "ana-perez",
+            "speaker_resolution_confidence": 0.92,
+            "speaker_resolution_method": "monologue_window",
+        }
+
+        result = instance.get_turn_speaker_slug(42)
+
+        assert result is not None
+        assert result["resolved_participant_slug"] == "ana-perez"
+        assert result["speaker_resolution_confidence"] == 0.92
+        assert result["speaker_resolution_method"] == "monologue_window"
+
+    def test_query_names_speaker_turn_videos_and_binds_turn_id(self, db):
+        """T1a — SQL targets speaker_turn_videos and binds the turn_id parameter."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.get_turn_speaker_slug(42)
+
+        sql, params = mock_cursor.execute.call_args[0]
+        assert "speaker_turn_videos" in sql
+        assert params == (42,)
+
+    def test_missing_row_returns_none(self, db):
+        """T1a — a turn_id with no matching row returns None, not a dict."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        result = instance.get_turn_speaker_slug(999)
+
+        assert result is None
+
+    def test_speaker_resolution_evidence_never_selected(self, db):
+        """T1a — the JSON audit blob is not part of the accessor's SELECT list."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.get_turn_speaker_slug(42)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "speaker_resolution_evidence" not in sql
+
+    def test_row_exists_with_null_slug_returns_dict_not_none(self, db):
+        """T1b — an existing row with a NULL slug returns a dict, distinct from a missing row."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "turn_id": 43,
+            "resolved_participant_slug": None,
+            "speaker_resolution_confidence": None,
+            "speaker_resolution_method": None,
+        }
+
+        result = instance.get_turn_speaker_slug(43)
+
+        assert result is not None
+        assert isinstance(result, dict)
+        assert result["turn_id"] == 43
+        assert result["resolved_participant_slug"] is None

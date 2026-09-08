@@ -1849,6 +1849,7 @@ class CongressionalVideoDB:
                 f"""SELECT vc.chapter_id, vc.title, vc.description, vc.speakers,
                                vc.key_speakers, vc.topics, vc.scoring_reasoning,
                                vc.relevance_score, vc.youtube_video_id,
+                               vc.mentioned_participant_slugs, vc.updated_at,
                                ysv.video_title AS source_video_title,
                                ysv.video_url   AS source_video_url,
                                ysv.session_number,
@@ -1857,6 +1858,30 @@ class CongressionalVideoDB:
                         LEFT JOIN {youtube_source_videos_table} ysv ON ysv.video_id = vc.video_id
                         WHERE vc.chapter_id = %s""",
                 (chapter_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def get_turn_speaker_slug(self, turn_id: int) -> dict | None:
+        """Roster-resolved speaker for one materialized turn video, or None if the row is gone.
+
+        Keyed read instead of a JOIN in pending_shorts_candidate_sql: that query owns
+        tier/cool-down semantics under 13 live-Postgres tests (design D2).
+
+        Note the two distinct absences a caller must handle (see D5, tests T1a/T1b):
+        a missing ROW returns None; an existing row with a NULL slug returns a dict
+        whose resolved_participant_slug is None.
+        """
+        stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT stv.turn_id,
+                           stv.resolved_participant_slug,
+                           stv.speaker_resolution_confidence,
+                           stv.speaker_resolution_method
+                    FROM {stv_table} stv
+                    WHERE stv.turn_id = %s""",
+                (turn_id,),
             )
             row = cur.fetchone()
             return dict(row) if row else None
