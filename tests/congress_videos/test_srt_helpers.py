@@ -1530,6 +1530,63 @@ class TestWriteShortSrtSidecar:
         assert any(r.exc_info is not None for r in warnings)
 
 
+class TestResolveShortSrtWindow:
+    """Window-resolution helper lifted out of ``write_short_srt_sidecar``
+    (issue #272). Chapter span is [300.0, 600.0]; the helper returns the
+    chapter-relative window or the full span on every fallback."""
+
+    CHAPTER_START = 300.0
+    CHAPTER_END = 600.0
+    VIDEO_ID = "vidshort"
+    CHAPTER_ID = 9
+    CLIP_ID = "clip01"
+
+    def _resolve(self, pretrim_start_secs, pretrim_end_secs, turn_id=None):
+        from congress_videos.srt_helpers import _resolve_short_srt_window
+
+        return _resolve_short_srt_window(
+            self.CHAPTER_START,
+            self.CHAPTER_END,
+            pretrim_start_secs,
+            pretrim_end_secs,
+            turn_id,
+            self.VIDEO_ID,
+            self.CHAPTER_ID,
+            self.CLIP_ID,
+        )
+
+    def test_turn_id_forces_full_chapter_span_even_with_valid_offsets(self):
+        assert self._resolve(30, 100, turn_id=7) == (300.0, 600.0)
+
+    @pytest.mark.parametrize(
+        "pretrim_start_secs,pretrim_end_secs",
+        [
+            (None, None),
+            (None, 100),
+            (30, None),
+            ("not-a-number", 100),
+            (30, "not-a-number"),
+        ],
+    )
+    def test_missing_or_non_numeric_offset_falls_back_to_full_span(self, pretrim_start_secs, pretrim_end_secs):
+        assert self._resolve(pretrim_start_secs, pretrim_end_secs) == (300.0, 600.0)
+
+    def test_zero_start_offset_is_a_valid_offset_not_a_fallback(self):
+        # `is None` check, not truthiness: 0.0 keeps the derived window.
+        assert self._resolve(0.0, 100) == (300.0, 400.0)
+
+    @pytest.mark.parametrize("pretrim_start_secs,pretrim_end_secs", [(100, 100), (100, 30)])
+    def test_inverted_or_empty_window_falls_back_to_full_span(self, pretrim_start_secs, pretrim_end_secs):
+        assert self._resolve(pretrim_start_secs, pretrim_end_secs) == (300.0, 600.0)
+
+    @pytest.mark.parametrize("pretrim_start_secs,pretrim_end_secs", [(-100, -50), (300, 400)])
+    def test_window_disjoint_from_chapter_span_falls_back_to_full_span(self, pretrim_start_secs, pretrim_end_secs):
+        assert self._resolve(pretrim_start_secs, pretrim_end_secs) == (300.0, 600.0)
+
+    def test_valid_window_is_chapter_relative(self):
+        assert self._resolve(30, 100) == (330.0, 400.0)
+
+
 class TestChapterAndShortSidecarsCoexist:
     """Both writers run for the same chapter and land in distinct canonical
     files: ``.../video_chapters/{chapter_id}/subtitles.srt`` for the chapter
