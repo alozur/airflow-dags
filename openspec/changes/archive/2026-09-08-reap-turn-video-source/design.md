@@ -276,6 +276,13 @@ deleted with the code it explains.
 
 ### 7. `write_short_srt_sidecar` guard — `srt_helpers.py:494`
 
+> **Superseded at verify (2026-09-08):** the group-span window math sketched in
+> this section was replaced by the spec's unconditional full-chapter-span
+> fallback for turn-sourced clips (`specs/short-video-srt-artifacts/spec.md`,
+> "Short SRT window derivation with fallback"). `write_short_srt_sidecar`
+> takes only `turn_id`; the group span is not threaded into the sidecar.
+
+
 Two new optional params, defaulting to `None` so the chapter path is byte-identical:
 
 ```python
