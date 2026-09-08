@@ -12,9 +12,10 @@ touches real audio, ffmpeg, torch, or webrtcvad. Mirrors
 from __future__ import annotations
 
 import copy
+import logging
 
 from congress_videos.modules.vad_helpers import _split_one_chapter, _timeline_within, split_long_chapters_with_vad
-from utils.time_utils import parse_timestamp
+from utils.time_utils import format_timestamp, parse_timestamp
 
 # ---------------------------------------------------------------------------
 # _timeline_within — D5 pure helper (no import of download.py's private symbol)
@@ -327,6 +328,28 @@ class TestSplitLongChaptersWithVad:
         second_children = second["videos"][0]["scored_chapters"]
 
         assert second_children == first_children
+
+    def test_real_gap_near_target_is_chosen_over_arithmetic_target(self, mocker, caplog):
+        """Gap-snapping proof through the entry point (closes verify Warning 2):
+        a real detected gap near the target wins over the arithmetic target."""
+        target, search_lo = 1920.0, 1800.0  # 64-min chapter midpoint, 1st-pass window lo
+        gap_start, gap_end = target - 20.0, target - 17.0  # 3s silence 20s before target
+        expected_cut = (gap_start + gap_end) / 2.0
+        self._patch_pipeline(mocker, segments=[(0.0, gap_start - search_lo), (gap_end - search_lo, 240.0)])
+        chapter = {"title": "Debate general", "start_time": "00:00:00,000", "end_time": "01:04:00,000"}
+
+        with caplog.at_level(logging.INFO, logger="congress_videos.modules.vad_helpers"):
+            result = split_long_chapters_with_vad(_scored([chapter]), target_date="2025-10-08")
+        children = result["videos"][0]["scored_chapters"]
+
+        assert len(children) == 2
+        assert children[0]["end_time"] == format_timestamp(expected_cut, with_ms=True)
+        assert children[0]["end_time"] != format_timestamp(target, with_ms=True)
+        assert children[0]["end_time"] == children[1]["start_time"]
+        assert children[1]["end_time"] == "01:04:00,000"
+        for child in children:
+            assert parse_timestamp(child["end_time"]) - parse_timestamp(child["start_time"]) <= 2400.0
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     def test_disabled_via_constant_is_passthrough(self, mocker):
         mocker.patch("congress_videos.modules.vad_helpers.CHAPTER_SPLIT_ENABLED", False)
