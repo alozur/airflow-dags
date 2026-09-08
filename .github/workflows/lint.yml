@@ -9,10 +9,19 @@ name: Lint
 # formatted once and CI now guards against drift. Job name stays "ruff
 # check" — it is a REQUIRED status check on the dev branch ruleset; never
 # rename it.
+#
+# The pull_request trigger carries no `branches:` filter and lists `edited`
+# explicitly (issue #486). Stacked slices are opened against their parent
+# branch and later retargeted with `gh pr edit --base dev`, which delivers an
+# `edited` event — NOT part of the default activity set
+# (opened/synchronize/reopened). With no branch filter every slice already
+# gets a run at `opened` on its own head sha, and that sha is what the dev
+# ruleset evaluates; `edited` adds a re-run against the new base. Before
+# this, every retargeted child needed a `gh pr close` + `gh pr reopen`.
 
 on:
   pull_request:
-    branches: [dev]
+    types: [opened, synchronize, reopened, edited]
   push:
     # main is included so the release merge commit carries a passing "ruff check":
     # the main->dev sync is a fast-forward push of that same sha, which the dev
@@ -23,7 +32,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: lint-${{ github.ref }}
+  # Keyed on the activity type as well as the ref (issue #486): github.ref for a
+  # pull_request is refs/pull/<n>/merge regardless of activity type, so without
+  # the suffix an `edited` event — even a title edit, same head sha — would
+  # cancel an in-flight `synchronize` run and leave `cancelled`, not success, on
+  # the required check. github.event.action is empty for push, so push runs
+  # still share one group per branch.
+  group: lint-${{ github.ref }}-${{ github.event.action }}
   cancel-in-progress: true
 
 jobs:
