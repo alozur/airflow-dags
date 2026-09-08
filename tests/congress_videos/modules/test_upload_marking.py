@@ -168,6 +168,15 @@ class TestMarkTurnUploads:
         mock_db.mark_turns_uploaded.assert_any_call(turn_id=1, youtube_video_id="abc")
         mock_db.mark_turns_uploaded.assert_any_call(turn_id=2, youtube_video_id="xyz")
 
+    def test_manual_turn_upload_is_persisted_outside_scheduled_quota(self, mock_db):
+        details = {"upload_details": [{"turn_id": 1, "youtube_video_id": "abc", "success": True}]}
+
+        mark_turn_uploads(mock_db, details, counts_toward_daily_quota=False)
+
+        mock_db.mark_turns_uploaded.assert_called_once_with(
+            turn_id=1, youtube_video_id="abc", counts_toward_daily_quota=False
+        )
+
     def test_skips_failed_uploads(self, mock_db):
         upload_results = {"upload_details": [{"turn_id": 1, "youtube_video_id": None, "success": False}]}
 

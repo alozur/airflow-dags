@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS production.video_chapters (
     is_uploaded_to_youtube BOOLEAN DEFAULT FALSE,
     youtube_video_id VARCHAR(50), -- YouTube video ID once uploaded as separate video
     youtube_upload_date TIMESTAMPTZ,
+    counts_toward_daily_quota BOOLEAN NOT NULL DEFAULT TRUE, -- migration 048 / issue #500
 
     -- Upload failure tracking (soft-delete after repeated failures)
     upload_attempts INTEGER DEFAULT 0,
@@ -312,6 +313,7 @@ CREATE TABLE IF NOT EXISTS production.speaker_turn_videos (
     is_uploaded_to_youtube        BOOLEAN     NOT NULL DEFAULT FALSE,
     youtube_video_id              VARCHAR(50),
     youtube_upload_date           TIMESTAMPTZ,
+    counts_toward_daily_quota     BOOLEAN     NOT NULL DEFAULT TRUE, -- migration 048 / issue #500
 
     -- Added by migration 030 (prepare/upload split, issue #146)
     prepared_at                   TIMESTAMPTZ,

@@ -451,7 +451,7 @@ class CongressionalVideoDB:
             )
             return chapters
 
-    def mark_chapter_uploaded(self, chapter_id: int, youtube_video_id: str):
+    def mark_chapter_uploaded(self, chapter_id: int, youtube_video_id: str, *, counts_toward_daily_quota: bool = True):
         """
         Mark a chapter as uploaded to YouTube.
 
@@ -468,10 +468,11 @@ class CongressionalVideoDB:
                         is_uploaded_to_youtube = TRUE,
                         youtube_video_id = %s,
                         youtube_upload_date = CURRENT_TIMESTAMP,
+                        counts_toward_daily_quota = %s,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE chapter_id = %s
                 """,
-                (youtube_video_id, chapter_id),
+                (youtube_video_id, counts_toward_daily_quota, chapter_id),
             )
             logger.info(f"Marked chapter {chapter_id} as uploaded to YouTube: {youtube_video_id}")
 
@@ -1075,7 +1076,9 @@ class CongressionalVideoDB:
             logger.info(f"Retrieved {len(turns)} uploadable turns (limit={limit})")
             return turns
 
-    def mark_turns_uploaded(self, turn_id: int, youtube_video_id: str) -> None:
+    def mark_turns_uploaded(
+        self, turn_id: int, youtube_video_id: str, *, counts_toward_daily_quota: bool = True
+    ) -> None:
         """Mark a speaker turn video as uploaded to YouTube.
 
         Sets is_uploaded_to_youtube=TRUE, youtube_video_id, and
@@ -1093,16 +1096,19 @@ class CongressionalVideoDB:
                     UPDATE {stv_table} SET
                         is_uploaded_to_youtube = TRUE,
                         youtube_video_id = %s,
-                        youtube_upload_date = NOW()
+                        youtube_upload_date = NOW(),
+                        counts_toward_daily_quota = %s
                     WHERE output_path = (
                         SELECT output_path FROM {stv_table} WHERE turn_id = %s
                     )
                     """,
-                (youtube_video_id, turn_id),
+                (youtube_video_id, counts_toward_daily_quota, turn_id),
             )
             logger.info(f"Marked turn {turn_id} as uploaded to YouTube: {youtube_video_id}")
 
-    def mark_turns_uploaded_by_output_path(self, output_path: str, youtube_video_id: str) -> int:
+    def mark_turns_uploaded_by_output_path(
+        self, output_path: str, youtube_video_id: str, *, counts_toward_daily_quota: bool = True
+    ) -> int:
         """Mark ALL speaker turn video rows sharing output_path as uploaded.
 
         Fallback marking path for when the caller does not have a turn_id
@@ -1132,10 +1138,11 @@ class CongressionalVideoDB:
                     UPDATE {stv_table} SET
                         is_uploaded_to_youtube = TRUE,
                         youtube_video_id = %s,
-                        youtube_upload_date = NOW()
+                        youtube_upload_date = NOW(),
+                        counts_toward_daily_quota = %s
                     WHERE output_path = %s
                     """,
-                (youtube_video_id, output_path),
+                (youtube_video_id, counts_toward_daily_quota, output_path),
             )
             logger.info(
                 "mark_turns_uploaded_by_output_path: output_path=%r marked uploaded to YouTube: %s (%d rows)",
@@ -1596,7 +1603,9 @@ class CongressionalVideoDB:
 
     def count_chapters_uploaded_today(self) -> int:
         """Returns the number of chapters uploaded to YouTube today (UTC date)."""
-        count = self._count_records("video_chapters", "youtube_upload_date >= CURRENT_DATE")
+        count = self._count_records(
+            "video_chapters", "youtube_upload_date >= CURRENT_DATE AND counts_toward_daily_quota = TRUE"
+        )
         logger.info(f"Chapters uploaded today: {count}")
         return count
 
@@ -1614,6 +1623,7 @@ class CongressionalVideoDB:
                     SELECT COUNT(DISTINCT output_path) AS count
                     FROM {table}
                     WHERE youtube_upload_date >= CURRENT_DATE
+                      AND counts_toward_daily_quota = TRUE
                     """
             )
             result = cur.fetchone()

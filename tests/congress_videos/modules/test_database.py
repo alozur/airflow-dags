@@ -278,7 +278,7 @@ class TestMarkChapterUploaded:
         sql, params = mock_cursor.execute.call_args[0]
         assert "UPDATE" in sql
         assert "is_uploaded_to_youtube" in sql
-        assert params == ("yt-chap-001", 7)
+        assert params == ("yt-chap-001", True, 7)
 
     def test_parameterized_no_injection(self, db):
         """youtube_video_id and chapter_id are params, not in SQL string."""
@@ -393,6 +393,7 @@ class TestCountChaptersUploadedToday:
         sql = mock_cursor.execute.call_args[0][0]
         assert "youtube_upload_date" in sql
         assert "CURRENT_DATE" in sql
+        assert "counts_toward_daily_quota = TRUE" in sql
 
     def test_returns_zero_when_fetchone_none(self, db):
         """Returns 0 gracefully when fetchone returns None."""
@@ -422,6 +423,7 @@ class TestCountTurnsUploadedToday:
         assert "output_path" in sql
         assert "youtube_upload_date" in sql
         assert "CURRENT_DATE" in sql
+        assert "counts_toward_daily_quota = TRUE" in sql
 
     def test_grouped_siblings_count_once(self, db):
         """N>1 rows sharing one output_path still count as 1 distinct video."""
