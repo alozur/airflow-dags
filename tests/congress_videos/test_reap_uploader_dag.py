@@ -408,6 +408,25 @@ class TestResolveSpeakers:
         )
         assert result == ("Laura Gómez", ""), f"Expected ('Laura Gómez', ''), got {result!r}"
 
+    # -------------------------------------------------------------------------
+    # T7 (issue #433, D4) — preferred_primary kwarg promotes the resolved turn
+    # speaker ahead of the key_speakers/speakers pool, deduplicating.
+    # -------------------------------------------------------------------------
+
+    def test_preferred_primary_promotes_over_pool(self):
+        """GIVEN preferred_primary + an unrelated pool THEN it becomes primary."""
+        from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
+
+        result = _resolve_speakers({"key_speakers": ["Otro Diputado"]}, preferred_primary="Ana Pérez")
+        assert result == ("Ana Pérez", "Otro Diputado")
+
+    def test_preferred_primary_dedups_when_already_in_pool(self):
+        """GIVEN preferred_primary already present in the pool THEN no duplicate entry."""
+        from congress_videos.reap_shorts_uploader_dag import _resolve_speakers
+
+        result = _resolve_speakers({"key_speakers": ["Ana Pérez", "Otro Diputado"]}, preferred_primary="Ana Pérez")
+        assert result == ("Ana Pérez", "Otro Diputado")
+
 
 # ---------------------------------------------------------------------------
 # Prompt template regression tests
@@ -912,3 +931,332 @@ class TestGenerateMetadataAiOutcome:
         assert metadata[0]["description"].startswith("🏛️ Debate en el Congreso de los Diputados.")
         warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
         assert any("7" in w and "boom" in w for w in warnings)
+
+
+# ---------------------------------------------------------------------------
+# build_shorts_metadata_context — pure function unit tests (issue #433, T3/T4)
+# ---------------------------------------------------------------------------
+
+
+def _lookup_stub(roster: dict):
+    """Stub participants_lookup: slug -> {"display_name": ...} | None.
+
+    The returned callable records every slug it was asked to resolve on its
+    `.calls` attribute, so tests can assert no-lookup-call behaviour.
+    """
+    calls: list[str] = []
+
+    def _fn(slug):
+        calls.append(slug)
+        return roster.get(slug)
+
+    _fn.calls = calls
+    return _fn
+
+
+class TestBuildShortsMetadataContext:
+    def test_multi_mention_preserves_order_and_identity(self):
+        """Spec: 'Multiple mentioned people preserve order and identity'."""
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_metadata_context
+
+        roster = {
+            "ana-perez": {"display_name": "Ana Pérez"},
+            "luis-gomez": {"display_name": "Luis Gómez"},
+            "maria-ruiz": {"display_name": "María Ruiz"},
+        }
+        chapter = {"mentioned_participant_slugs": ["ana-perez", "luis-gomez", "maria-ruiz"]}
+
+        result = build_shorts_metadata_context(chapter, None, _lookup_stub(roster))
+
+        assert result["mentioned_display_names"] == ["Ana Pérez", "Luis Gómez", "María Ruiz"]
+
+    def test_unknown_slug_dropped_not_rendered_raw(self):
+        """Spec: 'Unresolvable slug dropped, not rendered raw'."""
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_metadata_context
+
+        roster = {"ana-perez": {"display_name": "Ana Pérez"}}
+        chapter = {"mentioned_participant_slugs": ["ana-perez", "unknown-slug"]}
+
+        result = build_shorts_metadata_context(chapter, None, _lookup_stub(roster))
+
+        assert result["mentioned_display_names"] == ["Ana Pérez"]
+        assert "unknown-slug" not in result["mentioned_display_names"]
+
+    def test_speaker_excluded_from_mentioned_by_slug(self):
+        """Spec: 'Speaker excluded from mentioned-people section'."""
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_metadata_context
+
+        roster = {
+            "ana-perez": {"display_name": "Ana Pérez"},
+            "luis-gomez": {"display_name": "Luis Gómez"},
+        }
+        chapter = {"mentioned_participant_slugs": ["ana-perez", "luis-gomez"]}
+
+        result = build_shorts_metadata_context(chapter, "ana-perez", _lookup_stub(roster))
+
+        assert result["speaker_display_name"] == "Ana Pérez"
+        assert result["mentioned_display_names"] == ["Luis Gómez"]
+
+    def test_lookup_raise_for_mentioned_slug_is_swallowed(self):
+        """D4/D5: 'participants_lookup raises' — that slug becomes unresolvable, no raise."""
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_metadata_context
+
+        def _raising_lookup(slug):
+            if slug == "boom-slug":
+                raise RuntimeError("roster unavailable")
+            return {"display_name": "Luis Gómez"} if slug == "luis-gomez" else None
+
+        chapter = {"mentioned_participant_slugs": ["boom-slug", "luis-gomez"]}
+
+        result = build_shorts_metadata_context(chapter, None, _raising_lookup)
+
+        assert result["mentioned_display_names"] == ["Luis Gómez"]
+
+    def test_null_mentioned_participant_slugs_yields_empty_list(self):
+        """Spec: NULL mentioned_participant_slugs (never analysed) → []."""
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_metadata_context
+
+        chapter = {"mentioned_participant_slugs": None}
+
+        result = build_shorts_metadata_context(chapter, None, _lookup_stub({}))
+
+        assert result["mentioned_display_names"] == []
+
+    def test_empty_mentioned_participant_slugs_yields_empty_list(self):
+        """Spec: analysed-but-empty mentioned_participant_slugs behaves like NULL."""
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_metadata_context
+
+        chapter = {"mentioned_participant_slugs": []}
+
+        result = build_shorts_metadata_context(chapter, None, _lookup_stub({}))
+
+        assert result["mentioned_display_names"] == []
+
+    def test_turn_speaker_slug_none_yields_empty_speaker_and_no_lookup_call(self):
+        """D5: turn_speaker_slug=None → empty speaker name with no lookup call."""
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_metadata_context
+
+        lookup = _lookup_stub({})
+        chapter = {"mentioned_participant_slugs": []}
+
+        result = build_shorts_metadata_context(chapter, None, lookup)
+
+        assert result["speaker_display_name"] == ""
+        assert lookup.calls == []
+
+    def test_unresolvable_speaker_slug_yields_empty_speaker(self):
+        """Spec: 'Falls back to heuristic when slug is unresolvable' (speaker side)."""
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_metadata_context
+
+        chapter = {"mentioned_participant_slugs": []}
+
+        result = build_shorts_metadata_context(chapter, "off-roster-slug", _lookup_stub({}))
+
+        assert result["speaker_display_name"] == ""
+
+    def test_topic_never_enters_mentioned_or_speaker(self):
+        """T4 — spec: 'A topic never renders as a person'."""
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_metadata_context
+
+        roster = {"ana-perez": {"display_name": "Ana Pérez"}}
+        chapter = {
+            "mentioned_participant_slugs": ["ana-perez"],
+            "topics": ["Pedro Sánchez", "presupuestos"],
+        }
+
+        result = build_shorts_metadata_context(chapter, None, _lookup_stub(roster))
+
+        assert result["topics"] == ["Pedro Sánchez", "presupuestos"]
+        assert "Pedro Sánchez" not in result["mentioned_display_names"]
+        assert result["speaker_display_name"] != "Pedro Sánchez"
+
+
+# ---------------------------------------------------------------------------
+# _generate_metadata — empty-metadata byte-compatibility (issue #433, T5)
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateMetadataByteCompatibility:
+    def test_empty_metadata_prompt_byte_identical_to_template(self, mocker):
+        """Spec: 'Empty metadata is byte-compatible with today's output' (AC4)."""
+        from congress_videos.config.ai_prompts import SHORTS_METADATA_USER_PROMPT_TEMPLATE
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapter_metadata.return_value = _make_chapter_metadata(
+            key_speakers=[],
+            speakers=[],
+            topics=[],
+            mentioned_participant_slugs=None,
+        )
+
+        mocker.patch("os.path.exists", return_value=True)
+        mocker.patch("subprocess.run").return_value.returncode = 0
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.transcribe_audio_file",
+            return_value={"success": True, "text": "Texto de prueba"},
+        )
+
+        captured: dict = {}
+
+        def fake_generate_json_completion(system_prompt, user_prompt, **kwargs):
+            captured["user_prompt"] = user_prompt
+            return {"data": None, "error": "not used"}
+
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.generate_json_completion",
+            side_effect=fake_generate_json_completion,
+        )
+
+        pending_shorts = [{"id": 1, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        mock_db.get_turn_speaker_slug.assert_not_called()
+        expected_prompt = SHORTS_METADATA_USER_PROMPT_TEMPLATE.format(
+            transcript="Texto de prueba"[:2000],
+            chapter_title="Debate presupuestos",
+            primary_speaker="",
+            secondary_speakers="",
+            topics="Debate parlamentario",
+            scoring_reasoning="Alta relevancia"[:500],
+        )
+        assert captured["user_prompt"] == expected_prompt
+        assert "PERSONAS MENCIONADAS" not in captured["user_prompt"]
+
+        metadata = ti.xcom_store["shorts_metadata"]
+        assert metadata[0]["title"] == "Debate presupuestos #Shorts"
+
+
+# ---------------------------------------------------------------------------
+# _generate_metadata — turn speaker precedence integration (issue #433, T6)
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateMetadataTurnSpeakerPrecedence:
+    def test_resolved_slug_beats_key_speakers_in_prompt(self, mocker):
+        """Spec: 'Resolved slug takes precedence over heuristic'; mentioned block once, no raw slug."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapter_metadata.return_value = _make_chapter_metadata(
+            key_speakers=["Otro Diputado"],
+            speakers=["Otro Diputado"],
+            mentioned_participant_slugs=["luis-gomez"],
+        )
+        mock_db.get_turn_speaker_slug.return_value = {
+            "turn_id": 42,
+            "resolved_participant_slug": "ana-perez",
+            "speaker_resolution_confidence": 0.97,
+            "speaker_resolution_method": "llm",
+        }
+
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.lookup_participant_by_slug",
+            side_effect=lambda slug: {
+                "ana-perez": {"display_name": "Ana Pérez"},
+                "luis-gomez": {"display_name": "Luis Gómez"},
+            }.get(slug),
+        )
+        mocker.patch("os.path.exists", return_value=True)
+        mocker.patch("subprocess.run").return_value.returncode = 0
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.transcribe_audio_file",
+            return_value={"success": True, "text": "Texto de prueba"},
+        )
+
+        captured: dict = {}
+
+        def fake_generate_json_completion(system_prompt, user_prompt, **kwargs):
+            captured["user_prompt"] = user_prompt
+            return {"data": {"title": "T", "description": "D"}}
+
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.generate_json_completion",
+            side_effect=fake_generate_json_completion,
+        )
+
+        pending_shorts = [{"id": 1, "chapter_id": 10, "turn_id": 42, "local_file_path": "/fake/clip.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        mock_db.get_turn_speaker_slug.assert_called_once_with(42)
+        user_prompt = captured["user_prompt"]
+        assert "PONENTE PRINCIPAL: Ana Pérez" in user_prompt
+        assert "PONENTE PRINCIPAL: Otro Diputado" not in user_prompt
+        assert user_prompt.count("PERSONAS MENCIONADAS") == 1
+        assert "Luis Gómez" in user_prompt
+        assert "ana-perez" not in user_prompt
+        assert "luis-gomez" not in user_prompt
+
+    def test_accessor_exception_falls_back_to_heuristic_no_raise(self, mocker, caplog):
+        """D5: accessor raises (DB error) → caught at call site, WARNING, today's output."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapter_metadata.return_value = _make_chapter_metadata(
+            key_speakers=["Ana García"],
+        )
+        mock_db.get_turn_speaker_slug.side_effect = RuntimeError("connection reset")
+
+        mocker.patch("os.path.exists", return_value=False)
+
+        pending_shorts = [{"id": 9, "chapter_id": 10, "turn_id": 99, "local_file_path": "/fake/clip.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+
+        with caplog.at_level(logging.WARNING):
+            _generate_metadata(ti)  # must not raise
+
+        metadata = ti.xcom_store["shorts_metadata"]
+        assert metadata[0]["title"] == "Ana García: Debate presupuestos #Shorts"
+        warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("99" in w and "connection reset" in w for w in warnings)
+
+
+# ---------------------------------------------------------------------------
+# _generate_metadata — legacy short without turn_id never queries the
+# turn-speaker accessor (issue #433, T6b)
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateMetadataLegacyShortNoTurnId:
+    def test_turn_id_key_absent_never_calls_accessor(self, mocker):
+        """Spec: 'Legacy short has no turn_id' — key absent falls through to heuristic."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapter_metadata.return_value = _make_chapter_metadata(
+            key_speakers=["Ana García"],
+        )
+
+        mocker.patch("os.path.exists", return_value=False)
+
+        pending_shorts = [{"id": 1, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        mock_db.get_turn_speaker_slug.assert_not_called()
+        metadata = ti.xcom_store["shorts_metadata"]
+        assert metadata[0]["title"] == "Ana García: Debate presupuestos #Shorts"
+
+    def test_turn_id_none_never_calls_accessor(self, mocker):
+        """Spec: 'Legacy short has no turn_id' — explicit turn_id=None, same fall-through."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapter_metadata.return_value = _make_chapter_metadata(
+            key_speakers=["Ana García"],
+        )
+
+        mocker.patch("os.path.exists", return_value=False)
+
+        pending_shorts = [{"id": 2, "chapter_id": 10, "turn_id": None, "local_file_path": "/fake/clip.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        mock_db.get_turn_speaker_slug.assert_not_called()
