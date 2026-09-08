@@ -58,7 +58,8 @@ split_srt_by_silence (silencios >= 15s, chunks 10-20 min)
       --> identify_interesting_chapters (GPT-4o-mini)
           --> merge_interesting_chapters
               --> score_chapter_relevance (GPT-4o-mini)
-                  --> save_chapters_to_db (PythonOperator)
+                  --> trim_chapter_silence --> split_long_chapters
+                      --> save_chapters_to_db (PythonOperator)
 ```
 
 ### Sistema de scoring (0-5)
