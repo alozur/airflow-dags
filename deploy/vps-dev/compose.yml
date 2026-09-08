@@ -26,11 +26,28 @@ x-airflow: &airflow
     YOUTUBE_API_KEY: dev-disabled-not-a-credential
     REAP_API_KEY: dev-disabled-not-a-credential
     PIKZELS_API_KEY: dev-disabled-not-a-credential
+    # ML sidecars on the same internal network (these are also the code defaults).
+    WHISPER_API_HOST: whisper-api
+    WHISPER_API_PORT: "9000"
+    DIARIZE_API_HOST: diarize-api
+    DIARIZE_API_PORT: "8080"
+    YAMNET_API_HOST: yamnet-api
+    YAMNET_API_PORT: "8081"
   volumes:
     - logs:/opt/airflow/logs
     - data:/opt/airflow/data
   mem_limit: 2g
   cpus: 2
+  security_opt: [no-new-privileges:true]
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+# CPU-only ML sidecars: internal network only, pre-seeded model volumes, no egress,
+# no Hugging Face token. Thread caps keep native pools inside the cpus budget.
+x-sidecar: &sidecar
+  restart: unless-stopped
+  networks: [runtime]
   security_opt: [no-new-privileges:true]
   logging:
     driver: json-file
@@ -91,6 +108,74 @@ services:
       retries: 15
       start_period: 60s
 
+  diarize-api:
+    <<: *sidecar
+    # Built from benchmarks/pyannote_diarization at the release revision; runs as uid 10001.
+    image: ${DIARIZE_IMAGE:?Required}
+    environment:
+      # The server refuses to start inference without this variable; the pipeline is
+      # pre-seeded in the volume and the hub is offline, so no real token exists here.
+      HF_TOKEN: dev-offline-not-a-token
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HOME: /model-cache
+      MODEL_CACHE_DIR: /model-cache
+      DIARIZE_API_PORT: "8080"
+      IDLE_TIMEOUT_SECONDS: "900"
+      OMP_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
+      TORCH_NUM_THREADS: "2"
+    volumes: [hf_home:/model-cache]
+    mem_limit: 4g
+    cpus: 2
+    healthcheck:
+      # Single-worker uvicorn also runs inference, so /health can take tens of seconds
+      # while a diarization is in flight; a short timeout reports a working service unhealthy.
+      test: [CMD, curl, -f, http://localhost:8080/health]
+      interval: 60s
+      timeout: 60s
+      retries: 3
+      start_period: 30s
+
+  yamnet-api:
+    <<: *sidecar
+    # Built from benchmarks/yamnet_applause at the release revision; runs as uid 10001.
+    image: ${YAMNET_IMAGE:?Required}
+    environment:
+      MODEL_CACHE_DIR: /model-cache
+      YAMNET_API_PORT: "8081"
+      IDLE_TIMEOUT_SECONDS: "900"
+      OMP_NUM_THREADS: "1"
+    volumes: [yamnet_model_cache:/model-cache]
+    mem_limit: 1g
+    cpus: 1
+    healthcheck:
+      test: [CMD, curl, -f, http://localhost:8081/health]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  whisper-api:
+    <<: *sidecar
+    # Third-party image pinned by digest (same build production runs); it runs as root
+    # by upstream design. The tiny faster-whisper model is pre-seeded in the volume.
+    image: onerahmet/openai-whisper-asr-webservice:latest@sha256:03b402335881cdab2e4939b24620809df8d6ceec3bf2712217d41c8761a0f5d4
+    environment:
+      ASR_MODEL: tiny
+      ASR_ENGINE: faster_whisper
+      HF_HUB_OFFLINE: "1"
+      OMP_NUM_THREADS: "2"
+    volumes: [whisper_models:/root/.cache/whisper]
+    mem_limit: 2g
+    cpus: 2
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://localhost:9000/docs', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
 networks:
   runtime:
     internal: true
@@ -101,3 +186,7 @@ volumes:
   metadata:
   logs:
   data:
+  # Model caches: seeded from the controller bundle by Ansible, never downloaded at runtime.
+  hf_home:
+  yamnet_model_cache:
+  whisper_models:

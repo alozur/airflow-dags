@@ -26,7 +26,7 @@ COPY utils /opt/airflow/dags/repo/utils
 COPY congress_videos /opt/airflow/dags/repo/congress_videos
 COPY examples /opt/airflow/dags/repo/examples
 COPY .airflowignore /opt/airflow/dags/repo/.airflowignore
-COPY deploy/vps-dev/init.py deploy/vps-dev/verify.py /opt/dev-tools/
+COPY deploy/vps-dev/init.py deploy/vps-dev/verify.py deploy/vps-dev/ml_smoke.py /opt/dev-tools/
 RUN chmod -R a-w /opt/airflow/dags/repo /opt/dev-tools
 ARG SOURCE_REVISION
 ARG RELEASE_ID

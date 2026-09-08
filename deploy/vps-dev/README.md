@@ -21,7 +21,17 @@ Do not execute that verifier directly on a workstation with production access.
 
 The Dockerfile uses the source revision's frozen `uv.lock`, but OS packages
 are not snapshotted. Preserve the built image and recorded image ID for exact
-reuse. Local Whisper, YAMNet, diarization services, models, production OAuth,
-and the business database are absent. This foundation does not prove video
-processing works. Build and deployment are pending; no runtime claim follows
-from the passing static contracts.
+reuse.
+
+The three ML sidecars (`whisper-api`, `yamnet-api`, `diarize-api`) run on the
+same internal network with model volumes pre-seeded by Ansible: no runtime
+download and no Hugging Face token exist on the VPS. `diarize-api` and
+`yamnet-api` are built from `benchmarks/` at the release revision; `whisper-api`
+is the third-party image pinned by digest. Everything is CPU-only.
+`ml_smoke.py` runs inside the scheduler and proves each sidecar answers on
+synthetic audio. Airflow's local Whisper path is intentionally absent from the
+frozen image, so DEV transcription goes through `whisper-api` text-only (no
+SRT), a known functional gap versus production's start-time pip install.
+Production OAuth and the business database are absent. This foundation does
+not prove the full video pipeline works; no runtime claim follows from the
+passing static contracts.
