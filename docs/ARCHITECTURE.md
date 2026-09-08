@@ -43,6 +43,7 @@ independientes de YouTube.
   |     --> identify_interesting_chapters (GPT-4o-mini)
   |     --> merge_interesting_chapters
   |     --> score_chapter_relevance (GPT-4o-mini, score 0-5)
+  |     --> trim_chapter_silence --> split_long_chapters
   |     --> save_chapters_to_db (PostgreSQL)
   |
   +-- congress_youtube_chapter_uploader  (19:00 UTC diario)

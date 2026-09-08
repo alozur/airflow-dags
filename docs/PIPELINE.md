@@ -36,8 +36,9 @@ Detecta y analiza la sesión; no publica nada.
    orden del día y fecha de la sesión.
 5. **Análisis IA**: troceo del SRT por silencios → resumen por chunk → agregado
    → identificación de capítulos interesantes → merge → puntuación de
-   relevancia (0-5) → recorte de silencios de borde → normalización de
-   oradores → persistencia en `video_chapters`.
+   relevancia (0-5) → recorte de silencios de borde → división de capítulos
+   de más de 40 min por un hueco de silencio → normalización de oradores →
+   persistencia en `video_chapters`.
 
 ## Fase 1 — Subida de turnos · `congress_youtube_chapter_uploader`
 
