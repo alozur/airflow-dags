@@ -33,7 +33,12 @@ from collections.abc import Callable
 import numpy as np
 
 from congress_videos.config.constants import (
+    CHAPTER_SPLIT_ENABLED,
+    CHAPTER_SPLIT_MIN_CHILD_SECS,
     CHAPTER_SPLIT_MIN_GAP_SECS,
+    CHAPTER_SPLIT_WINDOW_SECS,
+    CHAPTER_SPLIT_WINDOW_WIDEN_FACTOR,
+    MAX_CHAPTER_DURATION_MINUTES,
     VAD_BACKEND,
     VAD_ENABLED,
     VAD_END_MARGIN_SECS,
@@ -1151,3 +1156,132 @@ def _split_one_chapter(
         child["timeline"] = _timeline_within(chapter.get("timeline"), chapter_start + lo, chapter_start + hi)
         children.append(child)
     return children
+
+
+def _split_chapter_best_effort(
+    chapter: dict,
+    source_video: str | None,
+    *,
+    max_chapter_secs: float,
+    min_child_secs: float,
+    window_secs: float,
+    widen_factor: float,
+    gap_merge_secs: float,
+    min_gap_secs: float,
+    backend: str,
+    sample_rate: int,
+) -> list[dict]:
+    """Split one chapter, degrading to a pure-arithmetic split on any failure (D4).
+
+    Retries with ``source_video=None`` on an unexpected exception. Only passes
+    the chapter through unchanged if that retry ALSO fails (infeasible config:
+    ``max_chapter_secs < min_child_secs``).
+    """
+    kwargs = {
+        "max_chapter_secs": max_chapter_secs,
+        "min_child_secs": min_child_secs,
+        "window_secs": window_secs,
+        "widen_factor": widen_factor,
+        "gap_merge_secs": gap_merge_secs,
+        "min_gap_secs": min_gap_secs,
+        "backend": backend,
+        "sample_rate": sample_rate,
+    }
+    try:
+        return _split_one_chapter(chapter, source_video, **kwargs)
+    except Exception as exc:  # noqa: BLE001 — best-effort, D4 never raises out of the task
+        log.warning(
+            "chapter_split.chapter_failed start_time=%s error=%s",
+            chapter.get("start_time"),
+            exc,
+            exc_info=True,
+        )
+        try:
+            return _split_one_chapter(chapter, None, **kwargs)
+        except Exception:  # noqa: BLE001 — infeasible_plan: MAX < MIN, arithmetic itself fails
+            log.warning("chapter_split.infeasible_plan start_time=%s", chapter.get("start_time"))
+            return [chapter]
+
+
+def split_long_chapters_with_vad(
+    scored_chapters: dict,
+    *,
+    target_date: str,
+    max_chapter_secs: float = MAX_CHAPTER_DURATION_MINUTES * 60,
+    min_child_secs: float = CHAPTER_SPLIT_MIN_CHILD_SECS,
+    window_secs: float = CHAPTER_SPLIT_WINDOW_SECS,
+    widen_factor: float = CHAPTER_SPLIT_WINDOW_WIDEN_FACTOR,
+    gap_merge_secs: float = VAD_GAP_MERGE_SECS,
+    min_gap_secs: float = CHAPTER_SPLIT_MIN_GAP_SECS,
+    backend: str = VAD_BACKEND,
+    sample_rate: int = VAD_SAMPLE_RATE,
+) -> dict:
+    """Replace every chapter over ``max_chapter_secs`` with contiguous children.
+
+    Produces ``ceil(duration / max_chapter_secs)`` contiguous children per
+    over-threshold chapter, cut at real speech gaps near equal-interval targets
+    (one on-disk VAD pass per candidate cut) or the arithmetic target otherwise
+    (D4 — never left over-threshold). Under-threshold chapters pass through as
+    the SAME dict object (idempotence). Best-effort: a disabled kill switch,
+    missing ``scored_chapters`` data, a missing source video (degrades EVERY
+    over-threshold chapter of that video to arithmetic — diverging from
+    :func:`trim_chapter_silence_with_vad`'s passthrough), or any per-cut/
+    per-chapter failure still produces a result.
+
+    Args:
+        scored_chapters: The scored-chapters dict (mutated in place and returned).
+        target_date: ``YYYY-MM-DD`` used to locate the downloaded video.
+        max_chapter_secs: Maximum allowed span per persisted chapter.
+        min_child_secs: Minimum allowed span per child.
+        window_secs: Initial half-window search radius around each target.
+        widen_factor: Multiplier applied ONCE when no gap is found in the base window.
+        gap_merge_secs: Forwarded to the gap finder.
+        min_gap_secs: Forwarded to the gap finder.
+        backend: VAD backend (``"webrtc"`` default, ``"silero"`` opt-in).
+        sample_rate: WAV sample rate fed to the backend.
+
+    Returns:
+        The SAME dict with over-threshold chapters replaced by their children,
+        list order preserved.
+    """
+    if not CHAPTER_SPLIT_ENABLED:
+        log.info("chapter_split.disabled — passthrough, chapters unchanged.")
+        return scored_chapters
+    if not scored_chapters or not scored_chapters.get("videos"):
+        return scored_chapters
+
+    for video in scored_chapters["videos"]:
+        video_id = video.get("video_id")
+        chapters = video.get("scored_chapters") or []
+        if not video_id or not chapters:
+            continue
+
+        source_video = _find_source_video(target_date, str(video_id))
+        if not source_video:
+            log.warning(
+                "chapter_split.video_not_found video_id=%s target_date=%s chapters=%s — "
+                "splitting arithmetically, never left over-threshold",
+                video_id,
+                target_date,
+                len(chapters),
+            )
+
+        rebuilt: list[dict] = []
+        for chapter in chapters:
+            rebuilt.extend(
+                _split_chapter_best_effort(
+                    chapter,
+                    source_video,
+                    max_chapter_secs=max_chapter_secs,
+                    min_child_secs=min_child_secs,
+                    window_secs=window_secs,
+                    widen_factor=widen_factor,
+                    gap_merge_secs=gap_merge_secs,
+                    min_gap_secs=min_gap_secs,
+                    backend=backend,
+                    sample_rate=sample_rate,
+                )
+            )
+        video["scored_chapters"] = rebuilt
+
+    return scored_chapters
