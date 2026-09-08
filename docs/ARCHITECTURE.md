@@ -213,6 +213,31 @@ XCom keys en congress_youtube_chapter_uploader:
       mentioned_participant_slugs, propia llamada LLM y cache). Una extracción
       exitosa sin temas NO sobrescribe un valor previo no vacío.
 
+### Productor → consumidor (issue #433)
+
+| Campo | Productor (tarea) | Consumidor (tarea) | Propiedad | Refresco / invalidación |
+|-------|--------------------|---------------------|-----------|--------------------------|
+| `speaker_turn_videos.resolved_participant_slug` | `speaker_turn_prepare::prepare_turns` → `resolve_speaker` / `resolve_monologue_speaker` (issue #430) | `reap_shorts_uploader::generate_metadata` → PONENTE PRINCIPAL | turno | se reescribe en cada re-diarización del turno |
+| `video_chapters.mentioned_participant_slugs` | `congress_youtube_chapter_uploader::prepare_thumbnail_config` → `_analyze_chapter_content` (issue #432) | `reap_shorts_uploader::generate_metadata` → bloque PERSONAS MENCIONADAS | capítulo | se reescribe en cada preparación de subida; NULL = sin analizar, `{}` = analizado sin menciones; el consumidor lee en vivo (misma llamada a `get_chapter_metadata`), nunca por XCom |
+| `video_chapters.topics` | ídem (`extract_topics`) | `reap_shorts_uploader::generate_metadata` → línea "Temas:"; `congress_youtube_chapter_uploader` (`_generate_youtube_metadata`) → descripción del largo, ver nota de frescura abajo | capítulo | una extracción vacía no pisa un valor previo no vacío |
+
+Regla de no fusión: los tres campos nunca se concatenan; un tema no se
+presenta como persona, una persona mencionada no se presenta como ponente,
+y el orador nunca se toma de la lista de mencionados.
+
+Límite conocido de auditoría: no existe revisión por campo. Si un análisis
+falla, `update_chapter_content_analysis` escribe solo la columna resuelta,
+así que un par `topics`/`mentioned_participant_slugs` puede provenir de
+ejecuciones distintas del mismo capítulo; `updated_at` es un marcador de
+fila, no de campo.
+
+Nota de frescura conocida: `reap_shorts_uploader` lee estos campos en vivo,
+dentro de la misma llamada a `get_chapter_metadata`. El consumidor de subida
+larga (`_generate_youtube_metadata`) puede leer `topics` de un XCom
+capturado antes de que `_analyze_chapter_content` los refresque; esa
+staleness es un bug preexistente, fuera de alcance de este cambio y
+seguido por separado.
+
   Vistas:
     uploadable_chapters  relevance_score >= 2 AND is_uploaded = FALSE
                          lector: congress_videos/speaker_turns_dag.py::select_chapters()
