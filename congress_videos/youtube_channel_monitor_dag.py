@@ -27,12 +27,13 @@ from airflow.operators.python import BranchPythonOperator, PythonOperator, Short
 
 from congress_videos.config import speaker_normalization_config as snc
 from congress_videos.config.constants import (
+    CHAPTER_SPLIT_ENABLED,
     TARGET_VIDEO_TITLE,
     VAD_ENABLED,
     YOUTUBE_CHANNEL_ID,
 )
 from congress_videos.modules import youtube as yt_channel
-from congress_videos.modules.vad_helpers import trim_chapter_silence_with_vad
+from congress_videos.modules.vad_helpers import split_long_chapters_with_vad, trim_chapter_silence_with_vad
 from utils.airflow_helpers import xcom_task
 from utils.env_loader import load_env_if_local
 
@@ -597,6 +598,36 @@ with DAG(
         trigger_rule="all_done",
     )
 
+    # Enforce MAX_CHAPTER_DURATION_MINUTES (issue #466): replace any chapter
+    # still over the threshold after the silence trim with contiguous children
+    # cut at real speech gaps (or arithmetic targets — never left whole).
+    # Re-pushes the corrected scored_chapters under the same XCom key so t9_db
+    # saves the split spans.
+    def _split_long_chapters(ti, **context):
+        scored = ti.xcom_pull(key="scored_chapters")
+        if not scored:
+            logging.warning("No scored_chapters available — split passthrough, nothing to split.")
+            return scored
+        if not CHAPTER_SPLIT_ENABLED:
+            logging.info("Chapter split disabled (CHAPTER_SPLIT_ENABLED=False) — passthrough.")
+            return scored
+        return split_long_chapters_with_vad(
+            scored,
+            target_date=_resolve_target_date(context),
+        )
+
+    t_split = PythonOperator(
+        task_id="split_long_chapters",
+        python_callable=lambda ti, **context: xcom_task(
+            ti,
+            lambda: _split_long_chapters(ti, **context),
+            "scored_chapters",  # overwrite same key with split spans
+        ),
+        # Default trigger_rule (all_success, D7): the sole upstream is t_trim,
+        # whose callable never raises — all_done would also fire on the skipped
+        # no_plenary_sessions branch, which all_success correctly avoids.
+    )
+
     # Step 9: Save scored chapters to database
     # Stores YouTube videos and their chapters with relevance scores in PostgreSQL
     def _run_save_chapters_to_db(ti, **context):
@@ -853,10 +884,13 @@ with DAG(
     t3c2 >> t3c2_integrity
     [t8, t3c2_integrity] >> t_trim
 
-    # After trimming the silence, save the chapters to the database
+    # After trimming the silence, enforce MAX_CHAPTER_DURATION_MINUTES (#466)
+    # before persisting: any chapter still over the threshold is replaced by
+    # contiguous children. Only then save to the database.
     # Note: session_number and session_date come from t5c and t5d tasks
-    # We need both the VAD-trimmed scoring (t_trim) and session info (t5c)
-    [t_trim, t5c] >> t9_db
+    # We need both the split scoring (t_split) and session info (t5c)
+    t_trim >> t_split
+    [t_split, t5c] >> t9_db
 
     # After saving chapters, normalize speaker names (best-effort; all_done so a
     # partial save never blocks normalization). normalize_speakers is now terminal.
