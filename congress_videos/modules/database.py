@@ -1861,6 +1861,30 @@ class CongressionalVideoDB:
             row = cur.fetchone()
             return dict(row) if row else None
 
+    def get_turn_speaker_slug(self, turn_id: int) -> dict | None:
+        """Roster-resolved speaker for one materialized turn video, or None if the row is gone.
+
+        Keyed read instead of a JOIN in pending_shorts_candidate_sql: that query owns
+        tier/cool-down semantics under 13 live-Postgres tests (design D2).
+
+        Note the two distinct absences a caller must handle (see D5, tests T1a/T1b):
+        a missing ROW returns None; an existing row with a NULL slug returns a dict
+        whose resolved_participant_slug is None.
+        """
+        stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT stv.turn_id,
+                           stv.resolved_participant_slug,
+                           stv.speaker_resolution_confidence,
+                           stv.speaker_resolution_method
+                    FROM {stv_table} stv
+                    WHERE stv.turn_id = %s""",
+                (turn_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
     def get_chapter_srt_context(self, chapter_id: int) -> dict | None:
         """Returns ``{video_id, start_time, end_time, session_date}`` for one
         chapter, or ``None`` when the chapter does not exist.
