@@ -121,8 +121,17 @@ whether a row has `turn_id` or only `chapter_id`.
 when present, falling back to `chapter_id` when `turn_id IS NULL`. The
 ranking universe MUST stay unfiltered by `is_uploaded`, `local_file_path`,
 or virality (issue #262). The outer query MUST NOT require a parent
-YouTube upload date, and its ordering MUST stay NULL-safe (`NULLS LAST`)
-now that a missing parent upload date is expected, not exceptional.
+YouTube upload date. Within each tier, the system MUST order candidates by
+`COALESCE(vc.youtube_upload_date, stv.materialized_at) DESC NULLS LAST`,
+resolving `stv` via `LEFT JOIN speaker_turn_videos stv ON stv.turn_id =
+ranked.turn_id`, so a candidate with no parent YouTube upload date derives
+its publish-order key from its own turn materialization timestamp instead
+of sorting last. Ties within that key MUST break by
+`ranked.reap_virality_score DESC NULLS LAST, ranked.id ASC`, unchanged.
+Legacy rows (`turn_id IS NULL`) MUST keep their existing relative order:
+the `LEFT JOIN` yields a `NULL` `materialized_at` for them, so the
+`COALESCE` degrades to `youtube_upload_date` alone, identical to today's
+clause.
 
 #### Scenario: Turn-keyed rows partition by turn_id
 
@@ -147,6 +156,25 @@ now that a missing parent upload date is expected, not exceptional.
 - GIVEN a candidate's parent has no YouTube upload date
 - WHEN `get_pending_shorts` runs
 - THEN it is still returned as eligible
+
+#### Scenario: Missing parent upload date resolves from turn materialization
+
+- GIVEN, in the same tier, turn-sourced row A has `turn_id` set, its parent
+  chapter has `youtube_upload_date IS NULL`, and its
+  `speaker_turn_videos.materialized_at` is more recent than row B's
+  published `youtube_upload_date`
+- AND legacy row B has `turn_id NULL` and a published `youtube_upload_date`
+  weeks in the past
+- WHEN the candidate query runs
+- THEN row A sorts strictly before row B within the tier
+
+#### Scenario: Legacy rows keep their existing relative order
+
+- GIVEN two legacy rows (`turn_id NULL`) in the same tier with different
+  published `youtube_upload_date` values
+- WHEN the candidate query runs
+- THEN they sort in the same relative order as before this change
+  (more recent `youtube_upload_date` first)
 
 ### Requirement: Chapter-only candidate selection is removed
 
