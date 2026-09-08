@@ -74,6 +74,8 @@ Order is load-bearing (design.md "Migration / Rollout"). PR1 base `feat/467-reap
 
 ## Phase 5: Orchestrator-run ops (post-merge, not sdd-apply)
 
+Executed by the orchestrator after the release to main; evidence in archive-report.md.
+
 - [ ] 5.1 Apply migration `047` on NAS `development` schema via `migrations_dag`
 - [ ] 5.2 Apply migration `047` on NAS `production` schema via `migrations_dag`
 - [ ] 5.3 `git_sync` both stacks; confirm `airflow dags list-import-errors` empty on both
