@@ -7,6 +7,7 @@ to identify interesting chapters/segments for content extraction.
 
 import logging
 import os
+import re
 
 import openai
 
@@ -209,6 +210,107 @@ def detect_silence_gaps(
     return silence_gaps
 
 
+def _single_chunk_fallback(srt_content: str) -> list[dict]:
+    """Return the whole transcript as one chunk when no silence gap was found.
+
+    Lifted verbatim out of ``chunk_by_silence`` (issue #272): the span runs
+    from the first to the last timestamp found (``,mmm`` accepted); with fewer
+    than two timestamps the span collapses to 00:00:00 / duration 0. The raw
+    ``srt_content`` is passed through as ``content``.
+    """
+    logger.warning("No silence gaps found, returning entire content as single chunk")
+    # Parse first and last timestamps (with or without milliseconds)
+    timestamps = re.findall(r"\d{1,2}:\d{2}:\d{2}(?:,\d{3})?", srt_content)
+    if len(timestamps) >= 2:
+        start_time = timestamps[0]
+        end_time = timestamps[-1]
+        duration = parse_timestamp_to_seconds(end_time) - parse_timestamp_to_seconds(start_time)
+    else:
+        start_time = "00:00:00"
+        end_time = "00:00:00"
+        duration = 0
+
+    return [
+        {
+            "chunk_number": 1,
+            "start_time": start_time,
+            "end_time": end_time,
+            "duration_seconds": duration,
+            "duration_minutes": round(duration / 60, 1),
+            "content": srt_content,
+        }
+    ]
+
+
+def _find_gap_entry_idx(entries: list[tuple], gap_midpoint: float) -> int | None:
+    """Index of the first entry whose END time reaches ``gap_midpoint``.
+
+    Lifted verbatim out of ``chunk_by_silence`` (issue #272): only ``entry[1]``
+    (the end timestamp) is consulted, equality qualifies, and ``None`` is
+    returned when no entry reaches the midpoint.
+    """
+    gap_entry_idx = None
+    for idx, entry in enumerate(entries):
+        if parse_timestamp_to_seconds(entry[1]) >= gap_midpoint:
+            gap_entry_idx = idx
+            break
+    return gap_entry_idx
+
+
+def _render_chunk_content(chunk_entries: list[tuple]) -> str:
+    """Render ``(start, end, text)`` entries back into SRT-like blocks.
+
+    Lifted verbatim out of ``chunk_by_silence`` (issue #272), where the same
+    two statements appeared at both chunk-emitting sites. Every entry ends in a
+    blank line, so the result carries a trailing ``\n\n`` (callers ``.strip()``
+    it); no entries render as ``""``.
+    """
+    chunk_content = ""
+    for entry in chunk_entries:
+        chunk_content += f"{entry[0]} --> {entry[1]}\n{entry[2]}\n\n"
+    return chunk_content
+
+
+def _merge_small_chunks(chunks: list[dict], min_chunk_seconds: int) -> list[dict]:
+    """Merge chunks shorter than ``min_chunk_seconds`` forward into the next one.
+
+    Lifted verbatim out of ``chunk_by_silence`` (issue #272): a small chunk
+    keeps absorbing following chunks while the merged span stays small, the
+    last chunk is never merged, ``duration_minutes`` is recomputed (rounded to
+    one decimal), contents join with a blank line, and the survivors are
+    renumbered sequentially from 1 (unmerged input dicts are renumbered in
+    place).
+    """
+    merged_chunks = []
+    i = 0
+    while i < len(chunks):
+        current_chunk = chunks[i]
+
+        # If chunk is too small and not the last one, merge with next
+        while current_chunk["duration_seconds"] < min_chunk_seconds and i < len(chunks) - 1:
+            next_chunk = chunks[i + 1]
+
+            # Merge current and next chunk
+            current_chunk = {
+                "chunk_number": len(merged_chunks) + 1,
+                "start_time": current_chunk["start_time"],
+                "end_time": next_chunk["end_time"],
+                "duration_seconds": (
+                    parse_timestamp_to_seconds(next_chunk["end_time"])
+                    - parse_timestamp_to_seconds(current_chunk["start_time"])
+                ),
+                "content": current_chunk["content"] + "\n\n" + next_chunk["content"],
+            }
+            current_chunk["duration_minutes"] = round(current_chunk["duration_seconds"] / 60, 1)
+            i += 1
+
+        # Renumber chunk
+        current_chunk["chunk_number"] = len(merged_chunks) + 1
+        merged_chunks.append(current_chunk)
+        i += 1
+    return merged_chunks
+
+
 def chunk_by_silence(
     srt_content: str,
     min_silence_seconds: int = 15,
@@ -262,28 +364,7 @@ def chunk_by_silence(
     )
 
     if not silence_gaps:
-        logger.warning("No silence gaps found, returning entire content as single chunk")
-        # Parse first and last timestamps (with or without milliseconds)
-        timestamps = re.findall(r"\d{1,2}:\d{2}:\d{2}(?:,\d{3})?", srt_content)
-        if len(timestamps) >= 2:
-            start_time = timestamps[0]
-            end_time = timestamps[-1]
-            duration = parse_timestamp_to_seconds(end_time) - parse_timestamp_to_seconds(start_time)
-        else:
-            start_time = "00:00:00"
-            end_time = "00:00:00"
-            duration = 0
-
-        return [
-            {
-                "chunk_number": 1,
-                "start_time": start_time,
-                "end_time": end_time,
-                "duration_seconds": duration,
-                "duration_minutes": round(duration / 60, 1),
-                "content": srt_content,
-            }
-        ]
+        return _single_chunk_fallback(srt_content)
 
     # Extract all SRT entries with timestamps
     # Supports both HH:MM:SS and HH:MM:SS,mmm formats
@@ -300,11 +381,7 @@ def chunk_by_silence(
         gap_midpoint = gap["gap_midpoint_seconds"]
 
         # Find the entry index at this gap
-        gap_entry_idx = None
-        for idx, entry in enumerate(entries):
-            if parse_timestamp_to_seconds(entry[1]) >= gap_midpoint:
-                gap_entry_idx = idx
-                break
+        gap_entry_idx = _find_gap_entry_idx(entries, gap_midpoint)
 
         if gap_entry_idx is None:
             continue
@@ -317,9 +394,7 @@ def chunk_by_silence(
         if chunk_duration >= max_chunk_seconds or gap_entry_idx == len(entries) - 1:
             # Build chunk content
             chunk_entries = entries[chunk_start_idx:gap_entry_idx]
-            chunk_content = ""
-            for entry in chunk_entries:
-                chunk_content += f"{entry[0]} --> {entry[1]}\n{entry[2]}\n\n"
+            chunk_content = _render_chunk_content(chunk_entries)
 
             chunks.append(
                 {
@@ -342,9 +417,7 @@ def chunk_by_silence(
         chunk_end_time = entries[-1][1]
         chunk_duration = parse_timestamp_to_seconds(chunk_end_time) - parse_timestamp_to_seconds(chunk_start_time)
 
-        chunk_content = ""
-        for entry in chunk_entries:
-            chunk_content += f"{entry[0]} --> {entry[1]}\n{entry[2]}\n\n"
+        chunk_content = _render_chunk_content(chunk_entries)
 
         chunks.append(
             {
@@ -358,33 +431,7 @@ def chunk_by_silence(
         )
 
     # Post-process: Merge chunks that are too small (less than min_chunk_duration_minutes)
-    merged_chunks = []
-    i = 0
-    while i < len(chunks):
-        current_chunk = chunks[i]
-
-        # If chunk is too small and not the last one, merge with next
-        while current_chunk["duration_seconds"] < min_chunk_seconds and i < len(chunks) - 1:
-            next_chunk = chunks[i + 1]
-
-            # Merge current and next chunk
-            current_chunk = {
-                "chunk_number": len(merged_chunks) + 1,
-                "start_time": current_chunk["start_time"],
-                "end_time": next_chunk["end_time"],
-                "duration_seconds": (
-                    parse_timestamp_to_seconds(next_chunk["end_time"])
-                    - parse_timestamp_to_seconds(current_chunk["start_time"])
-                ),
-                "content": current_chunk["content"] + "\n\n" + next_chunk["content"],
-            }
-            current_chunk["duration_minutes"] = round(current_chunk["duration_seconds"] / 60, 1)
-            i += 1
-
-        # Renumber chunk
-        current_chunk["chunk_number"] = len(merged_chunks) + 1
-        merged_chunks.append(current_chunk)
-        i += 1
+    merged_chunks = _merge_small_chunks(chunks, min_chunk_seconds)
 
     logger.info(f"Created {len(merged_chunks)} chunks based on silence gaps (min: {min_chunk_duration_minutes} min)")
     for chunk in merged_chunks:

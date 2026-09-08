@@ -715,3 +715,208 @@ class TestChapterIdentificationPromptStructure:
         assert "Desconocido" not in CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE, (
             "CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE must not use 'Desconocido' literal"
         )
+
+
+# --------------------------------------------------------------------------- #
+# chunk_by_silence helpers (lifted out of chunk_by_silence, issue #272)
+# --------------------------------------------------------------------------- #
+
+
+class TestSingleChunkFallback:
+    @pytest.mark.parametrize("srt_content", ["", "no timestamps at all", "00:00:05 --> only one timestamp"])
+    def test_fewer_than_two_timestamps_yields_zero_span_with_raw_content(self, srt_content: str):
+        from utils.ai_chapter_analyzer import _single_chunk_fallback
+
+        result = _single_chunk_fallback(srt_content)
+
+        assert result == [
+            {
+                "chunk_number": 1,
+                "start_time": "00:00:00",
+                "end_time": "00:00:00",
+                "duration_seconds": 0,
+                "duration_minutes": 0.0,
+                "content": srt_content,
+            }
+        ]
+
+    def test_uses_first_and_last_timestamps_with_millisecond_suffix(self):
+        from utils.ai_chapter_analyzer import _single_chunk_fallback
+
+        srt = "1\n00:00:01,500 --> 00:00:03,000\nHola\n\n2\n00:00:10,000 --> 00:01:30,250\nAdios\n"
+
+        result = _single_chunk_fallback(srt)
+
+        assert len(result) == 1
+        chunk = result[0]
+        assert chunk["chunk_number"] == 1
+        assert chunk["start_time"] == "00:00:01,500"
+        assert chunk["end_time"] == "00:01:30,250"
+        assert chunk["duration_seconds"] == 88.75
+        assert chunk["duration_minutes"] == 1.5
+        assert chunk["content"] is srt
+
+    def test_plain_timestamps_without_milliseconds(self):
+        from utils.ai_chapter_analyzer import _single_chunk_fallback
+
+        srt = "00:00:00 --> 00:00:10\nA\n\n00:00:20 --> 00:01:00\nB\n"
+
+        result = _single_chunk_fallback(srt)
+
+        assert result[0]["start_time"] == "00:00:00"
+        assert result[0]["end_time"] == "00:01:00"
+        assert result[0]["duration_seconds"] == 60.0
+        assert result[0]["duration_minutes"] == 1.0
+
+
+class TestFindGapEntryIdx:
+    ENTRIES = [
+        ("00:00:00", "00:00:10", "a"),
+        ("00:00:12", "00:00:20", "b"),
+        ("00:00:22", "00:00:30", "c"),
+    ]
+
+    def test_returns_first_entry_whose_end_time_reaches_the_midpoint(self):
+        from utils.ai_chapter_analyzer import _find_gap_entry_idx
+
+        assert _find_gap_entry_idx(self.ENTRIES, 15) == 1
+
+    def test_end_time_equal_to_the_midpoint_qualifies(self):
+        from utils.ai_chapter_analyzer import _find_gap_entry_idx
+
+        assert _find_gap_entry_idx(self.ENTRIES, 10) == 0
+
+    def test_end_time_just_below_the_midpoint_moves_to_the_next_entry(self):
+        from utils.ai_chapter_analyzer import _find_gap_entry_idx
+
+        assert _find_gap_entry_idx(self.ENTRIES, 11) == 1
+
+    def test_start_time_is_not_consulted(self):
+        from utils.ai_chapter_analyzer import _find_gap_entry_idx
+
+        # Midpoint 5 lies inside entry 0 (0-10); the end time alone decides.
+        assert _find_gap_entry_idx(self.ENTRIES, 5) == 0
+
+    @pytest.mark.parametrize("entries, midpoint", [([], 0), (ENTRIES, 31), (ENTRIES, 30.5)])
+    def test_none_when_no_entry_qualifies(self, entries, midpoint):
+        from utils.ai_chapter_analyzer import _find_gap_entry_idx
+
+        assert _find_gap_entry_idx(entries, midpoint) is None
+
+
+class TestRenderChunkContent:
+    def test_no_entries_renders_empty_string(self):
+        from utils.ai_chapter_analyzer import _render_chunk_content
+
+        assert _render_chunk_content([]) == ""
+
+    def test_single_entry_keeps_trailing_blank_line(self):
+        from utils.ai_chapter_analyzer import _render_chunk_content
+
+        assert _render_chunk_content([("00:00:00", "00:00:10", "hello")]) == "00:00:00 --> 00:00:10\nhello\n\n"
+
+    def test_entries_are_concatenated_in_order_with_text_verbatim(self):
+        from utils.ai_chapter_analyzer import _render_chunk_content
+
+        entries = [("00:00:00", "00:00:10", "first line\nsecond line"), ("00:00:12,500", "00:00:20", "  spaced ")]
+
+        assert _render_chunk_content(entries) == (
+            "00:00:00 --> 00:00:10\nfirst line\nsecond line\n\n00:00:12,500 --> 00:00:20\n  spaced \n\n"
+        )
+
+
+def _make_chunk(chunk_number: int, start_time: str, end_time: str, content: str) -> dict:
+    from utils.ai_chapter_analyzer import parse_timestamp_to_seconds
+
+    duration = parse_timestamp_to_seconds(end_time) - parse_timestamp_to_seconds(start_time)
+    return {
+        "chunk_number": chunk_number,
+        "start_time": start_time,
+        "end_time": end_time,
+        "duration_seconds": duration,
+        "duration_minutes": round(duration / 60, 1),
+        "content": content,
+    }
+
+
+class TestMergeSmallChunks:
+    def test_no_chunks_yields_empty_list(self):
+        from utils.ai_chapter_analyzer import _merge_small_chunks
+
+        assert _merge_small_chunks([], 120) == []
+
+    def test_small_chunk_merges_forward_into_the_next_one(self):
+        from utils.ai_chapter_analyzer import _merge_small_chunks
+
+        chunks = [_make_chunk(1, "00:00:00", "00:01:00", "A"), _make_chunk(2, "00:01:00", "00:10:00", "B")]
+
+        merged = _merge_small_chunks(chunks, 120)
+
+        assert merged == [
+            {
+                "chunk_number": 1,
+                "start_time": "00:00:00",
+                "end_time": "00:10:00",
+                "duration_seconds": 600.0,
+                "duration_minutes": 10.0,
+                "content": "A\n\nB",
+            }
+        ]
+
+    def test_merge_keeps_absorbing_while_the_result_stays_small(self):
+        from utils.ai_chapter_analyzer import _merge_small_chunks
+
+        chunks = [
+            _make_chunk(1, "00:00:00", "00:01:00", "A"),
+            _make_chunk(2, "00:01:00", "00:02:00", "B"),
+            _make_chunk(3, "00:02:00", "00:15:00", "C"),
+        ]
+
+        merged = _merge_small_chunks(chunks, 300)
+
+        assert len(merged) == 1
+        assert merged[0]["content"] == "A\n\nB\n\nC"
+        assert merged[0]["duration_seconds"] == 900.0
+
+    def test_last_chunk_is_never_merged_even_when_small(self):
+        from utils.ai_chapter_analyzer import _merge_small_chunks
+
+        chunks = [_make_chunk(1, "00:00:00", "00:10:00", "A"), _make_chunk(2, "00:10:00", "00:11:00", "B")]
+
+        merged = _merge_small_chunks(chunks, 120)
+
+        assert [c["content"] for c in merged] == ["A", "B"]
+        assert merged[1]["duration_seconds"] == 60.0
+
+    def test_chunks_are_renumbered_sequentially_from_one(self):
+        from utils.ai_chapter_analyzer import _merge_small_chunks
+
+        chunks = [
+            _make_chunk(7, "00:00:00", "00:10:00", "A"),
+            _make_chunk(8, "00:10:00", "00:20:00", "B"),
+            _make_chunk(9, "00:20:00", "00:30:00", "C"),
+        ]
+
+        merged = _merge_small_chunks(chunks, 120)
+
+        assert [c["chunk_number"] for c in merged] == [1, 2, 3]
+
+    def test_unmerged_chunk_is_the_input_dict_renumbered_in_place(self):
+        from utils.ai_chapter_analyzer import _merge_small_chunks
+
+        chunk = _make_chunk(5, "00:00:00", "00:10:00", "A")
+
+        merged = _merge_small_chunks([chunk], 120)
+
+        assert merged[0] is chunk
+        assert chunk["chunk_number"] == 1
+
+    def test_merged_duration_minutes_is_recomputed_rounded_to_one_decimal(self):
+        from utils.ai_chapter_analyzer import _merge_small_chunks
+
+        chunks = [_make_chunk(1, "00:00:00", "00:00:50", "A"), _make_chunk(2, "00:00:50", "00:01:40", "B")]
+
+        merged = _merge_small_chunks(chunks, 200)
+
+        assert merged[0]["duration_seconds"] == 100.0
+        assert merged[0]["duration_minutes"] == 1.7
