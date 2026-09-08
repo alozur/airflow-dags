@@ -107,7 +107,7 @@ def should_upload(**context):
     upload_quota = ti.xcom_pull(key="upload_quota") or {}
     queue_size = upload_quota.get("queue_size", 0)
     uploads_today = upload_quota.get("uploads_today", 0)
-    if uploads_today >= DAILY_LONG_FORM_UPLOAD_LIMIT:
+    if uploads_today >= DAILY_LONG_FORM_UPLOAD_LIMIT and _counts_toward_daily_quota(context.get("dag_run")):
         logging.info(
             "Skipping upload: %d long-form chapter upload(s) already recorded today (daily limit=%d)",
             uploads_today,

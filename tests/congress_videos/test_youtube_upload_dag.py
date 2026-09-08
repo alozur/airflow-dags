@@ -727,13 +727,14 @@ class TestShouldUpload:
 
         assert should_upload(**ctx) is False
 
-    def test_daily_limit_wins_over_manual_hour_threshold(self):
-        """Manual logical dates retain thresholds, but never bypass the daily cap."""
+    def test_manual_run_bypasses_the_daily_cap(self):
+        """A recovery is allowed even after a scheduled upload consumed the daily slot."""
         from congress_videos.youtube_upload_dag import should_upload
 
         ctx = _make_context_for_should_upload(queue_size=11, hour=11, uploads_today=1)
+        ctx["dag_run"] = MagicMock(run_type="manual")
 
-        assert should_upload(**ctx) is False
+        assert should_upload(**ctx) is True
 
     # Unknown hour — defaults to threshold 0
     def test_unknown_hour_queue_0_is_false(self):
