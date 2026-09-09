@@ -441,11 +441,18 @@ class TestPromptTemplates:
 
         assert "{speakers}" not in SHORTS_METADATA_USER_PROMPT_TEMPLATE
 
-    def test_system_prompt_contains_siempre_and_taxonomy_rule(self):
-        from congress_videos.config.ai_prompts import SHORTS_METADATA_SYSTEM_PROMPT
+    def test_system_prompt_requires_exact_name_without_naming_taxonomy(self):
+        from congress_videos.config.ai_prompts import (
+            SHORTS_METADATA_SYSTEM_PROMPT,
+            SHORTS_METADATA_USER_PROMPT_TEMPLATE,
+        )
 
         assert "SIEMPRE" in SHORTS_METADATA_SYSTEM_PROMPT
-        assert "Nivel 1" in SHORTS_METADATA_SYSTEM_PROMPT
+        for level in ("Nivel 1", "Nivel 2", "Nivel 3", "Nivel 4"):
+            assert level not in SHORTS_METADATA_SYSTEM_PROMPT
+        assert "EXACTAMENTE como aparece" in SHORTS_METADATA_SYSTEM_PROMPT
+        assert "cargo o rol" in SHORTS_METADATA_SYSTEM_PROMPT
+        assert "taxonomía de 4 niveles" not in SHORTS_METADATA_USER_PROMPT_TEMPLATE
 
 
 # ---------------------------------------------------------------------------

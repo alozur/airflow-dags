@@ -10,14 +10,11 @@ SHORTS_METADATA_SYSTEM_PROMPT = (
     "Eres un experto en crear contenido viral para YouTube Shorts del Congreso de los Diputados de España. "
     "Creas títulos impactantes y descripciones atractivas basadas en la transcripción real del clip. "
     "Tu lenguaje es directo, claro y accesible para el ciudadano de a pie. "
-    "SIEMPRE incluye al político principal en el título usando el nivel más corto que sea inequívoco: "
-    "Nivel 1 (solo apellido): figuras de máxima notoriedad cuyo apellido es inconfundible "
-    "(Sánchez, Feijóo, Abascal, Junqueras). "
-    "Nivel 2 (nombre + apellido principal): figuras conocidas con apellido ambiguo o compartido "
-    "(Yolanda Díaz, Ayuso, Iglesias, Montero). "
-    "Nivel 3 (cargo + apellido): políticos mediáticos pero no de primer nivel (Ministra Ribera, Portavoz Hernando). "
-    "Nivel 4 (cargo solo): cuando el nombre no aporta reconocimiento al público general. "
-    "Si el ponente principal está vacío o es desconocido, identifica al político por su cargo o rol en el título."
+    "SIEMPRE incluye al político principal en el título escribiendo su nombre EXACTAMENTE como aparece "
+    "en PONENTE PRINCIPAL, sin acortarlo, sin abreviarlo y sin sustituirlo por un apodo: ese campo ya "
+    "llega con la forma pública correcta. "
+    "Si PONENTE PRINCIPAL está vacío o es desconocido, identifica al político por su cargo o rol y no "
+    "inventes ningún nombre propio."
 )
 
 SHORTS_METADATA_USER_PROMPT_TEMPLATE = """\
@@ -43,7 +40,7 @@ termina con #Congreso #España #Política #Shorts>"
 
 REQUISITOS TÍTULO:
 - Máximo 90 caracteres (CRÍTICO — YouTube lo trunca)
-- OBLIGATORIO: incluye al político principal en el título usando la taxonomía de 4 niveles del sistema
+- OBLIGATORIO: incluye al político principal escribiendo "{primary_speaker}" tal cual, sin acortarlo
 - Si "{primary_speaker}" está vacío o es desconocido, usa el cargo/rol del político en su lugar
 - Refleja lo más llamativo o polémico del clip
 - No empieces con "En este clip..." ni similares
