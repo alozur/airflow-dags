@@ -3410,6 +3410,57 @@ class TestResolvedPhotoSpeakerName:
         assert resolved_photo_speaker_name({"source": "photo"}, ["Interviniente no identificado"]) is None
         assert resolved_photo_speaker_name({"source": "photo"}, None) is None
 
+    def test_mapped_participant_slug_wins_over_first_real_speaker(self) -> None:
+        """Issue #511 slice 4: a mapped participant_slug replaces real[0] with the catalogued name."""
+        from congress_videos.modules.thumbnail_generation import (
+            resolved_photo_speaker_name,
+        )
+
+        result = resolved_photo_speaker_name(
+            {"source": "photo"},
+            ["Pedro Sánchez", "Ana López"],
+            participant_slug="pedro-sanchez-perez-castejon",
+        )
+        assert result == "Sánchez"
+
+    def test_unmapped_participant_slug_is_byte_identical_to_no_slug(self) -> None:
+        """An unmapped/None participant_slug must not change the returned name at all."""
+        from congress_videos.modules.thumbnail_generation import (
+            resolved_photo_speaker_name,
+        )
+
+        without_slug = resolved_photo_speaker_name({"source": "photo"}, ["Cervera Pinar"])
+        with_unmapped_slug = resolved_photo_speaker_name(
+            {"source": "photo"}, ["Cervera Pinar"], participant_slug="unknown-person-slug"
+        )
+        with_none_slug = resolved_photo_speaker_name({"source": "photo"}, ["Cervera Pinar"], participant_slug=None)
+
+        assert with_unmapped_slug == without_slug == "Cervera Pinar"
+        assert with_none_slug == without_slug
+
+    def test_mapped_slug_still_respects_the_activation_gate(self) -> None:
+        """A mapped participant_slug must NOT open the gate on its own — source must still be 'photo'."""
+        from congress_videos.modules.thumbnail_generation import (
+            resolved_photo_speaker_name,
+        )
+
+        assert (
+            resolved_photo_speaker_name(
+                {"source": "party_logo"},
+                ["Pedro Sánchez"],
+                participant_slug="pedro-sanchez-perez-castejon",
+            )
+            is None
+        )
+        assert (
+            resolved_photo_speaker_name(
+                {"source": "photo"},
+                None,
+                participant_slug="pedro-sanchez-perez-castejon",
+            )
+            is None
+        )
+
 
 class TestArtDirectResolvedPhotoInstruction:
     """Phase 3: art_direct(..., resolved_speaker_name=) prompt injection,
@@ -3500,6 +3551,70 @@ class TestArtDirectResolvedPhotoInstruction:
         sibling_prompt = sibling_prompts[0]
         assert "NO REPITAS" in sibling_prompt and "EXCEPCIÓN DE IDENTIDAD" in sibling_prompt
         assert sibling_prompt.index("EXCEPCIÓN DE IDENTIDAD") > sibling_prompt.index("NO REPITAS")
+
+
+class TestCrossSeamDisplayNameConsistency:
+    """Issue #511 slice 4: title and art-direction MUST render the identical
+    catalogued display name for one mapped participant_slug (spec "Same slug,
+    same name across seams"). Both seams read the same conf["slug"] through
+    the same canonical_display_name lookup, so this holds by construction —
+    this test proves it, not just asserts it by design."""
+
+    def test_title_and_art_direction_render_identical_name_for_mapped_slug(self, mocker) -> None:
+        from congress_videos.modules.thumbnail_generation import (
+            art_direct,
+            generate_title,
+            resolved_photo_speaker_name,
+        )
+
+        participant_slug = "pedro-sanchez-perez-castejon"
+        key_speakers = ["Pedro Sánchez"]
+
+        title_captured: list[str] = []
+
+        def _title_side(system_prompt, user_prompt, **kw):
+            title_captured.append(user_prompt)
+            return {"data": {"title": "Un título válido"}, "error": None}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_title_side,
+        )
+        generate_title(
+            "Debate summary",
+            {"style": "A", "prompt": "debate parlamentario"},
+            key_speakers=key_speakers,
+            participant_slug=participant_slug,
+        )
+
+        art_captured: list[str] = []
+
+        def _art_side(system_prompt, user_prompt, **kw):
+            art_captured.append(user_prompt)
+            return {
+                "data": {
+                    "text": "RETRATO REAL",
+                    "background": "pasillo del Congreso",
+                    "person": "político, expresión seria",
+                    "mood": "seriedad",
+                },
+                "error": None,
+            }
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_art_side,
+        )
+        resolved_name = resolved_photo_speaker_name(
+            {"source": "photo"}, key_speakers, participant_slug=participant_slug
+        )
+        art_direct("Debate sobre presupuesto", _make_cfg(), resolved_speaker_name=resolved_name)
+
+        assert title_captured and art_captured
+        assert resolved_name == "Sánchez"
+        assert "Sánchez" in title_captured[0]
+        assert "Sánchez" in art_captured[0]
+        assert "Pedro Sánchez" not in title_captured[0]
 
 
 # ---------------------------------------------------------------------------

@@ -234,6 +234,51 @@ class TestArtDirectionResolvedPhotoWiring:
             assert kwargs["resolved_speaker_name"] is None
 
 
+class TestArtDirectionParticipantSlugWiring:
+    """Issue #511 slice 4: _task_art_direction and _task_art_direction_retry
+    must forward conf["slug"] as participant_slug= to resolved_photo_speaker_name,
+    the same seam already wired for title generation (phase 3, conf.get("slug"))."""
+
+    def test_task_art_direction_forwards_slug_to_resolved_photo_speaker_name(self, mocker) -> None:
+        dag_mod = importlib.import_module("congress_videos.generic_thumbnail_generator_dag")
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF_WITH_SPEAKERS,
+                "fetch_recent_history": None,
+                "resolve_participant_photo": {"source": "photo"},
+            }
+        )
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mocker.patch.object(dag_mod, "art_direct", return_value={"text": "BRIEF"})
+        mock_resolved = mocker.patch.object(dag_mod, "resolved_photo_speaker_name", return_value="Sánchez")
+
+        dag_mod._task_art_direction(ti)
+
+        mock_resolved.assert_called_once_with(
+            {"source": "photo"}, _FAKE_CONF_WITH_SPEAKERS["key_speakers"], _FAKE_CONF_WITH_SPEAKERS["slug"]
+        )
+
+    def test_task_art_direction_retry_forwards_slug_to_resolved_photo_speaker_name(self, mocker) -> None:
+        dag_mod = importlib.import_module("congress_videos.generic_thumbnail_generator_dag")
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF_WITH_SPEAKERS,
+                "art_direction": _FAKE_ART_BRIEF,
+                "fetch_recent_history": None,
+                "resolve_participant_photo": {"source": "photo"},
+            }
+        )
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mocker.patch.object(dag_mod, "art_direct", return_value={"text": "NUEVO"})
+        mock_resolved = mocker.patch.object(dag_mod, "resolved_photo_speaker_name", return_value="Sánchez")
+
+        dag_mod._task_art_direction_retry(ti)
+
+        mock_resolved.assert_called_once_with(
+            {"source": "photo"}, _FAKE_CONF_WITH_SPEAKERS["key_speakers"], _FAKE_CONF_WITH_SPEAKERS["slug"]
+        )
+
+
 class TestDagTaskIds:
     """T-03: DAG must contain exactly the expected task IDs — no more, no fewer."""
 
