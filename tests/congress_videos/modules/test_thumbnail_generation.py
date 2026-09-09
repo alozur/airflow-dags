@@ -3076,6 +3076,87 @@ class TestGenerateTitlePromptInjection:
         )
 
 
+class TestGenerateTitleCanonicalDisplayName:
+    """Issue #511 slice 3: participant_slug wiring into the title speaker list.
+
+    A mapped, resolved participant_slug replaces only the FIRST
+    _real_speakers entry with the catalogued short form (design D5). An
+    unmapped/None slug leaves the prompt byte-identical to today's behaviour
+    — the catalogue is consulted, never guessed.
+    """
+
+    def _make_best(self) -> dict:
+        return {"style": "A", "prompt": "debate parlamentario"}
+
+    def _build_prompt(self, key_speakers, participant_slug=None) -> str:
+        from congress_videos.modules.thumbnail_generation import _build_title_prompt
+
+        return _build_title_prompt(
+            "Debate summary",
+            self._make_best(),
+            None,
+            key_speakers,
+            participant_slug=participant_slug,
+        )
+
+    def test_mapped_slug_replaces_first_real_speaker_only(self) -> None:
+        """Mapped slug substitutes real[0] with the catalogued name; the rest of the list is untouched."""
+        prompt = self._build_prompt(
+            ["Pedro Sánchez", "Ana López"],
+            participant_slug="pedro-sanchez-perez-castejon",
+        )
+
+        assert "Sánchez, Ana López" in prompt, "Speaker list must be [canonical_name, *untouched_rest]"
+        assert "Pedro Sánchez" not in prompt, "The uncanonicalised full name must not survive substitution"
+
+    def test_unmapped_slug_is_byte_identical_to_no_slug(self) -> None:
+        """An unmapped participant_slug must not change the built prompt at all."""
+        without_slug = self._build_prompt(["Cervera Pinar"])
+        with_unmapped_slug = self._build_prompt(["Cervera Pinar"], participant_slug="unknown-person-slug")
+
+        assert with_unmapped_slug == without_slug
+
+    def test_none_slug_is_byte_identical_to_omitted_slug(self) -> None:
+        """participant_slug=None (explicit) must behave exactly like the omitted default."""
+        without_slug = self._build_prompt(["Cervera Pinar"])
+        with_none_slug = self._build_prompt(["Cervera Pinar"], participant_slug=None)
+
+        assert with_none_slug == without_slug
+
+    def test_mapped_slug_with_no_real_speakers_does_not_inject_a_name(self) -> None:
+        """A mapped slug must never override the nameless path when no real speaker exists."""
+        prompt = self._build_prompt(None, participant_slug="pedro-sanchez-perez-castejon")
+
+        assert "no hay ponentes identificados" in prompt.lower()
+        assert "Sánchez" not in prompt
+
+    def test_pedro_sanchez_headline_case_resolves_to_surname(self, mocker) -> None:
+        """Headline acceptance criterion: pedro-sanchez-perez-castejon → 'Sánchez' in generate_title's prompt."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        captured: list[str] = []
+
+        def _side(system_prompt, user_prompt, **kw):
+            captured.append(user_prompt)
+            return {"data": {"title": "Un título válido"}, "error": None}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side,
+        )
+        generate_title(
+            "Debate summary",
+            self._make_best(),
+            key_speakers=["Pedro Sánchez"],
+            participant_slug="pedro-sanchez-perez-castejon",
+        )
+
+        assert captured, "generate_json_completion must have been called"
+        assert "SOLO puedes nombrar" in captured[0]
+        assert "Sánchez" in captured[0]
+        assert "Pedro Sánchez" not in captured[0]
+
+
 # ---------------------------------------------------------------------------
 # Issue #228: characterization tests locking the C901 split's invariance
 #

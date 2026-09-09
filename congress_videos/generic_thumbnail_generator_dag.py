@@ -271,6 +271,7 @@ def _task_generate_title(ti: TaskInstance, **context: object) -> str:
         sibling_titles=history.get("titles") or None,
         key_speakers=conf.get("key_speakers") or None,
         forbidden_title=conf.get("previous_title"),
+        participant_slug=conf.get("slug"),
     )
 
 
