@@ -30,10 +30,10 @@ Chain strategy: stacked-to-main
 
 ## Phase 1: Catalogue Module + Loader (PR 1, ~350 lines)
 
-- [ ] 1.1 RED `tests/congress_videos/test_politician_display_names.py` (clone `tests/congress_videos/test_institutional_role_resolver.py` (read-only)): 1-entry catalogue loads; malformed shapes, duplicate slug, colliding normalized `display_name` (resolvable set only), `display_name` not a subsequence of `full_name`, bad `reference_url`, unparsable `reviewed_on`, blank `selection_note` → `CatalogValidationError`; `ambiguous: true` skips collision, never resolves; accented slug resolves; unmapped/`None`/blank slug → `None`; missing/corrupt catalog never raises, logs once.
-- [ ] 1.2 GREEN `congress_videos/modules/politician_display_names.py`: import `CatalogValidationError` from `institutional_role_resolver.py` (read-only, D3); frozen `DisplayName`/`DisplayNameCatalog`, `DisplayNameCatalogLoader`, private `_normalize_display_name`, lazy-singleton `canonical_display_name(slug)`.
-- [ ] 1.3 GREEN `congress_videos/catalogs/politician_display_names.v1.json`: `catalog_version: 1`, one entry (`pedro-sanchez-perez-castejon` → `Sánchez`).
-- [ ] 1.4 Run `uv run ruff check` on the new module; if `max-complexity=10` fires on the loader, split fixture-driven tests into their own PR (design contingency).
+- [x] 1.1 RED `tests/congress_videos/test_politician_display_names.py` (clone `tests/congress_videos/test_institutional_role_resolver.py` (read-only)): 1-entry catalogue loads; malformed shapes, duplicate slug, colliding normalized `display_name` (resolvable set only), `display_name` not a subsequence of `full_name`, bad `reference_url`, unparsable `reviewed_on`, blank `selection_note` → `CatalogValidationError`; `ambiguous: true` skips collision, never resolves; accented slug resolves; unmapped/`None`/blank slug → `None`; missing/corrupt catalog never raises, logs once.
+- [x] 1.2 GREEN `congress_videos/modules/politician_display_names.py`: import `CatalogValidationError` from `institutional_role_resolver.py` (read-only, D3); frozen `DisplayName`/`DisplayNameCatalog`, `DisplayNameCatalogLoader`, private `_normalize_display_name`, lazy-singleton `canonical_display_name(slug)`.
+- [x] 1.3 GREEN `congress_videos/catalogs/politician_display_names.v1.json`: `catalog_version: 1`, one entry (`pedro-sanchez-perez-castejon` → `Sánchez`).
+- [x] 1.4 Run `uv run ruff check` on the new module; if `max-complexity=10` fires on the loader, split fixture-driven tests into their own PR (design contingency).
 
 ## Phase 2: Populate Roster (PR 2, ~170 lines)
 
