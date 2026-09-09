@@ -21,9 +21,10 @@ class TestReapShortsUploaderDAGLoads:
     def test_dag_has_correct_task_count(self):
         from congress_videos.reap_shorts_uploader_dag import dag
 
-        # Tasks: get_pending_shorts, generate_metadata, trigger_youtube_upload,
-        # mark_shorts_uploaded, check_short_upload_failures
-        assert len(dag.tasks) == 5
+        # Tasks: get_pending_shorts, generate_metadata, verify_final_copy
+        # (issue #512), trigger_youtube_upload, mark_shorts_uploaded,
+        # check_short_upload_failures
+        assert len(dag.tasks) == 6
 
     def test_dag_schedule(self):
         from congress_videos.reap_shorts_uploader_dag import dag
@@ -36,6 +37,7 @@ class TestReapShortsUploaderDAGLoads:
         task_ids = {t.task_id for t in dag.tasks}
         assert "get_pending_shorts" in task_ids
         assert "generate_metadata" in task_ids
+        assert "verify_final_copy" in task_ids
         assert "trigger_youtube_upload" in task_ids
         assert "mark_shorts_uploaded" in task_ids
         assert "check_short_upload_failures" in task_ids
@@ -46,12 +48,14 @@ class TestReapShortsUploaderDAGLoads:
         tasks_by_id = {t.task_id: t for t in dag.tasks}
         t1 = tasks_by_id["get_pending_shorts"]
         t2 = tasks_by_id["generate_metadata"]
+        t2b = tasks_by_id["verify_final_copy"]
         t3 = tasks_by_id["trigger_youtube_upload"]
         t4 = tasks_by_id["mark_shorts_uploaded"]
         t5 = tasks_by_id["check_short_upload_failures"]
 
         assert t2.task_id in {t.task_id for t in t1.downstream_list}
-        assert t3.task_id in {t.task_id for t in t2.downstream_list}
+        assert t2b.task_id in {t.task_id for t in t2.downstream_list}
+        assert t3.task_id in {t.task_id for t in t2b.downstream_list}
         assert t4.task_id in {t.task_id for t in t3.downstream_list}
         assert t5.task_id in {t.task_id for t in t4.downstream_list}
 
@@ -862,6 +866,164 @@ class TestCheckShortUploadFailures:
         ti = _make_ti({})
         with pytest.raises(Exception, match="Upload results XCom missing"):
             _check_short_upload_failures(ti, params={})
+
+
+# ---------------------------------------------------------------------------
+# _verify_final_copy — shorts seam wiring (issue #512, PR4, t2 -> t2b -> t3)
+#
+# Locked asymmetry: this DAG has NO fail-loud path anywhere (no thumbnail
+# step, no fail-loud raise, no _check_upload_failures accumulator) — a
+# `reject` verdict, on title OR description, is recorded and logged but
+# NEVER blocks publication. This is a deliberate divergence from the
+# long-form seam's title-only ValueError.
+# ---------------------------------------------------------------------------
+
+
+def _make_short_meta(**overrides) -> dict:
+    base = {
+        "short_id": 1,
+        "title": "Título original",
+        "description": "Descripción original",
+        "chapter": {"title": "Debate", "mentioned_participant_slugs": None},
+        "turn_speaker_row": {"resolved_participant_slug": None},
+    }
+    base.update(overrides)
+    return base
+
+
+class TestVerifyFinalCopyShorts:
+    def _patch_verify(self, mocker, verdict):
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+    def _patch_db(self, mocker):
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        return mock_db_cls.return_value
+
+    def _patch_matching_content_version(self, mocker, version="matching-hash"):
+        mocker.patch("congress_videos.modules.final_copy_verification.compute_content_version", return_value=version)
+
+    def _make_verdict(self, **overrides):
+        from congress_videos.modules.final_copy_verification import CopyFinding, CopyVerdict
+
+        findings = overrides.pop("findings", ())
+        parsed_findings = tuple(CopyFinding(**f) if isinstance(f, dict) else f for f in findings)
+        defaults = {
+            "ok": True,
+            "verdict": "pass",
+            "findings": parsed_findings,
+            "title": "Título original",
+            "description": "Descripción original",
+            "correction_applied": False,
+            "content_version": "",
+            "rounds": 1,
+        }
+        defaults.update(overrides)
+        return CopyVerdict(**defaults)
+
+    def test_correction_applied_rewrites_shorts_metadata_in_place(self, mocker):
+        """4.2 (correction half): an accepted correction rewrites the
+        shorts_metadata entry in place so t3 publishes the corrected copy."""
+        from congress_videos.reap_shorts_uploader_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker)
+        self._patch_matching_content_version(mocker, version="hash-1")
+        verdict = self._make_verdict(
+            title="Título corregido",
+            description="Descripción corregida",
+            correction_applied=True,
+            content_version="hash-1",
+        )
+        self._patch_verify(mocker, verdict)
+
+        pending_shorts = [{"id": 1, "chapter_id": 10, "turn_id": 20}]
+        metadata = [_make_short_meta(short_id=1)]
+        ti = _make_ti({"pending_shorts": pending_shorts, "shorts_metadata": metadata})
+        _verify_final_copy(ti)
+
+        pushed_metadata = ti.xcom_store["shorts_metadata"]
+        assert pushed_metadata[0]["title"] == "Título corregido"
+        assert pushed_metadata[0]["description"] == "Descripción corregida"
+        mock_db.record_copy_verification_short.assert_called_once()
+        _, kwargs = mock_db.record_copy_verification_short.call_args
+        assert kwargs["corrected_title"] == "Título corregido"
+        results = ti.xcom_store["shorts_copy_verification"]
+        assert results[0]["corrected_applied"] is True
+        assert results[0]["persisted"] is True
+
+    def test_description_reject_persists_and_publishes_fallback_without_raising(self, mocker):
+        """4.2 (reject half): a description reject persists the audit row and
+        still publishes the existing (fallback) description — no fail-loud
+        path exists anywhere on this DAG."""
+        from congress_videos.reap_shorts_uploader_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker)
+        self._patch_matching_content_version(mocker, version="hash-2")
+        verdict = self._make_verdict(
+            verdict="reject",
+            findings=[{"field": "description", "category": "unsupported_claim", "severity": "high"}],
+            content_version="hash-2",
+        )
+        self._patch_verify(mocker, verdict)
+
+        pending_shorts = [{"id": 2, "chapter_id": 10, "turn_id": 20}]
+        metadata = [_make_short_meta(short_id=2)]
+        ti = _make_ti({"pending_shorts": pending_shorts, "shorts_metadata": metadata})
+        _verify_final_copy(ti)  # must not raise
+
+        assert ti.xcom_store["shorts_metadata"][0]["title"] == "Título original"
+        mock_db.record_copy_verification_short.assert_called_once()
+        assert ti.xcom_store["shorts_copy_verification"][0]["verdict"] == "reject"
+
+    def test_title_reject_also_does_not_raise(self, mocker):
+        """A title reject NEVER raises on this DAG — the hard-rejection
+        asymmetry from the long-form seam does not exist here."""
+        from congress_videos.reap_shorts_uploader_dag import _verify_final_copy
+
+        self._patch_db(mocker)
+        self._patch_matching_content_version(mocker, version="hash-3")
+        verdict = self._make_verdict(
+            verdict="reject",
+            findings=[{"field": "title", "category": "person_name", "severity": "high"}],
+            content_version="hash-3",
+        )
+        self._patch_verify(mocker, verdict)
+
+        pending_shorts = [{"id": 3, "chapter_id": 10, "turn_id": 20}]
+        metadata = [_make_short_meta(short_id=3)]
+        ti = _make_ti({"pending_shorts": pending_shorts, "shorts_metadata": metadata})
+        _verify_final_copy(ti)  # must not raise
+
+    def test_inconclusive_verdict_publishes_unchanged_and_writes_nothing(self, mocker):
+        """4.3 — inconclusive publishes shorts_metadata unchanged, no DB write."""
+        from congress_videos.reap_shorts_uploader_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker)
+        verdict_fn_return = self._make_verdict(
+            ok=False, verdict="", title="Título original", description="Descripción original"
+        )
+        self._patch_verify(mocker, verdict_fn_return)
+
+        pending_shorts = [{"id": 4, "chapter_id": 10, "turn_id": 20}]
+        metadata = [_make_short_meta(short_id=4)]
+        ti = _make_ti({"pending_shorts": pending_shorts, "shorts_metadata": metadata})
+        _verify_final_copy(ti)  # must not raise
+
+        mock_db.record_copy_verification_short.assert_not_called()
+        assert ti.xcom_store["shorts_metadata"][0]["title"] == "Título original"
+        assert ti.xcom_store["shorts_copy_verification"][0]["verdict"] == "inconclusive"
+        assert ti.xcom_store["shorts_copy_verification"][0]["persisted"] is False
+
+    def test_no_shorts_metadata_skips_verification_without_raising(self, mocker):
+        from congress_videos.reap_shorts_uploader_dag import _verify_final_copy
+
+        self._patch_db(mocker)
+        verify_fn = mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy")
+
+        ti = _make_ti({"pending_shorts": [], "shorts_metadata": []})
+        _verify_final_copy(ti)  # must not raise
+
+        verify_fn.assert_not_called()
+        assert "shorts_copy_verification" not in ti.xcom_store
 
 
 # ---------------------------------------------------------------------------

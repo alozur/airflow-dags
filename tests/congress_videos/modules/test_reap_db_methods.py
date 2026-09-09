@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
@@ -1299,3 +1300,90 @@ class TestGetTurnSpeakerSlug:
         assert isinstance(result, dict)
         assert result["turn_id"] == 43
         assert result["resolved_participant_slug"] is None
+
+
+# --------------------------------------------------------------------------- #
+# record_copy_verification_short (issue #512, design.md D3) — mirrors
+# record_copy_verification_turn, keyed by video_shorts.id (each short is its
+# own row, unlike long-form's output_path grouping), no thumbnail_text column
+# (the shorts pipeline has no thumbnail step at all).
+# --------------------------------------------------------------------------- #
+
+
+class TestRecordCopyVerificationShort:
+    def _call(self, db, **overrides):
+        instance, mock_cursor = db
+        kwargs = {
+            "short_id": 7,
+            "verdict": "pass",
+            "findings": [],
+            "original_title": "Título original",
+            "original_description": "Descripción original",
+            "corrected_title": None,
+            "corrected_description": None,
+            "content_version": "abc123",
+        }
+        kwargs.update(overrides)
+        result = instance.record_copy_verification_short(kwargs.pop("short_id"), **kwargs)
+        return result, mock_cursor
+
+    def test_where_clause_guards_on_content_version_and_id(self, db):
+        _, mock_cursor = self._call(db)
+
+        sql = mock_cursor.execute.call_args[0][0].upper()
+        assert "WHERE ID = %S AND COPY_CONTENT_VERSION IS DISTINCT FROM %S" in sql
+        assert "VIDEO_SHORTS" in sql
+        assert "COPY_THUMBNAIL_TEXT" not in sql
+
+    def test_idempotent_rerun_returns_zero_rowcount(self, db):
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 0
+
+        result, _ = self._call(db)
+
+        assert result == 0
+
+    def test_params_include_all_values_in_order(self, db):
+        _, mock_cursor = self._call(
+            db,
+            verdict="correctable",
+            findings=[{"field": "title", "category": "spelling"}],
+            corrected_title="Corregido",
+            corrected_description="Descripción corregida",
+            content_version="v2",
+        )
+
+        sql, params = mock_cursor.execute.call_args[0]
+        assert params == (
+            "correctable",
+            json.dumps([{"field": "title", "category": "spelling"}]),
+            "Título original",
+            "Descripción original",
+            "Corregido",
+            "Descripción corregida",
+            "v2",
+            7,
+            "v2",
+        )
+
+    def test_returns_cursor_rowcount(self, db):
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 3
+
+        result, _ = self._call(db)
+
+        assert result == 3
+
+    def test_raises_value_error_on_falsy_short_id(self, db):
+        instance, _ = db
+        with pytest.raises(ValueError):
+            instance.record_copy_verification_short(
+                0,
+                verdict="pass",
+                findings=[],
+                original_title="t",
+                original_description="d",
+                corrected_title=None,
+                corrected_description=None,
+                content_version="v1",
+            )
