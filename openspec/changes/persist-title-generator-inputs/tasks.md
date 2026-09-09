@@ -83,61 +83,61 @@ blocks (re-run overwrite vs. non-matching key); both are listed here as 3.2a/3.2
 
 ## Slice 2 — Turn path (base: slice 1 branch)
 
-- [ ] 2.1 Add `build_turn_title_payload(summary, best, title, *, sibling_titles=None, key_speakers=None,
+- [x] 2.1 Add `build_turn_title_payload(summary, best, title, *, sibling_titles=None, key_speakers=None,
   forbidden_title=None, participant_slug=None) -> dict` to
   `congress_videos/modules/thumbnail_generation.py` (next to `generate_title`). Build the dict from
   explicit literal keys only (`generator="turn_title"`, `schema_version=1`, plus the six inputs and
   `title`); reduce `best` to `{"label", "style", "prompt"}` only, and normalize `key_speakers` entries
   (`str` kept, `dict` reduced to `entry["name"]`, anything else dropped). Never spread `{**best}` or
   `dict(conf)`.
-- [ ] 2.2 Test (Scenario 6.1, turn half) in `tests/congress_videos/modules/test_thumbnail_generation.py`:
+- [x] 2.2 Test (Scenario 6.1, turn half) in `tests/congress_videos/modules/test_thumbnail_generation.py`:
   `set(json.loads(json.dumps(payload)))` equals the declared turn schema keys; recursive scan over
   serialized values finds no `http`, no `/`-rooted path, and no `token`/`key`/`secret` substring. Also
   assert `best`'s `local_path` / asset URL is dropped and `key_speakers` dict entries reduce to names
   only.
-- [ ] 2.3 In `congress_videos/generic_thumbnail_generator_dag.py`, extend `_task_thumbnail_result` to
+- [x] 2.3 In `congress_videos/generic_thumbnail_generator_dag.py`, extend `_task_thumbnail_result` to
   pull `fetch_recent_history` from XCom and call `build_turn_title_payload` with the same values
   `generate_title` consumed, attaching the result under `title_generation_input` in the returned dict
   alongside the four existing legacy keys (`success`, `chapter_id`, `output_path`, `title`). Do not
   change `_task_generate_title`'s `str` return type.
-- [ ] 2.4 Contract test in `tests/congress_videos/modules/test_generic_thumbnail_dag.py`:
+- [x] 2.4 Contract test in `tests/congress_videos/modules/test_generic_thumbnail_dag.py`:
   `_task_thumbnail_result` still returns the 4 legacy keys plus `title_generation_input`, and
   `_task_generate_title` still returns a bare `str`.
-- [ ] 2.5 In `congress_videos/youtube_upload_dag.py`'s `trigger_thumbnail_generation`, immediately before
+- [x] 2.5 In `congress_videos/youtube_upload_dag.py`'s `trigger_thumbnail_generation`, immediately before
   `ti.xcom_push(key="thumbnail_result", value=result)`, read
   `payload = result.get("title_generation_input")` (never added to the strict `:808-816` validation
   conjunction) and `key = thumbnail_config.get("output_path")` (never `result["output_path"]`, per
   D3). Add an optional `db=None` parameter to `trigger_thumbnail_generation`, matching
   `_prepare_thumbnail_config(item, db)`.
-- [ ] 2.6 Wire the call in task 2.5 with the explicit `try/except` convention from
+- [x] 2.6 Wire the call in task 2.5 with the explicit `try/except` convention from
   `congress_videos/modules/upload_marking.py` (~lines 60-108) — NOT the bare
   `record_copy_verification_*` call-site shape. On success set
   `provenance = {"status": "written" if rows else "no_row", "rows": rows, "error": None}`; on
   exception catch it, set `provenance = {"status": "failed", "rows": 0, "error": str(exc)}`, log at
   ERROR, and never re-raise or block publication. Push `title_provenance` to XCom. [C2]
-- [ ] 2.7 Test (Scenario 3.2b) in `tests/congress_videos/test_youtube_upload_dag.py`: with an injected
+- [x] 2.7 Test (Scenario 3.2b) in `tests/congress_videos/test_youtube_upload_dag.py`: with an injected
   fake `db` whose `record_title_generation_input_turn` returns `0`, assert `title_provenance ==
   {"status": "no_row", "rows": 0, "error": None}` and a WARNING is logged (`caplog`), never treated as
   success. [C4]
-- [ ] 2.8 Test (Scenario 5.1) in `tests/congress_videos/test_youtube_upload_dag.py`: with an injected
+- [x] 2.8 Test (Scenario 5.1) in `tests/congress_videos/test_youtube_upload_dag.py`: with an injected
   fake `db` whose `record_title_generation_input_turn` raises, assert `title_provenance["status"] ==
   "failed"` with the error string, the exception does not propagate, and
   `trigger_thumbnail_generation` still completes.
-- [ ] 2.9 Test (Scenario 7.1) in `tests/congress_videos/test_youtube_upload_dag.py`: `_prepare_upload_config`
+- [x] 2.9 Test (Scenario 7.1) in `tests/congress_videos/test_youtube_upload_dag.py`: `_prepare_upload_config`
   still raises `ValueError` when `thumbnail_result["title"]` is missing or blank, unaffected by the new
   hook.
-- [ ] 2.10 Test (Scenario 4.1, turn half) in `tests/congress_videos/modules/test_thumbnail_generation.py`:
+- [x] 2.10 Test (Scenario 4.1, turn half) in `tests/congress_videos/modules/test_thumbnail_generation.py`:
   round-trip a built turn payload — `generate_title(p["summary"], p["best"],
   sibling_titles=p["sibling_titles"], key_speakers=p["key_speakers"],
   forbidden_title=p["forbidden_title"], participant_slug=p["participant_slug"])` — succeeds using only
   stored fields, no live-worktree read, no `fetch_recent_history` re-call.
-- [ ] 2.11 Test (Scenario 7.2, turn half) in `tests/congress_videos/test_youtube_upload_dag.py`: assert
+- [x] 2.11 Test (Scenario 7.2, turn half) in `tests/congress_videos/test_youtube_upload_dag.py`: assert
   `record_copy_verification_turn` is still invoked, unchanged, on the same path as before the new hook.
-- [ ] 2.12 Also add the key-selection assertion described in design D3: injected fake `db` captures the
+- [x] 2.12 Also add the key-selection assertion described in design D3: injected fake `db` captures the
   key argument passed to `record_title_generation_input_turn` and asserts it equals
   `thumbnail_config["output_path"]`, explicitly different from the child DAG's `thumbnail.png`
   `output_path` in `result`.
-- [ ] 2.13 Run `uv run pytest tests/congress_videos/modules/test_thumbnail_generation.py tests/congress_videos/modules/test_generic_thumbnail_dag.py tests/congress_videos/test_youtube_upload_dag.py`
+- [x] 2.13 Run `uv run pytest tests/congress_videos/modules/test_thumbnail_generation.py tests/congress_videos/modules/test_generic_thumbnail_dag.py tests/congress_videos/test_youtube_upload_dag.py`
   and confirm green before opening the slice 2 PR against the slice 1 branch.
 
 ## Slice 3 — Shorts path (base: slice 2 branch)
