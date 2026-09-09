@@ -1331,3 +1331,55 @@ class TestGenerateMetadataLegacyShortNoTurnId:
         _generate_metadata(ti)
 
         mock_db.get_turn_speaker_slug.assert_not_called()
+
+
+class TestSpeakerExclusionSurvivesCanonicalShortening:
+    """Issue #511: shortening the speaker's name must not break mentioned-people dedup.
+
+    Mentioned people always render their FULL display name. The speaker is
+    excluded from that list both by slug identity and by case-folded
+    display-name equality. Once the catalogue shortens the speaker to a bare
+    surname, comparing mentioned people against only the shortened form stops
+    matching, so a duplicate participant record for the same person would be
+    listed as speaker AND as mentioned. The speaker must be excluded on either
+    form.
+    """
+
+    def test_duplicate_record_of_speaker_excluded_despite_short_form(self):
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_metadata_context
+
+        full_name = "Sánchez Pérez-Castejón, Pedro"
+        roster = {
+            "pedro-sanchez-perez-castejon": {"display_name": full_name},
+            # Same human, second participant row under a different slug.
+            "pedro-sanchez-duplicate-row": {"display_name": full_name},
+            "ana-perez": {"display_name": "Ana Pérez"},
+        }
+        chapter = {
+            "mentioned_participant_slugs": [
+                "pedro-sanchez-duplicate-row",
+                "ana-perez",
+            ]
+        }
+
+        result = build_shorts_metadata_context(chapter, "pedro-sanchez-perez-castejon", _lookup_stub(roster))
+
+        # The catalogue still shortens what is rendered for the speaker.
+        assert result["speaker_display_name"] == "Sánchez"
+        # ...and the duplicate row of that same person is still excluded.
+        assert result["mentioned_display_names"] == ["Ana Pérez"]
+
+    def test_unmapped_speaker_dedup_unchanged(self):
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_metadata_context
+
+        roster = {
+            "ana-perez": {"display_name": "Ana Pérez"},
+            "ana-perez-duplicate-row": {"display_name": "Ana Pérez"},
+            "luis-gomez": {"display_name": "Luis Gómez"},
+        }
+        chapter = {"mentioned_participant_slugs": ["ana-perez-duplicate-row", "luis-gomez"]}
+
+        result = build_shorts_metadata_context(chapter, "ana-perez", _lookup_stub(roster))
+
+        assert result["speaker_display_name"] == "Ana Pérez"
+        assert result["mentioned_display_names"] == ["Luis Gómez"]
