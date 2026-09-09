@@ -239,3 +239,114 @@ def test_canonical_display_name_never_raises_on_corrupt_catalog(tmp_path, monkey
         assert canonical_display_name("pedro-sanchez-perez-castejon") is None
 
     assert len(caplog.records) == 1
+
+
+# ---------------------------------------------------------------------------
+# Bundled roster — the initial 11-participant catalogue (>=2 appearances
+# across video_chapters.resolved_participant_slug and
+# speaker_turn_videos.resolved_participant_slug)
+# ---------------------------------------------------------------------------
+
+BUNDLED_ROSTER = {
+    "pedro-sanchez-perez-castejon": "Sánchez",
+    "miguel-tellado-filgueira": "Tellado",
+    "isabel-rodriguez-garcia": "Isabel Rodríguez",
+    "concepcion-gamarra-ruiz-clavijo": "Gamarra",
+    "maria-dolores-corujo-berriel": "Corujo",
+    "pedro-munoz-abrines": "Muñoz",
+    "javier-rodriguez-palacios": "Javier Rodríguez",
+    "agueda-mico-mico": "Micó",
+    "carlos-hernandez-quero": "Hernández",
+    "lidia-guinart-moreno": "Guinart",
+    "santiago-abascal-conde": "Abascal",
+}
+
+
+def test_bundled_catalog_has_exactly_the_11_entry_roster():
+    catalog = DisplayNameCatalogLoader(CATALOG_PATH).load()
+
+    assert len(catalog.entries) == 11
+    assert {entry.participant_slug for entry in catalog.entries} == set(BUNDLED_ROSTER)
+
+
+def test_bundled_catalog_has_no_ambiguous_entries():
+    catalog = DisplayNameCatalogLoader(CATALOG_PATH).load()
+
+    assert all(entry.ambiguous is False for entry in catalog.entries)
+
+
+@pytest.mark.parametrize(("slug", "expected_display_name"), sorted(BUNDLED_ROSTER.items()))
+def test_bundled_catalog_resolves_each_curated_slug(monkeypatch, slug, expected_display_name):
+    monkeypatch.setattr(politician_display_names, "_CATALOG_PATH", CATALOG_PATH)
+
+    assert canonical_display_name(slug) == expected_display_name
+
+
+@pytest.mark.parametrize(("slug", "expected_display_name"), sorted(BUNDLED_ROSTER.items()))
+def test_bundled_catalog_display_name_is_a_subsequence_of_full_name(slug, expected_display_name):
+    catalog = DisplayNameCatalogLoader(CATALOG_PATH).load()
+    entry = next(item for item in catalog.entries if item.participant_slug == slug)
+
+    assert entry.display_name == expected_display_name
+    assert entry.full_name is not None
+    # The loader already enforces this invariant at load time (D1/D4); this
+    # assertion pins the specific curated pair so a future edit that keeps
+    # the entry loadable but drifts the pairing is still caught here.
+    normalized_short = politician_display_names._normalize_display_name(entry.display_name).split()
+    normalized_long = politician_display_names._normalize_display_name(entry.full_name).split()
+    remaining = iter(normalized_long)
+    assert all(token in remaining for token in normalized_short)
+
+
+def test_bundled_catalog_disambiguates_the_rodriguez_collision():
+    """isabel-rodriguez-garcia and javier-rodriguez-palacios would both
+    collide on the bare surname "Rodríguez"; the roster must carry distinct,
+    first-name-qualified display names for both.
+    """
+    catalog = DisplayNameCatalogLoader(CATALOG_PATH).load()
+
+    isabel = catalog.canonical_name("isabel-rodriguez-garcia")
+    javier = catalog.canonical_name("javier-rodriguez-palacios")
+
+    assert isabel == "Isabel Rodríguez"
+    assert javier == "Javier Rodríguez"
+    assert isabel != javier
+
+
+def test_loader_rejects_the_bare_surname_rodriguez_collision(tmp_path):
+    """Proves the loader would reject the two Rodríguez entries if authored
+    with the colliding bare surname instead of the disambiguated form
+    actually shipped in the bundled catalogue.
+    """
+    catalog_path = CATALOG_PATH
+    document = json.loads(catalog_path.read_text(encoding="utf-8"))
+    for entry in document["entries"]:
+        if entry["participant_slug"] in ("isabel-rodriguez-garcia", "javier-rodriguez-palacios"):
+            entry["display_name"] = "Rodríguez"
+
+    with pytest.raises(CatalogValidationError, match="colliding_display_name"):
+        DisplayNameCatalogLoader(write_catalog(tmp_path, document)).load()
+
+
+def test_canonical_display_name_falls_back_for_out_of_catalog_rodriguez(monkeypatch):
+    """A third real Rodríguez, jose-antonio-rodriguez-salas, has only 1
+    appearance and is deliberately outside the catalogue: it must fall back
+    to existing full-name behaviour, not collide with either mapped entry.
+    """
+    monkeypatch.setattr(politician_display_names, "_CATALOG_PATH", CATALOG_PATH)
+
+    assert canonical_display_name("jose-antonio-rodriguez-salas") is None
+
+
+def test_bundled_catalog_accented_entry_round_trips(monkeypatch):
+    """agueda-mico-mico carries accented characters in both slug-adjacent
+    full_name ("Àgueda") and display_name ("Micó"); confirms JSON I/O does
+    not corrupt them.
+    """
+    monkeypatch.setattr(politician_display_names, "_CATALOG_PATH", CATALOG_PATH)
+    catalog = DisplayNameCatalogLoader(CATALOG_PATH).load()
+    entry = next(item for item in catalog.entries if item.participant_slug == "agueda-mico-mico")
+
+    assert entry.full_name == "Àgueda Micó Micó"
+    assert entry.display_name == "Micó"
+    assert canonical_display_name("agueda-mico-mico") == "Micó"

@@ -13,6 +13,136 @@
         "evidence_note": "Slug cross-checked against the active-deputies register.",
         "reviewed_on": "2026-09-09"
       }
+    },
+    {
+      "participant_slug": "miguel-tellado-filgueira",
+      "display_name": "Tellado",
+      "full_name": "Miguel Tellado Filgueira",
+      "ambiguous": false,
+      "selection_note": "Tellado Filgueira (PP), 59 appearances across video_chapters.resolved_participant_slug and speaker_turn_videos.resolved_participant_slug, clearing the >=2-appearance selection threshold; unique surname in the roster.",
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/busqueda-de-diputados",
+        "evidence_note": "Slug and party group (PP) cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-09-09"
+      }
+    },
+    {
+      "participant_slug": "isabel-rodriguez-garcia",
+      "display_name": "Isabel Rodríguez",
+      "full_name": "Isabel Rodríguez García",
+      "ambiguous": false,
+      "selection_note": "Rodríguez García (PSOE), 30 appearances across video_chapters.resolved_participant_slug and speaker_turn_videos.resolved_participant_slug, clearing the >=2-appearance selection threshold; disambiguated with a first name because the bare surname \"Rodríguez\" collides with javier-rodriguez-palacios.",
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/busqueda-de-diputados",
+        "evidence_note": "Slug and party group (PSOE) cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-09-09"
+      }
+    },
+    {
+      "participant_slug": "concepcion-gamarra-ruiz-clavijo",
+      "display_name": "Gamarra",
+      "full_name": "Concepción Gamarra Ruiz-Clavijo",
+      "ambiguous": false,
+      "selection_note": "Gamarra Ruiz-Clavijo (PP), 14 appearances across video_chapters.resolved_participant_slug and speaker_turn_videos.resolved_participant_slug, clearing the >=2-appearance selection threshold; unique surname in the roster.",
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/busqueda-de-diputados",
+        "evidence_note": "Slug and party group (PP) cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-09-09"
+      }
+    },
+    {
+      "participant_slug": "maria-dolores-corujo-berriel",
+      "display_name": "Corujo",
+      "full_name": "María Dolores Corujo Berriel",
+      "ambiguous": false,
+      "selection_note": "Corujo Berriel (PSOE), 10 appearances across video_chapters.resolved_participant_slug and speaker_turn_videos.resolved_participant_slug, clearing the >=2-appearance selection threshold; unique surname in the roster.",
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/busqueda-de-diputados",
+        "evidence_note": "Slug and party group (PSOE) cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-09-09"
+      }
+    },
+    {
+      "participant_slug": "pedro-munoz-abrines",
+      "display_name": "Muñoz",
+      "full_name": "Pedro Muñoz Abrines",
+      "ambiguous": false,
+      "selection_note": "Muñoz Abrines (PP), 7 appearances across video_chapters.resolved_participant_slug and speaker_turn_videos.resolved_participant_slug, clearing the >=2-appearance selection threshold; unique surname in the roster.",
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/busqueda-de-diputados",
+        "evidence_note": "Slug and party group (PP) cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-09-09"
+      }
+    },
+    {
+      "participant_slug": "javier-rodriguez-palacios",
+      "display_name": "Javier Rodríguez",
+      "full_name": "Javier Rodríguez Palacios",
+      "ambiguous": false,
+      "selection_note": "Rodríguez Palacios (PSOE), 4 appearances across video_chapters.resolved_participant_slug and speaker_turn_videos.resolved_participant_slug, clearing the >=2-appearance selection threshold; disambiguated with a first name because the bare surname \"Rodríguez\" collides with isabel-rodriguez-garcia.",
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/busqueda-de-diputados",
+        "evidence_note": "Slug and party group (PSOE) cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-09-09"
+      }
+    },
+    {
+      "participant_slug": "agueda-mico-mico",
+      "display_name": "Micó",
+      "full_name": "Àgueda Micó Micó",
+      "ambiguous": false,
+      "selection_note": "Micó Micó (SUMAR), 3 appearances across video_chapters.resolved_participant_slug and speaker_turn_videos.resolved_participant_slug, clearing the >=2-appearance selection threshold; unique surname in the roster.",
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/busqueda-de-diputados",
+        "evidence_note": "Slug and party group (SUMAR) cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-09-09"
+      }
+    },
+    {
+      "participant_slug": "carlos-hernandez-quero",
+      "display_name": "Hernández",
+      "full_name": "Carlos Hernández Quero",
+      "ambiguous": false,
+      "selection_note": "Hernández Quero (VOX), 3 appearances across video_chapters.resolved_participant_slug and speaker_turn_videos.resolved_participant_slug, clearing the >=2-appearance selection threshold; unique surname in the roster.",
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/busqueda-de-diputados",
+        "evidence_note": "Slug and party group (VOX) cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-09-09"
+      }
+    },
+    {
+      "participant_slug": "lidia-guinart-moreno",
+      "display_name": "Guinart",
+      "full_name": "Lídia Guinart Moreno",
+      "ambiguous": false,
+      "selection_note": "Guinart Moreno (PSC-PSOE), 2 appearances across video_chapters.resolved_participant_slug and speaker_turn_videos.resolved_participant_slug, clearing the >=2-appearance selection threshold; unique surname in the roster.",
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/busqueda-de-diputados",
+        "evidence_note": "Slug and party group (PSC-PSOE) cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-09-09"
+      }
+    },
+    {
+      "participant_slug": "santiago-abascal-conde",
+      "display_name": "Abascal",
+      "full_name": "Santiago Abascal Conde",
+      "ambiguous": false,
+      "selection_note": "Abascal Conde (VOX), 2 appearances across video_chapters.resolved_participant_slug and speaker_turn_videos.resolved_participant_slug, clearing the >=2-appearance selection threshold; unique surname in the roster.",
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/busqueda-de-diputados",
+        "evidence_note": "Slug and party group (VOX) cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-09-09"
+      }
     }
   ]
 }
