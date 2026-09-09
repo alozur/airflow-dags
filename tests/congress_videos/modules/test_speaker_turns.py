@@ -240,6 +240,67 @@ class TestExtractAnnouncement:
         assert "Segundo" in name or "segundo" in name.lower()
 
 
+class TestFirstNamedAnnouncement:
+    """[RED] _first_named_announcement, lifted out of extract_announcement's
+    first pass (issue #272 slice 4). Takes the already-sorted (closest-first)
+    block list ``sorted_blocks``."""
+
+    def test_first_named_match_in_input_order_wins(self):
+        from congress_videos.modules.speaker_turns import _first_named_announcement
+
+        sorted_blocks = _make_srt_blocks(
+            (0.0, 1.0, "Tiene la palabra el señor Primero"),
+            (1.0, 2.0, "Tiene la palabra el señor Segundo"),
+        )
+        name, found = _first_named_announcement(sorted_blocks)
+        assert found is True
+        assert name is not None
+        assert "Primero" in name
+
+    def test_later_named_block_never_overwrites_the_first(self):
+        from congress_videos.modules.speaker_turns import _first_named_announcement
+
+        sorted_blocks = _make_srt_blocks(
+            (0.0, 1.0, "Tiene la palabra el señor Uno"),
+            (1.0, 2.0, "Tiene la palabra el señor Dos"),
+            (2.0, 3.0, "Tiene la palabra el señor Tres"),
+        )
+        name, found = _first_named_announcement(sorted_blocks)
+        assert found is True
+        assert "Uno" in name
+
+    def test_none_when_no_named_match(self):
+        from congress_videos.modules.speaker_turns import _first_named_announcement
+
+        sorted_blocks = _make_srt_blocks((0.0, 1.0, "El debate sobre el presupuesto continúa"))
+        assert _first_named_announcement(sorted_blocks) is None
+
+
+class TestFirstPhraseAnnouncement:
+    """[RED] _first_phrase_announcement, lifted out of extract_announcement's
+    second pass (issue #272 slice 4)."""
+
+    def test_su_senoria_checked_before_gracias_within_same_block(self):
+        """A block matching BOTH phrases still yields (None, True) via the
+        _RE_SU_SENORIA branch checked first (two separate `if`s, no elif)."""
+        from congress_videos.modules.speaker_turns import _first_phrase_announcement
+
+        sorted_blocks = _make_srt_blocks((0.0, 1.0, "Tiene la palabra su señoría. Gracias, señoría."))
+        assert _first_phrase_announcement(sorted_blocks) == (None, True)
+
+    def test_gracias_only_block_yields_none_true(self):
+        from congress_videos.modules.speaker_turns import _first_phrase_announcement
+
+        sorted_blocks = _make_srt_blocks((0.0, 1.0, "Gracias, señoría"))
+        assert _first_phrase_announcement(sorted_blocks) == (None, True)
+
+    def test_none_when_neither_matches_in_any_block(self):
+        from congress_videos.modules.speaker_turns import _first_phrase_announcement
+
+        sorted_blocks = _make_srt_blocks((0.0, 1.0, "El debate sobre el presupuesto continúa"))
+        assert _first_phrase_announcement(sorted_blocks) is None
+
+
 # ---------------------------------------------------------------------------
 # Phase 4 — Postprocessing helpers
 # ---------------------------------------------------------------------------
