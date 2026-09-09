@@ -196,3 +196,29 @@ together); independent of PR1/PR2 and every other PR in the stack.
 ### Status (PR3)
 
 9/9 PR3 tasks complete. Ready for `sdd-verify` on PR3's scope, then `sdd-apply` again for PR4.
+
+## PR4 — `derive_candidate_intervals` (`benchmarks/pyannote_diarization/candidate_intervals.py`) — characterization tests first
+
+**Status: COMPLETE — 9/9 PR4 tasks done (4.1-4.9).** Branch `refactor/272-c901-slice-4-pr4`,
+stacks on PR3b tip `c3c5889`. Orchestrator directed no rebase this batch (commit-only worktree,
+already at the PR3 tip); hidden-regression pre-check ran against the current worktree instead of
+`origin/dev` and matched exactly: `derive_candidate_intervals` 12, nothing else.
+
+Commit `f3225f9` (test-first, per PR4's characterization exception): 3 direct unit tests pinned
+from the existing CLI-subprocess literals, green against untouched source. Commit `bb278a3`:
+7 RED-first quirk tests for `_merge_active_intervals`/`_intervals_to_gaps` (confirmed ImportError),
+then lifted both byte-for-byte (base 63-68, base 70-90 tail lift incl. `return gaps`) immediately
+above `derive_candidate_intervals`; pruned the pyproject entry (sole code was `C901`) and
+decremented `EXPECTED_C901_FILE_COUNT` 9→8 in the same commit. Complexity measured:
+`derive_candidate_intervals` 12→**7**, `_merge_active_intervals`→**3**, `_intervals_to_gaps`→**4**
+(all match design predictions exactly). AST-equality proof (`ast_check_s4_pr4.py`, scratch-only):
+5/5 `OK`. `uvx ruff check .` clean, `uvx ruff format --check .` clean, focused
+`uv run pytest -o addopts= tests/benchmarks/test_pyannote_diarization_candidate_intervals.py
+tests/test_ruff_config.py` → 27 passed. `git diff c3c5889..HEAD --shortstat`: 4 files, 161
+insertions(+), 30 deletions(-) = 191 changed lines (well under 400, no `size:exception` needed).
+Diff on the touched test file shows additions only. Rollback: `git revert` of `bb278a3` then
+`f3225f9`; independent of PR1-PR3 and PR5-PR6.
+
+### Status (PR4)
+
+9/9 PR4 tasks complete. Ready for `sdd-verify` on PR4's scope, then `sdd-apply` again for PR5.
