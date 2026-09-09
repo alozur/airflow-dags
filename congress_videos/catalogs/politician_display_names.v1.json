@@ -1,0 +1,18 @@
+{
+  "catalog_version": 1,
+  "entries": [
+    {
+      "participant_slug": "pedro-sanchez-perez-castejon",
+      "display_name": "Sánchez",
+      "full_name": "Pedro Sánchez",
+      "ambiguous": false,
+      "selection_note": "Party leader and Prime Minister; surname nationally unmistakable.",
+      "provenance": {
+        "publisher": "Congress of Deputies",
+        "reference_url": "https://www.congreso.es/busqueda-de-diputados",
+        "evidence_note": "Slug cross-checked against the active-deputies register.",
+        "reviewed_on": "2026-09-09"
+      }
+    }
+  ]
+}
