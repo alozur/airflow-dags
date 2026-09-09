@@ -56,8 +56,8 @@ Chain strategy: pending
 
 ## Phase 6: Commits & Follow-ups
 
-- [ ] 6.1 Commit code + tests together as one conventional commit: `fix(congress-videos): normalize shorts_metadata rows at the xcom append site` — covers `congress_videos/reap_shorts_uploader_dag.py` and `tests/congress_videos/test_reap_uploader_dag.py`. No AI attribution in the message body (repo convention).
-- [ ] 6.2 Commit the SDD planning artifacts as a SEPARATE commit: `docs(sdd): capture shorts_metadata xcom tz normalization change` — covers `openspec/changes/shorts-metadata-xcom-tz-normalization/**`. Keeps the ~300-380-line planning diff out of the code-review budget, per design's risk note.
+- [x] 6.1 Commit code + tests together as one conventional commit: `fix(congress-videos): normalize shorts_metadata rows at the xcom append site` — covers `congress_videos/reap_shorts_uploader_dag.py` and `tests/congress_videos/test_reap_uploader_dag.py`. No AI attribution in the message body (repo convention).
+- [x] 6.2 Commit the SDD planning artifacts as a SEPARATE commit: `docs(sdd): capture shorts_metadata xcom tz normalization change` — covers `openspec/changes/shorts-metadata-xcom-tz-normalization/**`. Keeps the ~300-380-line planning diff out of the code-review budget, per design's risk note.
 - [ ] 6.3 File follow-up issue A via `gh issue create`: "Repo-wide xcom_push serialization guard across ~61 push sites (12 DAGs)" — reference #546 and this change's design "Why this keeps happening" section; explicitly out of scope for this PR per the proposal.
 - [ ] 6.4 File follow-up issue B via `gh issue create`: "Latent pending_shorts raw-row XCom risk if video_shorts timestamps migrate to TIMESTAMPTZ" — reference #546; note `video_shorts.created_at`/`updated_at`/`copy_verified_at` are currently naive `TIMESTAMP` (safe today), risk activates only if a future migration adds a timezone.
 
