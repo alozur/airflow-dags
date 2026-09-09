@@ -351,6 +351,76 @@ def _build_resolution_user_prompt(
     return user_prompt
 
 
+def _validate_completion_response(
+    turn: dict,
+    response: dict,
+    valid_slugs: set[str],
+    region_blocks: list[dict],
+) -> dict | None:
+    """Lifted verbatim out of _resolve_speaker_inner (issue #272)."""
+    if response.get("error") or not response.get("data"):
+        logger.debug(
+            "resolve_speaker: completion error for turn_id=%s: %s",
+            turn.get("turn_id"),
+            response.get("error"),
+        )
+        return None
+
+    data = response["data"]
+
+    slug = data.get("participant_slug")
+    confidence = data.get("confidence")
+    evidence = data.get("evidence", "")
+
+    # Validate slug: must be in participants, confidence must be >= threshold
+    if not slug or slug not in valid_slugs:
+        logger.debug(
+            "resolve_speaker: hallucinated or null slug %r for turn_id=%s — returning None",
+            slug,
+            turn.get("turn_id"),
+        )
+        return None
+
+    try:
+        confidence = float(confidence)
+    except (TypeError, ValueError):
+        logger.debug(
+            "resolve_speaker: invalid confidence %r for turn_id=%s — returning None",
+            confidence,
+            turn.get("turn_id"),
+        )
+        return None
+
+    if confidence < SPEAKER_RESOLUTION_MIN_CONFIDENCE:
+        logger.debug(
+            "resolve_speaker: confidence %.2f < %.2f for turn_id=%s — returning None",
+            confidence,
+            SPEAKER_RESOLUTION_MIN_CONFIDENCE,
+            turn.get("turn_id"),
+        )
+        return None
+
+    # Evidence verification (issue #284, anchored per issue #322):
+    # independent of self-reported confidence — a candidate whose evidence
+    # cannot be located within region_blocks (the anchored gate) is rejected
+    # even at confidence 0.99. Runs last so every earlier return path/log
+    # line above stays byte-identical.
+    if not _evidence_supported_in_blocks(evidence, region_blocks):
+        logger.info(
+            "resolve_speaker: evidence not locatable in model-visible text for turn_id=%s — returning None",
+            turn.get("turn_id"),
+        )
+        return None
+
+    logger.info(
+        "resolve_speaker: resolved turn_id=%s → slug=%r confidence=%.2f",
+        turn.get("turn_id"),
+        slug,
+        confidence,
+    )
+    return {"participant_slug": slug, "confidence": confidence, "evidence": evidence}
+
+
 def _resolve_speaker_inner(
     turn: dict,
     participants: list[dict],
@@ -468,64 +538,4 @@ def _resolve_speaker_inner(
         model=LLM_CHEAP,
     )
 
-    if response.get("error") or not response.get("data"):
-        logger.debug(
-            "resolve_speaker: completion error for turn_id=%s: %s",
-            turn.get("turn_id"),
-            response.get("error"),
-        )
-        return None
-
-    data = response["data"]
-
-    slug = data.get("participant_slug")
-    confidence = data.get("confidence")
-    evidence = data.get("evidence", "")
-
-    # Validate slug: must be in participants, confidence must be >= threshold
-    if not slug or slug not in valid_slugs:
-        logger.debug(
-            "resolve_speaker: hallucinated or null slug %r for turn_id=%s — returning None",
-            slug,
-            turn.get("turn_id"),
-        )
-        return None
-
-    try:
-        confidence = float(confidence)
-    except (TypeError, ValueError):
-        logger.debug(
-            "resolve_speaker: invalid confidence %r for turn_id=%s — returning None",
-            confidence,
-            turn.get("turn_id"),
-        )
-        return None
-
-    if confidence < SPEAKER_RESOLUTION_MIN_CONFIDENCE:
-        logger.debug(
-            "resolve_speaker: confidence %.2f < %.2f for turn_id=%s — returning None",
-            confidence,
-            SPEAKER_RESOLUTION_MIN_CONFIDENCE,
-            turn.get("turn_id"),
-        )
-        return None
-
-    # Evidence verification (issue #284, anchored per issue #322):
-    # independent of self-reported confidence — a candidate whose evidence
-    # cannot be located within region_blocks (the anchored gate) is rejected
-    # even at confidence 0.99. Runs last so every earlier return path/log
-    # line above stays byte-identical.
-    if not _evidence_supported_in_blocks(evidence, region_blocks):
-        logger.info(
-            "resolve_speaker: evidence not locatable in model-visible text for turn_id=%s — returning None",
-            turn.get("turn_id"),
-        )
-        return None
-
-    logger.info(
-        "resolve_speaker: resolved turn_id=%s → slug=%r confidence=%.2f",
-        turn.get("turn_id"),
-        slug,
-        confidence,
-    )
-    return {"participant_slug": slug, "confidence": confidence, "evidence": evidence}
+    return _validate_completion_response(turn, response, valid_slugs, region_blocks)
