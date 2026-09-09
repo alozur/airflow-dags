@@ -2885,6 +2885,150 @@ class TestTriggerThumbnailGenerationForwardsOutputPath:
 
 
 # ---------------------------------------------------------------------------
+# title_generation_input persistence hook (issue #549, Requirement 3/5)
+# ---------------------------------------------------------------------------
+
+
+class TestTriggerThumbnailGenerationTitleProvenance:
+    """trigger_thumbnail_generation persists title_generation_input keyed by
+    thumbnail_config["output_path"] (the turn's own video.mp4), never the
+    child result's output_path (the reconciled thumbnail.png), and never
+    lets a persistence failure block publication."""
+
+    _TITLE_PAYLOAD = {
+        "generator": "turn_title",
+        "schema_version": 1,
+        "summary": "un resumen",
+        "best": {"label": "option_a", "style": "A", "prompt": "p"},
+        "sibling_titles": None,
+        "key_speakers": None,
+        "forbidden_title": None,
+        "participant_slug": None,
+        "title": "Un título",
+    }
+
+    def _ti_with_output_path(self) -> object:
+        return _make_ti(
+            {
+                "thumbnail_config": {
+                    "chapter_id": 42,
+                    "debate_summary": "un resumen",
+                    "session": "Sesión 80",
+                    "domain": "congreso",
+                    "slug": None,
+                    "output_path": "/data/oradores/42/video.mp4",
+                }
+            }
+        )
+
+    def _mock_success(self, mocker, extra_result: dict | None = None) -> None:
+        child_run = MagicMock()
+        child_run.run_id = "thumb_run_provenance"
+        child_run.state = "success"
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run)
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        result = {
+            "success": True,
+            "chapter_id": 42,
+            # D3: the child's reconciled output_path is thumbnail.png, distinct
+            # from thumbnail_config["output_path"] (video.mp4) used as the write key.
+            "output_path": "/data/oradores/42/thumbnail.png",
+            "title": "Un título",
+        }
+        if extra_result:
+            result.update(extra_result)
+        mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=result)
+
+    def test_write_key_is_thumbnail_config_output_path_not_child_result_output_path(self, mocker) -> None:
+        """Scenario 3.1/D3: the write key must be thumbnail_config['output_path']."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        self._mock_success(mocker, {"title_generation_input": self._TITLE_PAYLOAD})
+        fake_db = MagicMock()
+        fake_db.record_title_generation_input_turn.return_value = 1
+        ti = self._ti_with_output_path()
+
+        trigger_thumbnail_generation(ti, db=fake_db, run_id="test_run")
+
+        fake_db.record_title_generation_input_turn.assert_called_once()
+        call_args = fake_db.record_title_generation_input_turn.call_args
+        key_used = call_args.args[0] if call_args.args else call_args.kwargs.get("output_path")
+        assert key_used == "/data/oradores/42/video.mp4"
+        assert key_used != "/data/oradores/42/thumbnail.png"
+        assert call_args.kwargs["payload"] == self._TITLE_PAYLOAD
+
+    def test_zero_rows_is_no_row_not_success(self, mocker, caplog) -> None:
+        """Scenario 3.2b: rowcount == 0 is a loud no_row outcome, never success."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        self._mock_success(mocker, {"title_generation_input": self._TITLE_PAYLOAD})
+        fake_db = MagicMock()
+        fake_db.record_title_generation_input_turn.return_value = 0
+        ti = self._ti_with_output_path()
+
+        with caplog.at_level("WARNING"):
+            trigger_thumbnail_generation(ti, db=fake_db, run_id="test_run")
+
+        assert ti.xcom_store["title_provenance"] == {"status": "no_row", "rows": 0, "error": None}
+        assert any("0 rows" in r.message for r in caplog.records)
+
+    def test_db_exception_is_caught_and_publication_continues(self, mocker) -> None:
+        """Scenario 5.1: a persistence failure is caught, logged, and never
+        propagates — the upload task still completes with a valid thumbnail_result."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        self._mock_success(mocker, {"title_generation_input": self._TITLE_PAYLOAD})
+        fake_db = MagicMock()
+        fake_db.record_title_generation_input_turn.side_effect = RuntimeError("db unreachable")
+        ti = self._ti_with_output_path()
+
+        result = trigger_thumbnail_generation(ti, db=fake_db, run_id="test_run")
+
+        assert result == "thumb_run_provenance"
+        assert ti.xcom_store["title_provenance"] == {
+            "status": "failed",
+            "rows": 0,
+            "error": "db unreachable",
+        }
+        assert ti.xcom_store["thumbnail_result"]["success"] is True
+        assert ti.xcom_store["thumbnail_result"]["title"] == "Un título"
+
+    def test_missing_payload_records_skipped_never_fails_strict_validation(self, mocker) -> None:
+        """D2: title_generation_input absent from the result must never
+        degrade a valid title into a thumbnail failure — the strict
+        validation conjunction never sees this key."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        self._mock_success(mocker)  # no title_generation_input key at all
+        fake_db = MagicMock()
+        ti = self._ti_with_output_path()
+
+        trigger_thumbnail_generation(ti, db=fake_db, run_id="test_run")
+
+        fake_db.record_title_generation_input_turn.assert_not_called()
+        assert ti.xcom_store["title_provenance"] == {"status": "skipped", "rows": 0, "error": None}
+        assert ti.xcom_store["thumbnail_result"]["success"] is True
+
+    def test_default_db_none_constructs_congressional_video_db(self, mocker) -> None:
+        """No db= injected -> trigger_thumbnail_generation creates its own."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        self._mock_success(mocker, {"title_generation_input": self._TITLE_PAYLOAD})
+        mock_db_instance = MagicMock()
+        mock_db_instance.record_title_generation_input_turn.return_value = 1
+        mocker.patch(
+            "congress_videos.modules.database.CongressionalVideoDB",
+            return_value=mock_db_instance,
+        )
+        ti = self._ti_with_output_path()
+
+        trigger_thumbnail_generation(ti, run_id="test_run")
+
+        mock_db_instance.record_title_generation_input_turn.assert_called_once()
+        assert ti.xcom_store["title_provenance"]["status"] == "written"
+
+
+# ---------------------------------------------------------------------------
 # SRT sidecar write (Slice 5 — srt-sidecar-canonical-path)
 # ---------------------------------------------------------------------------
 
