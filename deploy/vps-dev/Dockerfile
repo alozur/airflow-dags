@@ -27,6 +27,10 @@ COPY congress_videos /opt/airflow/dags/repo/congress_videos
 COPY examples /opt/airflow/dags/repo/examples
 COPY .airflowignore /opt/airflow/dags/repo/.airflowignore
 COPY deploy/vps-dev/init.py deploy/vps-dev/verify.py deploy/vps-dev/ml_smoke.py deploy/vps-dev/app_init.py deploy/vps-dev/app_smoke.py /opt/dev-tools/
+# The VPS scheduler must never load git_sync_dag (it pulls from GitHub and
+# would need GITHUB_TOKEN); .airflowignore uses regex matching by default, so
+# this substring excludes utils/git_sync_dag.py from DagBag parsing.
+RUN echo "git_sync_dag" >> /opt/airflow/dags/repo/.airflowignore
 RUN chmod -R a-w /opt/airflow/dags/repo /opt/dev-tools
 ARG SOURCE_REVISION
 ARG RELEASE_ID

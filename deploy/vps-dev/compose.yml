@@ -23,10 +23,12 @@ x-airflow: &airflow
     POSTGRES_USER: airflow_dev
     POSTGRES_PASSWORD: ${APPLICATION_RUNTIME_PASSWORD:?Required}
     POSTGRES_SCHEMA: development
-    OPENAI_API_KEY: dev-disabled-not-a-credential
-    YOUTUBE_API_KEY: dev-disabled-not-a-credential
-    REAP_API_KEY: dev-disabled-not-a-credential
-    PIKZELS_API_KEY: dev-disabled-not-a-credential
+    # External API keys: rendered by Ansible from an optional secrets env file
+    # (external.env). A stack without that file behaves exactly as today.
+    OPENAI_API_KEY: ${OPENAI_API_KEY:-dev-disabled-not-a-credential}
+    YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-dev-disabled-not-a-credential}
+    REAP_API_KEY: ${REAP_API_KEY:-dev-disabled-not-a-credential}
+    PIKZELS_API_KEY: ${PIKZELS_API_KEY:-dev-disabled-not-a-credential}
     # ML sidecars on the same internal network (these are also the code defaults).
     WHISPER_API_HOST: whisper-api
     WHISPER_API_PORT: "9000"
@@ -113,8 +115,20 @@ services:
       application: {condition: service_healthy}
     command: [python, /opt/dev-tools/app_init.py]
 
+  # Only container that executes DAG tasks (LocalExecutor): the sole service
+  # attached to the egress network, and the only one holding external API
+  # keys and YouTube OAuth tokens.
   scheduler:
     <<: *airflow
+    networks: [runtime, egress]
+    environment:
+      <<: *environment
+      # Exposed so verify.py's egress probe knows the outcome compose expects.
+      EGRESS_INTERNAL: ${EGRESS_INTERNAL:-true}
+    volumes:
+      - logs:/opt/airflow/logs
+      - data:/opt/airflow/data
+      - ${YOUTUBE_TOKENS_HOST_DIR:?Required}:/opt/airflow/data/congress_videos/youtube_tokens
     depends_on:
       metadata: {condition: service_healthy}
       application: {condition: service_healthy}
@@ -219,6 +233,14 @@ networks:
     ipam:
       config:
         - subnet: ${RUNTIME_SUBNET:?Required}
+  # Egress network: scheduler-only. Safe default is no egress (internal: true)
+  # when EGRESS_INTERNAL is unset; Ansible sets it explicitly per release.
+  egress:
+    driver: bridge
+    internal: ${EGRESS_INTERNAL:-true}
+    ipam:
+      config:
+        - subnet: ${EGRESS_SUBNET:?Required}
 volumes:
   metadata:
   application:

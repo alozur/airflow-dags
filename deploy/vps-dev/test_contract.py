@@ -63,9 +63,13 @@ class DevContract(unittest.TestCase):
     def test_only_internal_network_and_fresh_project_volumes(self):
         config = self.compose()
         runtime = config["networks"]["runtime"]
-        self.assertEqual(list(config["networks"]), ["runtime"])
+        egress = config["networks"]["egress"]
+        self.assertEqual(set(config["networks"]), {"runtime", "egress"})
         self.assertIs(runtime["internal"], True)
         self.assertEqual(runtime["ipam"]["config"], [{"subnet": "${RUNTIME_SUBNET:?Required}"}])
+        self.assertEqual(egress["driver"], "bridge")
+        self.assertEqual(egress["internal"], "${EGRESS_INTERNAL:-true}")
+        self.assertEqual(egress["ipam"]["config"], [{"subnet": "${EGRESS_SUBNET:?Required}"}])
         for value in config["volumes"].values():
             self.assertFalse(value and (value.get("external") or value.get("name")))
         expected_services = {
@@ -90,16 +94,43 @@ class DevContract(unittest.TestCase):
             "whisper_models",
         }
         self.assertEqual(set(config["volumes"]), expected_volumes)
-        for service in config["services"].values():
+        for name, service in config["services"].items():
             attached = service["networks"]
             names = set(attached) if isinstance(attached, dict) else set(attached)
-            self.assertEqual(names, {"runtime"})
+            # LocalExecutor means only the scheduler runs DAG tasks, so only it
+            # may reach the egress network; every other service stays runtime-only.
+            expected_networks = {"runtime", "egress"} if name == "scheduler" else {"runtime"}
+            self.assertEqual(names, expected_networks, name)
             self.assertNotIn("container_name", service)
             self.assertNotIn("cpuset", service)
             self.assertNotIn("network_mode", service)
             for mount in service.get("volumes", []):
                 self.assertNotIn("/volume1", mount)
                 self.assertNotIn("docker.sock", mount)
+
+    def test_scheduler_holds_youtube_tokens_and_egress_signal_only(self):
+        services = self.compose()["services"]
+        scheduler = services["scheduler"]
+        self.assertIn(
+            "${YOUTUBE_TOKENS_HOST_DIR:?Required}:/opt/airflow/data/congress_videos/youtube_tokens",
+            scheduler["volumes"],
+        )
+        self.assertEqual(scheduler["environment"]["EGRESS_INTERNAL"], "${EGRESS_INTERNAL:-true}")
+        for name in ("webserver", "init", "app-init"):
+            self.assertNotIn("youtube_tokens", " ".join(services[name].get("volumes", [])))
+
+    def test_external_api_keys_come_from_environment_with_safe_default(self):
+        env = self.compose()["services"]["scheduler"]["environment"]
+        for key in ("OPENAI_API_KEY", "YOUTUBE_API_KEY", "REAP_API_KEY", "PIKZELS_API_KEY"):
+            self.assertEqual(env[key], f"${{{key}:-dev-disabled-not-a-credential}}")
+
+    def test_git_sync_dag_is_excluded_from_the_image(self):
+        text = (HERE / "Dockerfile").read_text()
+        before_readonly, _, after = text.partition("RUN chmod -R a-w")
+        self.assertTrue(after, "the read-only chmod step is missing")
+        self.assertIn(".airflowignore", before_readonly)
+        self.assertIn("git_sync_dag", before_readonly)
+        self.assertNotIn("git_sync_dag", after)
 
     def test_no_service_publishes_ports_and_ui_upstream_is_fixed(self):
         services = self.compose()["services"]
