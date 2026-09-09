@@ -116,7 +116,6 @@ indent-style = "space"
 "benchmarks/yamnet_applause/server.py" = ["C901", "N806", "SIM105", "SIM115"]
 "congress_videos/modules/materialization_executor.py" = ["SIM105"]
 "congress_videos/modules/participants_enrichment.py" = ["SIM108"]
-"congress_videos/modules/speaker_normalization.py" = ["C901"]
 "congress_videos/modules/speaker_placeholders.py" = ["SIM103"]
 "congress_videos/modules/speaker_resolution.py" = ["C901"]
 "congress_videos/modules/speaker_turns.py" = ["F841", "SIM102", "SIM108"]
