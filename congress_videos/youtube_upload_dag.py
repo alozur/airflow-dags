@@ -750,8 +750,56 @@ def _copy_verification_problems(payload: dict | None) -> list[str]:
     return problems
 
 
-def trigger_thumbnail_generation(ti, **context) -> str | None:
-    """Run the generic thumbnail DAG and retain its result for upload configuration."""
+def _write_title_provenance(payload: object, key: str | None, db=None) -> dict:
+    """Persist a title-generation input payload (issue #549), never blocking publication.
+
+    Follows the failure-isolation convention from
+    ``congress_videos/modules/upload_marking.py`` (~lines 60-108), NOT the
+    bare ``record_copy_verification_*`` call-site shape: catches any DB
+    exception, logs it, and returns a ``"failed"`` outcome instead of
+    propagating. A ``payload``/``key`` absence is not an error — it is
+    recorded as ``"skipped"``. ``rowcount == 0`` (design D3/C4: the write
+    carries no ``IS DISTINCT FROM`` guard) is a loud ``"no_row"`` outcome,
+    never treated as success.
+
+    Args:
+        payload: The candidate ``title_generation_input`` value pulled from
+            the child DAG's result (may be missing, ``None``, or malformed).
+        key: The write key — MUST be ``thumbnail_config["output_path"]`` (the
+            turn's own ``video.mp4``), never the child result's
+            ``output_path`` (the reconciled ``thumbnail.png``).
+        db: CongressionalVideoDB instance (injected for testability; created
+            internally when None).
+
+    Returns:
+        ``{"status": "written" | "no_row" | "failed" | "skipped", "rows": int, "error": str | None}``.
+    """
+    if not (isinstance(payload, dict) and payload and key):
+        return {"status": "skipped", "rows": 0, "error": None}
+
+    from congress_videos.modules.database import CongressionalVideoDB
+
+    try:
+        rows = (db or CongressionalVideoDB()).record_title_generation_input_turn(key, payload=payload)
+    except Exception as exc:
+        logging.error("title provenance write failed for output_path=%r: %s", key, exc)
+        return {"status": "failed", "rows": 0, "error": str(exc)}
+
+    if not rows:
+        logging.warning("title provenance: 0 rows matched for output_path=%r — key mismatch", key)
+        return {"status": "no_row", "rows": 0, "error": None}
+    return {"status": "written", "rows": rows, "error": None}
+
+
+def trigger_thumbnail_generation(ti, db=None, **context) -> str | None:
+    """Run the generic thumbnail DAG and retain its result for upload configuration.
+
+    Args:
+        ti: Airflow TaskInstance.
+        db: CongressionalVideoDB instance (injected for testability; created
+            internally when None), matching how ``_prepare_thumbnail_config``
+            already receives one.
+    """
     thumbnail_config = ti.xcom_pull(key="thumbnail_config") or {}
     chapter_id = thumbnail_config.get("chapter_id")
     required_values = ("chapter_id", "debate_summary", "session", "domain")
@@ -817,6 +865,18 @@ def trigger_thumbnail_generation(ti, **context) -> str | None:
             logging.warning("Thumbnail DAG run %s returned no valid result", child_run_id)
             ti.xcom_push(key="thumbnail_result", value=_thumbnail_failure(chapter_id))
             return child_run_id
+
+        # Issue #549: persist the title-generator input payload keyed by the
+        # TURN's own output_path (thumbnail_config["output_path"] — never
+        # result["output_path"], which is the child DAG's reconciled
+        # thumbnail.png). Optional in the strict validation above; never
+        # blocks publication.
+        provenance = _write_title_provenance(
+            result.get("title_generation_input"),
+            thumbnail_config.get("output_path"),
+            db=db,
+        )
+        ti.xcom_push(key="title_provenance", value=provenance)
 
         ti.xcom_push(key="thumbnail_result", value=result)
         return child_run_id
