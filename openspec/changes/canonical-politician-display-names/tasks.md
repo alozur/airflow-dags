@@ -64,5 +64,5 @@ Chain strategy: stacked-to-main
 
 ## Phase 7: Governance Documentation (PR 7, ~120 lines)
 
-- [ ] 7.1 RED `tests/docs/test_canonical_display_names_doc.py`: `docs/CANONICAL_DISPLAY_NAMES.md` exists and mentions ownership, the "≥2 appearances" selection criterion, quarterly-plus-reshuffle cadence, add/edit procedure.
-- [ ] 7.2 GREEN: write `docs/CANONICAL_DISPLAY_NAMES.md` — ownership, mechanical selection criterion (against the 11-entry roster), review cadence, step-by-step add/edit procedure (schema, provenance, `uv run pytest tests/congress_videos/test_politician_display_names.py`).
+- [x] 7.1 RED `tests/docs/test_canonical_display_names_doc.py`: `docs/CANONICAL_DISPLAY_NAMES.md` exists and mentions ownership, the "≥2 appearances" selection criterion, quarterly-plus-reshuffle cadence, add/edit procedure.
+- [x] 7.2 GREEN: write `docs/CANONICAL_DISPLAY_NAMES.md` — ownership, mechanical selection criterion (against the 11-entry roster), review cadence, step-by-step add/edit procedure (schema, provenance, `uv run pytest tests/congress_videos/test_politician_display_names.py`).
