@@ -255,3 +255,34 @@ file whose token PR6 has already dropped.
 ### Status (PR5)
 
 8/8 PR5 tasks complete. Ready for `sdd-verify` on PR5's scope, then `sdd-apply` again for PR6.
+
+## PR6 — `_prepare_turns_callable` VAD/sidecar/decode helper + token drop (`congress_videos/speaker_turn_prepare_dag.py`, part 2 of 2)
+
+**Status: COMPLETE — 8/8 PR6 tasks done (6.1-6.8).** Branch `refactor/272-c901-slice-4-pr6`,
+stacks on PR5 tip `56e2ad8` (no rebase — orchestrator directed commit-only worktree; hidden-regression
+pre-check ran against the current worktree, matched PR5 exactly: `_prepare_turns_callable` 11, nothing
+else, `_resolve_qa_winner` 6, `_persist_turn_resolution` 4).
+
+Lifted `_prepare_turn_artifacts(db, turn, turn_id, output_path) -> None` (base 438-470 / PR5-tip
+473-505, whole `try/except`) immediately above `_prepare_turns_callable`; call site → one statement.
+Applied normalization (a) twice (loop-exit `continue` → `return None` at both the failed-decode branch
+and the outer `except`); the try/except was already the loop body's last statement, so control flow is
+unchanged. Complexity measured: `_prepare_turn_artifacts`→**3**, `_prepare_turns_callable` 11→**9**
+(matches design prediction exactly). AST-equality proof (`ast_check_s4_pr6.py`, scratch-only): 4/4
+`OK`. 3 new RED-first quirk tests (`TestPrepareTurnArtifacts`: rc!=0 skips mark_turn_prepared;
+exceptions swallowed, never raise; mark_turn_prepared is the last success-path call), all confirmed
+RED (ImportError) before the lift, GREEN after. Hidden-regression re-run immediately before the token
+drop: clean. Same commit: `pyproject.toml` `["C901","UP022"]`→`["UP022"]`,
+`EXPECTED_C901_FILE_COUNT` 8→7; `test_every_code_list_is_sorted_and_deduped` passes.
+`uvx ruff check .` and `uvx ruff format --check .` clean. Focused
+`uv run pytest -o addopts= tests/congress_videos/test_speaker_turn_prepare_dag.py
+tests/test_ruff_config.py` → 99 passed. DagBag import check clean (0 import errors).
+`git diff --shortstat` (56e2ad8..HEAD): 4 files, 109 insertions(+), 35 deletions(-) = 144 changed
+lines, well under 400 (no `size:exception`). Test-file diff shows additions only (69/0). Commit
+`55f9b5a`. Rollback: `git revert` PR6 must accompany or follow a PR5 revert; PR6 is the final tip of
+the six-PR stack.
+
+### Status (PR6)
+
+8/8 PR6 tasks complete. All six work-unit PRs of slice-4 are done. Ready for `sdd-verify` on PR6's
+scope, then the orchestrator-owned final tip (full suite, e2e, release PR, issue #272 comment).
