@@ -32,6 +32,7 @@ from congress_videos.modules.database import CongressionalVideoDB
 from congress_videos.modules.participants_db import lookup_participant_by_slug
 from congress_videos.modules.politician_display_names import canonical_display_name
 from utils.ai_helpers import generate_json_completion, truncate_text
+from utils.airflow_helpers import utc_normalize_row
 from utils.env_loader import load_env_if_local
 from utils.llm_config import LLM_DEFAULT
 from utils.whisper_helpers import transcribe_audio_file
@@ -473,8 +474,13 @@ with DAG(
                     # issue #512: carried for verify_final_copy (t2b) — avoids
                     # a second get_chapter_metadata/get_turn_speaker_slug
                     # round trip for the same short.
-                    "chapter": ch,
-                    "turn_speaker_row": turn_speaker_row,
+                    # issue #546: normalized here, at the XCom append site —
+                    # a raw TIMESTAMPTZ row from psycopg2 breaks Airflow's
+                    # real XCom serializer (ZoneInfo ValueError). The
+                    # operator log above still prints the raw offset; this
+                    # is a transport fix, not a change to the DB snapshot.
+                    "chapter": utc_normalize_row(ch),
+                    "turn_speaker_row": utc_normalize_row(turn_speaker_row),
                 }
             )
 
