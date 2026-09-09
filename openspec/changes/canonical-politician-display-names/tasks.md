@@ -59,8 +59,8 @@ Chain strategy: stacked-to-main
 
 ## Phase 6: Prompt Taxonomy Removal (PR 6, ~90 lines)
 
-- [ ] 6.1 RED: flip `test_system_prompt_contains_siempre_and_taxonomy_rule` to assert no `"Nivel 1"`–`"Nivel 4"`, presence of `"EXACTAMENTE como aparece"` + `"cargo o rol"`; assert `"taxonomía de 4 niveles"` absent from `SHORTS_METADATA_USER_PROMPT_TEMPLATE`.
-- [ ] 6.2 GREEN: replace `SHORTS_METADATA_SYSTEM_PROMPT` (lines 13-20) and `SHORTS_METADATA_USER_PROMPT_TEMPLATE` (line 46) in `congress_videos/config/ai_prompts.py` with the D6 wording.
+- [x] 6.1 RED: flip `test_system_prompt_contains_siempre_and_taxonomy_rule` to assert no `"Nivel 1"`–`"Nivel 4"`, presence of `"EXACTAMENTE como aparece"` + `"cargo o rol"`; assert `"taxonomía de 4 niveles"` absent from `SHORTS_METADATA_USER_PROMPT_TEMPLATE`.
+- [x] 6.2 GREEN: replace `SHORTS_METADATA_SYSTEM_PROMPT` (lines 13-20) and `SHORTS_METADATA_USER_PROMPT_TEMPLATE` (line 46) in `congress_videos/config/ai_prompts.py` with the D6 wording.
 
 ## Phase 7: Governance Documentation (PR 7, ~120 lines)
 
