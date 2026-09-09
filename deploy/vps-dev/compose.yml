@@ -157,12 +157,14 @@ services:
       MODEL_CACHE_DIR: /model-cache
       DIARIZE_API_PORT: "8080"
       IDLE_TIMEOUT_SECONDS: "900"
-      OMP_NUM_THREADS: "2"
-      MKL_NUM_THREADS: "2"
-      TORCH_NUM_THREADS: "2"
+      # Three of the six vCores: diarization is the longest step (about real time
+      # on two threads), and only the scheduler's short ffmpeg extract runs alongside it.
+      OMP_NUM_THREADS: "3"
+      MKL_NUM_THREADS: "3"
+      TORCH_NUM_THREADS: "3"
     volumes: [hf_home:/model-cache]
     mem_limit: 4g
-    cpus: 2
+    cpus: 3
     healthcheck:
       # Single-worker uvicorn also runs inference, so /health can take tens of seconds
       # while a diarization is in flight; a short timeout reports a working service unhealthy.
