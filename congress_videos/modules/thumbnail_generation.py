@@ -791,6 +791,76 @@ def generate_title(
     return final_title
 
 
+def build_turn_title_payload(
+    summary: str,
+    best: dict,
+    title: str,
+    *,
+    sibling_titles: list[str] | None = None,
+    key_speakers: list | None = None,
+    forbidden_title: str | None = None,
+    participant_slug: str | None = None,
+) -> dict:
+    """Build the persisted title-generation input payload for a turn (issue #549).
+
+    Assembles an allowlisted, credential-free record of everything
+    ``generate_title`` consumed for this run plus the title it returned, so
+    the run is replayable from stored data alone (``generator="turn_title"``,
+    ``schema_version=1``).
+
+    Built from explicit literal keys only — never ``{**best}`` or a spread of
+    any source dict — so no credential-shaped key or asset URL can reach the
+    persisted jsonb.
+
+    Args:
+        summary: Debate summary text passed to ``generate_title``.
+        best: The chosen thumbnail option dict; reduced here to
+            ``{"label", "style", "prompt"}`` (drops ``local_path`` and any
+            Pikzels asset URL — ``_build_title_prompt`` only ever reads
+            ``style``/``prompt``).
+        title: The title ``generate_title`` returned for this run.
+        sibling_titles: Same value forwarded to ``generate_title``. An empty
+            list normalises to ``None``, matching ``generate_title``'s own
+            "falsy means no injection" contract.
+        key_speakers: Same value forwarded to ``generate_title``. Entries are
+            normalized to name-only strings: ``str`` kept as-is, ``dict``
+            reduced to ``entry["name"]`` (dropping ``photo_url``/slug keys),
+            anything else dropped. An empty result normalises to ``None``.
+        forbidden_title: Same value forwarded to ``generate_title``.
+        participant_slug: Same value forwarded to ``generate_title``.
+
+    Returns:
+        A dict matching the turn payload schema documented in
+        ``openspec/changes/persist-title-generator-inputs/design.md``.
+    """
+    reduced_best = {
+        "label": best.get("label", ""),
+        "style": best.get("style", ""),
+        "prompt": best.get("prompt", ""),
+    }
+
+    normalized_speakers: list[str] | None = None
+    if key_speakers:
+        names = [
+            entry if isinstance(entry, str) else entry.get("name")
+            for entry in key_speakers
+            if isinstance(entry, str) or (isinstance(entry, dict) and entry.get("name"))
+        ]
+        normalized_speakers = names or None
+
+    return {
+        "generator": "turn_title",
+        "schema_version": 1,
+        "summary": summary,
+        "best": reduced_best,
+        "sibling_titles": sibling_titles or None,
+        "key_speakers": normalized_speakers,
+        "forbidden_title": forbidden_title,
+        "participant_slug": participant_slug,
+        "title": title,
+    }
+
+
 def _summarise_sibling_brief(brief: str) -> str:
     """Extract the key visual axes from a stored Pikzels prompt, cap at 200 chars.
 

@@ -282,6 +282,108 @@ def _copy_verification_evidence(chapter: dict | None, turn_speaker_row: dict | N
     }
 
 
+def build_shorts_title_payload(
+    transcript: str,
+    *,
+    chapter_title: str,
+    primary_speaker: str,
+    secondary_speakers: str,
+    topics: str,
+    scoring_reasoning: str,
+    mentioned_display_names: list[str] | None,
+    title: str,
+) -> dict:
+    """Build the persisted title-generation input payload for a short (issue #549).
+
+    Assembles an allowlisted, credential-free record of everything the
+    shorts metadata generator (`_generate_metadata`) fed into the prompt for
+    this run, plus the title it accepted, so the run is replayable from
+    stored data alone (`generator="shorts_metadata"`, `schema_version=1`).
+
+    `transcript` MUST be the FULL, unsliced Whisper transcript — this
+    function performs its own `transcript[:2000]` slice and derives
+    `transcript_truncated`/`transcript_full_length` from the full value.
+    Passing an already-sliced transcript in would pin `transcript_truncated`
+    to `False` and cap `transcript_full_length` at 2000 (design.md C3).
+    `scoring_reasoning` is sliced to 500 chars here, the same slice
+    `_generate_metadata` applies when building the prompt.
+
+    Built from explicit literal keys only — never a spread of any source
+    dict (such as the chapter row) — so no credential-shaped key can reach
+    the persisted jsonb.
+
+    Args:
+        transcript: Full Whisper transcript text for the clip (unsliced).
+        chapter_title: Prompt input, the same value `_generate_metadata` used.
+        primary_speaker: Prompt input, the same value used.
+        secondary_speakers: Prompt input, the same value used.
+        topics: Prompt input, the same value used.
+        scoring_reasoning: Full chapter scoring-reasoning text (unsliced);
+            sliced to 500 chars here, matching the prompt's own slice.
+        mentioned_display_names: Same value used to extend the prompt, or
+            `None`/empty when no mentioned people were resolved.
+        title: The title actually accepted from the LLM response
+            (`truncate_text(ai_title, 100)`).
+
+    Returns:
+        A dict matching the shorts payload schema documented in
+        `openspec/changes/persist-title-generator-inputs/design.md`.
+    """
+    return {
+        "generator": "shorts_metadata",
+        "schema_version": 1,
+        "transcript": transcript[:2000],
+        "transcript_truncated": len(transcript) > 2000,
+        "transcript_full_length": len(transcript),
+        "chapter_title": chapter_title,
+        "primary_speaker": primary_speaker,
+        "secondary_speakers": secondary_speakers,
+        "topics": topics,
+        "scoring_reasoning": scoring_reasoning[:500],
+        "mentioned_display_names": mentioned_display_names or None,
+        "title": title,
+    }
+
+
+def _write_shorts_title_provenance(payload: dict | None, short_id: int | None, db=None) -> dict:
+    """Persist a short's title-generation input payload (issue #549), never
+    blocking metadata assembly for the remaining pending shorts.
+
+    Follows the failure-isolation convention from
+    `congress_videos/modules/upload_marking.py` (~lines 60-108), NOT the
+    bare `record_copy_verification_short` call-site shape at
+    `reap_shorts_uploader_dag.py:571`: catches any DB exception, logs it,
+    and returns a `"failed"` outcome instead of propagating. A missing
+    payload/short_id — the non-LLM fallback branch (design D5) never builds
+    one — is recorded as `"skipped"`, not an error. `rowcount == 0`
+    (design D3/C4: the write carries no `IS DISTINCT FROM` guard) is a loud
+    `"no_row"` outcome, never treated as success.
+
+    Args:
+        payload: The built `title_generation_input` payload, or `None` when
+            the LLM branch was skipped or returned no title.
+        short_id: `video_shorts.id` — the write key.
+        db: `CongressionalVideoDB` instance (injected for testability;
+            created internally when `None`).
+
+    Returns:
+        `{"status": "written" | "no_row" | "failed" | "skipped", "rows": int, "error": str | None}`.
+    """
+    if not (isinstance(payload, dict) and payload and short_id):
+        return {"status": "skipped", "rows": 0, "error": None}
+
+    try:
+        rows = (db or CongressionalVideoDB()).record_title_generation_input_short(short_id, payload=payload)
+    except Exception as exc:
+        logging.error("title provenance write failed for short_id=%r: %s", short_id, exc)
+        return {"status": "failed", "rows": 0, "error": str(exc)}
+
+    if not rows:
+        logging.warning("title provenance: 0 rows matched for short_id=%r — key mismatch", short_id)
+        return {"status": "no_row", "rows": 0, "error": None}
+    return {"status": "written", "rows": rows, "error": None}
+
+
 default_args = {
     "owner": "airflow",
     "depends_on_past": False,
@@ -393,6 +495,10 @@ with DAG(
             )
             description = "🏛️ Debate en el Congreso de los Diputados.\n\n#Congreso #España #Política #Shorts"
 
+            # Issue #549: default outcome for the non-LLM fallback path
+            # (design D5) — no write is attempted and the column stays NULL.
+            title_provenance = {"status": "skipped", "rows": 0, "error": None}
+
             transcript = None
             if video_path and os.path.exists(video_path):
                 try:
@@ -457,6 +563,22 @@ with DAG(
                     ai_description = ai_result["data"].get("description", "").strip()
                     if ai_title:
                         title = truncate_text(ai_title, max_length=100)
+                        # Issue #549 (design D5): persist the title generator's
+                        # input payload only when the LLM actually produced a
+                        # non-empty title — build_shorts_title_payload MUST
+                        # receive the FULL, unsliced transcript (design C3),
+                        # not the [:2000] slice used for the prompt above.
+                        title_payload = build_shorts_title_payload(
+                            transcript,
+                            chapter_title=chapter_title,
+                            primary_speaker=primary_speaker,
+                            secondary_speakers=secondary_speakers,
+                            topics=topics,
+                            scoring_reasoning=scoring_reasoning,
+                            mentioned_display_names=mentioned_display_names or None,
+                            title=title,
+                        )
+                        title_provenance = _write_shorts_title_provenance(title_payload, short_id, db=db)
                     if ai_description:
                         description = ai_description
                     logging.info(f"AI metadata for short {short_id}: title='{title}'")
@@ -481,6 +603,10 @@ with DAG(
                     # is a transport fix, not a change to the DB snapshot.
                     "chapter": utc_normalize_row(ch),
                     "turn_speaker_row": utc_normalize_row(turn_speaker_row),
+                    # issue #549: rides the existing shorts_metadata XCom;
+                    # {status, rows, error} only — no datetime, so it needs
+                    # no utc_normalize_row treatment (issue #546).
+                    "title_provenance": title_provenance,
                 }
             )
 

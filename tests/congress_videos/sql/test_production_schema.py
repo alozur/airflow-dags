@@ -242,6 +242,8 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "copy_thumbnail_text",
         "copy_content_version",
         "copy_verified_at",
+        # Added by migration 051 (title generator input persistence, issue #549)
+        "title_generation_input",
     ),
     "video_analytics_snapshots": (
         "snapshot_id",
@@ -449,7 +451,8 @@ class TestVideoShortsTableSnapshot:
     """production.video_shorts must be present in the snapshot, folding
     migrations 004 (create) + 005 (staged_clip_path) + 006 (scoring_reasoning)
     + 012 (upload failure tracking) + 047 (turn_id, issue #467) + 050
-    (final-copy-verification audit, issue #512) — 29 columns total.
+    (final-copy-verification audit, issue #512) + 051 (title generator input
+    persistence, issue #549) — 30 columns total.
 
     Column assertions are scoped to the extracted `CREATE TABLE ... (...)`
     block only, never the whole file: 9 of the 21 pre-050 column names also
@@ -489,6 +492,8 @@ class TestVideoShortsTableSnapshot:
         "copy_corrected_description",
         "copy_content_version",
         "copy_verified_at",
+        # Added by migration 051 (title generator input persistence, issue #549)
+        "title_generation_input",
     )
 
     @staticmethod

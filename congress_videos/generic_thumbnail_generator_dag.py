@@ -50,6 +50,7 @@ from congress_videos.config.thumbnail_config import get_domain_config
 from congress_videos.modules import pikzels_client as _pkz
 from congress_videos.modules.thumbnail_generation import (
     art_direct,
+    build_turn_title_payload,
     choose_best_option,
     fetch_recent_thumbnail_history,
     generate_title,
@@ -326,10 +327,17 @@ def _task_thumbnail_result(ti: TaskInstance, **context: object) -> dict:
     in the canonical directory and returns that path as output_path.
     For chapter-type or standalone triggers (legacy path): returns best local_path
     unchanged.
+
+    Also rebuilds the title-generation input payload (issue #549) from the
+    same XCom values ``_task_generate_title`` consumed — XCom values are
+    immutable once written, so this rebuild is byte-exact with what the
+    prompt received. This keeps ``_task_generate_title``'s ``str`` return
+    type unchanged for its existing consumers.
     """
     conf: dict = ti.xcom_pull(task_ids="validate_input") or {}
     best: dict = ti.xcom_pull(task_ids="choose_best_option") or {}
     title: str | None = ti.xcom_pull(task_ids="generate_title")  # issue #317: no or "" coercion
+    history: dict = ti.xcom_pull(task_ids="fetch_recent_history") or {}
 
     best_local_path: str | None = best.get("local_path")
     _conf_output_path = conf.get("output_path")
@@ -342,11 +350,24 @@ def _task_thumbnail_result(ti: TaskInstance, **context: object) -> dict:
         # Legacy chapter path or standalone trigger: use best local_path as-is.
         output_path = best_local_path
 
+    title_generation_input = None
+    if title:
+        title_generation_input = build_turn_title_payload(
+            conf.get("debate_summary", ""),
+            best,
+            title,
+            sibling_titles=history.get("titles") or None,
+            key_speakers=conf.get("key_speakers") or None,
+            forbidden_title=conf.get("previous_title"),
+            participant_slug=conf.get("slug"),
+        )
+
     return {
         "chapter_id": int(conf["chapter_id"]),
         "success": True,
         "output_path": output_path,
         "title": title,
+        "title_generation_input": title_generation_input,
     }
 
 

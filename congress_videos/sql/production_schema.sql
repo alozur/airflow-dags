@@ -173,7 +173,10 @@ CREATE TABLE IF NOT EXISTS production.video_shorts (
     copy_corrected_title        TEXT,
     copy_corrected_description  TEXT,
     copy_content_version        TEXT,
-    copy_verified_at            TIMESTAMP
+    copy_verified_at            TIMESTAMP,
+
+    -- Added by migration 051 (title generator input persistence, issue #549)
+    title_generation_input      JSONB
 );
 
 -- Table: llm_cache
@@ -368,6 +371,9 @@ CREATE TABLE IF NOT EXISTS production.speaker_turn_videos (
     copy_thumbnail_text           TEXT,
     copy_content_version          TEXT,
     copy_verified_at              TIMESTAMPTZ,
+
+    -- Added by migration 051 (title generator input persistence, issue #549)
+    title_generation_input        JSONB,
 
     CONSTRAINT uq_speaker_turn_videos_turn UNIQUE (turn_id)
 );
