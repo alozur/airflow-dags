@@ -222,3 +222,36 @@ Diff on the touched test file shows additions only. Rollback: `git revert` of `b
 ### Status (PR4)
 
 9/9 PR4 tasks complete. Ready for `sdd-verify` on PR4's scope, then `sdd-apply` again for PR5.
+
+## PR5 — `_prepare_turns_callable` AI-resolution helpers (`congress_videos/speaker_turn_prepare_dag.py`, part 1 of 2)
+
+**Status: COMPLETE — 8/8 PR5 tasks done (5.1-5.8).** Branch `refactor/272-c901-slice-4-pr5`,
+stacks on PR4 tip `1a9efbc` (no rebase this batch — orchestrator directed commit-only worktree;
+hidden-regression pre-check ran against the current worktree and matched `origin/dev` (`ac2e49e`,
+which had advanced past the session's stated `1aa5681` — zero drift on this file):
+`_prepare_turns_callable` 19, nothing else.
+
+Lifted `_resolve_qa_winner` (base 328-364) and `_persist_turn_resolution` (base 366-402), no
+`pyproject.toml`/counter edit (function stays masked at 11 per design). Complexity measured:
+`_resolve_qa_winner`→**6**, `_persist_turn_resolution`→**4**, `_prepare_turns_callable` 19→**11**
+(all match design predictions exactly). **Deviation from design**: `_persist_turn_resolution`'s
+base block reads `mentions` (reject-branch audit warning) — a free variable the design's per-lift
+contract table omitted from that helper's signature. Added `mentions` as a 9th parameter to keep
+the lift byte-for-byte; dropping the reference would have silently changed behavior. AST-equality
+proof (`ast_check_s4_pr5.py`, scratch-only): 7/7 `OK`, incl. both appended-return (c) shapes and
+the call-site arg/target order. 7 new RED-first quirk tests (`TestResolveQaWinner` ×4,
+`TestPersistTurnResolution` ×3) pin the design's named quirks (wide-repass gating, exception
+fallback, wide-reject-then-primary-crosscheck, `turn` never mutated; reject withholds write+patch,
+promotion sticky on `promote_signal` alone, `promoted` stays `False` on falsy `winner_name`) — all
+confirmed RED (ImportError) before the lift, GREEN after. `uvx ruff check .` and
+`uvx ruff format --check .` clean. Focused
+`uv run pytest -o addopts= tests/congress_videos/test_speaker_turn_prepare_dag.py` → 82 passed.
+DagBag import check clean (0 import errors). `git diff --shortstat`: 2 files, 284 insertions(+),
+75 deletions(-) = 359 changed lines (under 400, no `size:exception`). Diff on the test file shows
+additions only. Rollback: **PR5 may only be reverted together with PR6 (or PR6 first)** — PR6
+prunes the token PR5's lift half-pays for; reverting PR5 alone returns the function to 19 in a
+file whose token PR6 has already dropped.
+
+### Status (PR5)
+
+8/8 PR5 tasks complete. Ready for `sdd-verify` on PR5's scope, then `sdd-apply` again for PR6.
