@@ -47,17 +47,32 @@ plus #511's `canonical_display_name`.
 
 ## Phase 2: Pure verifier module + prompts (PR2, `feat/512-b-verifier-module`, base PR1)
 
-- [ ] 2.1 RED: `tests/congress_videos/modules/test_final_copy_verification.py` — consistent copy ⇒ `pass`; malformed/`None`/`error` response, unknown `verdict` token, non-list `findings`, `corrected` with a stray key ⇒ `ok=False`
-- [ ] 2.2 RED: party true-positive (`VOX` vs evidence `PSOE`) IS a finding; party variant (`PSE-EE (PSOE)` vs `PSOE`) is NOT; spelling/grammar/language findings
-- [ ] 2.3 RED: thumbnail text flagged and never present in `corrected`
-- [ ] 2.4 RED: bounded correction — evidence-backed name correction applied + rechecked; unsupported-claim correction discarded, original published; `completion_fn` call count `<=2` on every branch (table-driven)
-- [ ] 2.5 RED: `content_version` stable across identical inputs, different across changed evidence
-- [ ] 2.6 GREEN: add `FINAL_COPY_VERIFICATION_SYSTEM_PROMPT` + `FINAL_COPY_VERIFICATION_USER_TEMPLATE` to `congress_videos/config/ai_prompts.py` (design D6, exact text)
-- [ ] 2.7 GREEN: create `congress_videos/modules/final_copy_verification.py` — `CopyFinding`, `CopyVerdict`, `verify_final_copy()`; never raises (convention: `mentioned_people_resolution.py:78-110`); `completion_fn` defaults to `utils.llm_cache.cached_json_completion`, `model=LLM_DEFAULT`, no `temperature`/`max_tokens`/`max_completion_tokens`
-- [ ] 2.8 GREEN: implement `_unsupported_tokens` containment check + length bounds (title ≤100, description ≤5000) and `sha256` content-version helper
-- [ ] 2.9 REFACTOR: `uv run pytest tests/congress_videos/modules/test_final_copy_verification.py tests/utils/test_no_removed_llm_kwargs.py`; ruff check/format
-- [ ] 2.10 Commit: `feat(congress-videos): add independent final-copy verifier module`
-- [ ] 2.11 CONTINGENCY (only if 2.6–2.8 push PR2 over 400 lines): split the containment helper (`_unsupported_tokens`) + its table-driven tests into PR `2a` (`feat/512-b1-copy-containment`, base PR1); PR `2b` (`feat/512-b2-copy-verifier`, base PR2a) keeps verdict parsing, bounded correction and prompts. One slicing pass only — no further split.
+**Slice 2a landed** (`feat/512-b1-verifier-core`, base PR1): the module's core
+— verdict schema, defensive parsing, evidence containment, the bounded-correction
+contract, content versioning — shipped as `congress_videos/modules/final_copy_verification.py`
+with `run_correction_round()` as the tested seam (its `call_round(title, description)`
+callback stands in for "render the prompt and call completion_fn once", so this
+sub-slice needed no prompt content to be fully exercised). Actual diff: 743 lines
+(module 335 + tests 408) against the 400-line hard budget — reported honestly as a
+`size:exception` candidate rather than thinned to fit; see apply-progress for the
+full rationale. **2.6/2.7/2.10 remain**: `verify_final_copy()` (the named public
+wrapper) and the two prompt constants do not exist yet. Slice 2b will add them,
+compose them with `run_correction_round()`, and add integration tests through the
+`verify_final_copy` seam per design's "never module internals" testing rule —
+2a's tests targeting `run_correction_round`/`_parse_round_response`-equivalent
+internals are a deliberate, budget-driven deviation from that rule, not an oversight.
+
+- [x] 2.1 RED: `tests/congress_videos/modules/test_final_copy_verification.py` — consistent copy ⇒ `pass`; malformed/`None`/`error` response, unknown `verdict` token, non-list `findings`, `corrected` with a stray key ⇒ `ok=False` (targets `run_correction_round`, slice 2a's seam)
+- [x] 2.2 RED: party true-positive (`VOX` vs evidence `PSOE`) IS a finding; party variant (`PSE-EE (PSOE)` vs `PSOE`) is NOT; spelling/grammar/language findings
+- [x] 2.3 RED: thumbnail text flagged and never present in `corrected`
+- [x] 2.4 RED: bounded correction — evidence-backed name correction applied + rechecked; unsupported-claim correction discarded, original published; `call_round` (completion_fn stand-in) call count `<=2` on every branch (table-driven)
+- [x] 2.5 RED: `content_version` stable across identical inputs, different across changed evidence
+- [ ] 2.6 GREEN (slice 2b): add `FINAL_COPY_VERIFICATION_SYSTEM_PROMPT` + `FINAL_COPY_VERIFICATION_USER_TEMPLATE` to `congress_videos/config/ai_prompts.py` (design D6, exact text)
+- [ ] 2.7 GREEN (slice 2b): add `verify_final_copy()` to `congress_videos/modules/final_copy_verification.py` — thin wrapper composing the real prompts + `utils.llm_cache.cached_json_completion` default (`model=LLM_DEFAULT`, no `temperature`/`max_tokens`/`max_completion_tokens`) with `run_correction_round()` (already implemented in 2a); `CopyFinding`/`CopyVerdict` already exist
+- [x] 2.8 GREEN: implement evidence-containment check (`is_contained`, token-based per design D2) + length bounds (title ≤100, description ≤5000) and `sha256` content-version helper (`compute_content_version`)
+- [x] 2.9 REFACTOR: `uv run pytest tests/congress_videos/modules/test_final_copy_verification.py tests/utils/test_no_removed_llm_kwargs.py`; ruff check/format — all green for the 2a scope
+- [ ] 2.10 Commit (slice 2b): `feat(congress-videos): add independent final-copy verifier module` — 2a's commit used a distinct, honest message (`feat(congress-videos): add final-copy verifier core (schema, parsing, containment, bounded correction)`) since it does not yet include `verify_final_copy` or the prompts
+- [x] 2.11 CONTINGENCY — triggered: full slice 2 (module+prompts+tests) measured 1098 changed lines, ~3x the ~380 estimate. Applied a wider split than the contingency's literal wording (containment-helper-only): 2a = verdict schema + defensive parsing + evidence containment + bounded-correction contract + content versioning (matching the orchestrator's budget-guard boundary for this change); 2b = prompt constants + the public `verify_final_copy` wrapper. Even 2a alone is 743 lines, still over budget — reported as `size:exception`, not further fragmented (fragmenting a tightly-coupled parse→containment→correction flow across 3+ PRs would cost more reviewer clarity than it saves).
 
 ## Phase 3: Long-form seam wiring (PR3, `feat/512-c-longform-seam`, base PR2)
 
