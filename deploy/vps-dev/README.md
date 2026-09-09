@@ -32,6 +32,23 @@ is the third-party image pinned by digest. Everything is CPU-only.
 synthetic audio. Airflow's local Whisper path is intentionally absent from the
 frozen image, so DEV transcription goes through `whisper-api` text-only (no
 SRT), a known functional gap versus production's start-time pip install.
-Production OAuth and the business database are absent. This foundation does
-not prove the full video pipeline works; no runtime claim follows from the
-passing static contracts.
+Production OAuth is absent. This foundation does not prove the full video
+pipeline works; no runtime claim follows from the passing static contracts.
+
+## Application database
+
+`application` is a second, fully isolated `postgres:16-alpine` instance
+(same pinned digest as `metadata`) holding the business schema — it starts
+**empty**; no data is copied from anywhere. The one-shot `app-init` service
+provisions it once per release: as the bootstrap superuser (`airflow`, the
+same legacy role name `congress_videos/sql/grant_permissions.sql` expects on
+the NAS) it creates the `development` schema and applies that idempotent
+grant script, then sets the `airflow_dev` (runtime, DML-only) and
+`airflow_migrations` (DDL) role passwords. It then calls the same migration
+functions `utils/migrations_dag.py`'s `run_migrations` DAG uses — directly,
+never through a DAG run, so `verify.py`'s zero-DAG-run assertion still holds.
+`scheduler` and `webserver` only ever hold the `airflow_dev` runtime
+credential; the bootstrap superuser and migration passwords never reach
+their environment. `app_smoke.py` runs inside the scheduler afterward and
+proves the DAG code can authenticate as `airflow_dev`, see the migrated
+schema, and perform a DML round-trip (rolled back on purpose).

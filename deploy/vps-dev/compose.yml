@@ -15,13 +15,14 @@ x-airflow: &airflow
     AIRFLOW__CORE__PARALLELISM: "2"
     AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "1"
     AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "120"
-    # Nonfunctional application credentials: never point these at metadata.
-    POSTGRES_HOST: application-db-disabled.invalid
+    # Runtime application credentials: DML-only role, isolated from metadata and
+    # from the bootstrap superuser / migration role (least privilege for scheduler/webserver).
+    POSTGRES_HOST: application
     POSTGRES_PORT: "5432"
-    POSTGRES_DB: application_dev_disabled
-    POSTGRES_USER: disabled
-    POSTGRES_PASSWORD: disabled-not-a-credential
-    POSTGRES_SCHEMA: public
+    POSTGRES_DB: application_dev
+    POSTGRES_USER: airflow_dev
+    POSTGRES_PASSWORD: ${APPLICATION_RUNTIME_PASSWORD:?Required}
+    POSTGRES_SCHEMA: development
     OPENAI_API_KEY: dev-disabled-not-a-credential
     YOUTUBE_API_KEY: dev-disabled-not-a-credential
     REAP_API_KEY: dev-disabled-not-a-credential
@@ -70,6 +71,24 @@ services:
       timeout: 5s
       retries: 20
 
+  # Isolated business/application database: starts empty, provisioned only by app-init.
+  application:
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    restart: unless-stopped
+    networks: [runtime]
+    environment:
+      # Bootstrap superuser, mirrors the NAS legacy `airflow` role that grant_permissions.sql references.
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${APPLICATION_PASSWORD:?Required}
+      POSTGRES_DB: application_dev
+    volumes: [application:/var/lib/postgresql/data]
+    mem_limit: 1g
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U airflow -d application_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   init:
     <<: *airflow
     restart: "no"
@@ -80,10 +99,25 @@ services:
       metadata: {condition: service_healthy}
     command: [python, /opt/dev-tools/init.py]
 
+  # One-shot: creates roles/schema/grants via grant_permissions.sql, sets runtime/migration
+  # passwords, then applies pending SQL migrations exactly like the NAS run_migrations DAG does.
+  app-init:
+    <<: *airflow
+    restart: "no"
+    environment:
+      <<: *environment
+      APPLICATION_PASSWORD: ${APPLICATION_PASSWORD:?Required}
+      MIGRATION_POSTGRES_USER: airflow_migrations
+      MIGRATION_POSTGRES_PASSWORD: ${APPLICATION_MIGRATION_PASSWORD:?Required}
+    depends_on:
+      application: {condition: service_healthy}
+    command: [python, /opt/dev-tools/app_init.py]
+
   scheduler:
     <<: *airflow
     depends_on:
       metadata: {condition: service_healthy}
+      application: {condition: service_healthy}
     command: scheduler
     healthcheck:
       test: [CMD-SHELL, 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
@@ -96,6 +130,7 @@ services:
     <<: *airflow
     depends_on:
       metadata: {condition: service_healthy}
+      application: {condition: service_healthy}
     # Fixed address: the host loopback relay targets it; Docker publishes nothing.
     networks:
       runtime:
@@ -184,6 +219,7 @@ networks:
         - subnet: ${RUNTIME_SUBNET:?Required}
 volumes:
   metadata:
+  application:
   logs:
   data:
   # Model caches: seeded from the controller bundle by Ansible, never downloaded at runtime.
