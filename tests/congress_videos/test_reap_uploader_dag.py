@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
+from airflow.utils.json import XComDecoder, XComEncoder
 
 # ---------------------------------------------------------------------------
 # 7.7 — DAG 2 load test (reap_shorts_uploader)
@@ -108,6 +111,11 @@ class TestTriggerYoutubeUploadTitleTruncation:
 # ---------------------------------------------------------------------------
 # 7.8 — DAG 2 task functions (_get_pending_shorts, _mark_shorts_uploaded)
 # ---------------------------------------------------------------------------
+
+
+def _xcom_round_trip(value):
+    """Byte-identical to Airflow's real XCom push+pull serialization path."""
+    return json.loads(json.dumps(value, cls=XComEncoder), cls=XComDecoder)
 
 
 def _make_ti(xcom_store: dict | None = None):
@@ -533,6 +541,10 @@ def _make_chapter_metadata(**overrides) -> dict:
         "youtube_video_id": None,
         "source_video_title": None,
         "source_video_url": None,
+        # issue #546: models the raw psycopg2 TIMESTAMPTZ row — a non-zero
+        # fixed offset, the exact shape that breaks the real XCom serializer
+        # unless utc_normalize_row is applied before the append.
+        "updated_at": datetime(2024, 3, 1, 10, 0, tzinfo=timezone(timedelta(hours=2))),
         "session_number": None,
         "session_date": None,
     }
@@ -884,7 +896,14 @@ def _make_short_meta(**overrides) -> dict:
         "short_id": 1,
         "title": "Título original",
         "description": "Descripción original",
-        "chapter": {"title": "Debate", "mentioned_participant_slugs": None},
+        # issue #546: models t2's post-fix normalized output as consumed by
+        # t2b — UTC, not a non-zero offset (that shape lives only in
+        # _make_chapter_metadata, which models the raw pre-normalization row).
+        "chapter": {
+            "title": "Debate",
+            "mentioned_participant_slugs": None,
+            "updated_at": datetime(2024, 3, 1, 8, 0, tzinfo=UTC),
+        },
         "turn_speaker_row": {"resolved_participant_slug": None},
     }
     base.update(overrides)
@@ -1024,6 +1043,29 @@ class TestVerifyFinalCopyShorts:
 
         verify_fn.assert_not_called()
         assert "shorts_copy_verification" not in ti.xcom_store
+
+    def test_verify_final_copy_repush_survives_real_xcom_round_trip(self, mocker):
+        """T3 (issue #546): the shorts_metadata value _verify_final_copy
+        re-pushes — the second serialization point, after t2's own push —
+        must also survive Airflow's REAL XCom serializer round-trip.
+        Guards a future t2b that re-queries the DB and forgets to
+        normalize; _make_short_meta's nested chapter already models t2's
+        post-fix UTC output (design D4), so this is a pure re-push check."""
+        from congress_videos.reap_shorts_uploader_dag import _verify_final_copy
+
+        self._patch_db(mocker)
+        verdict_fn_return = self._make_verdict(
+            ok=False, verdict="", title="Título original", description="Descripción original"
+        )
+        self._patch_verify(mocker, verdict_fn_return)
+
+        pending_shorts = [{"id": 5, "chapter_id": 10, "turn_id": 20}]
+        metadata = [_make_short_meta(short_id=5)]
+        ti = _make_ti({"pending_shorts": pending_shorts, "shorts_metadata": metadata})
+        _verify_final_copy(ti)  # must not raise
+
+        restored = _xcom_round_trip(ti.xcom_store["shorts_metadata"])
+        assert restored[0]["chapter"]["updated_at"] == _make_short_meta()["chapter"]["updated_at"]
 
 
 # ---------------------------------------------------------------------------
@@ -1552,3 +1594,85 @@ class TestSpeakerExclusionSurvivesCanonicalShortening:
 
         assert result["speaker_display_name"] == "Ana Pérez"
         assert result["mentioned_display_names"] == ["Luis Gómez"]
+
+
+# ---------------------------------------------------------------------------
+# shorts_metadata XCom TZ normalization (issue #546) — fourth recurrence of
+# the class fixed by #163/#303/#309: a raw psycopg2 TIMESTAMPTZ row placed
+# into shorts_metadata breaks Airflow's real XCom serializer. Dict-equality
+# against the _make_ti fake store is NOT acceptable evidence here — every
+# assertion in this class round-trips through the real XComEncoder/Decoder.
+# ---------------------------------------------------------------------------
+
+
+class TestShortsMetadataXComNormalization:
+    def test_raw_chapter_row_breaks_real_xcom_round_trip(self):
+        """Bug-pin (issue #546): a RAW chapter row (the un-normalized dict as
+        returned by psycopg2, bypassing utc_normalize_row) DOES break
+        Airflow's REAL XCom serializer round-trip with the exact ZoneInfo
+        crash. This must stay red-raising FOREVER — it deliberately never
+        normalizes. It proves the +02:00 offset shape genuinely breaks the
+        serializer, so the normalization applied at the append site in
+        `_generate_metadata` is doing real work rather than being decorative.
+
+        Mirrors tests/utils/test_airflow_helpers.py::TestXComSerializerRoundTrip
+        ::test_raw_non_utc_offset_row_breaks_xcom_round_trip."""
+        payload = {"chapter": _make_chapter_metadata(), "turn_speaker_row": None}
+
+        # match= is load-bearing: without it any ValueError would satisfy this
+        # pin, including one raised for an unrelated reason. The point of the
+        # test is that THIS specific tz defect is what breaks the round-trip.
+        with pytest.raises(ValueError, match="ZoneInfo keys must be normalized relative paths"):
+            _xcom_round_trip(payload)
+
+    def test_generate_metadata_shorts_metadata_survives_real_xcom_round_trip(self, mocker):
+        """Primary regression (issue #546): _generate_metadata's pushed
+        shorts_metadata payload — built from a chapter row whose updated_at
+        carries a non-zero fixed UTC offset — survives the REAL XCom
+        serializer round-trip and decodes updated_at as a genuine UTC
+        datetime equal to the original instant."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapter_metadata.return_value = _make_chapter_metadata()
+        mock_db.get_turn_speaker_slug.return_value = {
+            "turn_id": 42,
+            "resolved_participant_slug": "ana-perez",
+        }
+
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.lookup_participant_by_slug",
+            return_value={"display_name": "Ana Pérez"},
+        )
+        mocker.patch("os.path.exists", return_value=False)
+
+        pending_shorts = [{"id": 1, "chapter_id": 10, "turn_id": 42}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        restored = _xcom_round_trip(ti.xcom_store["shorts_metadata"])
+
+        updated_at = restored[0]["chapter"]["updated_at"]
+        assert isinstance(updated_at, datetime)
+        assert updated_at.utcoffset() == timedelta(0)
+        assert updated_at == _make_chapter_metadata()["updated_at"]
+
+    def test_generate_metadata_missing_turn_stays_none_after_round_trip(self, mocker):
+        """A pending short with no turn_id keeps turn_speaker_row as None
+        through normalization AND through the real XCom round trip — the
+        no-turn branch must not raise."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.get_chapter_metadata.return_value = _make_chapter_metadata()
+
+        mocker.patch("os.path.exists", return_value=False)
+
+        pending_shorts = [{"id": 2, "chapter_id": 10}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        restored = _xcom_round_trip(ti.xcom_store["shorts_metadata"])
+
+        assert restored[0]["turn_speaker_row"] is None
