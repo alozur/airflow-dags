@@ -54,8 +54,8 @@ Chain strategy: stacked-to-main
 
 ## Phase 5: Shorts Wiring (PR 5, ~180 lines)
 
-- [ ] 5.1 RED: extend `TestBuildShortsMetadataContext` in `tests/congress_videos/test_reap_uploader_dag.py` — mapped `turn_speaker_slug` yields the catalogued name over `participants_lookup`; unmapped/`None` falls through unchanged; mentioned people never canonicalised; `pedro-sanchez-perez-castejon` → `Sánchez`.
-- [ ] 5.2 GREEN: in `build_shorts_metadata_context` (`congress_videos/reap_shorts_uploader_dag.py` L104-117), try `canonical_display_name(turn_speaker_slug)` before `participants_lookup`.
+- [x] 5.1 RED: extend `TestBuildShortsMetadataContext` in `tests/congress_videos/test_reap_uploader_dag.py` — mapped `turn_speaker_slug` yields the catalogued name over `participants_lookup`; unmapped/`None` falls through unchanged; mentioned people never canonicalised; `pedro-sanchez-perez-castejon` → `Sánchez`.
+- [x] 5.2 GREEN: in `build_shorts_metadata_context` (`congress_videos/reap_shorts_uploader_dag.py` L104-117), try `canonical_display_name(turn_speaker_slug)` before `participants_lookup`.
 
 ## Phase 6: Prompt Taxonomy Removal (PR 6, ~90 lines)
 
