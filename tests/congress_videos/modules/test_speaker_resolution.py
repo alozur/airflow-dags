@@ -1439,3 +1439,100 @@ class TestBuildResolutionUserPrompt:
             )
 
         assert seen_texts[0] == "chapter-text"
+
+
+class TestValidateCompletionResponse:
+    """Quirks pinned for _validate_completion_response (issue #272)."""
+
+    def test_truthy_error_or_empty_data_return_none(self):
+        from congress_videos.modules.speaker_resolution import _validate_completion_response
+
+        turn = {"turn_id": 7}
+        valid_slugs = {"pedro-sanchez"}
+
+        with_error = _validate_completion_response(
+            turn,
+            {"error": "boom", "data": {"participant_slug": "pedro-sanchez", "confidence": 0.9}},
+            valid_slugs,
+            [],
+        )
+        assert with_error is None
+
+        empty_data = _validate_completion_response(turn, {"error": None, "data": {}}, valid_slugs, [])
+        assert empty_data is None
+
+        missing_data = _validate_completion_response(turn, {"error": None, "data": None}, valid_slugs, [])
+        assert missing_data is None
+
+    def test_slug_not_in_valid_slugs_returns_none(self):
+        from congress_videos.modules.speaker_resolution import _validate_completion_response
+
+        turn = {"turn_id": 7}
+        response = {"error": None, "data": {"participant_slug": "unknown-slug", "confidence": 0.95}}
+
+        result = _validate_completion_response(turn, response, {"pedro-sanchez"}, [])
+
+        assert result is None
+
+    def test_string_confidence_is_coerced_by_float(self):
+        from congress_videos.modules.speaker_resolution import _validate_completion_response
+
+        turn = {"turn_id": 7}
+        response = {
+            "error": None,
+            "data": {"participant_slug": "pedro-sanchez", "confidence": "0.95", "evidence": "el senor Sanchez"},
+        }
+
+        with patch("congress_videos.modules.speaker_resolution._evidence_supported_in_blocks", return_value=True):
+            result = _validate_completion_response(turn, response, {"pedro-sanchez"}, [])
+
+        assert result is not None
+        assert result["confidence"] == pytest.approx(0.95)
+        assert isinstance(result["confidence"], float)
+
+    def test_confidence_exactly_at_threshold_passes_just_below_fails(self):
+        from congress_videos.modules.speaker_resolution import (
+            SPEAKER_RESOLUTION_MIN_CONFIDENCE,
+            _validate_completion_response,
+        )
+
+        turn = {"turn_id": 7}
+        at_threshold_response = {
+            "error": None,
+            "data": {
+                "participant_slug": "pedro-sanchez",
+                "confidence": SPEAKER_RESOLUTION_MIN_CONFIDENCE,
+                "evidence": "el senor Sanchez",
+            },
+        }
+        just_below_response = {
+            "error": None,
+            "data": {
+                "participant_slug": "pedro-sanchez",
+                "confidence": SPEAKER_RESOLUTION_MIN_CONFIDENCE - 0.01,
+                "evidence": "el senor Sanchez",
+            },
+        }
+
+        with patch("congress_videos.modules.speaker_resolution._evidence_supported_in_blocks", return_value=True):
+            at_threshold = _validate_completion_response(turn, at_threshold_response, {"pedro-sanchez"}, [])
+            just_below = _validate_completion_response(turn, just_below_response, {"pedro-sanchez"}, [])
+
+        assert at_threshold is not None
+        assert at_threshold["confidence"] == SPEAKER_RESOLUTION_MIN_CONFIDENCE
+        assert just_below is None
+
+    def test_evidence_defaults_to_empty_string(self):
+        from congress_videos.modules.speaker_resolution import _validate_completion_response
+
+        turn = {"turn_id": 7}
+        response = {"error": None, "data": {"participant_slug": "pedro-sanchez", "confidence": 0.95}}
+
+        with patch(
+            "congress_videos.modules.speaker_resolution._evidence_supported_in_blocks", return_value=True
+        ) as mock_gate:
+            result = _validate_completion_response(turn, response, {"pedro-sanchez"}, [])
+
+        assert result is not None
+        assert result["evidence"] == ""
+        mock_gate.assert_called_once_with("", [])

@@ -163,3 +163,36 @@ removed line is the `EXPECTED_C901_FILE_COUNT` constant, not a test assertion). 
 ### Status (PR2)
 
 8/8 PR2 tasks complete. Ready for `sdd-verify` on PR2's scope, then `sdd-apply` again for PR3.
+
+## PR3 — `_resolve_speaker_inner` (`congress_videos/modules/speaker_resolution.py`) — budget-risk PR
+
+**Status: COMPLETE — 9/9 PR3 tasks done (3.1-3.9).** Branch `refactor/272-c901-slice-4-pr3`,
+stacks on PR2 tip `9f8c23a`. Hidden-regression pre-check: `_resolve_speaker_inner` 14, nothing
+else, zero drift vs `origin/dev 1aa5681`.
+
+**Split triggered**: a single combined lift measured 504 changed lines (>400 budget). Applied
+the design's pre-approved contingency — commit `f09becf` (PR3a): lifted
+`_build_resolution_user_prompt` (base 385-428) only, normalizations (c)+(e); no pyproject edit;
+`_resolve_speaker_inner` measured 14→**11** (still masked, matches design's stated PR3a state
+exactly); 271 changed lines. Commit `d74a395` (PR3b): lifted `_validate_completion_response`
+(base 442-502, tail lift, no normalization needed); `_resolve_speaker_inner` 14→**6** (matches
+design prediction), `_build_resolution_user_prompt`→**5**, `_validate_completion_response`→**6**
+(both match predictions); pruned the `speaker_resolution.py` pyproject entry (sole code
+`"C901"`) and decremented `EXPECTED_C901_FILE_COUNT` 10→9; 232 changed lines. Combined total
+392 insertions + 111 deletions vs PR2 tip.
+
+AST-equality proofs (`ast_check_s4_pr3a.py` for PR3a scope, `ast_check_s4_pr3.py` for the full
+PR3b state, both scratch-only): 4/4 and 5/5 `OK` respectively, including the (e) abort-sentinel
+call-site check (`if user_prompt is None: return None`). 9 new RED-first quirk tests across two
+classes (`TestBuildResolutionUserPrompt` ×4, `TestValidateCompletionResponse` ×5), all confirmed
+RED (ImportError) before their respective lift, GREEN after. `uvx ruff check .` and
+`uvx ruff format --check .` clean at both tips. Focused
+`uv run pytest -o addopts= tests/congress_videos/modules/test_speaker_resolution.py
+tests/test_ruff_config.py` → 94 passed at the PR3b tip. `git diff 9f8c23a..HEAD -- tests/`
+shows additions only (the one `-` line is the `EXPECTED_C901_FILE_COUNT` constant, not a test
+assertion — same shape as PR2). Rollback: `git revert` of `d74a395` then `f09becf` (or both
+together); independent of PR1/PR2 and every other PR in the stack.
+
+### Status (PR3)
+
+9/9 PR3 tasks complete. Ready for `sdd-verify` on PR3's scope, then `sdd-apply` again for PR4.
