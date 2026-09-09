@@ -48,9 +48,9 @@ Chain strategy: stacked-to-main
 
 ## Phase 4: Art-Direction Wiring + Cross-Seam Consistency (PR 4, ~160 lines)
 
-- [ ] 4.1 RED: extend tests near `TestResolvedPhotoSpeakerName`/`TestArtDirectResolvedPhotoInstruction` — mapped slug wins over `_real_speakers(...)[0]`; unmapped byte-identical; one test asserting title and art-direction render the identical name for one mapped slug.
-- [ ] 4.2 GREEN: add `participant_slug: str | None = None` to `resolved_photo_speaker_name`; call `canonical_display_name`.
-- [ ] 4.3 GREEN: pass `conf.get("slug")` at `_task_art_direction` and `_task_art_direction_retry` in `generic_thumbnail_generator_dag.py`.
+- [x] 4.1 RED: extend tests near `TestResolvedPhotoSpeakerName`/`TestArtDirectResolvedPhotoInstruction` — mapped slug wins over `_real_speakers(...)[0]`; unmapped byte-identical; one test asserting title and art-direction render the identical name for one mapped slug.
+- [x] 4.2 GREEN: add `participant_slug: str | None = None` to `resolved_photo_speaker_name`; call `canonical_display_name`.
+- [x] 4.3 GREEN: pass `conf.get("slug")` at `_task_art_direction` and `_task_art_direction_retry` in `generic_thumbnail_generator_dag.py`.
 
 ## Phase 5: Shorts Wiring (PR 5, ~180 lines)
 

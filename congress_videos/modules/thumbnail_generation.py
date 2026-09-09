@@ -257,7 +257,11 @@ def _real_speakers(key_speakers: list | None) -> list[str]:
     return result
 
 
-def resolved_photo_speaker_name(photo_data: dict | None, key_speakers: list | None) -> str | None:
+def resolved_photo_speaker_name(
+    photo_data: dict | None,
+    key_speakers: list | None,
+    participant_slug: str | None = None,
+) -> str | None:
     """Return the speaker name to ground art_direct's 'person' field on, or None.
 
     Activation gate (issue #279): a real, non-placeholder speaker name is
@@ -266,19 +270,29 @@ def resolved_photo_speaker_name(photo_data: dict | None, key_speakers: list | No
     survives ``_real_speakers``. A party-logo source, an absent/empty photo
     result, or a placeholder-only ``key_speakers`` list all return None so
     that ``art_direct`` falls back to its default relatable-citizen framing.
+    ``participant_slug`` never opens this gate on its own.
 
     Args:
         photo_data: The XCom result from ``resolve_participant_photo``, or None.
         key_speakers: List of speaker entries (strings or dicts with a
             ``name`` key), or None.
+        participant_slug: Optional slug already produced by identity
+            resolution (issue #511). When the activation gate is open and
+            ``canonical_display_name(participant_slug)`` resolves, its
+            curated short form REPLACES the first ``_real_speakers`` entry.
+            A ``None``/unmapped/ambiguous slug leaves this byte-identical to
+            the pre-catalogue behaviour.
 
     Returns:
-        The first real speaker name when the gate opens; otherwise None.
+        The catalogued or first real speaker name when the gate opens;
+        otherwise None.
     """
     if not photo_data or photo_data.get("source") != "photo":
         return None
     real = _real_speakers(key_speakers)
-    return real[0] if real else None
+    if not real:
+        return None
+    return canonical_display_name(participant_slug) or real[0]
 
 
 def _build_art_direction_prompt(
