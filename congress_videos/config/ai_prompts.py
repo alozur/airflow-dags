@@ -277,6 +277,48 @@ THUMBNAIL_TITLE_NAMELESS_INSTRUCTION = (
     "usa formato sin nombre ([Verbo] + complemento)."
 )
 
+# Issue #510. Both rules were derived from a human labelling pass over 60 real
+# published titles and promoted by a measured A/B: generated on 52 replayable
+# inputs with the production model, judged pairwise in both orders, the
+# candidate won 30-11 (p = 0.0043). See benchmarks/title_eval/RUBRIC.md.
+#
+# The wording below names no politician, on purpose. Issue #91 removed
+# politician proper names from this prompt because they made the generator
+# attribute quotes to people who never spoke, and
+# tests/congress_videos/modules/test_thumbnail_generation.py pins that. The
+# A/B's first candidate listed example figures and had to be rewritten to
+# express notoriety by office instead; the rewrite was re-measured, not
+# assumed. Rewording it again, however harmlessly it reads, ships a variant
+# nobody tested — re-run benchmarks/title_eval/ab_test.py first.
+#
+# The notoriety rule deliberately overrides the "[Nombre] + verbo" formula
+# above rather than replacing it: the formula still governs the shape of the
+# sentence, and this decides whether the subject is a name or an office. The
+# labelling pass found the model naming backbenchers no viewer recognises,
+# where the office pulls harder — "no le conoce la gente pero un ministro da
+# notoriedad".
+THUMBNAIL_TITLE_NOTORIETY_RULES = (
+    "\n\nREGLA DE NOTORIEDAD (prevalece sobre el formato [Nombre] + verbo): "
+    "de entre los ponentes que tienes permitido nombrar, un nombre propio solo "
+    "ayuda si el gran público lo reconoce. "
+    "Si quien habla ocupa un cargo de primer nivel (presidencia del Gobierno, "
+    "liderazgo de un partido con representación parlamentaria, un ministerio) o "
+    "es alguien que aparece habitualmente en la prensa generalista, nómbralo. "
+    "Si quien habla es un diputado que el público general NO reconocería, NO uses su "
+    "nombre: usa su CARGO o su papel ('el Ministro de Hacienda', 'la ministra de "
+    "Inclusión', 'la portavoz socialista'), que aporta más notoriedad que un apellido "
+    "desconocido. Un nombre que nadie reconoce es peso muerto y ocupa el espacio que "
+    "debería llevar el hecho. "
+    "Un partido o una institución como sujeto ('Vox denuncia...', 'El Congreso aprueba...') "
+    "es perfectamente válido cuando el hecho es concreto. "
+    "NUNCA uses el tratamiento parlamentario ('el señor X', 'la señora Y'): "
+    "es registro de hemiciclo, no de audiencia."
+    "\n\nORDEN DEL TITULAR: lo más llamativo va primero. "
+    "Si hay un conflicto, un rechazo o una acusación, abre con eso, no con el trámite "
+    "que lo envuelve. 'El PP rechaza la ley del derecho a morir' funciona mejor que "
+    "'El Congreso aprueba la ley del derecho a morir pese al rechazo del PP'."
+)
+
 THUMBNAIL_TITLE_SYSTEM_PROMPT = (
     "Eres un redactor político experto en titulares de alto impacto para YouTube. "
     "Escribe titulares declarativos en formato de noticias: [Nombre] + verbo de acción + complemento o cita. "
@@ -292,7 +334,7 @@ THUMBNAIL_TITLE_SYSTEM_PROMPT = (
     "sin símbolos de canal; sin hashtags; sin los caracteres: # @ | ~ ^. "
     "Usa mayúsculas y minúsculas normales (capitalización estándar en español): "
     "NUNCA escribas el título entero en mayúsculas, pero respeta las siglas de "
-    "partidos (PSOE, PP, VOX, IVA)."
+    "partidos (PSOE, PP, VOX, IVA)." + THUMBNAIL_TITLE_NOTORIETY_RULES
 )
 
 _AVOID_TERMS_LIST = ", ".join(TITLE_WORDS_TO_AVOID)
