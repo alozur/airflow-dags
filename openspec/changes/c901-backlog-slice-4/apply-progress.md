@@ -118,24 +118,48 @@ per-lift contract table.
 
 None.
 
-### Remaining tasks (PR2-PR6, final tip)
+### Remaining tasks (PR3-PR6, final tip)
 
-- [ ] PR2 — `normalize_chapter_speakers` (`speaker_normalization.py`)
+- [x] PR2 — `normalize_chapter_speakers` (`speaker_normalization.py`)
 - [ ] PR3 — `_resolve_speaker_inner` (`speaker_resolution.py`, budget-risk PR)
 - [ ] PR4 — `derive_candidate_intervals` (`candidate_intervals.py`, characterization tests first)
 - [ ] PR5 — `_prepare_turns_callable` part 1 (`speaker_turn_prepare_dag.py`)
 - [ ] PR6 — `_prepare_turns_callable` part 2 + token drop
 - [ ] Final tip — full `uv run pytest`, e2e, release PR, issue #272 slice-4 report comment
 
-### Workload / PR Boundary
+### Workload / PR Boundary (PR1)
 
 - Mode: chained PR slice (`auto-chain` / `stacked-to-main`)
-- Current work unit: PR1 of 6 (+ release PR)
 - Boundary: starts at `413d2fe` (worktree base), ends at `e9defe6` (PR1 tip) — free prune of
   `reap_clip_preparer_dag.py` + full lift of both `speaker_turns.py` C901 offenders + token drop
 - Estimated review budget impact: 232 changed lines, well under the 400-line budget; PR1 is independent
   and reverts cleanly without touching PR2-PR6
 
-### Status
+### Status (PR1)
 
-11/11 PR1 tasks complete. Ready for `sdd-verify` on PR1's scope, then `sdd-apply` again for PR2.
+11/11 PR1 tasks complete.
+
+## PR2 — `normalize_chapter_speakers` (`congress_videos/modules/speaker_normalization.py`)
+
+**Status: COMPLETE — 8/8 PR2 tasks done (2.1-2.8).** Branch `refactor/272-c901-slice-4-pr2`, stacks on
+PR1 tip `968015e`. Commit `74e7190`.
+
+Lifted `_apply_institutional_role_corrections` (Step 0 for-loop, base 247-279) and
+`_apply_roster_resolution_step` (Step 1 `if dirty_names:` body, base 287-339), no declared
+normalization; `result`/`cursor` passed as the same live objects. Complexity measured:
+`normalize_chapter_speakers` 14→**6**, both helpers→**5** (all match design predictions exactly).
+AST-equality proof (`ast_check_s4_pr2.py`, scratch-only): 4/4 `OK`. 7 new RED-first quirk tests
+(consolidated from an initial 12-test draft that exceeded the 400-line budget at 443 lines; the
+consolidated 7 preserve every quirk assertion, none removed) — all confirmed RED (ImportError)
+before the lift, GREEN after. `pyproject.toml` entry pruned same commit;
+`EXPECTED_C901_FILE_COUNT` 11→10. `uvx ruff check .` clean, `uvx ruff format --check .` clean,
+focused `uv run pytest -o addopts= tests/congress_videos/modules/test_speaker_normalization.py
+tests/test_ruff_config.py` → 47 passed. `git diff 968015e..HEAD --shortstat`: 4 files, 302
+insertions(+), 88 deletions(-) = **390 changed lines**, within the 400-line budget (no
+`size:exception` needed). `git diff` on the touched test file shows additions only (the one
+removed line is the `EXPECTED_C901_FILE_COUNT` constant, not a test assertion). Rollback:
+`git revert` of commit `74e7190`; independent of PR1 and PR3-PR6.
+
+### Status (PR2)
+
+8/8 PR2 tasks complete. Ready for `sdd-verify` on PR2's scope, then `sdd-apply` again for PR3.
