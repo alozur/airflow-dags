@@ -111,7 +111,6 @@ indent-style = "space"
 # re-derive a different one.
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # permanent: re-exports (29 of them in modules/youtube/).
-"benchmarks/pyannote_diarization/candidate_intervals.py" = ["C901"]
 "benchmarks/pyannote_diarization/server.py" = ["C901", "SIM105", "SIM115"]
 "benchmarks/yamnet_applause/server.py" = ["C901", "N806", "SIM105", "SIM115"]
 "congress_videos/modules/materialization_executor.py" = ["SIM105"]

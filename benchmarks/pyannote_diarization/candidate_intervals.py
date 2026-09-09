@@ -37,6 +37,44 @@ def _rounded(value: float) -> float:
     return round(value, 6)
 
 
+def _merge_active_intervals(active_intervals: list[tuple[float, float]]) -> list[list[float]]:
+    """Lifted verbatim out of derive_candidate_intervals (issue #272)."""
+    merged_intervals: list[list[float]] = []
+    for start, end in sorted(active_intervals):
+        if merged_intervals and start <= merged_intervals[-1][1]:
+            merged_intervals[-1][1] = max(merged_intervals[-1][1], end)
+        else:
+            merged_intervals.append([start, end])
+    return merged_intervals
+
+
+def _intervals_to_gaps(
+    merged_intervals: list[list[float]], duration: float, min_gap_seconds: float
+) -> list[dict[str, object]]:
+    """Lifted verbatim out of derive_candidate_intervals (issue #272)."""
+    gaps: list[dict[str, object]] = []
+    cursor = 0.0
+    for start, end in merged_intervals:
+        if start - cursor >= min_gap_seconds:
+            gaps.append(
+                {
+                    "start_seconds": _rounded(cursor),
+                    "end_seconds": _rounded(start),
+                    "label": CANDIDATE_LABEL,
+                }
+            )
+        cursor = end
+    if duration - cursor >= min_gap_seconds:
+        gaps.append(
+            {
+                "start_seconds": _rounded(cursor),
+                "end_seconds": _rounded(duration),
+                "label": CANDIDATE_LABEL,
+            }
+        )
+    return gaps
+
+
 def derive_candidate_intervals(summary: dict[str, Any], min_gap_seconds: float) -> list[dict[str, object]]:
     """Return gaps in raw diarization activity that meet the requested minimum duration."""
     duration = _finite_number(summary.get("full_video_duration_seconds"), "full_video_duration_seconds")
@@ -60,34 +98,8 @@ def derive_candidate_intervals(summary: dict[str, Any], min_gap_seconds: float) 
         if clamped_end > clamped_start:
             active_intervals.append((clamped_start, clamped_end))
 
-    merged_intervals: list[list[float]] = []
-    for start, end in sorted(active_intervals):
-        if merged_intervals and start <= merged_intervals[-1][1]:
-            merged_intervals[-1][1] = max(merged_intervals[-1][1], end)
-        else:
-            merged_intervals.append([start, end])
-
-    gaps: list[dict[str, object]] = []
-    cursor = 0.0
-    for start, end in merged_intervals:
-        if start - cursor >= min_gap_seconds:
-            gaps.append(
-                {
-                    "start_seconds": _rounded(cursor),
-                    "end_seconds": _rounded(start),
-                    "label": CANDIDATE_LABEL,
-                }
-            )
-        cursor = end
-    if duration - cursor >= min_gap_seconds:
-        gaps.append(
-            {
-                "start_seconds": _rounded(cursor),
-                "end_seconds": _rounded(duration),
-                "label": CANDIDATE_LABEL,
-            }
-        )
-    return gaps
+    merged_intervals = _merge_active_intervals(active_intervals)
+    return _intervals_to_gaps(merged_intervals, duration, min_gap_seconds)
 
 
 def _positive_finite_float(value: str) -> float:
