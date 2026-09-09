@@ -82,19 +82,56 @@ deletions (308 changed lines), within the 400-line budget for this sub-slice.
 
 ## Phase 3: Long-form seam wiring (PR3, `feat/512-c-longform-seam`, base PR2)
 
-- [ ] 3.1 RED: `db.record_copy_verification_turn(output_path, ...)` — guarded `UPDATE ... WHERE output_path = %s AND copy_content_version IS DISTINCT FROM %s`, second call with same `content_version` returns `rowcount == 0`, grouped `output_path` updates all sibling rows (mirror `mark_turns_uploaded_by_output_path`, `database.py:1127-1171`) — `mock_psycopg2_connection` fixture pattern from `test_thumbnail_generation.py`
-- [ ] 3.2 RED: `tests/congress_videos/test_youtube_upload_dag.py` — title `reject` (no correction) raises the existing `ValueError` at `youtube_upload_dag.py:971-976`, unchanged message path
-- [ ] 3.3 RED: description `reject` persists the audit row, publishes original, appended as a `_copy_verification_problems` finding in `_check_upload_failures` — never raises
-- [ ] 3.4 RED: inconclusive verdict (verifier failure/timeout/malformed) publishes `upload_config` unchanged, no DB write, surfaces via accumulator
-- [ ] 3.5 RED: correctable+contained correction patches `upload_config["videos"][0]["title"/"description"]` AND rewrites sidecars via `_write_orador_sidecars` (`youtube_upload.py:16`)
-- [ ] 3.6 RED: stale-copy guard — recomputed `content_version` mismatch immediately before write skips the write, emits accumulator finding
-- [ ] 3.7 GREEN: add `record_copy_verification_turn` to `congress_videos/modules/database.py`
-- [ ] 3.8 GREEN: add new task `t6b` (`verify_final_copy`) between `t6` (`prepare_upload_config`) and `t7` (`trigger_youtube_upload`) in `congress_videos/youtube_upload_dag.py`; assemble evidence from `db.get_chapter_metadata(chapter_id)` (`:1866`), `db.get_turn_speaker_slug(turn_id)` (`:1893`), `lookup_participant_by_slug(slug)` (`participants_db.py:174`) for raw `display_name`, and `politician_display_names.canonical_display_name(slug)` (#511) for `short_name`; thumbnail text from `db.get_chosen_thumbnail(chapter_id)` (`:2385`) — omit the field entirely when `art_direction_brief` is `NULL`/legacy string
-- [ ] 3.9 GREEN: verify against `upload_config["videos"][0]["title"/"description"]` (post-sidecar-roundtrip values), never the `thumbnail_result`/`_extract_metadata_description` XComs
-- [ ] 3.10 GREEN: implement `_copy_verification_problems(payload)` (shaped like `_turn_marking_problems`, `youtube_upload_dag.py:574`) and append it inside `_check_upload_failures` (`:1141-1189`)
-- [ ] 3.11 GREEN: push XCom `copy_verification` `{verdict, findings, corrected_applied, persisted, content_version}`; missing XCom is itself an accumulator finding, not a short-circuit raise
-- [ ] 3.12 REFACTOR: `uv run pytest tests/congress_videos/test_youtube_upload_dag.py tests/congress_videos/modules/`; ruff check/format; `bash scripts/test-airflow-e2e.sh`
-- [ ] 3.13 Commit: `feat(youtube-upload): verify turn copy before publication`
+**Slice 3 landed.** Deviations from the task list's literal wording, both
+narrower/clarifying than the design's prose rather than contradicting it (see
+apply-progress for full rationale):
+
+- Task 3.1's evidence-write test lives in `tests/congress_videos/modules/test_database_turns.py`
+  (a new `TestRecordCopyVerificationTurn` class, right next to
+  `TestMarkTurnsUploadedByOutputPath`) using that file's own `_make_conn` +
+  `patch("congress_videos.modules.database.PostgresConnection", ...)` pattern —
+  not the `mock_psycopg2_connection` fixture (that fixture mocks raw
+  `psycopg2.connect(...)` calls, the shape used by `thumbnail_generation.persist_results`,
+  not by any `CongressionalVideoDB` method; `record_copy_verification_turn` is a
+  `CongressionalVideoDB` method exactly like `mark_turns_uploaded_by_output_path`,
+  so it needed that file's own established mocking shape instead).
+- Design.md's Interfaces/Contracts section states "Persist only when `ok` is
+  true" — followed literally: an `ok=True` "correctable" verdict whose
+  correction was discarded (unsupported) still persists an audit row, it is
+  not treated as a non-write case. `_copy_verification_problems` reports it
+  separately as a "discarded unsupported correction" finding.
+- `_copy_verification_problems` reports exactly the four conditions design.md
+  D7 names by their literal text — reject (non-title), a discarded unsupported
+  correction, a persistence/stale-copy-guard skip, and a missing XCom — plus
+  `inconclusive` per task 3.4's explicit wording ("surfaces via accumulator").
+  A standalone `thumbnail_text` finding under an otherwise-clean verdict is
+  not separately escalated beyond these four; it remains visible in the
+  `copy_verification` XCom's `findings` list either way.
+- The evidence bundle's tri-valued `mentioned_participant_slugs` field is
+  keyed literally as `"mencionados"` (Spanish), per design.md D5's literal
+  `"mencionados": "no analizado"` / `"mencionados": []` JSON-key text — every
+  other evidence key stays English, matching the D5 table.
+- Updated `docs/DAGS.md`'s task-graph diagram and task count (14→15) and the
+  one other pre-existing test that hardcoded the 14-task count
+  (`TestDualQueueWiredIntoDag::test_dag_task_count_updated_for_wired_dual_queue`),
+  plus four pre-existing "should not raise" `_check_upload_failures` fixtures
+  that needed a clean `copy_verification` XCom added — the same kind of
+  backward-compatibility update issue #332 required when `_turn_marking_problems`
+  was introduced.
+
+- [x] 3.1 RED: `db.record_copy_verification_turn(output_path, ...)` — guarded `UPDATE ... WHERE output_path = %s AND copy_content_version IS DISTINCT FROM %s`, second call with same `content_version` returns `rowcount == 0`, grouped `output_path` updates all sibling rows (mirror `mark_turns_uploaded_by_output_path`, `database.py:1127-1171`)
+- [x] 3.2 RED: `tests/congress_videos/test_youtube_upload_dag.py` — title `reject` (no correction) raises a `ValueError`, matching the fail-loud convention already established at this seam (issue #245), without touching the existing raise
+- [x] 3.3 RED: description `reject` persists the audit row, publishes original, appended as a `_copy_verification_problems` finding in `_check_upload_failures` — never raises
+- [x] 3.4 RED: inconclusive verdict (verifier failure/timeout/malformed) publishes `upload_config` unchanged, no DB write, surfaces via accumulator
+- [x] 3.5 RED: correctable+contained correction patches `upload_config["videos"][0]["title"/"description"]` AND rewrites sidecars via `_write_orador_sidecars` (`youtube_upload.py:16`)
+- [x] 3.6 RED: stale-copy guard — recomputed `content_version` mismatch immediately before write skips the write, emits accumulator finding
+- [x] 3.7 GREEN: add `record_copy_verification_turn` to `congress_videos/modules/database.py`
+- [x] 3.8 GREEN: add new task `t6b` (`verify_final_copy`) between `t6` (`prepare_upload_config`) and `t7` (`trigger_youtube_upload`) in `congress_videos/youtube_upload_dag.py`; assemble evidence from `db.get_chapter_metadata(chapter_id)` (`:1866`), `db.get_turn_speaker_slug(turn_id)` (`:1893`), `lookup_participant_by_slug(slug)` (`participants_db.py:174`) for raw `display_name`, and `politician_display_names.canonical_display_name(slug)` (#511) for `short_name`; thumbnail text from `db.get_chosen_thumbnail(chapter_id)` (`:2385`) — omit the field entirely when `art_direction_brief` is `NULL`/legacy string
+- [x] 3.9 GREEN: verify against `upload_config["videos"][0]["title"/"description"]` (post-sidecar-roundtrip values), never the `thumbnail_result`/`_extract_metadata_description` XComs
+- [x] 3.10 GREEN: implement `_copy_verification_problems(payload)` (shaped like `_turn_marking_problems`, `youtube_upload_dag.py:574`) and append it inside `_check_upload_failures` (`:1141-1189`)
+- [x] 3.11 GREEN: push XCom `copy_verification` `{verdict, findings, corrected_applied, persisted, content_version}`; missing XCom is itself an accumulator finding, not a short-circuit raise
+- [x] 3.12 REFACTOR: `uv run pytest tests/congress_videos/test_youtube_upload_dag.py tests/congress_videos/modules/`; ruff check/format; `bash scripts/test-airflow-e2e.sh` (Docker unavailable in this environment — substituted a local `DagBag(safe_mode=True)` import-error check, clean; run the real e2e script before merge)
+- [x] 3.13 Commit: `feat(youtube-upload): verify turn copy before publication`
 
 ## Phase 4: Shorts seam wiring (PR4, `feat/512-d-shorts-seam`, base PR3)
 
