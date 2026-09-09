@@ -232,6 +232,16 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "thumbnail_republish_attempts",
         "thumbnail_republish_abandoned",
         "last_thumbnail_republish_error",
+        # Added by migration 050 (final-copy-verification audit, issue #512)
+        "copy_verification_verdict",
+        "copy_verification_findings",
+        "copy_original_title",
+        "copy_original_description",
+        "copy_corrected_title",
+        "copy_corrected_description",
+        "copy_thumbnail_text",
+        "copy_content_version",
+        "copy_verified_at",
     ),
     "video_analytics_snapshots": (
         "snapshot_id",
@@ -438,13 +448,13 @@ class TestUploadableTurnsUnaffectedByThumbnailRepublish:
 class TestVideoShortsTableSnapshot:
     """production.video_shorts must be present in the snapshot, folding
     migrations 004 (create) + 005 (staged_clip_path) + 006 (scoring_reasoning)
-    + 012 (upload failure tracking) + 047 (turn_id, issue #467) — 21 columns
-    total.
+    + 012 (upload failure tracking) + 047 (turn_id, issue #467) + 050
+    (final-copy-verification audit, issue #512) — 29 columns total.
 
     Column assertions are scoped to the extracted `CREATE TABLE ... (...)`
-    block only, never the whole file: 9 of the 21 column names also exist on
-    `production.video_chapters`, so a whole-file substring search would stay
-    green even if a column were deleted from `video_shorts` alone.
+    block only, never the whole file: 9 of the 21 pre-050 column names also
+    exist on `production.video_chapters`, so a whole-file substring search
+    would stay green even if a column were deleted from `video_shorts` alone.
     """
 
     VIDEO_SHORTS_COLUMNS = (
@@ -469,6 +479,16 @@ class TestVideoShortsTableSnapshot:
         "is_upload_abandoned",
         "last_upload_error",
         "turn_id",  # migration 047 (issue #467)
+        # Added by migration 050 (final-copy-verification audit, issue #512).
+        # No copy_thumbnail_text here — the shorts path has no thumbnail step.
+        "copy_verification_verdict",
+        "copy_verification_findings",
+        "copy_original_title",
+        "copy_original_description",
+        "copy_corrected_title",
+        "copy_corrected_description",
+        "copy_content_version",
+        "copy_verified_at",
     )
 
     @staticmethod

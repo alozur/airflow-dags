@@ -9,6 +9,8 @@ No I/O, no DB, plain strings only.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from congress_videos.modules.speaker_turns import (
@@ -344,6 +346,65 @@ class TestQaContextBooster:
         turns = [_turn(0.0, 2.8, "SPEAKER_00"), _turn(2.8, 10.0, ""), _turn(10.0, 20.0, "  ")]
         flagged = _flag_procedural(turns, blocks)
         assert flagged[0].is_procedural is False
+
+
+class TestCollectPatternSpans:
+    """[RED] _collect_pattern_spans, lifted out of is_procedural_turn's two
+    byte-identical pattern-scan loops (issue #272 slice 4)."""
+
+    def test_matched_names_dedupe_while_spans_keep_one_entry_per_match(self):
+        """A pattern name is recorded once in matched_names even when its
+        compiled pattern matches twice, but spans grows one entry per match."""
+        from congress_videos.modules.speaker_turns import _collect_pattern_spans
+
+        patterns = (("dup_pattern", re.compile("gracias")),)
+        normalized = "gracias gracias"
+        spans: list[tuple[int, int]] = []
+        matched_names: list[str] = []
+
+        result = _collect_pattern_spans(patterns, normalized, spans, matched_names)
+
+        assert result is None
+        assert matched_names == ["dup_pattern"]
+        assert len(spans) == 2
+
+    def test_mutates_caller_lists_in_place_and_returns_none(self):
+        """spans and matched_names are the SAME list objects after the call —
+        the helper appends in place, it never rebinds or returns a new list."""
+        from congress_videos.modules.speaker_turns import _collect_pattern_spans
+
+        patterns = (("greet", re.compile("hola")),)
+        normalized = "hola mundo"
+        spans: list[tuple[int, int]] = []
+        matched_names: list[str] = []
+        spans_id = id(spans)
+        matched_names_id = id(matched_names)
+
+        result = _collect_pattern_spans(patterns, normalized, spans, matched_names)
+
+        assert result is None
+        assert id(spans) == spans_id
+        assert id(matched_names) == matched_names_id
+        assert spans == [(0, 4)]
+        assert matched_names == ["greet"]
+
+    def test_second_distinct_pattern_appends_its_own_name(self):
+        """Two distinct pattern names both matching once each land as two
+        separate matched_names entries, in pattern-tuple order."""
+        from congress_videos.modules.speaker_turns import _collect_pattern_spans
+
+        patterns = (
+            ("greet", re.compile("hola")),
+            ("farewell", re.compile("adios")),
+        )
+        normalized = "hola y adios"
+        spans: list[tuple[int, int]] = []
+        matched_names: list[str] = []
+
+        _collect_pattern_spans(patterns, normalized, spans, matched_names)
+
+        assert matched_names == ["greet", "farewell"]
+        assert len(spans) == 2
 
 
 def _turn(start: float, end: float, label: str) -> Turn:

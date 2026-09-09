@@ -183,6 +183,113 @@ def _apply_corrections_to_timeline(
     return result
 
 
+def _apply_institutional_role_corrections(
+    cursor,
+    chapter_id: int,
+    speakers: list[str],
+    key_speakers: list[str],
+    timeline: list[dict],
+    session_date: date,
+    result: NormalizationResult,
+) -> None:
+    """Lifted verbatim out of normalize_chapter_speakers (issue #272)."""
+    for raw in _dedupe_raw_names(speakers, key_speakers, timeline):
+        resolved = _resolve_role(raw, session_date)
+        if resolved is None:
+            continue
+        slug, role_name, is_participant = resolved
+        if role_name == raw:
+            continue
+        _upsert_cache_row(
+            cursor,
+            chapter_id,
+            raw,
+            status="matched",
+            canonical_speaker=role_name,
+            participant_normalized_name=slug.replace("-", " ") if is_participant else None,
+            confidence_score=1.0,
+        )
+        result.cache_rows.append(
+            {
+                "dirty_speaker": raw,
+                "status": "matched",
+                "canonical_speaker": role_name,
+                "confidence_score": 1.0,
+            }
+        )
+        result.corrections[raw] = role_name
+        if result.resolved_participant_slug is None and is_participant:
+            result.resolved_participant_slug = slug
+        logger.info(
+            "normalize_chapter_speakers: role-resolved %r -> %r (chapter %d)",
+            raw,
+            role_name,
+            chapter_id,
+        )
+
+
+def _apply_roster_resolution_step(
+    cursor,
+    chapter_id: int,
+    dirty_names: list[str],
+    result: NormalizationResult,
+) -> None:
+    """Lifted verbatim out of normalize_chapter_speakers (issue #272)."""
+    try:
+        participants = get_participants_roster()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "normalize_chapter_speakers: participant roster fetch failed "
+            "(chapter %d): %s — degrading to no Step 1 corrections",
+            chapter_id,
+            exc,
+        )
+        participants = []
+
+    resolution = resolve_chapter_speakers(dirty_names[:MAX_MENTIONS_PER_CALL], participants)
+    for dirty in dirty_names:
+        match = resolution.by_mention.get(dirty)
+        if match is None:
+            logger.debug(
+                "normalize_chapter_speakers: no resolver match for %r (chapter %d)",
+                dirty,
+                chapter_id,
+            )
+            _upsert_cache_row(cursor, chapter_id, dirty, "no_match")
+            result.cache_rows.append({"dirty_speaker": dirty, "status": "no_match"})
+            continue
+
+        _upsert_cache_row(
+            cursor,
+            chapter_id,
+            dirty,
+            status="matched",
+            canonical_speaker=match.display_name,
+            participant_normalized_name=match.participant_slug.replace("-", " "),
+            confidence_score=match.confidence,
+        )
+        result.cache_rows.append(
+            {
+                "dirty_speaker": dirty,
+                "status": "matched",
+                "canonical_speaker": match.display_name,
+                "confidence_score": match.confidence,
+            }
+        )
+        result.corrections[dirty] = match.display_name
+        # Slug = the first accepted match, in dirty_names (input) order.
+        # Step 0's slug, when already set, is never overwritten here.
+        if result.resolved_participant_slug is None:
+            result.resolved_participant_slug = match.participant_slug
+        logger.info(
+            "normalize_chapter_speakers: matched %r -> %r (chapter %d, confidence=%.2f)",
+            dirty,
+            match.display_name,
+            chapter_id,
+            match.confidence,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -244,39 +351,9 @@ def normalize_chapter_speakers(
         # role-only mentions ("Ministra de Defensa"). Resolved mentions never
         # reach the fuzzy/LLM pipeline because they are filtered as placeholders.
         if session_date is not None:
-            for raw in _dedupe_raw_names(speakers, key_speakers, timeline):
-                resolved = _resolve_role(raw, session_date)
-                if resolved is None:
-                    continue
-                slug, role_name, is_participant = resolved
-                if role_name == raw:
-                    continue
-                _upsert_cache_row(
-                    cursor,
-                    chapter_id,
-                    raw,
-                    status="matched",
-                    canonical_speaker=role_name,
-                    participant_normalized_name=slug.replace("-", " ") if is_participant else None,
-                    confidence_score=1.0,
-                )
-                result.cache_rows.append(
-                    {
-                        "dirty_speaker": raw,
-                        "status": "matched",
-                        "canonical_speaker": role_name,
-                        "confidence_score": 1.0,
-                    }
-                )
-                result.corrections[raw] = role_name
-                if result.resolved_participant_slug is None and is_participant:
-                    result.resolved_participant_slug = slug
-                logger.info(
-                    "normalize_chapter_speakers: role-resolved %r -> %r (chapter %d)",
-                    raw,
-                    role_name,
-                    chapter_id,
-                )
+            _apply_institutional_role_corrections(
+                cursor, chapter_id, speakers, key_speakers, timeline, session_date, result
+            )
 
         # Step 1: roster-validated resolver over the placeholder-filtered dirty
         # names, EXCLUDING anything Step 0 already corrected (Step-0-wins).
@@ -284,59 +361,7 @@ def normalize_chapter_speakers(
             n for n in _dedupe_dirty_speakers(speakers, key_speakers, timeline) if n not in result.corrections
         ]
         if dirty_names:
-            try:
-                participants = get_participants_roster()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "normalize_chapter_speakers: participant roster fetch failed "
-                    "(chapter %d): %s — degrading to no Step 1 corrections",
-                    chapter_id,
-                    exc,
-                )
-                participants = []
-
-            resolution = resolve_chapter_speakers(dirty_names[:MAX_MENTIONS_PER_CALL], participants)
-            for dirty in dirty_names:
-                match = resolution.by_mention.get(dirty)
-                if match is None:
-                    logger.debug(
-                        "normalize_chapter_speakers: no resolver match for %r (chapter %d)",
-                        dirty,
-                        chapter_id,
-                    )
-                    _upsert_cache_row(cursor, chapter_id, dirty, "no_match")
-                    result.cache_rows.append({"dirty_speaker": dirty, "status": "no_match"})
-                    continue
-
-                _upsert_cache_row(
-                    cursor,
-                    chapter_id,
-                    dirty,
-                    status="matched",
-                    canonical_speaker=match.display_name,
-                    participant_normalized_name=match.participant_slug.replace("-", " "),
-                    confidence_score=match.confidence,
-                )
-                result.cache_rows.append(
-                    {
-                        "dirty_speaker": dirty,
-                        "status": "matched",
-                        "canonical_speaker": match.display_name,
-                        "confidence_score": match.confidence,
-                    }
-                )
-                result.corrections[dirty] = match.display_name
-                # Slug = the first accepted match, in dirty_names (input) order.
-                # Step 0's slug, when already set, is never overwritten here.
-                if result.resolved_participant_slug is None:
-                    result.resolved_participant_slug = match.participant_slug
-                logger.info(
-                    "normalize_chapter_speakers: matched %r -> %r (chapter %d, confidence=%.2f)",
-                    dirty,
-                    match.display_name,
-                    chapter_id,
-                    match.confidence,
-                )
+            _apply_roster_resolution_step(cursor, chapter_id, dirty_names, result)
 
         # Step 3: bulk UPDATE video_chapters if any corrections were recorded
         if result.corrections:

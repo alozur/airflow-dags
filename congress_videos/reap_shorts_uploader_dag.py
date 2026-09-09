@@ -27,6 +27,7 @@ from congress_videos.config.ai_prompts import (
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
 from congress_videos.modules.database import CongressionalVideoDB
 from congress_videos.modules.participants_db import lookup_participant_by_slug
+from congress_videos.modules.politician_display_names import canonical_display_name
 from utils.ai_helpers import generate_json_completion, truncate_text
 from utils.env_loader import load_env_if_local
 from utils.llm_config import LLM_DEFAULT
@@ -90,6 +91,20 @@ def build_shorts_metadata_context(
     participants_lookup call is individually guarded — this function never
     raises.
 
+    Catalogue precedence (issue #511, design D5): once turn_speaker_slug is
+    resolved, participants_lookup still runs and its raw display name is
+    retained, then canonical_display_name(turn_speaker_slug) overrides what
+    is rendered when the catalogue resolves. A None/unmapped/ambiguous slug
+    falls through unchanged to today's participants_lookup behaviour.
+    Mentioned people are never canonicalised: a bare surname is only safe
+    for the subject the short is about.
+
+    The raw name is retained deliberately. Mentioned people are excluded
+    from the speaker both by slug identity and by case-folded display-name
+    equality, and they always render their FULL name. Comparing them only
+    against a shortened speaker name would silently stop matching, so the
+    speaker is excluded on either form.
+
     Args:
         chapter: row from CongressionalVideoDB.get_chapter_metadata.
         turn_speaker_slug: speaker_turn_videos.resolved_participant_slug for
@@ -102,6 +117,7 @@ def build_shorts_metadata_context(
          "topics": list[str]}
     """
     speaker_display_name = ""
+    speaker_full_display_name = ""
     if turn_speaker_slug:
         try:
             participant = participants_lookup(turn_speaker_slug)
@@ -114,10 +130,22 @@ def build_shorts_metadata_context(
             )
             participant = None
         if participant and participant.get("display_name"):
-            speaker_display_name = participant["display_name"]
+            speaker_full_display_name = participant["display_name"]
+            speaker_display_name = speaker_full_display_name
+
+        canonical_name = canonical_display_name(turn_speaker_slug)
+        if canonical_name:
+            speaker_display_name = canonical_name
 
     speaker_slug_key = (turn_speaker_slug or "").strip().lower()
-    speaker_name_key = speaker_display_name.strip().lower()
+    speaker_name_keys = {
+        key
+        for key in (
+            speaker_display_name.strip().lower(),
+            speaker_full_display_name.strip().lower(),
+        )
+        if key
+    }
 
     mentioned_display_names: list[str] = []
     seen_names: set[str] = set()
@@ -142,7 +170,7 @@ def build_shorts_metadata_context(
             continue
         display_name = participant["display_name"]
         name_key = display_name.strip().lower()
-        if name_key == speaker_name_key and speaker_name_key:
+        if name_key in speaker_name_keys:
             continue
         if name_key in seen_names:
             continue

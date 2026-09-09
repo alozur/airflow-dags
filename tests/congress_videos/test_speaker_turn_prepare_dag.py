@@ -2193,3 +2193,246 @@ class TestDocstringScheduleConsistency:
         doc_with_cron_token = "Schedule: 0 2 * * * UTC."
 
         _assert_no_schedule_claims_if_none("0 2 * * *", doc_with_cron_token)
+
+
+# ---------------------------------------------------------------------------
+# 5.2 _resolve_qa_winner / _persist_turn_resolution (issue #272 PR5 lift)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveQaWinner:
+    """Quirks pinned for _resolve_qa_winner (issue #272)."""
+
+    def _primary(self, slug="pedro-sanchez"):
+        return {"participant_slug": slug, "confidence": 0.9, "evidence": "primary evidence"}
+
+    def test_wide_repass_only_when_promote_signal_and_wide_context_enabled(self):
+        """resolve_speaker (the wide re-pass) fires only when both promote_signal
+        and QA_WIDE_CONTEXT_ENABLED are true; either being false alone skips it."""
+        from congress_videos.speaker_turn_prepare_dag import _resolve_qa_winner
+
+        turn = {"turn_id": 1}
+        primary = self._primary()
+        participants = [{"slug": "pedro-sanchez", "display_name": "Pedro Sanchez"}]
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker") as mock_wide,
+            patch("congress_videos.speaker_turn_prepare_dag.crosscheck_slug", return_value="ok"),
+        ):
+            with patch("congress_videos.speaker_turn_prepare_dag.QA_WIDE_CONTEXT_ENABLED", True):
+                _resolve_qa_winner(turn, participants, 1, primary, "Pedro Sanchez", False, [])
+            mock_wide.assert_not_called()
+
+            with patch("congress_videos.speaker_turn_prepare_dag.QA_WIDE_CONTEXT_ENABLED", False):
+                _resolve_qa_winner(turn, participants, 1, primary, "Pedro Sanchez", True, [])
+            mock_wide.assert_not_called()
+
+            mock_wide.return_value = None
+            with patch("congress_videos.speaker_turn_prepare_dag.QA_WIDE_CONTEXT_ENABLED", True):
+                _resolve_qa_winner(turn, participants, 1, primary, "Pedro Sanchez", True, [])
+            mock_wide.assert_called_once()
+
+    def test_raising_wide_call_falls_back_to_primary_without_propagating(self):
+        """A wide resolve_speaker exception never propagates out of the helper;
+        the primary result stands as the winner."""
+        from congress_videos.speaker_turn_prepare_dag import _resolve_qa_winner
+
+        turn = {"turn_id": 1}
+        primary = self._primary()
+        participants = [{"slug": "pedro-sanchez", "display_name": "Pedro Sanchez"}]
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", side_effect=RuntimeError("boom")),
+            patch("congress_videos.speaker_turn_prepare_dag.crosscheck_slug", return_value="ok") as mock_cross,
+            patch("congress_videos.speaker_turn_prepare_dag.QA_WIDE_CONTEXT_ENABLED", True),
+        ):
+            winner, winner_name, winner_verdict, wide_slug = _resolve_qa_winner(
+                turn, participants, 1, primary, "Pedro Sanchez", True, []
+            )
+
+        assert winner is primary
+        assert winner_name == "Pedro Sanchez"
+        assert winner_verdict == "ok"
+        assert wide_slug is None
+        mock_cross.assert_called_once_with("Pedro Sanchez", [])
+
+    def test_wide_candidate_rejected_by_crosscheck_falls_through_to_primary_check(self):
+        """A wide candidate rejected by the roster crosscheck leaves winner_verdict
+        None after the wide block, so the primary gets crosschecked afterward; the
+        rejected wide_slug is still reported to the caller for the audit log."""
+        from congress_videos.speaker_turn_prepare_dag import _resolve_qa_winner
+
+        turn = {"turn_id": 1}
+        primary = self._primary("pedro-sanchez")
+        wide = {"participant_slug": "alberto-gonzalez", "confidence": 0.8}
+        participants = [
+            {"slug": "pedro-sanchez", "display_name": "Pedro Sanchez"},
+            {"slug": "alberto-gonzalez", "display_name": "Alberto Gonzalez"},
+        ]
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=wide),
+            patch(
+                "congress_videos.speaker_turn_prepare_dag.crosscheck_slug",
+                side_effect=["reject", "ok"],
+            ) as mock_cross,
+            patch("congress_videos.speaker_turn_prepare_dag.QA_WIDE_CONTEXT_ENABLED", True),
+        ):
+            winner, winner_name, winner_verdict, wide_slug = _resolve_qa_winner(
+                turn, participants, 1, primary, "Pedro Sanchez", True, ["mention"]
+            )
+
+        assert winner is primary
+        assert winner_name == "Pedro Sanchez"
+        assert winner_verdict == "ok"
+        assert wide_slug == "alberto-gonzalez"
+        assert mock_cross.call_args_list[0].args == ("Alberto Gonzalez", ["mention"])
+        assert mock_cross.call_args_list[1].args == ("Pedro Sanchez", ["mention"])
+
+    def test_turn_is_never_mutated(self):
+        """_resolve_qa_winner reads turn (for the wide shallow-copy re-pass) but
+        never writes to it."""
+        from congress_videos.speaker_turn_prepare_dag import _resolve_qa_winner
+
+        turn = {"turn_id": 1, "turn_type": "qa", "resolved_name": "Original Name"}
+        turn_before = dict(turn)
+        primary = self._primary()
+        wide = {"participant_slug": "alberto-gonzalez", "confidence": 0.8}
+        participants = [{"slug": "alberto-gonzalez", "display_name": "Alberto Gonzalez"}]
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.resolve_speaker", return_value=wide),
+            patch("congress_videos.speaker_turn_prepare_dag.crosscheck_slug", return_value="ok"),
+            patch("congress_videos.speaker_turn_prepare_dag.QA_WIDE_CONTEXT_ENABLED", True),
+        ):
+            _resolve_qa_winner(turn, participants, 1, primary, "Pedro Sanchez", True, [])
+
+        assert turn == turn_before
+
+
+class TestPersistTurnResolution:
+    """Quirks pinned for _persist_turn_resolution (issue #272)."""
+
+    def _winner(self, slug="pedro-sanchez"):
+        return {"participant_slug": slug, "confidence": 0.9, "evidence": "ev"}
+
+    def test_reject_withholds_db_write_and_in_memory_patch(self):
+        """verdict == 'reject' withholds both the DB write and the in-memory
+        resolved_name patch; promotion never fires either."""
+        from congress_videos.speaker_turn_prepare_dag import _persist_turn_resolution
+
+        turn = {"turn_id": 1, "resolved_name": "Stale Name"}
+        mock_db = MagicMock()
+        winner = self._winner()
+
+        promoted = _persist_turn_resolution(
+            mock_db, turn, 1, "/data/v1.mp4", winner, "Pedro Sanchez", "reject", True, []
+        )
+
+        assert promoted is False
+        mock_db.mark_turn_resolved.assert_not_called()
+        mock_db.promote_turn_type_to_qa.assert_not_called()
+        assert turn["resolved_name"] == "Stale Name"
+
+    def test_promotion_is_sticky_on_promote_signal_alone(self):
+        """promote_signal alone drives promotion — it is never re-evaluated
+        against the winner beyond the reject/withhold gate."""
+        from congress_videos.speaker_turn_prepare_dag import _persist_turn_resolution
+
+        turn = {"turn_id": 1, "resolved_name": "Stale Name"}
+        mock_db = MagicMock()
+        winner = self._winner()
+
+        promoted = _persist_turn_resolution(mock_db, turn, 1, "/data/v1.mp4", winner, "Pedro Sanchez", "ok", True, [])
+
+        assert promoted is True
+        mock_db.mark_turn_resolved.assert_called_once_with(
+            "/data/v1.mp4", "pedro-sanchez", 0.9, "ai_srt_context", 1, evidence="ev"
+        )
+        mock_db.promote_turn_type_to_qa.assert_called_once_with("/data/v1.mp4")
+        assert turn["resolved_name"] == "Pedro Sanchez"
+
+    def test_promoted_stays_false_when_winner_name_is_falsy(self):
+        """promote_signal True cannot promote a falsy winner_name — the in-memory
+        patch and the promotion both live behind the same `if winner_name:` guard."""
+        from congress_videos.speaker_turn_prepare_dag import _persist_turn_resolution
+
+        turn = {"turn_id": 1, "resolved_name": "Stale Name"}
+        mock_db = MagicMock()
+        winner = self._winner()
+
+        promoted = _persist_turn_resolution(mock_db, turn, 1, "/data/v1.mp4", winner, "", "ok", True, [])
+
+        assert promoted is False
+        mock_db.mark_turn_resolved.assert_called_once()
+        mock_db.promote_turn_type_to_qa.assert_not_called()
+        assert turn["resolved_name"] == "Stale Name"
+
+
+# ---------------------------------------------------------------------------
+# 6.2 _prepare_turn_artifacts (issue #272 PR6 lift)
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareTurnArtifacts:
+    """Quirks pinned for _prepare_turn_artifacts (issue #272)."""
+
+    def test_nonzero_decode_rc_returns_early_without_marking_prepared(self):
+        """rc != 0 from the ffmpeg decode check returns without calling
+        mark_turn_prepared — prepared_at must stay NULL for a retry."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turn_artifacts
+
+        turn = _make_turn(1, "/data/v1.mp4")
+        mock_db = MagicMock()
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag._run_ffmpeg_decode_check", return_value=1),
+        ):
+            result = _prepare_turn_artifacts(mock_db, turn, 1, "/data/v1.mp4")
+
+        assert result is None
+        mock_db.mark_turn_prepared.assert_not_called()
+
+    def test_internal_exception_is_swallowed_and_never_raises(self):
+        """Any exception raised inside (VAD, sidecar write, decode check) is
+        caught and swallowed — the helper returns None, it never raises."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turn_artifacts
+
+        turn = _make_turn(1, "/data/v1.mp4")
+        mock_db = MagicMock()
+
+        with patch(
+            "congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = _prepare_turn_artifacts(mock_db, turn, 1, "/data/v1.mp4")
+
+        assert result is None
+        mock_db.mark_turn_prepared.assert_not_called()
+
+    def test_mark_turn_prepared_is_the_last_call_on_success(self):
+        """On the success path, mark_turn_prepared is called with turn_id,
+        called exactly once, and only after the decode check passed."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turn_artifacts
+
+        turn = _make_turn(7, "/data/v7.mp4")
+        mock_db = MagicMock()
+        call_order = []
+        mock_db.mark_turn_prepared.side_effect = lambda *a, **k: call_order.append("mark_turn_prepared")
+
+        def fake_decode(path):
+            call_order.append("decode_check")
+            return 0
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag._run_ffmpeg_decode_check", side_effect=fake_decode),
+        ):
+            result = _prepare_turn_artifacts(mock_db, turn, 7, "/data/v7.mp4")
+
+        assert result is None
+        mock_db.mark_turn_prepared.assert_called_once_with(7)
+        assert call_order == ["decode_check", "mark_turn_prepared"]

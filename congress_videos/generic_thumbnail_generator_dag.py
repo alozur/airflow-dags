@@ -151,7 +151,7 @@ def _task_art_direction(ti: TaskInstance, **context: object) -> dict:
         previous_brief=conf.get("previous_brief"),
         sibling_briefs=history.get("briefs") or None,
         srt_fragment=conf.get("srt_fragment"),
-        resolved_speaker_name=resolved_photo_speaker_name(photo_data, conf.get("key_speakers")),
+        resolved_speaker_name=resolved_photo_speaker_name(photo_data, conf.get("key_speakers"), conf.get("slug")),
         forbidden_archetype=conf.get("previous_archetype"),
     )
 
@@ -271,6 +271,7 @@ def _task_generate_title(ti: TaskInstance, **context: object) -> str:
         sibling_titles=history.get("titles") or None,
         key_speakers=conf.get("key_speakers") or None,
         forbidden_title=conf.get("previous_title"),
+        participant_slug=conf.get("slug"),
     )
 
 
@@ -381,7 +382,7 @@ def _task_art_direction_retry(ti: TaskInstance, **context: object) -> dict:
         domain_cfg,
         previous_brief=previous_brief,
         sibling_briefs=history.get("briefs") or None,
-        resolved_speaker_name=resolved_photo_speaker_name(photo_data, conf.get("key_speakers")),
+        resolved_speaker_name=resolved_photo_speaker_name(photo_data, conf.get("key_speakers"), conf.get("slug")),
     )
 
 

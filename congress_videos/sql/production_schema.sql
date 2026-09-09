@@ -162,7 +162,18 @@ CREATE TABLE IF NOT EXISTS production.video_shorts (
     last_upload_error       TEXT,
 
     -- Added by migration 047 (turn-sourced reap clips, issue #467)
-    turn_id                 INTEGER REFERENCES production.speaker_turn_videos(turn_id) ON DELETE SET NULL
+    turn_id                 INTEGER REFERENCES production.speaker_turn_videos(turn_id) ON DELETE SET NULL,
+
+    -- Added by migration 050 (final-copy-verification audit, issue #512).
+    -- No copy_thumbnail_text — the shorts path has no thumbnail step.
+    copy_verification_verdict   TEXT,
+    copy_verification_findings  JSONB,
+    copy_original_title         TEXT,
+    copy_original_description   TEXT,
+    copy_corrected_title        TEXT,
+    copy_corrected_description  TEXT,
+    copy_content_version        TEXT,
+    copy_verified_at            TIMESTAMP
 );
 
 -- Table: llm_cache
@@ -346,6 +357,17 @@ CREATE TABLE IF NOT EXISTS production.speaker_turn_videos (
     thumbnail_republish_attempts   INTEGER     DEFAULT 0,
     thumbnail_republish_abandoned  BOOLEAN     DEFAULT FALSE,
     last_thumbnail_republish_error TEXT,
+
+    -- Added by migration 050 (final-copy-verification audit, issue #512)
+    copy_verification_verdict     TEXT,
+    copy_verification_findings    JSONB,
+    copy_original_title           TEXT,
+    copy_original_description     TEXT,
+    copy_corrected_title          TEXT,
+    copy_corrected_description    TEXT,
+    copy_thumbnail_text           TEXT,
+    copy_content_version          TEXT,
+    copy_verified_at              TIMESTAMPTZ,
 
     CONSTRAINT uq_speaker_turn_videos_turn UNIQUE (turn_id)
 );
