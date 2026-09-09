@@ -1338,6 +1338,56 @@ class TestTaskGenerateTitleKeySpeakers:
         mock_generate_title.assert_called_once()
 
 
+class TestTaskGenerateTitleParticipantSlug:
+    """Issue #511 slice 3: _task_generate_title must forward conf['slug'] as participant_slug."""
+
+    def test_slug_forwarded_when_present(self, mocker) -> None:
+        """When validate_input conf has slug, _task_generate_title passes it as participant_slug."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        best = {"style": "A", "prompt": "debate", "label": "option_a", "main_score": 77.0}
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "choose_best_option": best,
+                "fetch_recent_history": {"briefs": [], "titles": []},
+            }
+        )
+
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mock_generate_title = mocker.patch.object(dag_mod, "generate_title", return_value="Un título")
+
+        dag_mod._task_generate_title(ti)
+
+        mock_generate_title.assert_called_once()
+        _, kwargs = mock_generate_title.call_args
+        assert "participant_slug" in kwargs, "_task_generate_title must pass participant_slug= to generate_title"
+        assert kwargs["participant_slug"] == _FAKE_CONF["slug"]
+
+    def test_missing_slug_forwards_none(self, mocker) -> None:
+        """When validate_input conf has no slug key, participant_slug=None reaches generate_title unchanged."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        conf_without_slug = {k: v for k, v in _FAKE_CONF.items() if k != "slug"}
+        best = {"style": "A", "prompt": "debate", "label": "option_a", "main_score": 77.0}
+        ti = _make_fake_ti(
+            {
+                "validate_input": conf_without_slug,
+                "choose_best_option": best,
+                "fetch_recent_history": {"briefs": [], "titles": []},
+            }
+        )
+
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mock_generate_title = mocker.patch.object(dag_mod, "generate_title", return_value="Un título")
+
+        dag_mod._task_generate_title(ti)
+
+        mock_generate_title.assert_called_once()
+        _, kwargs = mock_generate_title.call_args
+        assert kwargs.get("participant_slug") is None
+
+
 # ---------------------------------------------------------------------------
 # thumbnail-canonical-path (Slice 4a): canonical download path + reconciliation
 # ---------------------------------------------------------------------------

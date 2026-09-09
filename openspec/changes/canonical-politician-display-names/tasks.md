@@ -42,9 +42,9 @@ Chain strategy: stacked-to-main
 
 ## Phase 3: Title Wiring (PR 3, ~150 lines)
 
-- [ ] 3.1 RED: extend `tests/congress_videos/modules/test_thumbnail_generation.py` near `TestGenerateTitlePromptInjection` — mapped `participant_slug` replaces the first `_real_speakers` entry in `THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION`; unmapped/`None` byte-identical; `pedro-sanchez-perez-castejon` → `Sánchez`.
-- [ ] 3.2 GREEN: add `participant_slug: str | None = None` to `_build_title_prompt`/`generate_title` in `congress_videos/modules/thumbnail_generation.py`; substitute `canonical_display_name(participant_slug)` for `real[0]` when it resolves.
-- [ ] 3.3 GREEN: pass `participant_slug=conf.get("slug")` at `_task_generate_title` in `congress_videos/generic_thumbnail_generator_dag.py`.
+- [x] 3.1 RED: extend `tests/congress_videos/modules/test_thumbnail_generation.py` near `TestGenerateTitlePromptInjection` — mapped `participant_slug` replaces the first `_real_speakers` entry in `THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION`; unmapped/`None` byte-identical; `pedro-sanchez-perez-castejon` → `Sánchez`.
+- [x] 3.2 GREEN: add `participant_slug: str | None = None` to `_build_title_prompt`/`generate_title` in `congress_videos/modules/thumbnail_generation.py`; substitute `canonical_display_name(participant_slug)` for `real[0]` when it resolves.
+- [x] 3.3 GREEN: pass `participant_slug=conf.get("slug")` at `_task_generate_title` in `congress_videos/generic_thumbnail_generator_dag.py`.
 
 ## Phase 4: Art-Direction Wiring + Cross-Seam Consistency (PR 4, ~160 lines)
 

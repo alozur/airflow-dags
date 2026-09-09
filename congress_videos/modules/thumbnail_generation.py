@@ -38,6 +38,7 @@ from congress_videos.config.ai_prompts import (
     THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE,
 )
 from congress_videos.config.constants import CONGRESO_BROWSER_USER_AGENT
+from congress_videos.modules.politician_display_names import canonical_display_name
 from utils.ai_helpers import generate_json_completion
 from utils.llm_config import LLM_CHEAP, LLM_DEFAULT
 from utils.postgres_helpers import PostgresConnection
@@ -581,8 +582,19 @@ def _build_title_prompt(
     sibling_titles: list[str] | None,
     key_speakers: list | None,
     extra_instruction: str = "",
+    participant_slug: str | None = None,
 ) -> str:
-    """Build the title user prompt, injecting sibling/speaker/extra instruction blocks."""
+    """Build the title user prompt, injecting sibling/speaker/extra instruction blocks.
+
+    Args:
+        participant_slug: Optional slug already produced by identity resolution
+            (issue #511). When ``canonical_display_name(participant_slug)``
+            resolves, its curated short form REPLACES only the first
+            ``_real_speakers`` entry in the speaker prohibition list — the
+            rest of the list, and every other instruction block, is
+            untouched. A ``None``/unmapped/ambiguous slug leaves this prompt
+            byte-identical to the pre-catalogue behaviour.
+    """
     style_text = best.get("style", "")
     prompt_text = best.get("prompt", "")
 
@@ -597,6 +609,9 @@ def _build_title_prompt(
         user_prompt += f"\n\n{sibling_block}"
     real = _real_speakers(key_speakers)
     if real:
+        canonical_name = canonical_display_name(participant_slug)
+        if canonical_name:
+            real = [canonical_name, *real[1:]]
         user_prompt += "\n\n" + THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION.format(speaker_list=", ".join(real))
     else:
         # Falsy key_speakers (None / []) and all-placeholder lists both map
@@ -658,6 +673,7 @@ def generate_title(
     sibling_titles: list[str] | None = None,
     key_speakers: list | None = None,
     forbidden_title: str | None = None,
+    participant_slug: str | None = None,
 ) -> str:
     """Generate a YouTube title for the chosen thumbnail option via OpenAI.
 
@@ -683,6 +699,10 @@ def generate_title(
             caller records the collision by comparing the returned title
             against forbidden_title itself. None (default) never triggers a
             reroll — byte-identical to the pre-change behavior.
+        participant_slug: Optional slug already produced by identity
+            resolution (issue #511), forwarded to ``_build_title_prompt`` on
+            every attempt. See its docstring for the substitution rule.
+            None (default) is byte-identical to the pre-catalogue behavior.
 
     Returns:
         A YouTube title string (≤90 chars, no emojis, no forbidden chars, no question marks).
@@ -692,7 +712,9 @@ def generate_title(
             whose sanitised result is non-blank (issue #317).
     """
     # First attempt
-    title = _request_title(_build_title_prompt(summary, best, sibling_titles, key_speakers))
+    title = _request_title(
+        _build_title_prompt(summary, best, sibling_titles, key_speakers, participant_slug=participant_slug)
+    )
 
     if title and _is_valid_title(title):
         final_title = title
@@ -701,7 +723,14 @@ def generate_title(
 
         # Second attempt
         second = _request_title(
-            _build_title_prompt(summary, best, sibling_titles, key_speakers, extra_instruction=instruction)
+            _build_title_prompt(
+                summary,
+                best,
+                sibling_titles,
+                key_speakers,
+                extra_instruction=instruction,
+                participant_slug=participant_slug,
+            )
         )
         if second and _is_valid_title(second):
             final_title = second
@@ -737,6 +766,7 @@ def generate_title(
                 sibling_titles,
                 key_speakers,
                 extra_instruction=reroll_instruction,
+                participant_slug=participant_slug,
             )
         )
         if reroll and _is_valid_title(reroll):
