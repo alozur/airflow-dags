@@ -27,6 +27,7 @@ from congress_videos.config.ai_prompts import (
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
 from congress_videos.modules.database import CongressionalVideoDB
 from congress_videos.modules.participants_db import lookup_participant_by_slug
+from congress_videos.modules.politician_display_names import canonical_display_name
 from utils.ai_helpers import generate_json_completion, truncate_text
 from utils.env_loader import load_env_if_local
 from utils.llm_config import LLM_DEFAULT
@@ -90,6 +91,14 @@ def build_shorts_metadata_context(
     participants_lookup call is individually guarded — this function never
     raises.
 
+    Catalogue precedence (issue #511, design D5): once turn_speaker_slug is
+    resolved, canonical_display_name(turn_speaker_slug) is tried BEFORE
+    participants_lookup. When it resolves, its curated short form is used
+    and participants_lookup is never called for the speaker — a
+    None/unmapped/ambiguous slug falls through unchanged to today's
+    participants_lookup behaviour. Mentioned people are never canonicalised:
+    a bare surname is only safe for the subject the short is about.
+
     Args:
         chapter: row from CongressionalVideoDB.get_chapter_metadata.
         turn_speaker_slug: speaker_turn_videos.resolved_participant_slug for
@@ -103,18 +112,22 @@ def build_shorts_metadata_context(
     """
     speaker_display_name = ""
     if turn_speaker_slug:
-        try:
-            participant = participants_lookup(turn_speaker_slug)
-        except Exception as exc:
-            logging.warning(
-                "build_shorts_metadata_context: speaker slug lookup failed for "
-                "turn_speaker_slug=%r: %s — speaker_display_name stays empty",
-                turn_speaker_slug,
-                exc,
-            )
-            participant = None
-        if participant and participant.get("display_name"):
-            speaker_display_name = participant["display_name"]
+        canonical_name = canonical_display_name(turn_speaker_slug)
+        if canonical_name:
+            speaker_display_name = canonical_name
+        else:
+            try:
+                participant = participants_lookup(turn_speaker_slug)
+            except Exception as exc:
+                logging.warning(
+                    "build_shorts_metadata_context: speaker slug lookup failed for "
+                    "turn_speaker_slug=%r: %s — speaker_display_name stays empty",
+                    turn_speaker_slug,
+                    exc,
+                )
+                participant = None
+            if participant and participant.get("display_name"):
+                speaker_display_name = participant["display_name"]
 
     speaker_slug_key = (turn_speaker_slug or "").strip().lower()
     speaker_name_key = speaker_display_name.strip().lower()

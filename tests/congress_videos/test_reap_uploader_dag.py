@@ -1070,6 +1070,77 @@ class TestBuildShortsMetadataContext:
         assert "Pedro Sánchez" not in result["mentioned_display_names"]
         assert result["speaker_display_name"] != "Pedro Sánchez"
 
+    def test_mapped_turn_speaker_slug_uses_catalogue_over_lookup(self):
+        """Issue #511 slice 5, design D5: catalogue wins over participants_lookup."""
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_metadata_context
+
+        # The roster would resolve a different (uncurated) full name — the
+        # catalogue must win, so participants_lookup's value never surfaces.
+        roster = {"pedro-sanchez-perez-castejon": {"display_name": "Pedro Sánchez Pérez-Castejón"}}
+        chapter = {"mentioned_participant_slugs": []}
+
+        result = build_shorts_metadata_context(chapter, "pedro-sanchez-perez-castejon", _lookup_stub(roster))
+
+        assert result["speaker_display_name"] == "Sánchez"
+
+    def test_unmapped_turn_speaker_slug_falls_through_to_lookup_unchanged(self):
+        """Design D5: catalogue miss falls through to today's participants_lookup behaviour."""
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_metadata_context
+
+        roster = {"ana-perez": {"display_name": "Ana Pérez"}}
+        chapter = {"mentioned_participant_slugs": []}
+
+        result = build_shorts_metadata_context(chapter, "ana-perez", _lookup_stub(roster))
+
+        assert result["speaker_display_name"] == "Ana Pérez"
+
+    def test_none_turn_speaker_slug_never_consults_catalogue(self):
+        """Design D5: a None slug is byte-identical to today — no catalogue lookup either."""
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_metadata_context
+
+        lookup = _lookup_stub({})
+        chapter = {"mentioned_participant_slugs": []}
+
+        result = build_shorts_metadata_context(chapter, None, lookup)
+
+        assert result["speaker_display_name"] == ""
+        assert lookup.calls == []
+
+    def test_mentioned_people_never_canonicalised(self):
+        """Spec: only the resolved speaker is canonicalised, never mentioned people."""
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_metadata_context
+
+        roster = {"pedro-sanchez-perez-castejon": {"display_name": "Pedro Sánchez Pérez-Castejón"}}
+        chapter = {"mentioned_participant_slugs": ["pedro-sanchez-perez-castejon"]}
+
+        result = build_shorts_metadata_context(chapter, None, _lookup_stub(roster))
+
+        assert result["mentioned_display_names"] == ["Pedro Sánchez Pérez-Castejón"]
+        assert "Sánchez" not in result["mentioned_display_names"]
+
+
+class TestShortsCrossSeamDisplayNameConsistency:
+    """Issue #511 slice 5: extends slice 4's title/art-direction cross-seam
+    proof (spec "Same slug, same name across seams") to the shorts seam. All
+    three seams consult canonical_display_name for the same mapped slug, so
+    they must render the identical curated name."""
+
+    def test_shorts_speaker_matches_title_and_art_direction_for_mapped_slug(self, mocker):
+        from congress_videos.modules.thumbnail_generation import resolved_photo_speaker_name
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_metadata_context
+
+        participant_slug = "pedro-sanchez-perez-castejon"
+        key_speakers = ["Pedro Sánchez"]
+
+        art_name = resolved_photo_speaker_name({"source": "photo"}, key_speakers, participant_slug=participant_slug)
+
+        chapter = {"mentioned_participant_slugs": []}
+        roster = {participant_slug: {"display_name": "Pedro Sánchez Pérez-Castejón"}}
+        shorts_result = build_shorts_metadata_context(chapter, participant_slug, _lookup_stub(roster))
+
+        assert art_name == "Sánchez"
+        assert shorts_result["speaker_display_name"] == art_name
+
 
 # ---------------------------------------------------------------------------
 # _generate_metadata — empty-metadata byte-compatibility (issue #433, T5)
