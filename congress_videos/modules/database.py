@@ -1255,6 +1255,83 @@ class CongressionalVideoDB:
             )
             return cur.rowcount
 
+    def record_copy_verification_short(
+        self,
+        short_id: int,
+        *,
+        verdict: str,
+        findings: list[dict],
+        original_title: str,
+        original_description: str,
+        corrected_title: str | None,
+        corrected_description: str | None,
+        content_version: str,
+    ) -> int:
+        """Persist a final-copy verification audit row for a short (issue #512,
+        design.md D3/D4). Guarded UPDATE, not an insert, mirroring
+        ``record_copy_verification_turn`` exactly minus ``copy_thumbnail_text``:
+        the shorts pipeline has no thumbnail-generation step at all. Keys by
+        ``video_shorts.id`` — unlike the long-form seam's output_path grouping,
+        each short is its own row.
+
+        Args:
+            short_id: video_shorts.id primary key.
+            verdict: pass | correctable | reject.
+            findings: Serializable finding dicts (JSONB column).
+            original_title: Title actually published (before any correction).
+            original_description: Description actually published.
+            corrected_title: Accepted correction, or None when not applied.
+            corrected_description: Accepted correction, or None when not applied.
+            content_version: sha256 content version this verdict was computed for.
+
+        Returns:
+            Number of rows updated (``cur.rowcount``). 0 means either no row
+            matched ``id`` or this exact content_version is already
+            recorded — both are success, not failure.
+
+        Raises:
+            ValueError: If short_id is falsy.
+        """
+        if not short_id:
+            raise ValueError("record_copy_verification_short: short_id is required")
+
+        shorts_table = self.pg_conn.get_qualified_table("video_shorts")
+
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                    UPDATE {shorts_table} SET
+                        copy_verification_verdict  = %s,
+                        copy_verification_findings = %s::jsonb,
+                        copy_original_title         = %s,
+                        copy_original_description    = %s,
+                        copy_corrected_title         = %s,
+                        copy_corrected_description   = %s,
+                        copy_content_version         = %s,
+                        copy_verified_at             = NOW()
+                    WHERE id = %s AND copy_content_version IS DISTINCT FROM %s
+                    """,
+                (
+                    verdict,
+                    json.dumps(findings or []),
+                    original_title,
+                    original_description,
+                    corrected_title,
+                    corrected_description,
+                    content_version,
+                    short_id,
+                    content_version,
+                ),
+            )
+            logger.info(
+                "record_copy_verification_short: short_id=%s verdict=%s content_version=%s (%d rows)",
+                short_id,
+                verdict,
+                content_version,
+                cur.rowcount,
+            )
+            return cur.rowcount
+
     def mark_turn_thumbnail_republish_needed(
         self,
         *,

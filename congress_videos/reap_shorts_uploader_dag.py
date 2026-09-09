@@ -7,10 +7,13 @@ description derived from audio transcription (Whisper) + chapter metadata (GPT-4
 Flow:
 1. get_pending_shorts   — claim the highest-virality unuploaded clip
 2. generate_metadata    — extract audio → Whisper transcript → GPT title+description
+2b. verify_final_copy   — verify the final title/description against DB evidence
+                            before publication (issue #512); no fail-loud path
 3. trigger_youtube_upload — upload via generic_youtube_uploader
 4. mark_shorts_uploaded — persist youtube_video_id + is_uploaded=TRUE
 """
 
+import dataclasses
 import logging
 import os
 from datetime import date, datetime, timedelta
@@ -221,6 +224,63 @@ def _format_session_line(session_number: int | None, session_date: date | None) 
     return f"\n\n🏛️ {body}" if body else ""
 
 
+def _copy_verification_evidence(chapter: dict | None, turn_speaker_row: dict | None) -> dict:
+    """Assemble the final-copy verification evidence bundle for a short
+    (issue #512, design.md D5). Takes the chapter row and turn-speaker row
+    ALREADY read by `_generate_metadata` (stashed on the shorts_metadata
+    entry) instead of re-querying the DB — this DAG has done those reads
+    upstream. Mirrors `_copy_verification_evidence` in `youtube_upload_dag.py`
+    exactly, minus the two DB reads it performs internally there. No
+    `thumbnail_text` key: the shorts pipeline has no thumbnail step at all.
+
+    `mencionados` is tri-valued (design.md D5): NULL renders `"no analizado"`,
+    an empty list renders `[]`, a populated list renders resolved entries.
+    """
+    chapter = chapter or {}
+    turn_speaker_row = turn_speaker_row or {}
+    slug = turn_speaker_row.get("resolved_participant_slug")
+    participant = (lookup_participant_by_slug(slug) if slug else None) or {}
+
+    mentioned_slugs = chapter.get("mentioned_participant_slugs")
+    if mentioned_slugs is None:
+        mencionados: object = "no analizado"
+    else:
+        mencionados = []
+        for mentioned_slug in mentioned_slugs:
+            mentioned_participant = (lookup_participant_by_slug(mentioned_slug) if mentioned_slug else None) or {}
+            mencionados.append(
+                {
+                    "slug": mentioned_slug,
+                    "display_name": mentioned_participant.get("display_name"),  # raw
+                    "short_name": canonical_display_name(mentioned_slug),  # canonical (#511)
+                    "party": mentioned_participant.get("party"),
+                }
+            )
+
+    return {
+        "speaker": {
+            "slug": slug,
+            "display_name": participant.get("display_name"),  # raw — ground-truth identity
+            "short_name": canonical_display_name(slug),  # canonical (#511)
+            "party": participant.get("party"),
+            "parliamentary_group": participant.get("parliamentary_group"),
+            "resolution_confidence": turn_speaker_row.get("speaker_resolution_confidence"),
+            "resolution_method": turn_speaker_row.get("speaker_resolution_method"),
+        },
+        "chapter": {
+            "title": chapter.get("title"),
+            "description": chapter.get("description"),
+            "topics": chapter.get("topics"),
+            "speakers": chapter.get("speakers"),
+            "key_speakers": chapter.get("key_speakers"),
+            "scoring_reasoning": chapter.get("scoring_reasoning"),
+            "session_number": chapter.get("session_number"),
+            "session_date": chapter.get("session_date"),
+        },
+        "mencionados": mencionados,
+    }
+
+
 default_args = {
     "owner": "airflow",
     "depends_on_past": False,
@@ -299,6 +359,7 @@ with DAG(
 
             turn_id = short.get("turn_id")
             turn_speaker_slug = None
+            turn_speaker_row = None
             if turn_id:
                 try:
                     turn_speaker_row = db.get_turn_speaker_slug(turn_id)
@@ -409,6 +470,11 @@ with DAG(
                     "short_id": short_id,
                     "title": title,
                     "description": description,
+                    # issue #512: carried for verify_final_copy (t2b) — avoids
+                    # a second get_chapter_metadata/get_turn_speaker_slug
+                    # round trip for the same short.
+                    "chapter": ch,
+                    "turn_speaker_row": turn_speaker_row,
                 }
             )
 
@@ -417,6 +483,119 @@ with DAG(
     t2 = PythonOperator(
         task_id="generate_metadata",
         python_callable=_generate_metadata,
+    )
+
+    def _verify_final_copy(ti, **context):
+        """Verify each short's final publication copy before it ships (issue #512).
+
+        New task t2b, between t2 (generate_metadata) and t3
+        (trigger_youtube_upload). Runs on the `shorts_metadata` entries,
+        which `_generate_metadata` already finalized — including the
+        own-channel footer and session line appended at the end of its loop
+        — so title/description here are the truly last mutable
+        representation, matching design.md's "verify the last mutable
+        representation, never an upstream copy" rule. Shorts have no
+        thumbnail step at all, so `thumbnail_text` is never passed.
+
+        Locked asymmetry (design.md, issue #512): the shorts path has NO
+        fail-loud path anywhere — a `reject` verdict, on title OR
+        description, is recorded and logged but NEVER blocks publication.
+        There is also no accumulator on this DAG (unlike the long-form
+        `_check_upload_failures`); findings surface via the task log and the
+        `shorts_copy_verification` XCom only.
+        """
+        from congress_videos.modules.final_copy_verification import (
+            compute_content_version,
+            verify_final_copy,
+        )
+
+        pending_shorts = ti.xcom_pull(key="pending_shorts") or []
+        shorts_metadata = ti.xcom_pull(key="shorts_metadata") or []
+
+        if not shorts_metadata:
+            logging.info("_verify_final_copy: no shorts metadata — skipping verification")
+            return None
+
+        db = CongressionalVideoDB()
+        results = []
+
+        for short, meta in zip(pending_shorts, shorts_metadata):
+            short_id = short.get("id")
+            original_title = meta.get("title") or ""
+            original_description = meta.get("description") or ""
+            evidence = _copy_verification_evidence(meta.get("chapter"), meta.get("turn_speaker_row"))
+
+            verdict = verify_final_copy(title=original_title, description=original_description, evidence=evidence)
+
+            if not verdict.ok:
+                logging.info(
+                    "_verify_final_copy: inconclusive verdict for short_id=%s — publishing unchanged", short_id
+                )
+                results.append(
+                    {
+                        "short_id": short_id,
+                        "verdict": "inconclusive",
+                        "findings": [],
+                        "corrected_applied": False,
+                        "persisted": False,
+                        "content_version": "",
+                    }
+                )
+                continue
+
+            if verdict.verdict == "reject":
+                logging.warning(
+                    "_verify_final_copy: reject verdict for short_id=%s (fields=%s) — publishing "
+                    "unchanged, no fail-loud path on this DAG (issue #512)",
+                    short_id,
+                    sorted({f.field for f in verdict.findings}),
+                )
+
+            if verdict.correction_applied:
+                meta["title"] = verdict.title
+                meta["description"] = verdict.description
+
+            # Stale-copy guard (design.md D3): recompute from the values
+            # actually about to be published, immediately before the write.
+            recomputed_version = compute_content_version(
+                title=verdict.title, description=verdict.description, thumbnail_text=None, evidence=evidence
+            )
+            persisted = False
+            if short_id and recomputed_version == verdict.content_version:
+                db.record_copy_verification_short(
+                    short_id,
+                    verdict=verdict.verdict,
+                    findings=[dataclasses.asdict(f) for f in verdict.findings],
+                    original_title=original_title,
+                    original_description=original_description,
+                    corrected_title=verdict.title if verdict.correction_applied else None,
+                    corrected_description=verdict.description if verdict.correction_applied else None,
+                    content_version=verdict.content_version,
+                )
+                persisted = True
+            else:
+                logging.warning(
+                    "_verify_final_copy: stale-copy guard skipped the audit write for short_id=%s", short_id
+                )
+
+            results.append(
+                {
+                    "short_id": short_id,
+                    "verdict": verdict.verdict,
+                    "findings": [dataclasses.asdict(f) for f in verdict.findings],
+                    "corrected_applied": verdict.correction_applied,
+                    "persisted": persisted,
+                    "content_version": verdict.content_version,
+                }
+            )
+
+        ti.xcom_push(key="shorts_metadata", value=shorts_metadata)
+        ti.xcom_push(key="shorts_copy_verification", value=results)
+        return None
+
+    t2b = PythonOperator(
+        task_id="verify_final_copy",
+        python_callable=_verify_final_copy,
     )
 
     def _trigger_youtube_upload(ti, **context):
@@ -573,4 +752,4 @@ with DAG(
         python_callable=_check_short_upload_failures,
     )
 
-    t1 >> t2 >> t3 >> t4 >> t5
+    t1 >> t2 >> t2b >> t3 >> t4 >> t5
