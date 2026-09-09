@@ -30,6 +30,7 @@ but is unreachable in production, because selection only ever returns
 item_type="turn". See the "Nomenclatura" subsection in docs/DAGS.md.
 """
 
+import dataclasses
 import logging
 import os
 import time
@@ -49,6 +50,7 @@ from congress_videos.modules.participants_db import (
     lookup_participant_by_slug,
     lookup_participant_fuzzy,
 )
+from congress_videos.modules.politician_display_names import canonical_display_name
 from congress_videos.modules.speaker_placeholders import is_placeholder
 from congress_videos.modules.topic_extraction import extract_topics
 from congress_videos.modules.upload_marking import mark_chapter_uploads, mark_turn_uploads
@@ -626,6 +628,128 @@ def _turn_marking_problems(turn_updates: dict | None) -> list[str]:
     return problems
 
 
+def _copy_verification_evidence(db, *, chapter_id: int | None, turn_id: int | None) -> dict:
+    """Assemble the evidence bundle for final-copy verification (issue #512,
+    design.md D5). Both the canonical short_name (#511) and the raw
+    display_name are included and clearly labelled — the verifier must
+    never receive only one of them.
+
+    ``mencionados`` is tri-valued (design.md D5): NULL renders
+    ``"no analizado"`` (not yet analysed — must never be misread as "nobody
+    mentioned"), an empty list renders ``[]`` (analysed, nobody mentioned),
+    a populated list renders the resolved entries.
+    """
+    chapter = (db.get_chapter_metadata(chapter_id) if chapter_id is not None else None) or {}
+
+    speaker_row = (db.get_turn_speaker_slug(turn_id) if turn_id is not None else None) or {}
+    slug = speaker_row.get("resolved_participant_slug")
+    participant = (lookup_participant_by_slug(slug) if slug else None) or {}
+
+    mentioned_slugs = chapter.get("mentioned_participant_slugs")
+    if mentioned_slugs is None:
+        mencionados: object = "no analizado"
+    else:
+        mencionados = []
+        for mentioned_slug in mentioned_slugs:
+            mentioned_participant = (lookup_participant_by_slug(mentioned_slug) if mentioned_slug else None) or {}
+            mencionados.append(
+                {
+                    "slug": mentioned_slug,
+                    "display_name": mentioned_participant.get("display_name"),  # raw
+                    "short_name": canonical_display_name(mentioned_slug),  # canonical
+                    "party": mentioned_participant.get("party"),
+                }
+            )
+
+    return {
+        "speaker": {
+            "slug": slug,
+            "display_name": participant.get("display_name"),  # raw — ground-truth identity
+            "short_name": canonical_display_name(slug),  # canonical (#511)
+            "party": participant.get("party"),
+            "parliamentary_group": participant.get("parliamentary_group"),
+            "resolution_confidence": speaker_row.get("speaker_resolution_confidence"),
+            "resolution_method": speaker_row.get("speaker_resolution_method"),
+        },
+        "chapter": {
+            "title": chapter.get("title"),
+            "description": chapter.get("description"),
+            "topics": chapter.get("topics"),
+            "speakers": chapter.get("speakers"),
+            "key_speakers": chapter.get("key_speakers"),
+            "scoring_reasoning": chapter.get("scoring_reasoning"),
+            "session_number": chapter.get("session_number"),
+            "session_date": chapter.get("session_date"),
+        },
+        "mencionados": mencionados,
+    }
+
+
+def _thumbnail_brief_text(thumbnail_row: dict | None) -> str | None:
+    """Return the verifiable text from a video_thumbnails row's
+    art_direction_brief JSONB (design.md D5). NULL and the legacy plain-string
+    shape (video_analytics_actions_dag.py:298) both omit the field entirely —
+    only the current dict-with-"text" shape yields anything to verify."""
+    if not thumbnail_row:
+        return None
+    brief = thumbnail_row.get("art_direction_brief")
+    if isinstance(brief, dict):
+        text = brief.get("text")
+        if isinstance(text, str) and text:
+            return text
+    return None
+
+
+def _copy_verification_problems(payload: dict | None) -> list[str]:
+    """Describe final-copy verification findings worth failing the daily
+    upload gate for (issue #512, design.md D7). Shaped like
+    _turn_marking_problems: returns finished operator-facing sentences,
+    appended to the _check_upload_failures `problems` accumulator.
+
+    `payload` is the `copy_verification` XCom
+    (`{verdict, findings, corrected_applied, persisted, content_version}`).
+    `None` means the XCom is missing entirely — always an anomaly once a
+    turn was actually verified — reported as a finding, never a
+    short-circuit raise, so it cannot mask the other findings.
+
+    A title `reject` never reaches this function: it raises upstream in
+    `_verify_final_copy`, before the XCom is ever pushed (the locked
+    hard-rejection asymmetry). A successfully applied correction is a
+    success story, not a finding, even though its originating findings are
+    still kept in the payload for audit purposes.
+    """
+    if payload is None:
+        return ["copy_verification XCom missing after prepare_upload_config succeeded"]
+
+    verdict = payload.get("verdict")
+    findings = payload.get("findings") or []
+    corrected_applied = bool(payload.get("corrected_applied"))
+    problems: list[str] = []
+
+    if verdict == "inconclusive":
+        problems.append(
+            "Final-copy verification inconclusive (verifier failure, timeout or "
+            "malformed response); published unchanged, no audit persisted"
+        )
+
+    if verdict == "reject":
+        fields = sorted({f.get("field") for f in findings if isinstance(f, dict) and f.get("field")})
+        problems.append(
+            f"Final-copy verification rejected (fields={fields or ['unknown']}); published unchanged, review required"
+        )
+
+    unsupported = [f for f in findings if isinstance(f, dict) and f.get("category") == "unsupported_claim"]
+    if unsupported and not corrected_applied:
+        problems.append(
+            f"Final-copy verification discarded {len(unsupported)} unsupported correction(s); published original copy"
+        )
+
+    if verdict in ("pass", "correctable", "reject") and not payload.get("persisted"):
+        problems.append("Final-copy verification audit write was skipped (stale-copy guard)")
+
+    return problems
+
+
 def trigger_thumbnail_generation(ti, **context) -> str | None:
     """Run the generic thumbnail DAG and retain its result for upload configuration."""
     thumbnail_config = ti.xcom_pull(key="thumbnail_config") or {}
@@ -1028,6 +1152,138 @@ with DAG(
             "upload_config",
         )
 
+    def _verify_final_copy(ti, **context):
+        """Verify the turn's final publication copy before it ships (issue #512).
+
+        New task t6b, between t6 (prepare_upload_config) and t7
+        (trigger_youtube_upload). Reads title/description from
+        `upload_config["videos"][0]` — the LAST mutable representation,
+        already sidecar-round-tripped by prepare_orador_upload_config —
+        NEVER the upstream thumbnail_result / _extract_metadata_description
+        XComs (design.md: "Verify the last mutable representation, never an
+        upstream copy").
+
+        Hard-rejection asymmetry (design.md D2/D7, locked): a `reject`
+        verdict blocks publication ONLY for the title, reusing the ValueError
+        fail-loud convention already established at this seam (issue #245).
+        Description and thumbnail-text findings are recorded and surfaced
+        through the `_check_upload_failures` accumulator; publication
+        proceeds with the existing values.
+
+        Chapter items reach this task too (both paths push `upload_config`
+        with the same "videos" shape); an item with no videos to verify
+        (upstream skip/failure) is a silent no-op — the anomaly, if any, was
+        already an upstream failure that `_check_upload_failures` covers
+        through its own findings.
+        """
+        from congress_videos.modules.database import CongressionalVideoDB
+        from congress_videos.modules.final_copy_verification import (
+            compute_content_version,
+            verify_final_copy,
+        )
+        from congress_videos.modules.youtube.youtube_upload import _write_orador_sidecars
+
+        config = ti.xcom_pull(key="upload_config")
+        videos = (config or {}).get("videos") or []
+        if not videos:
+            logging.info("_verify_final_copy: no upload_config videos — skipping verification")
+            return None
+
+        video = videos[0]
+        chapter_id = video.get("chapter_id")
+        turn_id = video.get("turn_id")
+        output_path = video.get("video_file")
+        original_title = video.get("title") or ""
+        original_description = video.get("description") or ""
+
+        db = CongressionalVideoDB()
+        evidence = _copy_verification_evidence(db, chapter_id=chapter_id, turn_id=turn_id)
+        thumbnail_text = _thumbnail_brief_text(db.get_chosen_thumbnail(chapter_id) if chapter_id is not None else None)
+
+        verdict = verify_final_copy(
+            title=original_title,
+            description=original_description,
+            thumbnail_text=thumbnail_text,
+            evidence=evidence,
+        )
+
+        if not verdict.ok:
+            logging.info(
+                "_verify_final_copy: inconclusive verdict (chapter_id=%s, turn_id=%s) — publishing unchanged",
+                chapter_id,
+                turn_id,
+            )
+            ti.xcom_push(
+                key="copy_verification",
+                value={
+                    "verdict": "inconclusive",
+                    "findings": [],
+                    "corrected_applied": False,
+                    "persisted": False,
+                    "content_version": "",
+                },
+            )
+            return None
+
+        if verdict.verdict == "reject" and any(f.field == "title" for f in verdict.findings):
+            raise ValueError(
+                "Turn upload aborted: final-copy verification rejected the title "
+                f"(chapter_id={chapter_id}, turn_id={turn_id}, output_path={output_path}); "
+                "refusing to publish a flagged title (issue #512)."
+            )
+
+        if verdict.correction_applied:
+            video["title"] = verdict.title
+            video["description"] = verdict.description
+            if output_path:
+                _write_orador_sidecars(output_path, verdict.title, verdict.description)
+            ti.xcom_push(key="upload_config", value=config)
+
+        # Stale-copy guard (design.md D3): recompute from the values actually
+        # about to be published, immediately before the write. A mismatch
+        # means the copy changed since verification — never persist a
+        # correction against copy the verifier never saw.
+        recomputed_version = compute_content_version(
+            title=verdict.title,
+            description=verdict.description,
+            thumbnail_text=thumbnail_text,
+            evidence=evidence,
+        )
+        persisted = False
+        if output_path and recomputed_version == verdict.content_version:
+            db.record_copy_verification_turn(
+                output_path,
+                verdict=verdict.verdict,
+                findings=[dataclasses.asdict(f) for f in verdict.findings],
+                original_title=original_title,
+                original_description=original_description,
+                corrected_title=verdict.title if verdict.correction_applied else None,
+                corrected_description=verdict.description if verdict.correction_applied else None,
+                thumbnail_text=thumbnail_text,
+                content_version=verdict.content_version,
+            )
+            persisted = True
+        else:
+            logging.warning(
+                "_verify_final_copy: stale-copy guard skipped the audit write "
+                "(chapter_id=%s, turn_id=%s, output_path=%s)",
+                chapter_id,
+                turn_id,
+                output_path,
+            )
+
+        ti.xcom_push(
+            key="copy_verification",
+            value={
+                "verdict": verdict.verdict,
+                "findings": [dataclasses.asdict(f) for f in verdict.findings],
+                "corrected_applied": verdict.correction_applied,
+                "persisted": persisted,
+                "content_version": verdict.content_version,
+            },
+        )
+        return None
+
     def _run_backfill_thumbnail_video_id(ti):
         """Back-fill youtube_video_id in video_thumbnails after upload completes."""
         _backfill_thumbnail_video_id(ti)
@@ -1065,6 +1321,12 @@ with DAG(
     t6 = PythonOperator(
         task_id="prepare_upload_config",
         python_callable=_prepare_upload_config,
+    )
+
+    # Step 6b (new, issue #512): verify the final copy before publication
+    t6b = PythonOperator(
+        task_id="verify_final_copy",
+        python_callable=_verify_final_copy,
     )
 
     # Step 7: Trigger generic YouTube uploader DAG and wait for completion
@@ -1183,6 +1445,13 @@ with DAG(
         # short-circuit raise: it must not mask the two findings above.
         problems.extend(_turn_marking_problems(ti.xcom_pull(key="turn_upload_updates")))
 
+        # NEW (issue #512). A reject on description/thumbnail text, a
+        # discarded unsupported correction, an inconclusive verdict, or a
+        # skipped audit write is a finding, not a short-circuit raise: it
+        # must not mask the findings above. A title reject never reaches
+        # here — it already raised in _verify_final_copy.
+        problems.extend(_copy_verification_problems(ti.xcom_pull(key="copy_verification")))
+
         if problems:
             raise Exception(" | ".join(problems))
 
@@ -1251,8 +1520,8 @@ with DAG(
         python_callable=_check_upload_failures,
     )
 
-    # Task dependencies (14 tasks total)
-    # t0 > t1_quota > t1_skip > t1_item > t2 > t3_prepare > t4_generate > t5 > t6 > t7 >
+    # Task dependencies (15 tasks total)
+    # t0 > t1_quota > t1_skip > t1_item > t2 > t3_prepare > t4_generate > t5 > t6 > t6b > t7 >
     #   [t8_db, t8_turns] > t8_backfill > t9
     (
         t0
@@ -1264,6 +1533,7 @@ with DAG(
         >> t4_generate
         >> t5
         >> t6
+        >> t6b
         >> t7
         >> [t8_db, t8_turns]
         >> t8_backfill

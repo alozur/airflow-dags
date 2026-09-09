@@ -1170,6 +1170,91 @@ class CongressionalVideoDB:
             )
             return cur.rowcount
 
+    def record_copy_verification_turn(
+        self,
+        output_path: str,
+        *,
+        verdict: str,
+        findings: list[dict],
+        original_title: str,
+        original_description: str,
+        corrected_title: str | None,
+        corrected_description: str | None,
+        thumbnail_text: str | None,
+        content_version: str,
+    ) -> int:
+        """Persist a final-copy verification audit row (issue #512, design.md D3).
+
+        Guarded UPDATE, not an insert: the WHERE clause includes
+        ``copy_content_version IS DISTINCT FROM %s`` so a retry that
+        recomputes the identical content_version affects zero rows — a
+        success, not an error. Keys by output_path, mirroring
+        ``mark_turns_uploaded_by_output_path`` (#129): grouped turns share
+        one output_path across several speaker_turn_videos rows and all
+        describe the same published video.
+
+        Args:
+            output_path: Absolute path to the grouped turn's video.mp4 file.
+            verdict: pass | correctable | reject.
+            findings: Serializable finding dicts (JSONB column).
+            original_title: Title actually published (before any correction).
+            original_description: Description actually published.
+            corrected_title: Accepted correction, or None when not applied.
+            corrected_description: Accepted correction, or None when not applied.
+            thumbnail_text: Verified thumbnail text, or None when unavailable.
+            content_version: sha256 content version this verdict was computed for.
+
+        Returns:
+            Number of rows updated (``cur.rowcount``). 0 means either no row
+            matched output_path or this exact content_version is already
+            recorded — both are success, not failure.
+
+        Raises:
+            ValueError: If output_path is falsy (would generate an unbounded
+                ``WHERE output_path = NULL`` update).
+        """
+        if not output_path:
+            raise ValueError("record_copy_verification_turn: output_path is required")
+
+        stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
+
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                    UPDATE {stv_table} SET
+                        copy_verification_verdict  = %s,
+                        copy_verification_findings = %s::jsonb,
+                        copy_original_title         = %s,
+                        copy_original_description    = %s,
+                        copy_corrected_title         = %s,
+                        copy_corrected_description   = %s,
+                        copy_thumbnail_text          = %s,
+                        copy_content_version         = %s,
+                        copy_verified_at             = NOW()
+                    WHERE output_path = %s AND copy_content_version IS DISTINCT FROM %s
+                    """,
+                (
+                    verdict,
+                    json.dumps(findings or []),
+                    original_title,
+                    original_description,
+                    corrected_title,
+                    corrected_description,
+                    thumbnail_text,
+                    content_version,
+                    output_path,
+                    content_version,
+                ),
+            )
+            logger.info(
+                "record_copy_verification_turn: output_path=%r verdict=%s content_version=%s (%d rows)",
+                output_path,
+                verdict,
+                content_version,
+                cur.rowcount,
+            )
+            return cur.rowcount
+
     def mark_turn_thumbnail_republish_needed(
         self,
         *,
