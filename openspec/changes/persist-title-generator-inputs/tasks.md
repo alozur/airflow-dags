@@ -49,35 +49,36 @@ blocks (re-run overwrite vs. non-matching key); both are listed here as 3.2a/3.2
 
 ## Slice 1 — Migration + write methods (base: `feat/549-generator-input-payloads`)
 
-- [ ] 1.1 Create `congress_videos/sql/migrations/051_persist_title_generation_input.sql` with two
+- [x] 1.1 Create `congress_videos/sql/migrations/051_persist_title_generation_input.sql` with two
   `ALTER TABLE ... ADD COLUMN IF NOT EXISTS title_generation_input JSONB` statements
   (`speaker_turn_videos`, `video_shorts`), and write the `DOWN` block as SQL comments only — the
   migration runner executes the whole file transactionally, so the DOWN statements MUST stay
   commented out, never active SQL.
-- [ ] 1.2 Mirror both `ADD COLUMN` lines from task 1.1 into `congress_videos/sql/production_schema.sql`,
+- [x] 1.2 Mirror both `ADD COLUMN` lines from task 1.1 into `congress_videos/sql/production_schema.sql`,
   in the existing `speaker_turn_videos` and `video_shorts` table blocks. [C1-a/b]
-- [ ] 1.3 Add `"title_generation_input"` to the `TABLE_COLUMNS` tuple entries for BOTH
-  `speaker_turn_videos` and `video_shorts` in `tests/congress_videos/sql/test_production_schema.py`.
-  This is NOT covered by any existing test — task 1.1 alone makes no test fail, so this edit is what
-  makes the drift check meaningful. [C1-c]
-- [ ] 1.4 Add `record_title_generation_input_turn(self, output_path: str, *, payload: dict) -> int` to
+- [x] 1.3 Add `"title_generation_input"` to the `TABLE_COLUMNS` tuple entry for `speaker_turn_videos`
+  and to the `VIDEO_SHORTS_COLUMNS` tuple (the actual authoritative structure for `video_shorts` in
+  this file — see Deviations) in `tests/congress_videos/sql/test_production_schema.py`. This was NOT
+  covered by any existing test — task 1.1 alone made no test fail, so this edit is what makes the
+  drift check meaningful. [C1-c]
+- [x] 1.4 Add `record_title_generation_input_turn(self, output_path: str, *, payload: dict) -> int` to
   `congress_videos/modules/database.py` (after `record_copy_verification_short`): unguarded
   `UPDATE ... SET title_generation_input = %s::jsonb WHERE output_path = %s`
   (no `IS DISTINCT FROM` guard, per Req 3/D3), bind via `json.dumps(payload, ensure_ascii=False)`,
   raise `ValueError` on falsy `output_path` or non-dict/empty `payload`, return `cur.rowcount`, log
   `(%d rows)`.
-- [ ] 1.5 Add `record_title_generation_input_short(self, short_id: int, *, payload: dict) -> int` to
+- [x] 1.5 Add `record_title_generation_input_short(self, short_id: int, *, payload: dict) -> int` to
   `congress_videos/modules/database.py`: same shape, keyed by `video_shorts.id`.
-- [ ] 1.6 Unit test in `tests/congress_videos/modules/test_database.py`: mocked cursor asserts the
+- [x] 1.6 Unit test in `tests/congress_videos/modules/test_database.py`: mocked cursor asserts the
   `UPDATE` SQL text, the `%s::jsonb` bind, the `json.dumps` argument, `rowcount` passthrough, and
   `ValueError` on falsy key / non-dict payload for both methods.
-- [ ] 1.7 Test (Scenario 3.1) in `tests/congress_videos/modules/test_database.py`: N sibling
+- [x] 1.7 Test (Scenario 3.1) in `tests/congress_videos/modules/test_database.py`: N sibling
   `speaker_turn_videos` rows sharing one `output_path` — one `record_title_generation_input_turn` call
   updates all N rows with the identical payload; a row under a different `output_path` is untouched.
-- [ ] 1.8 Test (Scenario 3.2a) in `tests/congress_videos/modules/test_database.py`: calling
+- [x] 1.8 Test (Scenario 3.2a) in `tests/congress_videos/modules/test_database.py`: calling
   `record_title_generation_input_turn` twice with the same `output_path` overwrites the payload and
   returns `rowcount >= 1` both times, without raising.
-- [ ] 1.9 Run `uv run pytest tests/congress_videos/sql/test_production_schema.py tests/congress_videos/modules/test_database.py`
+- [x] 1.9 Run `uv run pytest tests/congress_videos/sql/test_production_schema.py tests/congress_videos/modules/test_database.py`
   and confirm green before opening the slice 1 PR.
 
 ## Slice 2 — Turn path (base: slice 1 branch)

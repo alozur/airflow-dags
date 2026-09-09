@@ -1332,6 +1332,103 @@ class CongressionalVideoDB:
             )
             return cur.rowcount
 
+    def record_title_generation_input_turn(self, output_path: str, *, payload: dict) -> int:
+        """Persist the title generator's input payload for provenance/replay
+        (issue #549, design.md D3). Guarded UPDATE keyed by output_path,
+        mirroring ``mark_turns_uploaded_by_output_path`` (#129) and
+        ``record_copy_verification_turn`` (#512): grouped turns share one
+        output_path across several speaker_turn_videos rows, and one call
+        writes the identical payload to every sibling row.
+
+        Unlike ``record_copy_verification_turn``, this UPDATE carries NO
+        ``IS DISTINCT FROM`` content guard, so ``rowcount == 0`` means
+        exactly one thing: the key matched no row. The caller MUST treat
+        that as a loud ``no_row`` outcome, never as success.
+
+        Args:
+            output_path: Absolute path to the grouped turn's video.mp4 file.
+            payload: Allowlisted generator-input dict (see build_turn_title_payload).
+
+        Returns:
+            Number of rows updated (``cur.rowcount``). 0 means no row
+            matched output_path — the caller must log and record this loudly.
+
+        Raises:
+            ValueError: If output_path is falsy or payload is not a
+                non-empty dict.
+        """
+        if not output_path:
+            raise ValueError("record_title_generation_input_turn: output_path is required")
+        if not isinstance(payload, dict) or not payload:
+            raise ValueError("record_title_generation_input_turn: payload must be a non-empty dict")
+
+        stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
+
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                    UPDATE {stv_table} SET
+                        title_generation_input = %s::jsonb
+                    WHERE output_path = %s
+                    """,
+                (
+                    json.dumps(payload, ensure_ascii=False),
+                    output_path,
+                ),
+            )
+            logger.info(
+                "record_title_generation_input_turn: output_path=%r (%d rows)",
+                output_path,
+                cur.rowcount,
+            )
+            return cur.rowcount
+
+    def record_title_generation_input_short(self, short_id: int, *, payload: dict) -> int:
+        """Persist the shorts title generator's input payload for
+        provenance/replay (issue #549, design.md D3). Same shape as
+        ``record_title_generation_input_turn`` minus the sibling grouping:
+        each short is its own row, keyed by ``video_shorts.id``.
+
+        No content guard — ``rowcount == 0`` means the key matched no row.
+
+        Args:
+            short_id: video_shorts.id primary key.
+            payload: Allowlisted generator-input dict (see build_shorts_title_payload).
+
+        Returns:
+            Number of rows updated (``cur.rowcount``). 0 means no row
+            matched id — the caller must log and record this loudly.
+
+        Raises:
+            ValueError: If short_id is falsy or payload is not a non-empty
+                dict.
+        """
+        if not short_id:
+            raise ValueError("record_title_generation_input_short: short_id is required")
+        if not isinstance(payload, dict) or not payload:
+            raise ValueError("record_title_generation_input_short: payload must be a non-empty dict")
+
+        shorts_table = self.pg_conn.get_qualified_table("video_shorts")
+
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                    UPDATE {shorts_table} SET
+                        title_generation_input = %s::jsonb
+                    WHERE id = %s
+                    """,
+                (
+                    json.dumps(payload, ensure_ascii=False),
+                    short_id,
+                ),
+            )
+            logger.info(
+                "record_title_generation_input_short: short_id=%s (%d rows)",
+                short_id,
+                cur.rowcount,
+            )
+            return cur.rowcount
+
     def mark_turn_thumbnail_republish_needed(
         self,
         *,
