@@ -142,44 +142,44 @@ blocks (re-run overwrite vs. non-matching key); both are listed here as 3.2a/3.2
 
 ## Slice 3 — Shorts path (base: slice 2 branch)
 
-- [ ] 3.1 Add `build_shorts_title_payload(transcript, *, chapter_title, primary_speaker,
+- [x] 3.1 Add `build_shorts_title_payload(transcript, *, chapter_title, primary_speaker,
   secondary_speakers, topics, scoring_reasoning, mentioned_display_names, title) -> dict` at module
   level in `congress_videos/reap_shorts_uploader_dag.py`, beside `build_shorts_metadata_context`.
   The `transcript` parameter MUST receive the FULL, unsliced Whisper transcript; the function performs
   its own `transcript[:2000]` slice and computes `transcript_truncated = len(transcript) > 2000` and
   `transcript_full_length = len(transcript)` internally. Do not pass an already-sliced value in. [C3]
-- [ ] 3.2 In `congress_videos/reap_shorts_uploader_dag.py`'s `_generate_metadata` per-short loop, after
+- [x] 3.2 In `congress_videos/reap_shorts_uploader_dag.py`'s `_generate_metadata` per-short loop, after
   `title` is finalized (the LLM branch, `truncate_text(ai_title, 100)`) and before the
   `metadata_list.append` block, call `build_shorts_title_payload` with the full in-scope `transcript`
   variable and the finalized `title`. [Req 2, C3]
-- [ ] 3.3 Test (Scenario 6.1, shorts half) in `tests/congress_videos/test_reap_uploader_dag.py`:
+- [x] 3.3 Test (Scenario 6.1, shorts half) in `tests/congress_videos/test_reap_uploader_dag.py`:
   `set(json.loads(json.dumps(payload)))` equals the declared shorts schema keys; recursive scan finds
   no `http`, `/`-rooted path, or `token`/`key`/`secret` substring.
-- [ ] 3.4 Test (Scenario 2.1) in `tests/congress_videos/test_reap_uploader_dag.py`: given a non-empty
+- [x] 3.4 Test (Scenario 2.1) in `tests/congress_videos/test_reap_uploader_dag.py`: given a non-empty
   transcript longer than 2000 chars, assert the payload's `transcript` equals exactly the first 2000
   chars, `transcript_truncated is True`, `transcript_full_length` equals the full length, and the
   stored `title` equals the accepted LLM title. Also cover the 1999/2001-char boundary cases.
-- [ ] 3.5 Wire the call from task 3.2 with the same `upload_marking.py`-style `try/except` used in task
+- [x] 3.5 Wire the call from task 3.2 with the same `upload_marking.py`-style `try/except` used in task
   2.6 (never the bare `reap_shorts_uploader_dag.py:571` shape), keyed by `short_id` (already in scope),
   recording the outcome as `"title_provenance"` inside the appended metadata dict so it rides the
   existing `shorts_metadata` XCom. One short's failure MUST NOT abort the loop over remaining
   shorts. [C2, Req 5]
-- [ ] 3.5b Test (Scenario 5.2) in `tests/congress_videos/test_reap_uploader_dag.py`: with an injected
+- [x] 3.5b Test (Scenario 5.2) in `tests/congress_videos/test_reap_uploader_dag.py`: with an injected
   fake `db` whose `record_title_generation_input_short` raises for short #1, assert short #1's
   `title_provenance["status"] == "failed"` and metadata assembly for short #2 in the same loop still
   completes.
-- [ ] 3.6 Test (Scenario 2.2) in `tests/congress_videos/test_reap_uploader_dag.py`: given an empty
+- [x] 3.6 Test (Scenario 2.2) in `tests/congress_videos/test_reap_uploader_dag.py`: given an empty
   transcript that skips the LLM branch, assert no `record_title_generation_input_short` call occurs
   and the metadata's `title_provenance` reflects "skipped" / the column stays untouched (NULL).
-- [ ] 3.7 Test (Scenario 4.1, shorts half) in `tests/congress_videos/test_reap_uploader_dag.py`:
+- [x] 3.7 Test (Scenario 4.1, shorts half) in `tests/congress_videos/test_reap_uploader_dag.py`:
   round-trip a built shorts payload by re-rendering `SHORTS_METADATA_USER_PROMPT_TEMPLATE.format(...)`
   from the stored fields verbatim (no re-applying `[:2000]`/`[:500]` slicing on already-sliced stored
   values) and assert the render succeeds using only stored fields.
-- [ ] 3.8 Test (Scenario 7.2, shorts half) in `tests/congress_videos/test_reap_uploader_dag.py`: assert
+- [x] 3.8 Test (Scenario 7.2, shorts half) in `tests/congress_videos/test_reap_uploader_dag.py`: assert
   `record_copy_verification_short` is still invoked, unchanged, on the same path as before the new
   hook.
-- [ ] 3.9 Run `uv run pytest tests/congress_videos/test_reap_uploader_dag.py` and confirm green before
+- [x] 3.9 Run `uv run pytest tests/congress_videos/test_reap_uploader_dag.py` and confirm green before
   opening the slice 3 PR against the slice 2 branch.
-- [ ] 3.10 After slice 3 is green, run `bash scripts/test-airflow-e2e.sh` once across the full chain
+- [x] 3.10 After slice 3 is green, run `bash scripts/test-airflow-e2e.sh` once across the full chain
   (touches `congress_videos/**`) to confirm `airflow dags list-import-errors` stays empty for all three
   modified DAGs.

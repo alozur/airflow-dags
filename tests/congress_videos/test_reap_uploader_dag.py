@@ -1676,3 +1676,392 @@ class TestShortsMetadataXComNormalization:
         restored = _xcom_round_trip(ti.xcom_store["shorts_metadata"])
 
         assert restored[0]["turn_speaker_row"] is None
+
+
+# ---------------------------------------------------------------------------
+# build_shorts_title_payload (issue #549, slice 3)
+# ---------------------------------------------------------------------------
+
+_SHORTS_PAYLOAD_DECLARED_KEYS = {
+    "generator",
+    "schema_version",
+    "transcript",
+    "transcript_truncated",
+    "transcript_full_length",
+    "chapter_title",
+    "primary_speaker",
+    "secondary_speakers",
+    "topics",
+    "scoring_reasoning",
+    "mentioned_display_names",
+    "title",
+}
+
+
+def _scan_for_secrets_shorts(value: object) -> list[str]:
+    """Recursively collect string leaves that look like a URL/path/credential.
+
+    Local duplicate of the same helper in test_thumbnail_generation.py — no
+    cross-test-module import convention exists in this repo's test suite.
+    """
+    hits: list[str] = []
+
+    def _walk(node: object) -> None:
+        if isinstance(node, dict):
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                _walk(v)
+        elif isinstance(node, str):
+            low = node.lower()
+            if "http" in low or node.startswith("/") or any(w in low for w in ("token", "key", "secret")):
+                hits.append(node)
+
+    _walk(value)
+    return hits
+
+
+class TestBuildShortsTitlePayload:
+    """build_shorts_title_payload assembles an allowlisted, credential-free
+    record of the shorts metadata generator's prompt inputs plus the
+    accepted title (issue #549)."""
+
+    def _payload(self, **overrides) -> dict:
+        from congress_videos.reap_shorts_uploader_dag import build_shorts_title_payload
+
+        base = {
+            "transcript": "Fragmento de la transcripción del clip.",
+            "chapter_title": "Debate presupuestos",
+            "primary_speaker": "Ana García",
+            "secondary_speakers": "Luis Pérez",
+            "topics": "presupuestos, economía",
+            "scoring_reasoning": "Alta relevancia por el contexto del debate",
+            "mentioned_display_names": ["Pedro Sánchez"],
+            "title": "Ana García sobre presupuestos",
+        }
+        base.update(overrides)
+        transcript = base.pop("transcript")
+        return build_shorts_title_payload(transcript, **base)
+
+    def test_declared_keys_only(self):
+        """Scenario 6.1 (shorts half): serialized payload has exactly the declared schema keys."""
+        payload = self._payload()
+
+        serialized = json.loads(json.dumps(payload))
+        assert set(serialized) == _SHORTS_PAYLOAD_DECLARED_KEYS
+
+    def test_no_credentials_or_urls_or_paths_in_serialized_payload(self):
+        """Scenario 6.1 (shorts half): recursive scan finds no http/path/token/key/secret."""
+        payload = self._payload()
+
+        serialized = json.loads(json.dumps(payload))
+        assert _scan_for_secrets_shorts(serialized) == []
+
+    def test_literal_generator_and_schema_version(self):
+        payload = self._payload()
+
+        assert payload["generator"] == "shorts_metadata"
+        assert payload["schema_version"] == 1
+
+    def test_transcript_over_2000_chars_is_sliced_and_flagged_truncated(self):
+        """Scenario 2.1: a >2000-char full transcript is sliced to exactly
+        2000 chars, flagged truncated, and the full length is preserved."""
+        full_transcript = "a" * 2500
+        payload = self._payload(transcript=full_transcript)
+
+        assert payload["transcript"] == full_transcript[:2000]
+        assert len(payload["transcript"]) == 2000
+        assert payload["transcript_truncated"] is True
+        assert payload["transcript_full_length"] == 2500
+
+    def test_transcript_boundary_1999_chars_not_truncated(self):
+        full_transcript = "b" * 1999
+        payload = self._payload(transcript=full_transcript)
+
+        assert payload["transcript"] == full_transcript
+        assert payload["transcript_truncated"] is False
+        assert payload["transcript_full_length"] == 1999
+
+    def test_transcript_boundary_exactly_2000_chars_not_truncated(self):
+        full_transcript = "c" * 2000
+        payload = self._payload(transcript=full_transcript)
+
+        assert payload["transcript"] == full_transcript
+        assert payload["transcript_truncated"] is False
+        assert payload["transcript_full_length"] == 2000
+
+    def test_transcript_boundary_2001_chars_truncated(self):
+        full_transcript = "d" * 2001
+        payload = self._payload(transcript=full_transcript)
+
+        assert payload["transcript"] == full_transcript[:2000]
+        assert payload["transcript_truncated"] is True
+        assert payload["transcript_full_length"] == 2001
+
+    def test_scoring_reasoning_sliced_to_500_chars(self):
+        reasoning = "x" * 600
+        payload = self._payload(scoring_reasoning=reasoning)
+
+        assert payload["scoring_reasoning"] == reasoning[:500]
+        assert len(payload["scoring_reasoning"]) == 500
+
+    def test_mentioned_display_names_none_stays_none(self):
+        payload = self._payload(mentioned_display_names=None)
+
+        assert payload["mentioned_display_names"] is None
+
+    def test_round_trip_renders_template_from_stored_fields_only(self):
+        """Scenario 4.1 (shorts half): re-rendering the prompt template from
+        the stored (already-sliced) fields succeeds without re-applying
+        [:2000]/[:500] slicing on already-sliced values."""
+        from congress_videos.config.ai_prompts import SHORTS_METADATA_USER_PROMPT_TEMPLATE
+
+        full_transcript = "Texto de la transcripción completa. " * 100  # > 2000 chars
+        reasoning = "Alta relevancia por el contexto. " * 40  # > 500 chars
+        payload = self._payload(transcript=full_transcript, scoring_reasoning=reasoning)
+
+        rendered = SHORTS_METADATA_USER_PROMPT_TEMPLATE.format(
+            transcript=payload["transcript"],
+            chapter_title=payload["chapter_title"],
+            primary_speaker=payload["primary_speaker"],
+            secondary_speakers=payload["secondary_speakers"],
+            topics=payload["topics"],
+            scoring_reasoning=payload["scoring_reasoning"],
+        )
+
+        assert payload["transcript"] in rendered
+        assert len(payload["transcript"]) == 2000
+        assert len(payload["scoring_reasoning"]) == 500
+
+
+# ---------------------------------------------------------------------------
+# _generate_metadata — title_generation_input persistence hook (issue #549, slice 3)
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateMetadataTitleProvenance:
+    """_generate_metadata persists the shorts title-generator input payload
+    only when the LLM branch actually produced a non-empty title (design
+    D5), keyed by short_id, with the same failure-isolation convention as
+    the turn path's _write_title_provenance (issue #549 slice 3)."""
+
+    def _mock_transcription(self, mocker, transcript_text: str) -> None:
+        mocker.patch("os.path.exists", return_value=True)
+        mock_subprocess = mocker.patch("subprocess.run")
+        mock_subprocess.return_value.returncode = 0
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.transcribe_audio_file",
+            return_value={"success": True, "text": transcript_text},
+        )
+
+    def test_llm_title_triggers_write_with_full_transcript_payload_keyed_by_short_id(self, mocker):
+        """Scenario 2.1 + design C3: the builder receives the FULL,
+        unsliced transcript, and the write is keyed by short_id."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapter_metadata.return_value = _make_chapter_metadata()
+        mock_db.record_title_generation_input_short.return_value = 1
+
+        raw_transcript = "Fragmento transcrito. " * 120  # > 2000 chars
+        # _generate_metadata strips the raw Whisper text before it becomes
+        # the in-scope `transcript` variable the hook consumes.
+        full_transcript = raw_transcript.strip()
+        self._mock_transcription(mocker, raw_transcript)
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.generate_json_completion",
+            return_value={"data": {"title": "Título generado por IA", "description": "Descripción IA"}},
+        )
+
+        pending_shorts = [{"id": 77, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        mock_db.record_title_generation_input_short.assert_called_once()
+        call_args = mock_db.record_title_generation_input_short.call_args
+        key_used = call_args.args[0] if call_args.args else call_args.kwargs.get("short_id")
+        assert key_used == 77
+
+        payload = call_args.kwargs["payload"]
+        assert set(payload) == _SHORTS_PAYLOAD_DECLARED_KEYS
+        assert payload["transcript"] == full_transcript[:2000]
+        assert payload["transcript_truncated"] is True
+        assert payload["transcript_full_length"] == len(full_transcript)
+        assert payload["title"] == "Título generado por IA"
+
+        metadata = ti.xcom_store["shorts_metadata"]
+        assert metadata[0]["title_provenance"] == {"status": "written", "rows": 1, "error": None}
+
+    def test_empty_transcript_skips_llm_branch_and_records_skipped(self, mocker):
+        """Scenario 2.2: the fallback branch (no transcript) writes nothing
+        and the column stays untouched (NULL)."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapter_metadata.return_value = _make_chapter_metadata()
+        mocker.patch("os.path.exists", return_value=False)  # no clip file -> transcript stays None
+
+        pending_shorts = [{"id": 5, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        mock_db.record_title_generation_input_short.assert_not_called()
+        metadata = ti.xcom_store["shorts_metadata"]
+        assert metadata[0]["title_provenance"] == {"status": "skipped", "rows": 0, "error": None}
+
+    def test_llm_returns_no_title_skips_write(self, mocker):
+        """Design D5: the LLM branch ran but returned no usable title — no
+        write occurs, matching the non-LLM fallback outcome."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapter_metadata.return_value = _make_chapter_metadata()
+        self._mock_transcription(mocker, "Texto transcrito suficientemente largo.")
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.generate_json_completion",
+            return_value={"data": {"title": "", "description": "Descripción IA"}},
+        )
+
+        pending_shorts = [{"id": 6, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        mock_db.record_title_generation_input_short.assert_not_called()
+        metadata = ti.xcom_store["shorts_metadata"]
+        assert metadata[0]["title_provenance"] == {"status": "skipped", "rows": 0, "error": None}
+
+    def test_db_failure_for_one_short_does_not_abort_loop(self, mocker):
+        """Scenario 5.2: a persistence failure for short #1 is caught and
+        logged, and short #2's metadata assembly still completes."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapter_metadata.return_value = _make_chapter_metadata()
+        self._mock_transcription(mocker, "Texto transcrito suficientemente largo.")
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.generate_json_completion",
+            return_value={"data": {"title": "Título IA", "description": "Descripción IA"}},
+        )
+        mock_db.record_title_generation_input_short.side_effect = [RuntimeError("db unreachable"), 1]
+
+        pending_shorts = [
+            {"id": 1, "chapter_id": 10, "local_file_path": "/fake/clip1.mp4"},
+            {"id": 2, "chapter_id": 10, "local_file_path": "/fake/clip2.mp4"},
+        ]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)  # must not raise
+
+        metadata = ti.xcom_store["shorts_metadata"]
+        assert len(metadata) == 2
+        assert metadata[0]["title_provenance"] == {"status": "failed", "rows": 0, "error": "db unreachable"}
+        assert metadata[1]["title_provenance"] == {"status": "written", "rows": 1, "error": None}
+
+    def test_zero_rows_is_no_row_not_success(self, mocker, caplog):
+        """Scenario 3.2b analogue: rowcount == 0 is a loud no_row outcome, never success."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapter_metadata.return_value = _make_chapter_metadata()
+        self._mock_transcription(mocker, "Texto transcrito suficientemente largo.")
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.generate_json_completion",
+            return_value={"data": {"title": "Título IA", "description": "Descripción IA"}},
+        )
+        mock_db.record_title_generation_input_short.return_value = 0
+
+        pending_shorts = [{"id": 9, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        with caplog.at_level("WARNING"):
+            _generate_metadata(ti)
+
+        metadata = ti.xcom_store["shorts_metadata"]
+        assert metadata[0]["title_provenance"] == {"status": "no_row", "rows": 0, "error": None}
+        assert any("0 rows" in r.message for r in caplog.records)
+
+    def test_shorts_metadata_with_title_provenance_survives_real_xcom_round_trip(self, mocker):
+        """The new title_provenance key contains no datetime values, so it
+        must round-trip through the real XCom serializer unchanged
+        (issue #546 regression guard)."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapter_metadata.return_value = _make_chapter_metadata()
+        mock_db.record_title_generation_input_short.return_value = 1
+        self._mock_transcription(mocker, "Texto transcrito suficientemente largo.")
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.generate_json_completion",
+            return_value={"data": {"title": "Título IA", "description": "Descripción IA"}},
+        )
+
+        pending_shorts = [{"id": 11, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        restored = _xcom_round_trip(ti.xcom_store["shorts_metadata"])
+
+        assert restored[0]["title_provenance"] == {"status": "written", "rows": 1, "error": None}
+
+    def test_record_copy_verification_short_still_invoked_unchanged(self, mocker):
+        """Scenario 7.2 (shorts half): the #512 verification seam is
+        unaffected — record_copy_verification_short still runs on the
+        metadata dict now carrying the extra title_provenance key.
+
+        This is a regression pin, not new coverage: TestVerifyFinalCopy's
+        existing tests already assert record_copy_verification_short is
+        called on shorts_metadata entries built via _make_short_meta, and
+        _verify_final_copy (untouched by this slice) ignores unknown keys.
+        This test proves the two seams compose end to end."""
+        from congress_videos.reap_shorts_uploader_dag import _generate_metadata, _verify_final_copy
+
+        mock_db_cls = mocker.patch("congress_videos.reap_shorts_uploader_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_chapter_metadata.return_value = _make_chapter_metadata()
+        mock_db.record_title_generation_input_short.return_value = 1
+        self._mock_transcription(mocker, "Texto transcrito suficientemente largo.")
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.generate_json_completion",
+            return_value={"data": {"title": "Título IA", "description": "Descripción IA"}},
+        )
+
+        # No turn_id: _copy_verification_evidence's speaker/mentioned-people
+        # lookups only fire when a slug is present, keeping this test free
+        # of any real DB dependency.
+        pending_shorts = [{"id": 13, "chapter_id": 10, "local_file_path": "/fake/clip.mp4"}]
+        ti = _make_ti({"pending_shorts": pending_shorts})
+        _generate_metadata(ti)
+
+        from congress_videos.modules.final_copy_verification import CopyVerdict
+
+        verdict = CopyVerdict(
+            ok=True,
+            verdict="pass",
+            findings=[],
+            title="Título IA",
+            description=ti.xcom_store["shorts_metadata"][0]["description"],
+            correction_applied=False,
+            content_version="hash-shorts-549",
+            rounds=1,
+        )
+        # _verify_final_copy imports these two names locally at call time
+        # (see reap_shorts_uploader_dag.py), so the patch target is their
+        # origin module, matching TestVerifyFinalCopyShorts's convention.
+        mocker.patch(
+            "congress_videos.modules.final_copy_verification.verify_final_copy",
+            return_value=verdict,
+        )
+        mocker.patch(
+            "congress_videos.modules.final_copy_verification.compute_content_version",
+            return_value="hash-shorts-549",
+        )
+
+        ti.xcom_store["pending_shorts"] = pending_shorts
+        _verify_final_copy(ti)
+
+        mock_db.record_copy_verification_short.assert_called_once()

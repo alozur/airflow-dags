@@ -272,3 +272,148 @@ None.
 13/13 slice-2 tasks complete. `git diff --shortstat` 541(+)/2(-) across 6 production+test files (554/15
 including the `tasks.md` checkbox commit) — over the 400-line budget, flagged as `size:exception`. Ready
 for verify (slice 2 scope) / ready for slice 3 apply.
+
+---
+
+## Slice 3 — Shorts path (base: `feat/549-slice2b-parent-hook`)
+
+**Branch**: `feat/549-slice3-shorts-path` (base `feat/549-slice2b-parent-hook` at `868f0a4`, which
+contains the renamed/carried-forward slice 1+2 history: `12f3728`, `6c5459b`, `bc26c29`, `6e268a7`,
+`868f0a4`)
+**Commit**: `c9d0e31` — `feat(shorts): persist the shorts title-generator payload at generation time`
+**Status**: COMPLETE — all slice 3 tasks (3.1-3.10) done. Not pushed, no PR opened (orchestrator handles
+delivery).
+
+### Completed Tasks
+
+- [x] 3.1 `build_shorts_title_payload(transcript, *, chapter_title, primary_speaker, secondary_speakers,
+  topics, scoring_reasoning, mentioned_display_names, title) -> dict` added at module level in
+  `congress_videos/reap_shorts_uploader_dag.py`, beside `build_shorts_metadata_context`. Receives the
+  FULL, unsliced Whisper transcript; slices `transcript[:2000]` and `scoring_reasoning[:500]`
+  internally, and computes `transcript_truncated = len(transcript) > 2000` /
+  `transcript_full_length = len(transcript)` from the full value (design C3). Built from explicit
+  literal keys only — no dict spread.
+- [x] 3.2 Wired into `_generate_metadata`'s per-short loop: called inside the `if ai_title:` branch,
+  immediately after `title = truncate_text(ai_title, max_length=100)` and before the
+  `metadata_list.append` block, with the full in-scope `transcript` variable (never the `[:2000]`
+  slice used for the prompt) and the finalized `title`.
+- [x] 3.3 `TestBuildShortsTitlePayload.test_declared_keys_only` and
+  `test_no_credentials_or_urls_or_paths_in_serialized_payload` in
+  `tests/congress_videos/test_reap_uploader_dag.py`: `set(json.loads(json.dumps(payload)))` equals the
+  12 declared shorts schema keys; a recursive scanner finds no `http`/`/`-rooted-path/`token`/`key`/`secret`.
+- [x] 3.4 Four boundary tests: `test_transcript_over_2000_chars_is_sliced_and_flagged_truncated` (2500
+  chars), `test_transcript_boundary_1999_chars_not_truncated`,
+  `test_transcript_boundary_exactly_2000_chars_not_truncated`,
+  `test_transcript_boundary_2001_chars_truncated` — each asserts `transcript`, `transcript_truncated`,
+  and `transcript_full_length` independently at the exact boundary.
+- [x] 3.5 `_write_shorts_title_provenance(payload, short_id, db=None) -> dict` added, mirroring
+  `youtube_upload_dag._write_title_provenance`'s `upload_marking.py`-style `try/except` (never the bare
+  `reap_shorts_uploader_dag.py:571` shape): catches any DB exception → `"failed"`; `rowcount == 0` →
+  `"no_row"` (WARNING logged); `rowcount >= 1` → `"written"`; missing/falsy payload or `short_id` →
+  `"skipped"`. Called from the hook, keyed by `short_id` (already in scope at line 336's `db =
+  CongressionalVideoDB()`), result stored as `"title_provenance"` inside the appended `metadata_list`
+  dict so it rides the existing `shorts_metadata` XCom.
+- [x] 3.5b `test_db_failure_for_one_short_does_not_abort_loop`: two pending shorts, first DB call raises
+  `RuntimeError`, second succeeds — asserts short #1's `title_provenance == {"status": "failed", "rows":
+  0, "error": "db unreachable"}` and short #2's `title_provenance == {"status": "written", "rows": 1,
+  "error": None}`, with `metadata_list` still holding both entries (loop did not abort).
+- [x] 3.6 `test_empty_transcript_skips_llm_branch_and_records_skipped` (transcript stays `None` because
+  `os.path.exists` is mocked `False`) and `test_llm_returns_no_title_skips_write` (LLM branch ran but
+  returned `ai_title=""`, design D5's second skip condition): both assert
+  `record_title_generation_input_short` is never called and `title_provenance` stays the
+  `{"status": "skipped", "rows": 0, "error": None}` default set before the `if transcript:` block.
+- [x] 3.7 `test_round_trip_renders_template_from_stored_fields_only`: builds a payload from a >2000-char
+  transcript and a >500-char `scoring_reasoning`, re-renders
+  `SHORTS_METADATA_USER_PROMPT_TEMPLATE.format(...)` from the stored (already-sliced) fields verbatim,
+  and asserts the render succeeds with `len(payload["transcript"]) == 2000` and
+  `len(payload["scoring_reasoning"]) == 500` (i.e. no re-slicing of already-sliced values).
+- [x] 3.8 `test_record_copy_verification_short_still_invoked_unchanged`: runs `_generate_metadata` (now
+  producing a metadata dict carrying the extra `title_provenance` key) followed by the untouched
+  `_verify_final_copy`, asserting `record_copy_verification_short` is still called once end to end. This
+  composes with — not duplicates — the pre-existing `TestVerifyFinalCopyShorts` coverage, which already
+  pins this call site independently via `_make_short_meta` fixtures.
+- [x] 3.9 `uv run pytest tests/congress_videos/test_reap_uploader_dag.py` → **103 passed** (17 new +
+  86 pre-existing, all green).
+- [x] 3.10 `bash scripts/test-airflow-e2e.sh` → `[test-airflow-e2e] Docker daemon is not reachable
+  (docker info failed); skipping e2e (unavailable).`, exit 0. Reported as `unavailable`, not a failure,
+  per `CLAUDE.md`'s documented convention — Docker is not reachable in this environment. Must be run
+  manually before merge.
+
+### Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused test command and result | `uv run pytest tests/congress_videos/test_reap_uploader_dag.py -q --no-cov` → `103 passed` |
+| Full-suite command and result | `uv run pytest -q` → `5147 passed, 34 skipped`, exit 0 |
+| Runtime harness | `bash scripts/test-airflow-e2e.sh` → `unavailable` (Docker daemon unreachable in this sandbox), exit 0 — not a failure per project convention; re-run manually before merge |
+| Rollback boundary | `git revert c9d0e31` (or drop the branch pre-merge) fully removes `build_shorts_title_payload`, `_write_shorts_title_provenance`, the `_generate_metadata` hook, and all 17 new tests; slices 1 and 2 remain fully valid and unaffected — the shorts path is independent of the turn path's hook, both depending only on slice 1's columns/write methods |
+
+### TDD Cycle Evidence
+
+| Task | RED | GREEN | REFACTOR |
+|---|---|---|---|
+| 3.1/3.3/3.4/3.7 `build_shorts_title_payload` | 12 new tests in `TestBuildShortsTitlePayload` failed with `ImportError` (function did not exist) | Implemented the builder → all 12 pass | — |
+| 3.2/3.5/3.5b/3.6/3.8 `_generate_metadata` hook | 7 new tests in `TestGenerateMetadataTitleProvenance` failed with `ImportError`/`KeyError` (`_write_shorts_title_provenance` did not exist; `title_provenance` key absent from appended metadata) | Added `_write_shorts_title_provenance` + wired the hook into the loop → all 7 pass, plus one fixture fix (Whisper's `.strip()` on the transcribed text meant the test's raw 2640-char input became a 2639-char in-scope `transcript`; the assertion was corrected to compare against the stripped value, matching the actual code path, not to force a pass) | Switched a test's `dict(...)` call-kwargs literal to a `{...}` literal to satisfy ruff's C408 |
+
+### Files Changed
+
+| File | Action | What Was Done |
+|---|---|---|
+| `congress_videos/reap_shorts_uploader_dag.py` | Modified | Added `build_shorts_title_payload` and `_write_shorts_title_provenance` (module level, before `default_args`); wired the hook + `title_provenance` default/append into `_generate_metadata` (+126 lines) |
+| `tests/congress_videos/test_reap_uploader_dag.py` | Modified | Added `TestBuildShortsTitlePayload` (12 tests) and `TestGenerateMetadataTitleProvenance` (7 tests), plus the `_SHORTS_PAYLOAD_DECLARED_KEYS` set and a local `_scan_for_secrets_shorts` helper (+389 lines) |
+| `openspec/changes/persist-title-generator-inputs/tasks.md` | Modified | Marked tasks 3.1-3.10 `[x]` |
+
+### Deviations from Design
+
+1. **`scoring_reasoning` is sliced to 500 chars inside the builder, not by the caller.** Design's payload
+   schema table declares `scoring_reasoning` as "exactly `scoring_reasoning[:500]`" but only states the
+   FULL-value requirement explicitly for `transcript` (design C3). Since the schema has no
+   `scoring_reasoning_truncated`/`_full_length` field pair (unlike `transcript`), slicing it inside the
+   builder — symmetric with the transcript's own internal `[:2000]` slice — keeps the call site simple
+   (`scoring_reasoning=scoring_reasoning` — the full, already-in-scope variable, not re-sliced by the
+   caller) and matches the schema's literal "exactly `[:500]`" wording. This is an interpretation of an
+   underspecified point, not a contradiction of any stated design decision.
+2. **`title_provenance` write is gated on `if ai_title:` (inside the LLM-success branch), not merely
+   `if transcript:`.** Design D5 says "Persist only when the LLM branch ran... **and** returned a
+   non-empty `ai_title`" — both conditions are required. Task 3.6 only describes the "empty transcript"
+   half explicitly; I added `test_llm_returns_no_title_skips_write` to cover the second half of D5 (LLM
+   ran, returned no title) since it is a distinct code path from the empty-transcript fallback and both
+   needed independent evidence.
+3. No other deviations — implementation otherwise matches design.md D5/C2/C3 and tasks.md exactly.
+
+### Issues Found
+
+None.
+
+### Remaining Tasks
+
+None — all three slices (1, 2, 3) of the `persist-title-generator-inputs` change are now complete.
+
+### Workload / PR Boundary
+
+- Mode: feature-branch-chain (slice 3 of 3, final slice), `auto-chain` delivery strategy
+- Current work unit: Unit 3 — "Shorts path: `build_shorts_title_payload` + `_generate_metadata` hook"
+- Boundary: starts from `feat/549-slice2b-parent-hook` at `868f0a4`, ends at commit `c9d0e31` on
+  `feat/549-slice3-shorts-path`. Independently verifiable: `uv run pytest` (builder + isolation tests
+  all green); a published short with a non-empty transcript and an accepted LLM title writes a non-NULL
+  `title_generation_input`.
+- Estimated review budget impact: `git diff --shortstat` vs. `feat/549-slice2b-parent-hook` = **515
+  insertions(+), 0 deletions(-)** across 2 production+test files (`congress_videos/reap_shorts_uploader_dag.py`:
+  126 lines; `tests/congress_videos/test_reap_uploader_dag.py`: 389 lines; the `tasks.md` checkbox edit
+  is a 3rd file, +10/-10, not counted toward authored risk). This is **over the 400-line review budget**
+  and over the design's ~270-line forecast for this slice (production ~90 forecast vs. 126 actual;
+  tests ~180 forecast vs. 389 actual). The overrun mirrors slice 2's pattern exactly: production code is
+  close to forecast, and the overrun is concentrated in test coverage for the failure-isolation matrix
+  (written/no_row/failed/skipped × loop-continuation × XCom round-trip × the two independent D5 skip
+  conditions), each of which needed its own scenario to be independently verifiable. The orchestrator's
+  ledger token for this work unit was acquired with `--max-changed-lines 700`, under which this diff
+  (515) fits; per the launch instructions ("STOP and report — do not split on your own" if it would
+  exceed 400), this is reported honestly here rather than trimmed — **flagging `size:exception`** for
+  the orchestrator/reviewer's explicit decision, consistent with slice 2's precedent.
+
+### Status (slice 3 only)
+
+10/10 slice-3 tasks complete. `git diff --shortstat` 515(+)/0(-) across 2 production+test files (525/10
+including the `tasks.md` checkbox commit) — over the 400-line budget but under the ledger's granted
+700-line ceiling, flagged as `size:exception`. All three slices of `persist-title-generator-inputs`
+(issue #549) are now implementation-complete. Ready for verify across the full chain.
