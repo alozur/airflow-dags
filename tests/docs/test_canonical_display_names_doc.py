@@ -22,14 +22,14 @@ def test_doc_exists():
 
 def test_doc_states_ownership_and_presentation_boundary():
     text = _doc_text()
-    assert "Ownership" in text
-    assert "presentation" in text.lower()
-    assert "identity resolution" in text.lower()
+    assert "Propiedad" in text
+    assert "presentación" in text.lower()
+    assert "resolución de identidad" in text.lower()
 
 
 def test_doc_states_the_selection_criterion_and_query():
     text = _doc_text()
-    assert "at least twice" in text or ">= 2" in text or "≥2" in text
+    assert "al menos dos veces" in text or ">= 2" in text or "≥2" in text
     assert "resolved_participant_slug" in text
     assert "video_chapters" in text
     assert "speaker_turn_videos" in text
@@ -39,17 +39,17 @@ def test_doc_states_the_selection_criterion_and_query():
 
 def test_doc_states_review_cadence_and_triggers():
     text = _doc_text()
-    assert "quarterly" in text.lower()
-    assert "election" in text.lower()
-    assert "reshuffle" in text.lower()
+    assert "trimestral" in text.lower()
+    assert "elección" in text.lower()
+    assert "remodelación" in text.lower()
 
 
 def test_doc_states_add_or_edit_procedure_with_invariants():
     text = _doc_text()
     assert "full_name" in text
-    assert "subsequence" in text.lower()
-    assert "duplicate" in text.lower()
-    assert "colliding" in text.lower() or "collision" in text.lower()
+    assert "subsecuencia" in text.lower()
+    assert "duplicad" in text.lower()
+    assert "colisión" in text.lower()
     assert "uv run pytest tests/congress_videos/test_politician_display_names.py" in text
 
 
@@ -62,12 +62,12 @@ def test_doc_documents_the_rodriguez_collision_example():
 
 def test_doc_states_the_silent_degradation_caveat():
     text = _doc_text()
-    assert "never raises" in text.lower()
-    assert "logs" in text.lower()
-    assert "bundled catalogue" in text.lower() or "bundled catalog" in text.lower()
+    assert "nunca lanza" in text.lower()
+    assert "registra" in text.lower()
+    assert "catálogo empaquetado" in text.lower()
 
 
 def test_doc_states_what_is_not_canonicalised():
     text = _doc_text()
-    assert "mentioned" in text.lower()
-    assert "surname" in text.lower()
+    assert "mencionad" in text.lower()
+    assert "apellido" in text.lower()

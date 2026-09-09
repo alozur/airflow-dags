@@ -1,36 +1,37 @@
-# Canonical politician display names
+# Nombres públicos canónicos de políticos
 
-How the curated slug → public-name catalogue
-(`congress_videos/catalogs/politician_display_names.v1.json`) is scoped,
-reviewed, and extended. See
+Cómo se acota, revisa y amplía el catálogo curado slug → nombre público
+(`congress_videos/catalogs/politician_display_names.v1.json`). Consulta
 [`openspec/changes/canonical-politician-display-names/design.md`](../openspec/changes/canonical-politician-display-names/design.md)
-for the module design and consumer wiring; this doc only covers what changes
-after that PR ships — keeping the catalogue correct.
+para el diseño del módulo y el cableado de los consumidores; este documento
+solo cubre lo que cambia después de que esa PR se integre — mantener el
+catálogo correcto.
 
-## Ownership and scope
+## Propiedad y alcance
 
-The catalogue is a **presentation** concern: it decides what a title or
-thumbnail *renders* for a politician who has already been identified. It is
-deliberately separate from identity resolution — a participant's canonical
-identity is always the `congress_participants.slug` produced upstream, and
-that slug never changes because of this catalogue. `canonical_display_name`
-only maps an already-resolved slug to a preferred short public name; it never
-participates in deciding who a speaker is.
+El catálogo es una cuestión de **presentación**: decide qué renderiza un
+título o una miniatura para un político que ya ha sido identificado. Está
+deliberadamente separado de la resolución de identidad — la identidad
+canónica de un participante siempre es el `congress_participants.slug`
+producido aguas arriba, y ese slug nunca cambia por culpa de este catálogo.
+`canonical_display_name` solo mapea un slug ya resuelto a un nombre público
+corto preferido; nunca participa en decidir quién es un orador.
 
-The `congress_videos` maintainer owns the catalogue. Any change to
-`politician_display_names.v1.json` needs a PR, like any other code change —
-there is no separate approval process.
+El mantenedor de `congress_videos` es el propietario del catálogo. Cualquier
+cambio en `politician_display_names.v1.json` necesita una PR, como cualquier
+otro cambio de código — no hay un proceso de aprobación aparte.
 
-## The initial roster and its selection criterion
+## El listado inicial y su criterio de selección
 
-The criterion is mechanical and reproducible, not editorial: **a participant
-is in the roster if they appeared at least twice across
-`video_chapters.resolved_participant_slug` and
-`speaker_turn_videos.resolved_participant_slug`.** Editorial judgment only
-picks the *display form* for each admitted slug (e.g. a bare surname vs. a
-disambiguated "First Surname") — it never decides who is admitted.
+El criterio es mecánico y reproducible, no editorial: **un participante entra
+en el listado si ha aparecido al menos dos veces entre
+`video_chapters.resolved_participant_slug` y
+`speaker_turn_videos.resolved_participant_slug`.** El juicio editorial solo
+elige la *forma de presentación* para cada slug admitido (por ejemplo, un
+apellido a secas frente a un "Nombre Apellido" desambiguado) — nunca decide
+quién es admitido.
 
-Re-derive the candidate set with:
+Puedes recalcular el conjunto de candidatos con:
 
 ```sql
 SELECT slug, COUNT(*) AS appearances
@@ -50,88 +51,95 @@ HAVING COUNT(*) >= 2
 ORDER BY appearances DESC;
 ```
 
-As of authoring (2026-09-09), this query returns **11 people out of only 21**
-who have ever appeared with a resolved slug at all. The other 10 resolved
-slugs appeared once and are correctly absent from the catalogue — one
-appearance is not enough evidence that a curated short form is worth the
-editorial debt it creates (see below).
+En el momento de redactar esto (2026-09-09), esta consulta devuelve **11
+personas de solo 21** que han aparecido alguna vez con un slug resuelto. Los
+otros 10 slugs resueltos aparecieron una sola vez y están correctamente
+ausentes del catálogo — una sola aparición no es evidencia suficiente de que
+una forma corta curada merezca la deuda editorial que crea (ver más abajo).
 
-## Review cadence
+## Cadencia de revisión
 
-Review the catalogue **quarterly**, and immediately after either of these
-triggers:
+Revisa el catálogo **trimestralmente**, e inmediatamente después de
+cualquiera de estos disparadores:
 
-- **A general election.** Party leadership and prominence can shift enough
-  that a previously-safe bare surname (or the editorial judgment behind it)
-  is no longer accurate.
-- **A cabinet reshuffle.** A minister's portfolio changing affects whether a
-  short form still reads as unambiguous and current.
+- **Unas elecciones generales.** El liderazgo y la relevancia de los partidos
+  pueden cambiar lo suficiente como para que un apellido a secas antes seguro
+  (o el juicio editorial detrás de él) deje de ser preciso.
+- **Una remodelación de gobierno.** Que cambie la cartera de un ministro
+  afecta a si una forma corta sigue leyéndose como inequívoca y vigente.
 
-Both triggers exist because curated short forms are **editorial debt by
-design**: `full_name` and the token-subsequence rule (below) only prevent an
-*invented* shortened form, they cannot detect that a form is *stale*. Only a
-human review catches that.
+Ambos disparadores existen porque las formas cortas curadas son **deuda
+editorial por diseño**: `full_name` y la regla de subsecuencia de tokens (más
+abajo) solo evitan una forma abreviada *inventada*, no pueden detectar que una
+forma esté *desactualizada*. Solo una revisión humana detecta eso.
 
-## How to add or change a mapping
+## Cómo añadir o cambiar un mapeo
 
-1. Add or edit an entry in `congress_videos/catalogs/politician_display_names.v1.json`.
-   Each entry needs `participant_slug`, `display_name`, `full_name`,
-   `ambiguous`, `selection_note` (state the appearance count and why the
-   short form is safe), and a complete `provenance` block (`publisher`,
+1. Añade o edita una entrada en
+   `congress_videos/catalogs/politician_display_names.v1.json`. Cada entrada
+   necesita `participant_slug`, `display_name`, `full_name`, `ambiguous`,
+   `selection_note` (indica el número de apariciones y por qué la forma
+   corta es segura) y un bloque `provenance` completo (`publisher`,
    `reference_url`, `evidence_note`, `reviewed_on`).
-2. The loader (`congress_videos/modules/politician_display_names.py`) enforces
-   these invariants at load time — a violation raises `CatalogValidationError`
-   and fails DAG import loudly:
-   - **`full_name` subsequence rule**: the normalized `display_name` must be
-     a token subsequence of the normalized `full_name`. This is what
-     mechanically prevents inventing a shortened form that isn't actually
-     derived from the person's real name — every token in `display_name`
-     must appear, in order, inside `full_name`.
-   - **No duplicate `participant_slug`** across all entries — a hard failure.
-   - **No colliding normalized `display_name`** over the resolvable
-     (non-`ambiguous`) set — a hard failure. Two different people must never
-     render the same short name.
-3. Run the catalogue test suite before opening a PR:
+2. El cargador (`congress_videos/modules/politician_display_names.py`)
+   impone estos invariantes en el momento de carga — una violación lanza
+   `CatalogValidationError` y hace fallar la importación del DAG de forma
+   ruidosa:
+   - **Regla de subsecuencia de `full_name`**: el `display_name` normalizado
+     debe ser una subsecuencia de tokens del `full_name` normalizado. Esto es
+     lo que evita mecánicamente inventar una forma abreviada que en realidad
+     no se derive del nombre real de la persona — cada token de
+     `display_name` debe aparecer, en orden, dentro de `full_name`.
+   - **Sin `participant_slug` duplicado** entre todas las entradas — un
+     fallo obligatorio.
+   - **Sin `display_name` normalizado en colisión** dentro del conjunto
+     resoluble (no `ambiguous`) — un fallo obligatorio. Dos personas
+     distintas nunca deben renderizar el mismo nombre corto.
+3. Ejecuta la suite de tests del catálogo antes de abrir una PR:
 
    ```
    uv run pytest tests/congress_videos/test_politician_display_names.py
    ```
 
-### Worked example: the `Rodríguez` collision
+### Ejemplo resuelto: la colisión de `Rodríguez`
 
-`isabel-rodriguez-garcia` and `javier-rodriguez-palacios` both reduce to a
-bare surname of `Rodríguez` — the collision rule rejects mapping either of
-them to plain `Rodríguez`. Both are instead disambiguated with a first name
-(`Isabel Rodríguez`, `Javier Rodríguez`). A third person with the same
-surname, `jose-antonio-rodriguez-salas`, is deliberately **outside** the
-roster (below the ≥2-appearance threshold) and simply falls back to full-name
-behaviour. This is the concrete case the collision rule and the appearance
-threshold exist to handle — read it before adding any new `Rodríguez`,
-`García`, or other common-surname entry.
+`isabel-rodriguez-garcia` y `javier-rodriguez-palacios` se reducen ambos a un
+apellido a secas `Rodríguez` — la regla de colisión rechaza mapear a
+cualquiera de los dos como `Rodríguez` a secas. Ambos se desambiguan en su
+lugar con un nombre de pila (`Isabel Rodríguez`, `Javier Rodríguez`). Una
+tercera persona con el mismo apellido, `jose-antonio-rodriguez-salas`, queda
+deliberadamente **fuera** del listado (por debajo del umbral de ≥2
+apariciones) y simplemente recae en el comportamiento de nombre completo.
+Este es el caso concreto que la regla de colisión y el umbral de apariciones
+existen para gestionar — léelo antes de añadir cualquier entrada nueva de
+`Rodríguez`, `García` u otro apellido común.
 
-## Silent-degradation caveat
+## Advertencia de degradación silenciosa
 
-`canonical_display_name` **never raises** and the catalogue loads **lazily**
-(on first call, cached per process). This means a broken bundled catalogue —
-malformed JSON, a duplicate slug, a collision — does **not** fail DAG import.
-It silently degrades: every call returns `None`, every consumer falls back to
-its pre-existing full-name behaviour, and the failure is logged as a single
-`ERROR` the first time it's hit.
+`canonical_display_name` **nunca lanza** excepciones y el catálogo se carga
+de forma **perezosa** (en la primera llamada, con caché por proceso). Esto
+significa que un catálogo empaquetado roto — JSON malformado, un slug
+duplicado, una colisión — **no** hace fallar la importación del DAG. Se
+degrada silenciosamente: toda llamada devuelve `None`, todo consumidor recae
+en su comportamiento previo de nombre completo, y el fallo se registra como
+un único `ERROR` la primera vez que ocurre.
 
-Because of that silent fallback, **the bundled-catalogue CI test
-(`tests/congress_videos/test_politician_display_names.py`, the case that
-loads the real `politician_display_names.v1.json`) is the real gate.** It
-must never be skipped or weakened — it is the only thing that turns a broken
-catalogue into a loud CI failure instead of a silent, unnoticed regression in
-production titles.
+Debido a ese fallback silencioso, **el test de CI del catálogo empaquetado
+(`tests/congress_videos/test_politician_display_names.py`, el caso que carga
+el `politician_display_names.v1.json` real) es la verdadera puerta de
+control.** Nunca debe omitirse ni debilitarse — es lo único que convierte un
+catálogo roto en un fallo de CI ruidoso en lugar de una regresión silenciosa
+e inadvertida en los títulos en producción.
 
-## What is deliberately not canonicalised
+## Qué se deja deliberadamente sin canonicalizar
 
-- **Mentioned people always render their full name.** The catalogue is only
-  ever consulted for the resolved subject of a title, thumbnail, or short —
-  never for a person merely referenced in speech.
-- **A bare surname is only safe for the subject of the video.** Rendering a
-  bare surname for someone who is merely mentioned would be far more likely
-  to be ambiguous or misleading than for the identified speaker the content
-  is actually about, which is why wiring never routes a mentioned-person slug
-  through `canonical_display_name`.
+- **Las personas mencionadas siempre renderizan su nombre completo.** El
+  catálogo solo se consulta para el sujeto resuelto de un título, una
+  miniatura o un short — nunca para una persona simplemente referenciada al
+  hablar.
+- **Un apellido a secas solo es seguro para el sujeto del vídeo.** Renderizar
+  un apellido a secas para alguien simplemente mencionado sería mucho más
+  propenso a resultar ambiguo o engañoso que para el orador identificado
+  sobre el que trata realmente el contenido, por lo que el cableado nunca
+  enruta el slug de una persona mencionada a través de
+  `canonical_display_name`.
