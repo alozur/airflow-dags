@@ -1,15 +1,11 @@
-"""Pure final-copy verifier core (issue #512, design.md slice 2a).
+"""Final-copy verifier module (issue #512, design.md).
 
 Implements the verdict schema, defensive response parsing, evidence
-containment and the bounded-correction contract (design.md D1, D2, D3).
-Never raises (module convention: ``mentioned_people_resolution.py``).
-
-Deferred to slice 2b: the two prompt constants in ``ai_prompts.py`` and the
-public ``verify_final_copy`` wrapper that renders them and defaults
-``completion_fn`` to ``utils.llm_cache.cached_json_completion``. Until then
-:func:`run_correction_round` is the tested seam: its ``call_round`` callback
-takes the place of a completion_fn+prompt pair, so this module needs no
-prompt content to be fully exercised. This module is NOT wired into any DAG.
+containment, the bounded-correction contract (design.md D1, D2, D3) and the
+public :func:`verify_final_copy` entry point that composes them with the two
+prompt constants in ``ai_prompts.py`` (D6). Never raises (module convention:
+``mentioned_people_resolution.py``). This module is NOT wired into any DAG
+yet — that is slices 3/4.
 """
 
 from __future__ import annotations
@@ -20,6 +16,12 @@ import re
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
+
+from congress_videos.config.ai_prompts import (
+    FINAL_COPY_VERIFICATION_SYSTEM_PROMPT,
+    FINAL_COPY_VERIFICATION_USER_TEMPLATE,
+)
+from utils.llm_config import LLM_DEFAULT
 
 MAX_CORRECTION_ROUNDS: int = 1
 """Rounds beyond the initial call. No loop construct exists in this module:
@@ -51,8 +53,7 @@ class CopyFinding:
 
 @dataclass(frozen=True)
 class CopyVerdict:
-    """Return value of :func:`run_correction_round` (and, in slice 2b,
-    ``verify_final_copy``)."""
+    """Return value of :func:`verify_final_copy` and :func:`run_correction_round`."""
 
     ok: bool = False
     """False means inconclusive — NEVER treat as pass."""
@@ -211,12 +212,86 @@ def is_contained(
 
 
 def compute_content_version(*, title: str, description: str, thumbnail_text: str | None, evidence: dict) -> str:
-    """sha256 of the same canonical payload the eventual (slice 2b) user
-    prompt renders from, so the content version and the LLM cache key move
-    in lockstep (design.md D3)."""
+    """sha256 of the same canonical payload the user prompt renders from
+    (:func:`verify_final_copy`), so the content version and the LLM cache key
+    move in lockstep (design.md D3)."""
     payload = {"title": title, "description": description, "thumbnail_text": thumbnail_text, "evidence": evidence}
     serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _render_copy_block(title: str, description: str, thumbnail_text: str | None) -> str:
+    """Render title/description/thumbnail as separate labelled fields (design.md
+    D6/D5) — thumbnail text is included only when supplied, matching the
+    upstream ``art_direction_brief`` NULL/legacy-string omission rule."""
+    lines = [f"Título: {title}", f"Descripción: {description}"]
+    if thumbnail_text is not None:
+        lines.append(f"Texto de miniatura: {thumbnail_text}")
+    return "\n".join(lines)
+
+
+def verify_final_copy(
+    *,
+    title: str,
+    description: str,
+    thumbnail_text: str | None = None,
+    evidence: dict,
+    completion_fn: Callable | None = None,
+) -> CopyVerdict:
+    """Verify publication copy against trusted evidence. NEVER raises.
+
+    Thin wrapper (design.md D6/D7 interface): renders the two
+    ``FINAL_COPY_VERIFICATION_*`` prompts into a ``call_round(title,
+    description)`` closure and delegates the bounded-correction contract
+    entirely to :func:`run_correction_round`. Thumbnail text is verified and
+    reported but, per the system prompt, is never corrected.
+
+    Args:
+        completion_fn: Optional override for the LLM completion call, same
+            shape as ``cached_json_completion`` — ``(system_prompt,
+            user_prompt, model=..., **kw) -> {"data": ..., "error": ...}``.
+            Defaults to ``utils.llm_cache.cached_json_completion`` with
+            ``model=LLM_DEFAULT``.
+
+    Returns:
+        ``CopyVerdict(ok=False)`` on any failure or malformed response;
+        callers then publish the ``title``/``description`` they passed in.
+    """
+    try:
+        return _verify_inner(title, description, thumbnail_text, evidence, completion_fn)
+    except Exception:  # noqa: BLE001
+        return CopyVerdict(title=title, description=description)
+
+
+def _verify_inner(
+    title: str,
+    description: str,
+    thumbnail_text: str | None,
+    evidence: dict,
+    completion_fn: Callable | None,
+) -> CopyVerdict:
+    content_version = compute_content_version(
+        title=title, description=description, thumbnail_text=thumbnail_text, evidence=evidence
+    )
+
+    if completion_fn is None:
+        from utils.llm_cache import cached_json_completion
+
+        completion_fn = cached_json_completion
+
+    def call_round(candidate_title: str, candidate_description: str) -> dict:
+        copy_block = _render_copy_block(candidate_title, candidate_description, thumbnail_text)
+        evidence_block = json.dumps(evidence, sort_keys=True, ensure_ascii=False, default=str)
+        user_prompt = FINAL_COPY_VERIFICATION_USER_TEMPLATE.format(copy_block=copy_block, evidence_block=evidence_block)
+        return completion_fn(FINAL_COPY_VERIFICATION_SYSTEM_PROMPT, user_prompt, model=LLM_DEFAULT)
+
+    return run_correction_round(
+        original_title=title,
+        original_description=description,
+        evidence=evidence,
+        call_round=call_round,
+        content_version=content_version,
+    )
 
 
 def run_correction_round(

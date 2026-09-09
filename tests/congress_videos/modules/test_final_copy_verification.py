@@ -7,8 +7,15 @@ containment) and D3 (content versioning).
 Slice 2a scope: the tested seam is ``run_correction_round``, whose injected
 ``call_round(title, description)`` stands in for "render the prompt and call
 completion_fn once" — the two prompt constants and the public
-``verify_final_copy`` wrapper are deferred to slice 2b, so this module needs
-no prompt content to be fully exercised.
+``verify_final_copy`` wrapper were deferred to slice 2b.
+
+Slice 2b adds the two prompt constants (design.md D6) and the public
+``verify_final_copy`` wrapper. Per design.md's Testing Strategy ("never
+module internals"), the ``TestVerifyFinalCopyPublicSeam`` class below tests
+through that public seam with an injected ``completion_fn`` shaped like
+``cached_json_completion`` (``(system_prompt, user_prompt, model=..., **kw)
+-> {"data": ..., "error": ...}``) — most branch coverage already lives in
+the slice 2a tests above, exercised through ``run_correction_round``.
 """
 
 from __future__ import annotations
@@ -59,6 +66,29 @@ def _correctable_response(corrected_title=None, corrected_description=None, find
 
 def _reject_response(findings=None):
     return {"data": {"verdict": "reject", "findings": findings or [], "corrected": None}, "error": None}
+
+
+def _completion_stub(response, calls=None):
+    """Stub matching cached_json_completion's shape: (system_prompt,
+    user_prompt, model=..., **kw) -> {"data": ..., "error": ...}."""
+    call_log = calls if calls is not None else []
+
+    def _fn(system_prompt, user_prompt, model=None, **kw):
+        call_log.append((system_prompt, user_prompt, model))
+        return response
+
+    return _fn
+
+
+def _completion_sequenced(responses, calls=None):
+    call_log = calls if calls is not None else []
+    remaining = list(responses)
+
+    def _fn(system_prompt, user_prompt, model=None, **kw):
+        call_log.append((system_prompt, user_prompt, model))
+        return remaining.pop(0) if remaining else {"data": None, "error": "exhausted"}
+
+    return _fn
 
 
 class TestConsistentCopyPasses:
@@ -406,3 +436,121 @@ class TestNeverRaises:
 
         assert result.ok is False
         assert (result.title, result.description) == ("T", "D")
+
+
+class TestPinnedPromptContent:
+    """Guards design.md D6's exact prompt text against silent drift."""
+
+    def test_system_prompt_states_the_no_invention_rule(self):
+        from congress_videos.config.ai_prompts import FINAL_COPY_VERIFICATION_SYSTEM_PROMPT
+
+        assert "No inventes identidades" in FINAL_COPY_VERIFICATION_SYSTEM_PROMPT
+
+    def test_system_prompt_states_the_party_variant_rule(self):
+        from congress_videos.config.ai_prompts import FINAL_COPY_VERIFICATION_SYSTEM_PROMPT
+
+        assert "PSC-PSOE" in FINAL_COPY_VERIFICATION_SYSTEM_PROMPT
+        assert "PSE-EE (PSOE)" in FINAL_COPY_VERIFICATION_SYSTEM_PROMPT
+
+    def test_system_prompt_never_corrects_thumbnail_text(self):
+        from congress_videos.config.ai_prompts import FINAL_COPY_VERIFICATION_SYSTEM_PROMPT
+
+        assert "NUNCA se corrige" in FINAL_COPY_VERIFICATION_SYSTEM_PROMPT
+
+    def test_user_template_names_title_description_and_thumbnail_as_separate_fields(self):
+        from congress_videos.modules.final_copy_verification import verify_final_copy
+
+        calls = []
+        verify_final_copy(
+            title="T",
+            description="D",
+            thumbnail_text="Miniatura",
+            evidence=_evidence(),
+            completion_fn=_completion_stub(_pass_response(), calls=calls),
+        )
+
+        _, user_prompt, _ = calls[0]
+        assert "Título" in user_prompt
+        assert "Descripción" in user_prompt
+        assert "miniatura" in user_prompt.lower()
+
+
+class TestVerifyFinalCopyPublicSeam:
+    """Integration tests through the public seam (design.md's confirmed seam,
+    "never module internals"). Branch coverage for the bounded-correction
+    contract already lives in the slice 2a classes above via
+    ``run_correction_round``; these tests confirm the wiring."""
+
+    def test_pass_verdict(self):
+        from congress_videos.modules.final_copy_verification import verify_final_copy
+
+        result = verify_final_copy(
+            title="Título correcto",
+            description="Descripción correcta",
+            evidence=_evidence(),
+            completion_fn=_completion_stub(_pass_response()),
+        )
+
+        assert result.ok is True
+        assert result.verdict == "pass"
+        assert (result.title, result.description) == ("Título correcto", "Descripción correcta")
+        assert result.content_version != ""
+
+    def test_correctable_verdict_gets_corrected(self):
+        from congress_videos.modules.final_copy_verification import verify_final_copy
+
+        round0 = _correctable_response(corrected_title="Sánchez responde", corrected_description="Descripción original")
+        result = verify_final_copy(
+            title="Sanchez responde",
+            description="Descripción original",
+            evidence=_evidence(),
+            completion_fn=_completion_sequenced([round0, _pass_response()]),
+        )
+
+        assert result.ok is True
+        assert result.title == "Sánchez responde"
+        assert result.correction_applied is True
+
+    def test_inconclusive_verdict_on_malformed_output(self):
+        from congress_videos.modules.final_copy_verification import verify_final_copy
+
+        response = {"data": {"verdict": "maybe-not-real"}, "error": None}
+        result = verify_final_copy(
+            title="T", description="D", evidence=_evidence(), completion_fn=_completion_stub(response)
+        )
+
+        assert result.ok is False
+        assert (result.title, result.description) == ("T", "D")
+
+    def test_verifier_failure_never_raises_and_publishes_original(self):
+        from congress_videos.modules.final_copy_verification import verify_final_copy
+
+        def _raising(system_prompt, user_prompt, model=None, **kw):
+            raise TimeoutError("upstream timed out")
+
+        result = verify_final_copy(title="T", description="D", evidence=_evidence(), completion_fn=_raising)
+
+        assert result.ok is False
+        assert (result.title, result.description) == ("T", "D")
+
+    def test_default_completion_fn_resolves_to_cached_json_completion_with_llm_default(self, monkeypatch):
+        from congress_videos.modules.final_copy_verification import verify_final_copy
+        from utils.llm_config import LLM_DEFAULT
+
+        calls = []
+
+        def _fake(system_prompt, user_prompt, model=None, **kw):
+            calls.append((system_prompt, user_prompt, model, kw))
+            return _pass_response()
+
+        monkeypatch.setattr("utils.llm_cache.cached_json_completion", _fake)
+
+        result = verify_final_copy(title="T", description="D", evidence=_evidence())
+
+        assert result.ok is True
+        assert len(calls) == 1
+        _, _, model, kw = calls[0]
+        assert model == LLM_DEFAULT
+        assert "temperature" not in kw
+        assert "max_tokens" not in kw
+        assert "max_completion_tokens" not in kw
