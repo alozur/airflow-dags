@@ -4022,3 +4022,179 @@ def _is_json(value: str) -> bool:
         return True
     except (ValueError, TypeError):
         return False
+
+
+# ---------------------------------------------------------------------------
+# build_turn_title_payload (issue #549)
+# ---------------------------------------------------------------------------
+
+_TURN_PAYLOAD_DECLARED_KEYS = {
+    "generator",
+    "schema_version",
+    "summary",
+    "best",
+    "sibling_titles",
+    "key_speakers",
+    "forbidden_title",
+    "participant_slug",
+    "title",
+}
+
+
+def _scan_for_secrets(value: object) -> list[str]:
+    """Recursively collect string leaves that look like a URL/path/credential."""
+    hits: list[str] = []
+
+    def _walk(node: object) -> None:
+        if isinstance(node, dict):
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                _walk(v)
+        elif isinstance(node, str):
+            low = node.lower()
+            if "http" in low or node.startswith("/") or any(w in low for w in ("token", "key", "secret")):
+                hits.append(node)
+
+    _walk(value)
+    return hits
+
+
+class TestBuildTurnTitlePayload:
+    """build_turn_title_payload assembles an allowlisted, credential-free
+    record of generate_title's inputs plus the resulting title (issue #549)."""
+
+    def _best(self, **overrides) -> dict:
+        base = {
+            "label": "option_a",
+            "style": "Estilo A",
+            "prompt": "A gold border thumbnail prompt",
+            "local_path": "/thumbnails/42/option_a.png",
+            "output_url": "https://pikzels.com/out/option_a.png",
+            "main_score": 90.0,
+        }
+        base.update(overrides)
+        return base
+
+    def test_declared_keys_only(self):
+        """Scenario 6.1 (turn half): serialized payload has exactly the declared schema keys."""
+        from congress_videos.modules.thumbnail_generation import build_turn_title_payload
+
+        payload = build_turn_title_payload(
+            "Resumen del debate",
+            self._best(),
+            "Un título generado",
+            sibling_titles=["Título anterior 1"],
+            key_speakers=["Ana García"],
+            forbidden_title="Título prohibido",
+            participant_slug="ana-garcia",
+        )
+
+        serialized = json.loads(json.dumps(payload))
+        assert set(serialized) == _TURN_PAYLOAD_DECLARED_KEYS
+
+    def test_no_credentials_or_urls_or_paths_in_serialized_payload(self):
+        """Scenario 6.1 (turn half): recursive scan finds no http/path/token/key/secret."""
+        from congress_videos.modules.thumbnail_generation import build_turn_title_payload
+
+        payload = build_turn_title_payload(
+            "Resumen del debate",
+            self._best(),
+            "Un título generado",
+            sibling_titles=["Título anterior 1"],
+            key_speakers=["Ana García"],
+            forbidden_title="Título prohibido",
+            participant_slug="ana-garcia",
+        )
+
+        serialized = json.loads(json.dumps(payload))
+        assert _scan_for_secrets(serialized) == []
+
+    def test_best_drops_local_path_and_asset_url(self):
+        """best is reduced to {label, style, prompt} only."""
+        from congress_videos.modules.thumbnail_generation import build_turn_title_payload
+
+        payload = build_turn_title_payload("Resumen", self._best(), "Título")
+
+        assert payload["best"] == {
+            "label": "option_a",
+            "style": "Estilo A",
+            "prompt": "A gold border thumbnail prompt",
+        }
+        assert "local_path" not in payload["best"]
+        assert "output_url" not in payload["best"]
+
+    def test_key_speakers_dict_entries_reduce_to_names_only(self):
+        """key_speakers dict entries (e.g. carrying photo_url) reduce to their name."""
+        from congress_videos.modules.thumbnail_generation import build_turn_title_payload
+
+        payload = build_turn_title_payload(
+            "Resumen",
+            self._best(),
+            "Título",
+            key_speakers=[
+                "Ana García",
+                {"name": "Luis Pérez", "photo_url": "https://example.com/luis.jpg", "slug": "luis-perez"},
+                {"no_name_key": "x"},
+                42,
+            ],
+        )
+
+        assert payload["key_speakers"] == ["Ana García", "Luis Pérez"]
+        assert _scan_for_secrets(payload["key_speakers"]) == []
+
+    def test_empty_sibling_titles_and_key_speakers_normalise_to_none(self):
+        from congress_videos.modules.thumbnail_generation import build_turn_title_payload
+
+        payload = build_turn_title_payload(
+            "Resumen",
+            self._best(),
+            "Título",
+            sibling_titles=[],
+            key_speakers=[],
+        )
+
+        assert payload["sibling_titles"] is None
+        assert payload["key_speakers"] is None
+
+    def test_literal_generator_and_schema_version(self):
+        from congress_videos.modules.thumbnail_generation import build_turn_title_payload
+
+        payload = build_turn_title_payload("Resumen", self._best(), "Título")
+
+        assert payload["generator"] == "turn_title"
+        assert payload["schema_version"] == 1
+
+    def test_round_trip_replays_generate_title_from_stored_fields_only(self, mocker):
+        """Scenario 4.1 (turn half): the stored payload alone is enough to
+        replay generate_title — no live-worktree read, no fetch_recent_history
+        re-call."""
+        from congress_videos.modules.thumbnail_generation import build_turn_title_payload, generate_title
+
+        payload = build_turn_title_payload(
+            "Resumen del debate",
+            self._best(),
+            "Un título generado",
+            sibling_titles=["Título anterior 1"],
+            key_speakers=["Ana García"],
+            forbidden_title="Título prohibido distinto",
+            participant_slug="ana-garcia",
+        )
+
+        mock_request = mocker.patch(
+            "congress_videos.modules.thumbnail_generation._request_title",
+            return_value="Un título replayado",
+        )
+
+        replayed = generate_title(
+            payload["summary"],
+            payload["best"],
+            sibling_titles=payload["sibling_titles"],
+            key_speakers=payload["key_speakers"],
+            forbidden_title=payload["forbidden_title"],
+            participant_slug=payload["participant_slug"],
+        )
+
+        assert replayed == "Un título replayado"
+        mock_request.assert_called_once()

@@ -584,7 +584,75 @@ class TestTaskThumbnailResult:
             "success": True,
             "output_path": "/thumbnails/42/option_a.png",
             "title": "A title for upload",
+            "title_generation_input": {
+                "generator": "turn_title",
+                "schema_version": 1,
+                "summary": _FAKE_CONF["debate_summary"],
+                "best": {"label": "", "style": "", "prompt": ""},
+                "sibling_titles": None,
+                "key_speakers": None,
+                "forbidden_title": None,
+                "participant_slug": _FAKE_CONF["slug"],
+                "title": "A title for upload",
+            },
         }
+
+    def test_pulls_fetch_recent_history_and_forwards_sibling_titles(self) -> None:
+        """title_generation_input.sibling_titles must come from fetch_recent_history."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "choose_best_option": {"local_path": "/thumbnails/42/option_a.png"},
+                "generate_title": "A title for upload",
+                "fetch_recent_history": {"briefs": [], "titles": ["Título anterior"]},
+            }
+        )
+
+        result = dag_mod._task_thumbnail_result(ti)
+
+        assert result["title_generation_input"]["sibling_titles"] == ["Título anterior"]
+
+    def test_title_generation_input_none_when_title_is_none(self) -> None:
+        """No title generated (E-2 path) -> no payload is built."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "choose_best_option": {"local_path": "/thumbnails/42/option_a.png"},
+                "generate_title": None,
+            }
+        )
+
+        result = dag_mod._task_thumbnail_result(ti)
+
+        assert result["title_generation_input"] is None
+
+
+class TestTaskGenerateTitleReturnTypeUnchanged:
+    """Contract test (task 2.4): widening the return dict of
+    _task_thumbnail_result must never widen _task_generate_title's bare
+    str return type — both _task_persist_results and _task_thumbnail_result
+    still pull it as task_ids="generate_title" and expect str | None."""
+
+    def test_task_generate_title_returns_bare_str(self, mocker) -> None:
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "choose_best_option": {"local_path": "/thumbnails/42/option_a.png", "style": "A", "prompt": "p"},
+                "fetch_recent_history": None,
+            }
+        )
+        mocker.patch.object(dag_mod, "generate_title", return_value="A bare string title")
+
+        result = dag_mod._task_generate_title(ti)
+
+        assert isinstance(result, str)
+        assert result == "A bare string title"
 
 
 # ---------------------------------------------------------------------------
