@@ -163,6 +163,15 @@ class DevContract(unittest.TestCase):
             self.assertIn(base, script)
             self.assertTrue((HERE.parent.parent / "congress_videos/sql" / base).exists(), base)
 
+    def test_init_creates_every_pool_the_dags_require(self):
+        init = (HERE / "init.py").read_text()
+        required = set()
+        for dag_file in (HERE.parent.parent / "congress_videos").glob("*_dag.py"):
+            required |= set(re.findall(r'pool="([a-z_]+)"', dag_file.read_text()))
+        self.assertEqual(required, {"nas_ffmpeg"})
+        for pool in required:
+            self.assertIn(f'"{pool}"', init)
+
     def test_ml_sidecars_are_offline_and_bounded(self):
         services = self.compose()["services"]
         diarize = services["diarize-api"]
