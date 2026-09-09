@@ -286,6 +286,71 @@ def resolve_speaker(
 # ---------------------------------------------------------------------------
 
 
+def _build_resolution_user_prompt(
+    turn: dict,
+    participants: list[dict],
+    all_blocks: list[dict],
+    chapter_span: tuple[float, float] | None,
+    chapter_start_seconds: float,
+    region_end: float,
+    intro_text: str,
+    turn_text: str,
+    combined_text: str,
+) -> str | None:
+    """Lifted verbatim out of _resolve_speaker_inner (issue #272)."""
+    # qa-gated chapter-wide prompt context (issue #322, D1/D7/D8): only for
+    # turn_type == 'qa' with a parseable chapter span and the kill switch
+    # on. chapter_text is the single source of truth both the pre-gate (D4)
+    # and the prompt builder below read, so they can never drift apart.
+    # The else-branch below is the fallback, not the normal path (issue #463).
+    turn_type = turn.get("turn_type")
+    chapter_text: str | None = None
+    if QA_WIDE_CONTEXT_ENABLED and turn_type == "qa":
+        if chapter_span is not None:
+            prompt_blocks = chapter_window_blocks(all_blocks, chapter_start_seconds, region_end)
+            chapter_text = _build_qa_chapter_text(prompt_blocks)
+        else:
+            logger.warning(
+                "resolve_speaker: turn_id=%s is turn_type='qa' but its chapter "
+                "span is unparseable — falling back to the intro+turn prompt "
+                "context (the fallback branch; the live qa path is chapter-wide)",
+                turn.get("turn_id"),
+            )
+
+    wide_context_active = chapter_text is not None
+    prompt_text_for_gate = chapter_text if wide_context_active else combined_text
+
+    # Announcement pre-gate (issue #284, rebound per #322 D4): reads the
+    # SAME text the prompt will show the model — chapter-wide for qa with a
+    # parseable span, intro+turn otherwise — so the two can never disagree.
+    if REQUIRE_ANNOUNCEMENT_PHRASE and not has_announcement_phrase(prompt_text_for_gate):
+        logger.info(
+            "resolve_speaker: no announcement phrase in model-visible text for turn_id=%s — skipping LLM call",
+            turn.get("turn_id"),
+        )
+        return None
+
+    # Serialize participant roster: slug | display_name | party
+    roster_lines = [f"{p['slug']} | {p.get('display_name', '')} | {p.get('party', '')}" for p in participants]
+    participant_roster = "\n".join(roster_lines)
+
+    if wide_context_active:
+        user_prompt = SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE.format(
+            chapter_text=chapter_text,
+            intro_text=intro_text,
+            turn_text=turn_text,
+            participant_roster=participant_roster,
+        )
+    else:
+        user_prompt = SPEAKER_RESOLUTION_USER_TEMPLATE.format(
+            intro_text=intro_text,
+            turn_text=turn_text,
+            participant_roster=participant_roster,
+        )
+
+    return user_prompt
+
+
 def _resolve_speaker_inner(
     turn: dict,
     participants: list[dict],
@@ -377,55 +442,19 @@ def _resolve_speaker_inner(
     turn_text = "\n".join(b["text"] for b in turn_blocks) if turn_blocks else "(no turn context)"
     combined_text = f"{intro_text}\n{turn_text}"
 
-    # qa-gated chapter-wide prompt context (issue #322, D1/D7/D8): only for
-    # turn_type == 'qa' with a parseable chapter span and the kill switch
-    # on. chapter_text is the single source of truth both the pre-gate (D4)
-    # and the prompt builder below read, so they can never drift apart.
-    # The else-branch below is the fallback, not the normal path (issue #463).
-    turn_type = turn.get("turn_type")
-    chapter_text: str | None = None
-    if QA_WIDE_CONTEXT_ENABLED and turn_type == "qa":
-        if chapter_span is not None:
-            prompt_blocks = chapter_window_blocks(all_blocks, chapter_start_seconds, region_end)
-            chapter_text = _build_qa_chapter_text(prompt_blocks)
-        else:
-            logger.warning(
-                "resolve_speaker: turn_id=%s is turn_type='qa' but its chapter "
-                "span is unparseable — falling back to the intro+turn prompt "
-                "context (the fallback branch; the live qa path is chapter-wide)",
-                turn.get("turn_id"),
-            )
-
-    wide_context_active = chapter_text is not None
-    prompt_text_for_gate = chapter_text if wide_context_active else combined_text
-
-    # Announcement pre-gate (issue #284, rebound per #322 D4): reads the
-    # SAME text the prompt will show the model — chapter-wide for qa with a
-    # parseable span, intro+turn otherwise — so the two can never disagree.
-    if REQUIRE_ANNOUNCEMENT_PHRASE and not has_announcement_phrase(prompt_text_for_gate):
-        logger.info(
-            "resolve_speaker: no announcement phrase in model-visible text for turn_id=%s — skipping LLM call",
-            turn.get("turn_id"),
-        )
+    user_prompt = _build_resolution_user_prompt(
+        turn,
+        participants,
+        all_blocks,
+        chapter_span,
+        chapter_start_seconds,
+        region_end,
+        intro_text,
+        turn_text,
+        combined_text,
+    )
+    if user_prompt is None:
         return None
-
-    # Serialize participant roster: slug | display_name | party
-    roster_lines = [f"{p['slug']} | {p.get('display_name', '')} | {p.get('party', '')}" for p in participants]
-    participant_roster = "\n".join(roster_lines)
-
-    if wide_context_active:
-        user_prompt = SPEAKER_RESOLUTION_WIDE_USER_TEMPLATE.format(
-            chapter_text=chapter_text,
-            intro_text=intro_text,
-            turn_text=turn_text,
-            participant_roster=participant_roster,
-        )
-    else:
-        user_prompt = SPEAKER_RESOLUTION_USER_TEMPLATE.format(
-            intro_text=intro_text,
-            turn_text=turn_text,
-            participant_roster=participant_roster,
-        )
 
     # Call the LLM (or injected stub)
     if completion_fn is None:

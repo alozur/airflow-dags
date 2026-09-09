@@ -1293,3 +1293,149 @@ class TestD4FailSafeCollapse:
 
         assert result is not None
         assert "CHAPTER TRANSCRIPT" not in user
+
+
+# ---------------------------------------------------------------------------
+# Direct helper tests (issue #272, slice 4 PR3 — lifted out of
+# _resolve_speaker_inner)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildResolutionUserPrompt:
+    """Quirks pinned for _build_resolution_user_prompt (issue #272)."""
+
+    def test_wide_template_requires_all_three_conditions(self):
+        from congress_videos.modules.speaker_resolution import _build_resolution_user_prompt
+
+        base_kwargs = {
+            "participants": _make_participants(),
+            "all_blocks": [{"start_secs": 0.0, "end_secs": 1.0, "text": "hola"}],
+            "chapter_start_seconds": 0.0,
+            "region_end": 100.0,
+            "intro_text": "intro",
+            "turn_text": "turn",
+            "combined_text": "intro\nturn",
+        }
+
+        with (
+            patch("congress_videos.modules.speaker_resolution.chapter_window_blocks", return_value=[]),
+            patch(
+                "congress_videos.modules.speaker_resolution._build_qa_chapter_text",
+                return_value="CHAPTER TRANSCRIPT stub",
+            ),
+            patch("congress_videos.modules.speaker_resolution.has_announcement_phrase", return_value=True),
+        ):
+            # (a) turn_type=='qa' + parseable span + kill switch on -> wide
+            wide_prompt = _build_resolution_user_prompt(
+                turn={"turn_id": 1, "turn_type": "qa"}, chapter_span=(0.0, 100.0), **base_kwargs
+            )
+            assert "CHAPTER TRANSCRIPT stub" in wide_prompt
+
+            # (b) turn_type != 'qa' -> narrow, even with a parseable span
+            narrow_wrong_type = _build_resolution_user_prompt(
+                turn={"turn_id": 1, "turn_type": "monologue"}, chapter_span=(0.0, 100.0), **base_kwargs
+            )
+            assert "CHAPTER TRANSCRIPT stub" not in narrow_wrong_type
+
+            # (c) chapter_span is None -> narrow, even for a qa turn
+            narrow_no_span = _build_resolution_user_prompt(
+                turn={"turn_id": 1, "turn_type": "qa"}, chapter_span=None, **base_kwargs
+            )
+            assert "CHAPTER TRANSCRIPT stub" not in narrow_no_span
+
+        with (
+            patch("congress_videos.modules.speaker_resolution.QA_WIDE_CONTEXT_ENABLED", False),
+            patch("congress_videos.modules.speaker_resolution.chapter_window_blocks", return_value=[]),
+            patch(
+                "congress_videos.modules.speaker_resolution._build_qa_chapter_text",
+                return_value="CHAPTER TRANSCRIPT stub",
+            ),
+            patch("congress_videos.modules.speaker_resolution.has_announcement_phrase", return_value=True),
+        ):
+            # (d) kill switch off -> narrow even for a qa turn with a parseable span
+            narrow_kill_switch = _build_resolution_user_prompt(
+                turn={"turn_id": 1, "turn_type": "qa"}, chapter_span=(0.0, 100.0), **base_kwargs
+            )
+            assert "CHAPTER TRANSCRIPT stub" not in narrow_kill_switch
+
+    def test_unparseable_span_on_qa_turn_warns_and_falls_back_narrow(self, caplog):
+        from congress_videos.modules.speaker_resolution import _build_resolution_user_prompt
+
+        with (
+            patch("congress_videos.modules.speaker_resolution.has_announcement_phrase", return_value=True),
+            caplog.at_level("WARNING"),
+        ):
+            prompt = _build_resolution_user_prompt(
+                turn={"turn_id": 42, "turn_type": "qa"},
+                participants=_make_participants(),
+                all_blocks=[],
+                chapter_span=None,
+                chapter_start_seconds=0.0,
+                region_end=100.0,
+                intro_text="intro",
+                turn_text="turn",
+                combined_text="intro\nturn",
+            )
+
+        assert prompt is not None
+        assert "CHAPTER TRANSCRIPT" not in prompt
+        assert any("chapter" in rec.message.lower() and "span" in rec.message.lower() for rec in caplog.records)
+
+    def test_none_only_from_announcement_pre_gate(self):
+        from congress_videos.modules.speaker_resolution import _build_resolution_user_prompt
+
+        kwargs = {
+            "turn": {"turn_id": 1, "turn_type": "monologue"},
+            "participants": _make_participants(),
+            "all_blocks": [],
+            "chapter_span": None,
+            "chapter_start_seconds": 0.0,
+            "region_end": 100.0,
+            "intro_text": "(no intro)",
+            "turn_text": "(no turn context)",
+            "combined_text": "(no intro)\n(no turn context)",
+        }
+
+        with patch("congress_videos.modules.speaker_resolution.has_announcement_phrase", return_value=False):
+            gated = _build_resolution_user_prompt(**kwargs)
+        assert gated is None
+
+        with patch("congress_videos.modules.speaker_resolution.has_announcement_phrase", return_value=True):
+            passed = _build_resolution_user_prompt(**kwargs)
+        assert passed is not None
+
+    def test_pre_gate_reads_chapter_text_when_wide_else_combined_text(self):
+        from congress_videos.modules.speaker_resolution import _build_resolution_user_prompt
+
+        seen_texts = []
+
+        def _record_gate(text):
+            seen_texts.append(text)
+            return True
+
+        base_kwargs = {
+            "participants": _make_participants(),
+            "all_blocks": [{"start_secs": 0.0, "end_secs": 1.0, "text": "hola"}],
+            "chapter_start_seconds": 0.0,
+            "region_end": 100.0,
+            "intro_text": "intro-text",
+            "turn_text": "turn-text",
+            "combined_text": "combined-text",
+        }
+
+        with (
+            patch("congress_videos.modules.speaker_resolution.chapter_window_blocks", return_value=[]),
+            patch(
+                "congress_videos.modules.speaker_resolution._build_qa_chapter_text",
+                return_value="chapter-text",
+            ),
+            patch("congress_videos.modules.speaker_resolution.has_announcement_phrase", side_effect=_record_gate),
+        ):
+            _build_resolution_user_prompt(
+                turn={"turn_id": 1, "turn_type": "qa"}, chapter_span=(0.0, 100.0), **base_kwargs
+            )
+            _build_resolution_user_prompt(
+                turn={"turn_id": 1, "turn_type": "monologue"}, chapter_span=(0.0, 100.0), **base_kwargs
+            )
+
+        assert seen_texts[0] == "chapter-text"
