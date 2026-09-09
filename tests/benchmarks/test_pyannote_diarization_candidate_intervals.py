@@ -7,7 +7,61 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from benchmarks.pyannote_diarization.candidate_intervals import (
+    SummaryValidationError,
+    derive_candidate_intervals,
+)
+
 CLI = Path("benchmarks/pyannote_diarization/candidate_intervals.py")
+
+
+# ---------------------------------------------------------------------------
+# Direct characterization tests for derive_candidate_intervals — pinned from
+# literals already proven by the CLI-subprocess tests below (issue #272,
+# slice 4, PR4). Written and run GREEN before the C901 refactor lands, so
+# they document current behavior rather than the post-lift shape.
+# ---------------------------------------------------------------------------
+
+
+def test_derive_candidate_intervals_clamps_merges_and_reports_interior_and_tail_gaps():
+    summary = {
+        "full_video_duration_seconds": 20.0,
+        "raw_turns": [
+            {"start_seconds": -2.0, "end_seconds": 4.0},
+            {"start_seconds": 3.0, "end_seconds": 6.0},
+            {"start_seconds": 10.0, "end_seconds": 12.0},
+        ],
+    }
+
+    intervals = derive_candidate_intervals(summary, min_gap_seconds=3.0)
+
+    assert intervals == [
+        {"start_seconds": 6.0, "end_seconds": 10.0, "label": "NO_DIARIZED_SPEECH"},
+        {"start_seconds": 12.0, "end_seconds": 20.0, "label": "NO_DIARIZED_SPEECH"},
+    ]
+
+
+def test_derive_candidate_intervals_rejects_both_leading_and_tail_gaps_under_minimum():
+    summary = {
+        "full_video_duration_seconds": 10.0,
+        "raw_turns": [{"start_seconds": 4.0, "end_seconds": 6.0}],
+    }
+
+    intervals = derive_candidate_intervals(summary, min_gap_seconds=5)
+
+    assert intervals == []
+
+
+def test_derive_candidate_intervals_rejects_end_before_start():
+    summary = {
+        "full_video_duration_seconds": 10.0,
+        "raw_turns": [{"start_seconds": 4.0, "end_seconds": 2.0}],
+    }
+
+    with pytest.raises(SummaryValidationError, match="end_seconds must not precede start_seconds"):
+        derive_candidate_intervals(summary, min_gap_seconds=3.0)
 
 
 def test_cli_writes_clamped_union_of_diarization_gaps_as_candidates(tmp_path: Path):
