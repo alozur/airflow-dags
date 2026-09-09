@@ -38,12 +38,12 @@ plus #511's `canonical_display_name`.
 
 ## Phase 1: Migration + Schema (PR1, `feat/512-a-migration-050`)
 
-- [ ] 1.1 RED: `test_migration_050.py` — mirror `tests/congress_videos/sql/test_migration_043.py` shape: both `ALTER TABLE` blocks present, every column `ADD COLUMN IF NOT EXISTS`, `speaker_turn_videos.copy_verified_at` is `TIMESTAMPTZ`, `video_shorts.copy_verified_at` is `TIMESTAMP`, `copy_thumbnail_text` only on `speaker_turn_videos`, and the entire `DOWN` block is commented (regex assertion)
-- [ ] 1.2 RED: extend `tests/congress_videos/sql/test_production_schema.py` drift test with the 9 new `speaker_turn_videos` columns and 8 new `video_shorts` columns
-- [ ] 1.3 GREEN: create `congress_videos/sql/migrations/050_final_copy_verification_audit.sql` per design D4 (both `ALTER TABLE` blocks, commented `DOWN`)
-- [ ] 1.4 GREEN: update `congress_videos/sql/production_schema.sql` in lockstep
-- [ ] 1.5 REFACTOR: `uv run pytest tests/congress_videos/sql/`; `uv run ruff check .`; `uv run ruff format --check .`
-- [ ] 1.6 Commit: `feat(db): add final-copy-verification audit columns (migration 050)`
+- [x] 1.1 RED: `test_migration_050.py` — mirror `tests/congress_videos/sql/test_migration_043.py` shape: both `ALTER TABLE` blocks present, every column `ADD COLUMN IF NOT EXISTS`, `speaker_turn_videos.copy_verified_at` is `TIMESTAMPTZ`, `video_shorts.copy_verified_at` is `TIMESTAMP`, `copy_thumbnail_text` only on `speaker_turn_videos`, and the entire `DOWN` block is commented (regex assertion)
+- [x] 1.2 RED: extend `tests/congress_videos/sql/test_production_schema.py` drift test with the 9 new `speaker_turn_videos` columns and 8 new `video_shorts` columns
+- [x] 1.3 GREEN: create `congress_videos/sql/migrations/050_final_copy_verification_audit.sql` per design D4 (both `ALTER TABLE` blocks, commented `DOWN`)
+- [x] 1.4 GREEN: update `congress_videos/sql/production_schema.sql` in lockstep
+- [x] 1.5 REFACTOR: `uv run pytest tests/congress_videos/sql/`; `uv run ruff check .`; `uv run ruff format --check .`
+- [x] 1.6 Commit: `feat(db): add final-copy-verification audit columns (migration 050)`
 
 ## Phase 2: Pure verifier module + prompts (PR2, `feat/512-b-verifier-module`, base PR1)
 
