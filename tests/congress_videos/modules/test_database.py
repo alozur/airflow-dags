@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from unittest.mock import MagicMock
 
@@ -278,7 +279,7 @@ class TestMarkChapterUploaded:
         sql, params = mock_cursor.execute.call_args[0]
         assert "UPDATE" in sql
         assert "is_uploaded_to_youtube" in sql
-        assert params == ("yt-chap-001", 7)
+        assert params == ("yt-chap-001", True, 7)
 
     def test_parameterized_no_injection(self, db):
         """youtube_video_id and chapter_id are params, not in SQL string."""
@@ -393,6 +394,7 @@ class TestCountChaptersUploadedToday:
         sql = mock_cursor.execute.call_args[0][0]
         assert "youtube_upload_date" in sql
         assert "CURRENT_DATE" in sql
+        assert "counts_toward_daily_quota = TRUE" in sql
 
     def test_returns_zero_when_fetchone_none(self, db):
         """Returns 0 gracefully when fetchone returns None."""
@@ -422,6 +424,7 @@ class TestCountTurnsUploadedToday:
         assert "output_path" in sql
         assert "youtube_upload_date" in sql
         assert "CURRENT_DATE" in sql
+        assert "counts_toward_daily_quota = TRUE" in sql
 
     def test_grouped_siblings_count_once(self, db):
         """N>1 rows sharing one output_path still count as 1 distinct video."""
@@ -564,6 +567,70 @@ class TestGetChapterMetadataSessionData:
         assert result is not None
         assert result["session_number"] is None
         assert result["session_date"] is None
+
+    def test_sql_selects_mentioned_participant_slugs_and_updated_at(self, db):
+        """T2 — the query gains mentioned_participant_slugs and updated_at (issue #433)."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.get_chapter_metadata(chapter_id=1)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "mentioned_participant_slugs" in sql
+        assert "updated_at" in sql
+
+    def test_returns_multi_slug_mentioned_participants(self, db):
+        """T2 — a populated mentioned_participant_slugs array passes through unchanged."""
+        from datetime import datetime as dt_datetime
+
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "chapter_id": 8,
+            "title": "Debate energía",
+            "description": "desc",
+            "speakers": ["Ana Pérez"],
+            "key_speakers": ["Ana Pérez"],
+            "topics": ["energía"],
+            "scoring_reasoning": "high",
+            "relevance_score": 4,
+            "source_video_title": "Sesion 90",
+            "source_video_url": "https://youtube.com/watch?v=uvw",
+            "session_number": 90,
+            "session_date": None,
+            "mentioned_participant_slugs": ["ana-perez", "luis-gomez"],
+            "updated_at": dt_datetime(2026, 9, 1, 12, 0, 0),
+        }
+
+        result = instance.get_chapter_metadata(chapter_id=8)
+
+        assert result is not None
+        assert result["mentioned_participant_slugs"] == ["ana-perez", "luis-gomez"]
+        assert result["updated_at"] == dt_datetime(2026, 9, 1, 12, 0, 0)
+
+    def test_null_mentioned_participant_slugs_stays_none(self, db):
+        """T2 — a never-analysed chapter returns None, distinct from an empty list."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "chapter_id": 9,
+            "title": "Sin analizar",
+            "description": "desc",
+            "speakers": [],
+            "key_speakers": [],
+            "topics": [],
+            "scoring_reasoning": "",
+            "relevance_score": 2,
+            "source_video_title": None,
+            "source_video_url": None,
+            "session_number": None,
+            "session_date": None,
+            "mentioned_participant_slugs": None,
+            "updated_at": None,
+        }
+
+        result = instance.get_chapter_metadata(chapter_id=9)
+
+        assert result is not None
+        assert result["mentioned_participant_slugs"] is None
 
 
 # --------------------------------------------------------------------------- #
@@ -763,3 +830,160 @@ class TestSelectUnpreparedTurnsChapterSpan:
 
         sql = mock_cursor.execute.call_args[0][0]
         assert "stv.turn_type" in sql, f"select_unprepared_turns must select stv.turn_type; got: {sql}"
+
+
+# --------------------------------------------------------------------------- #
+# record_title_generation_input_turn / _short (issue #549)
+# --------------------------------------------------------------------------- #
+
+
+class TestRecordTitleGenerationInputTurn:
+    """record_title_generation_input_turn is an unguarded UPDATE keyed by
+    output_path (design.md D3): every sibling row of a grouped turn shares
+    one output_path, so one call writes the identical payload to all of
+    them. Unlike record_copy_verification_turn there is NO
+    ``IS DISTINCT FROM`` content guard — rowcount == 0 unambiguously means
+    the key matched no row, and the method must return that count
+    faithfully so the call site can treat it as a loud `no_row` outcome
+    (Req 3 / design C4)."""
+
+    def test_update_statement_targets_speaker_turn_videos_no_content_guard(self, db):
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 1
+
+        instance.record_title_generation_input_turn("/path/turn1.mp4", payload={"title": "t"})
+
+        sql = mock_cursor.execute.call_args[0][0].upper()
+        assert "UPDATE" in sql
+        assert "SPEAKER_TURN_VIDEOS" in sql
+        assert "TITLE_GENERATION_INPUT = %S::JSONB" in sql
+        assert "WHERE OUTPUT_PATH = %S" in sql
+        assert "IS DISTINCT FROM" not in sql
+
+    def test_binds_json_dumps_payload_and_output_path(self, db):
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 1
+        payload = {"generator": "turn_title", "schema_version": 1, "title": "t"}
+
+        instance.record_title_generation_input_turn("/path/turn1.mp4", payload=payload)
+
+        params = mock_cursor.execute.call_args[0][1]
+        assert params == (json.dumps(payload, ensure_ascii=False), "/path/turn1.mp4")
+
+    def test_returns_cursor_rowcount(self, db):
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 3
+
+        result = instance.record_title_generation_input_turn("/path/turn1.mp4", payload={"title": "t"})
+
+        assert result == 3
+
+    def test_zero_rowcount_is_returned_faithfully_not_swallowed(self, db):
+        """No content guard exists, so rowcount == 0 means the key matched
+        no row (Req 3/C4) — the method must not mask it as success."""
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 0
+
+        result = instance.record_title_generation_input_turn("/path/turn1.mp4", payload={"title": "t"})
+
+        assert result == 0
+
+    def test_raises_value_error_on_empty_output_path(self, db):
+        instance, _ = db
+
+        with pytest.raises(ValueError):
+            instance.record_title_generation_input_turn("", payload={"title": "t"})
+
+    @pytest.mark.parametrize("bad_payload", [None, {}, "not-a-dict", []])
+    def test_raises_value_error_on_invalid_payload(self, db, bad_payload):
+        instance, _ = db
+
+        with pytest.raises(ValueError):
+            instance.record_title_generation_input_turn("/path/turn1.mp4", payload=bad_payload)
+
+    def test_grouped_siblings_update_by_output_path_only(self, db):
+        """Scenario 3.1: one call, keyed by output_path, updates every
+        sibling row sharing that path with the identical payload — the
+        WHERE clause carries no turn_id filter, so a row under a different
+        output_path is structurally untouched."""
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 3  # 3 sibling rows share this output_path
+
+        result = instance.record_title_generation_input_turn("/path/grouped.mp4", payload={"title": "grouped"})
+
+        sql = mock_cursor.execute.call_args[0][0].upper()
+        params = mock_cursor.execute.call_args[0][1]
+        assert "WHERE OUTPUT_PATH = %S" in sql
+        assert "TURN_ID" not in sql
+        assert params[-1] == "/path/grouped.mp4"
+        assert result == 3
+
+    def test_rerun_same_output_path_overwrites_without_raising(self, db):
+        """Scenario 3.2a: calling twice with the same key overwrites the
+        payload and returns rowcount >= 1 both times, without raising."""
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 1
+
+        first = instance.record_title_generation_input_turn("/path/turn1.mp4", payload={"title": "v1"})
+        second = instance.record_title_generation_input_turn("/path/turn1.mp4", payload={"title": "v2"})
+
+        assert first >= 1
+        assert second >= 1
+        assert mock_cursor.execute.call_count == 2
+
+
+class TestRecordTitleGenerationInputShort:
+    """record_title_generation_input_short mirrors
+    record_title_generation_input_turn exactly, keyed by video_shorts.id."""
+
+    def test_update_statement_targets_video_shorts_no_content_guard(self, db):
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 1
+
+        instance.record_title_generation_input_short(42, payload={"title": "t"})
+
+        sql = mock_cursor.execute.call_args[0][0].upper()
+        assert "UPDATE" in sql
+        assert "VIDEO_SHORTS" in sql
+        assert "TITLE_GENERATION_INPUT = %S::JSONB" in sql
+        assert "WHERE ID = %S" in sql
+        assert "IS DISTINCT FROM" not in sql
+
+    def test_binds_json_dumps_payload_and_short_id(self, db):
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 1
+        payload = {"generator": "shorts_metadata", "schema_version": 1, "title": "t"}
+
+        instance.record_title_generation_input_short(42, payload=payload)
+
+        params = mock_cursor.execute.call_args[0][1]
+        assert params == (json.dumps(payload, ensure_ascii=False), 42)
+
+    def test_returns_cursor_rowcount(self, db):
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 1
+
+        result = instance.record_title_generation_input_short(42, payload={"title": "t"})
+
+        assert result == 1
+
+    def test_zero_rowcount_is_returned_faithfully(self, db):
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 0
+
+        result = instance.record_title_generation_input_short(42, payload={"title": "t"})
+
+        assert result == 0
+
+    def test_raises_value_error_on_falsy_short_id(self, db):
+        instance, _ = db
+
+        with pytest.raises(ValueError):
+            instance.record_title_generation_input_short(0, payload={"title": "t"})
+
+    @pytest.mark.parametrize("bad_payload", [None, {}, "not-a-dict", []])
+    def test_raises_value_error_on_invalid_payload(self, db, bad_payload):
+        instance, _ = db
+
+        with pytest.raises(ValueError):
+            instance.record_title_generation_input_short(42, payload=bad_payload)

@@ -707,3 +707,193 @@ class TestParticipantsFetchFailure:
 
             # Must not raise.
             normalize_chapter_speakers(1, ["Pedro Sanchez"], [], [], mock_conn, _make_config())
+
+
+# ---------------------------------------------------------------------------
+# PR2 (issue #272) — quirk tests for the C901 helpers lifted out of
+# normalize_chapter_speakers. Both import the private helper directly, so
+# they fail with ImportError until the lift lands (RED-first).
+# ---------------------------------------------------------------------------
+
+
+class TestApplyInstitutionalRoleCorrections:
+    """Quirks pinned for _apply_institutional_role_corrections (issue #272)."""
+
+    def test_unresolved_mention_skips_without_cache_write(self):
+        from datetime import date
+
+        from congress_videos.modules.speaker_normalization import (
+            NormalizationResult,
+            _apply_institutional_role_corrections,
+        )
+
+        cursor = MagicMock()
+        result = NormalizationResult()
+
+        with patch("congress_videos.modules.speaker_normalization._resolve_role", return_value=None):
+            _apply_institutional_role_corrections(cursor, 1, ["Foo Bar"], [], [], date(2026, 6, 1), result)
+
+        cursor.execute.assert_not_called()
+        assert result.corrections == {}
+        assert result.cache_rows == []
+
+    def test_role_name_equal_to_raw_skips_without_cache_write(self):
+        from datetime import date
+
+        from congress_videos.modules.speaker_normalization import (
+            NormalizationResult,
+            _apply_institutional_role_corrections,
+        )
+
+        cursor = MagicMock()
+        result = NormalizationResult()
+
+        with patch(
+            "congress_videos.modules.speaker_normalization._resolve_role",
+            return_value=("some-slug", "Foo Bar", True),
+        ):
+            _apply_institutional_role_corrections(cursor, 1, ["Foo Bar"], [], [], date(2026, 6, 1), result)
+
+        cursor.execute.assert_not_called()
+        assert result.corrections == {}
+
+    def test_participant_normalized_name_is_none_when_not_participant(self):
+        from datetime import date
+
+        from congress_videos.modules.speaker_normalization import (
+            NormalizationResult,
+            _apply_institutional_role_corrections,
+        )
+
+        cursor = MagicMock()
+        result = NormalizationResult()
+
+        with patch(
+            "congress_videos.modules.speaker_normalization._resolve_role",
+            return_value=("catalog-only-slug", "Catalog Name", False),
+        ):
+            _apply_institutional_role_corrections(cursor, 1, ["Ministra de Defensa"], [], [], date(2026, 6, 1), result)
+
+        # (chapter_id, dirty_speaker, canonical_speaker, participant_normalized_name, status, confidence_score)
+        params = cursor.execute.call_args[0][1]
+        assert params[3] is None
+        assert result.corrections["Ministra de Defensa"] == "Catalog Name"
+
+    def test_slug_written_only_when_none_and_is_participant(self):
+        """Covers three slug quirks in one method: written when None+participant,
+        withheld when not a participant, never overwritten once already set. Also
+        pins that the helper mutates `result` in place and returns None."""
+        from datetime import date
+
+        from congress_videos.modules.speaker_normalization import (
+            NormalizationResult,
+            _apply_institutional_role_corrections,
+        )
+
+        cursor = MagicMock()
+
+        # (a) written when currently None and is_participant is True
+        result_a = NormalizationResult()
+        with patch(
+            "congress_videos.modules.speaker_normalization._resolve_role",
+            return_value=("pedro-sanchez", "Pedro Sánchez", True),
+        ):
+            return_value = _apply_institutional_role_corrections(
+                cursor, 1, ["Pedro Sanchez"], [], [], date(2026, 6, 1), result_a
+            )
+        assert return_value is None
+        assert result_a.resolved_participant_slug == "pedro-sanchez"
+        assert result_a.corrections["Pedro Sanchez"] == "Pedro Sánchez"
+
+        # (b) withheld when is_participant is False
+        result_b = NormalizationResult()
+        with patch(
+            "congress_videos.modules.speaker_normalization._resolve_role",
+            return_value=("catalog-only-slug", "Catalog Name", False),
+        ):
+            _apply_institutional_role_corrections(
+                cursor, 1, ["Ministra de Defensa"], [], [], date(2026, 6, 1), result_b
+            )
+        assert result_b.resolved_participant_slug is None
+
+        # (c) never overwritten once already set
+        result_c = NormalizationResult()
+        result_c.resolved_participant_slug = "existing-slug"
+        with patch(
+            "congress_videos.modules.speaker_normalization._resolve_role",
+            return_value=("pedro-sanchez", "Pedro Sánchez", True),
+        ):
+            _apply_institutional_role_corrections(cursor, 1, ["Pedro Sanchez"], [], [], date(2026, 6, 1), result_c)
+        assert result_c.resolved_participant_slug == "existing-slug"
+
+
+class TestApplyRosterResolutionStep:
+    """Quirks pinned for _apply_roster_resolution_step (issue #272)."""
+
+    def test_empty_roster_still_calls_resolver(self):
+        from congress_videos.modules.speaker_normalization import (
+            NormalizationResult,
+            _apply_roster_resolution_step,
+        )
+
+        cursor = MagicMock()
+        result = NormalizationResult()
+
+        roster_patch, resolver_patch = _patched(roster=[], resolution=_make_resolution())
+        with roster_patch, resolver_patch as mock_resolver:
+            _apply_roster_resolution_step(cursor, 1, ["Pedro Sanchez"], result)
+
+        mock_resolver.assert_called_once_with(["Pedro Sanchez"], [])
+
+    def test_over_cap_mentions_get_no_match_but_all_dirty_names_iterate(self):
+        from congress_videos.modules.chapter_speaker_resolution import MAX_MENTIONS_PER_CALL
+        from congress_videos.modules.speaker_normalization import (
+            NormalizationResult,
+            _apply_roster_resolution_step,
+        )
+
+        cursor = MagicMock()
+        result = NormalizationResult()
+        dirty_names = [f"Name {i}" for i in range(MAX_MENTIONS_PER_CALL + 2)]
+
+        roster_patch, resolver_patch = _patched(resolution=_make_resolution())
+        with roster_patch, resolver_patch as mock_resolver:
+            _apply_roster_resolution_step(cursor, 1, dirty_names, result)
+
+        sent_mentions = mock_resolver.call_args[0][0]
+        assert len(sent_mentions) == MAX_MENTIONS_PER_CALL
+        assert len(result.cache_rows) == len(dirty_names)
+        assert result.cache_rows[-1]["status"] == "no_match"
+
+    def test_slug_is_first_accepted_match_and_never_overwritten(self):
+        """Covers two slug quirks in one method: first accepted match wins in
+        input order, and an already-set slug is never overwritten. Also pins
+        that the helper mutates `result` in place and returns None."""
+        from congress_videos.modules.speaker_normalization import (
+            NormalizationResult,
+            _apply_roster_resolution_step,
+        )
+
+        cursor = MagicMock()
+
+        # (a) first accepted match, in input order, wins
+        resolution = _make_resolution(
+            _match("Name A", "slug-a", "Display A"),
+            _match("Name B", "slug-b", "Display B"),
+        )
+        result_a = NormalizationResult()
+        roster_patch, resolver_patch = _patched(resolution=resolution)
+        with roster_patch, resolver_patch:
+            return_value = _apply_roster_resolution_step(cursor, 1, ["Name A", "Name B"], result_a)
+        assert return_value is None
+        assert result_a.resolved_participant_slug == "slug-a"
+        assert result_a.corrections["Name A"] == "Display A"
+
+        # (b) never overwritten once already set
+        result_b = NormalizationResult()
+        result_b.resolved_participant_slug = "existing-slug"
+        resolution_b = _make_resolution(_match("Name A", "slug-a", "Display A"))
+        roster_patch, resolver_patch = _patched(resolution=resolution_b)
+        with roster_patch, resolver_patch:
+            _apply_roster_resolution_step(cursor, 1, ["Name A"], result_b)
+        assert result_b.resolved_participant_slug == "existing-slug"

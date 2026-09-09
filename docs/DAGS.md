@@ -58,7 +58,8 @@ split_srt_by_silence (silencios >= 15s, chunks 10-20 min)
       --> identify_interesting_chapters (GPT-4o-mini)
           --> merge_interesting_chapters
               --> score_chapter_relevance (GPT-4o-mini)
-                  --> save_chapters_to_db (PythonOperator)
+                  --> trim_chapter_silence --> split_long_chapters
+                      --> save_chapters_to_db (PythonOperator)
 ```
 
 ### Sistema de scoring (0-5)
@@ -129,7 +130,7 @@ fuera, asi que ese ORDER BY interno es el que decide quien ocupa la unica plaza 
 | isTesting | false | Hardcoded false para subidas publicas |
 | dry_run | false | Ejecuta el pipeline completo sin disparar la subida a YouTube |
 
-### Grafo de tareas (14 tareas)
+### Grafo de tareas (15 tareas)
 
 ```
 ensure_data_directory (PythonOperator)
@@ -142,10 +143,14 @@ ensure_data_directory (PythonOperator)
                       --> generate_thumbnail (PythonOperator, dispara generic_thumbnail_generator y espera)
                           --> extract_chapter_videos (PythonOperator)
                               --> prepare_upload_config (PythonOperator)
-                                  --> trigger_youtube_upload (trigger_dag_api + polling 10s)
-                                      --> [mark_chapters_uploaded, mark_turns_uploaded]  (en paralelo)
-                                          --> backfill_thumbnail_video_id (PythonOperator)
-                                              --> check_upload_failures (PythonOperator, fail-loud)
+                                  --> verify_final_copy (PythonOperator, issue #512: verifica
+                                      titulo/descripcion contra evidencia de BD antes de publicar;
+                                      un reject de titulo aborta el run, descripcion/miniatura solo
+                                      se registran)
+                                      --> trigger_youtube_upload (trigger_dag_api + polling 10s)
+                                          --> [mark_chapters_uploaded, mark_turns_uploaded]  (en paralelo)
+                                              --> backfill_thumbnail_video_id (PythonOperator)
+                                                  --> check_upload_failures (PythonOperator, fail-loud)
 ```
 
 Dos tareas de esa cadena son ramas muertas para el flujo actual:

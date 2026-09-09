@@ -47,12 +47,11 @@ class TestYoutubeUploadDagLoads:
         assert dag is not None
         assert dag.dag_id == "congress_youtube_chapter_uploader"
 
-    def test_dag_has_fourteen_tasks(self):
-        """DAG must have 14 tasks: 13 original (t1_db replaced by get_uploadable_item PythonOperator)
-        plus mark_turns_uploaded task."""
+    def test_dag_has_fifteen_tasks(self):
+        """DAG must have 15 tasks: the prior 14 plus verify_final_copy (issue #512)."""
         from congress_videos.youtube_upload_dag import dag
 
-        assert len(dag.tasks) == 14
+        assert len(dag.tasks) == 15
 
     def test_expected_task_ids_present(self):
         """New task IDs present; legacy Pillow task IDs absent."""
@@ -67,9 +66,23 @@ class TestYoutubeUploadDagLoads:
         assert "prepare_thumbnail_config" in task_ids
         assert "generate_thumbnail" in task_ids
         assert "backfill_thumbnail_video_id" in task_ids
+        # Issue #512
+        assert "verify_final_copy" in task_ids
         # Legacy Pillow tasks must be gone
         assert "generate_thumbnail_text" not in task_ids
         assert "generate_thumbnails" not in task_ids
+
+    def test_verify_final_copy_between_prepare_upload_config_and_trigger_upload(self):
+        """t6b sits directly between t6 (prepare_upload_config) and t7 (trigger_youtube_upload)."""
+        from congress_videos.youtube_upload_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        prepare = tasks_by_id["prepare_upload_config"]
+        verify = tasks_by_id["verify_final_copy"]
+        trigger = tasks_by_id["trigger_youtube_upload"]
+
+        assert verify.task_id in {t.task_id for t in prepare.downstream_list}
+        assert trigger.task_id in {t.task_id for t in verify.downstream_list}
 
     def test_chain_t7_t8_backfill_t9(self):
         """New chain: trigger -> mark_uploaded -> backfill -> check_failures."""
@@ -362,6 +375,108 @@ class TestTurnMarkingProblems:
 
 
 # ---------------------------------------------------------------------------
+# _copy_verification_problems (issue #512)
+# ---------------------------------------------------------------------------
+
+
+class TestCopyVerificationProblems:
+    """Shaped like _turn_marking_problems: finished sentences appended to the
+    _check_upload_failures accumulator (design.md D7)."""
+
+    def _clean_payload(self, **overrides) -> dict:
+        payload = {
+            "verdict": "pass",
+            "findings": [],
+            "corrected_applied": False,
+            "persisted": True,
+            "content_version": "v1",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_none_payload_reports_missing_xcom(self):
+        from congress_videos.youtube_upload_dag import _copy_verification_problems
+
+        assert _copy_verification_problems(None) == [
+            "copy_verification XCom missing after prepare_upload_config succeeded"
+        ]
+
+    def test_clean_pass_payload_returns_empty_list(self):
+        from congress_videos.youtube_upload_dag import _copy_verification_problems
+
+        assert _copy_verification_problems(self._clean_payload()) == []
+
+    def test_successful_correction_returns_empty_list(self):
+        """A silently auto-corrected typo is a success story, not a finding."""
+        from congress_videos.youtube_upload_dag import _copy_verification_problems
+
+        payload = self._clean_payload(
+            verdict="pass",
+            findings=[{"field": "title", "category": "spelling", "severity": "low"}],
+            corrected_applied=True,
+        )
+        assert _copy_verification_problems(payload) == []
+
+    def test_inconclusive_verdict_is_a_finding(self):
+        from congress_videos.youtube_upload_dag import _copy_verification_problems
+
+        payload = self._clean_payload(verdict="inconclusive", persisted=False)
+        problems = _copy_verification_problems(payload)
+        assert len(problems) == 1
+        assert "inconclusive" in problems[0].lower()
+
+    def test_description_reject_is_a_finding(self):
+        from congress_videos.youtube_upload_dag import _copy_verification_problems
+
+        payload = self._clean_payload(
+            verdict="reject",
+            findings=[{"field": "description", "category": "unsupported_claim", "severity": "high"}],
+        )
+        problems = _copy_verification_problems(payload)
+        assert len(problems) == 2  # reject + the same finding also flags as a discarded correction
+        assert any("reject" in p.lower() and "description" in p for p in problems)
+
+    def test_discarded_unsupported_correction_is_a_finding(self):
+        from congress_videos.youtube_upload_dag import _copy_verification_problems
+
+        payload = self._clean_payload(
+            verdict="correctable",
+            findings=[
+                {
+                    "field": "title",
+                    "category": "unsupported_claim",
+                    "severity": "high",
+                    "detail": "Correction discarded: not derivable from the supplied evidence.",
+                }
+            ],
+            corrected_applied=False,
+        )
+        problems = _copy_verification_problems(payload)
+        assert len(problems) == 1
+        assert "unsupported" in problems[0].lower()
+
+    def test_persistence_skip_is_a_finding(self):
+        """Stale-copy guard skip (design.md D3) on an otherwise ok verdict."""
+        from congress_videos.youtube_upload_dag import _copy_verification_problems
+
+        payload = self._clean_payload(verdict="pass", persisted=False)
+        problems = _copy_verification_problems(payload)
+        assert len(problems) == 1
+        assert "audit write" in problems[0].lower() or "stale" in problems[0].lower()
+
+    def test_reject_and_persistence_skip_both_fire(self):
+        from congress_videos.youtube_upload_dag import _copy_verification_problems
+
+        payload = self._clean_payload(
+            verdict="reject",
+            findings=[{"field": "description", "category": "unsupported_claim"}],
+            persisted=False,
+        )
+        problems = _copy_verification_problems(payload)
+        assert len(problems) == 3
+
+
+# ---------------------------------------------------------------------------
 # _check_upload_failures
 # ---------------------------------------------------------------------------
 
@@ -399,6 +514,13 @@ class TestCheckUploadFailures:
                     "failed_updates": 0,
                     "details": [],
                 },
+                "copy_verification": {
+                    "verdict": "pass",
+                    "findings": [],
+                    "corrected_applied": False,
+                    "persisted": True,
+                    "content_version": "v1",
+                },
             }
         )
         _check_upload_failures(ti)  # should not raise
@@ -417,6 +539,13 @@ class TestCheckUploadFailures:
                     "updated_turns": 0,
                     "failed_updates": 0,
                     "details": [],
+                },
+                "copy_verification": {
+                    "verdict": "pass",
+                    "findings": [],
+                    "corrected_applied": False,
+                    "persisted": True,
+                    "content_version": "v1",
                 },
             }
         )
@@ -485,6 +614,13 @@ class TestCheckUploadFailures:
                     "updated_turns": 0,
                     "failed_updates": 0,
                     "details": [],
+                },
+                "copy_verification": {
+                    "verdict": "pass",
+                    "findings": [],
+                    "corrected_applied": False,
+                    "persisted": True,
+                    "content_version": "v1",
                 },
             }
         )
@@ -607,6 +743,13 @@ class TestCheckUploadFailures:
                     "failed_updates": 0,
                     "details": [{"turn_id": 42, "status": "updated"}],
                 },
+                "copy_verification": {
+                    "verdict": "pass",
+                    "findings": [],
+                    "corrected_applied": False,
+                    "persisted": True,
+                    "content_version": "v1",
+                },
             }
         )
         _check_upload_failures(ti)  # should not raise
@@ -660,6 +803,212 @@ class TestTriggerUploadWithConfig:
 
 
 # ---------------------------------------------------------------------------
+# _verify_final_copy (t6b, issue #512)
+# ---------------------------------------------------------------------------
+
+
+def _make_upload_config(*, title="Título original", description="Descripción original", chapter_id=100, turn_id=1):
+    return {
+        "token_file": "/tokens/x.pickle",
+        "videos": [
+            {
+                "video_file": "/data/turn1/video.mp4",
+                "title": title,
+                "description": description,
+                "thumbnail_file": "/data/turn1/thumbnail.png",
+                "chapter_id": chapter_id,
+                "turn_id": turn_id,
+                "video_id": "vidXYZ",
+            }
+        ],
+    }
+
+
+class TestVerifyFinalCopy:
+    """Long-form seam wiring: verify_final_copy() runs on the LAST mutable
+    representation (upload_config["videos"][0]), never the upstream
+    thumbnail_result/_extract_metadata_description XComs (design.md)."""
+
+    def _patch_db(self, mocker, chapter_row=None, speaker_row=None, thumbnail_row=None):
+        mock_db = MagicMock()
+        mock_db.get_chapter_metadata.return_value = chapter_row
+        mock_db.get_turn_speaker_slug.return_value = speaker_row
+        mock_db.get_chosen_thumbnail.return_value = thumbnail_row
+        mocker.patch("congress_videos.modules.database.CongressionalVideoDB", return_value=mock_db)
+        return mock_db
+
+    def _patch_matching_content_version(self, mocker, version="matching-hash"):
+        """Patch compute_content_version so the stale-copy guard's recompute
+        always matches whatever the mocked verdict declares — tests that are
+        not exercising the guard itself (3.6) shouldn't have to replicate the
+        real evidence bundle by hand."""
+        mocker.patch("congress_videos.modules.final_copy_verification.compute_content_version", return_value=version)
+
+    def _make_verdict(self, **overrides):
+        from congress_videos.modules.final_copy_verification import CopyFinding, CopyVerdict
+
+        findings = overrides.pop("findings", ())
+        parsed_findings = tuple(CopyFinding(**f) if isinstance(f, dict) else f for f in findings)
+        defaults = {
+            "ok": True,
+            "verdict": "pass",
+            "findings": parsed_findings,
+            "title": "Título original",
+            "description": "Descripción original",
+            "correction_applied": False,
+            "content_version": "",
+            "rounds": 1,
+        }
+        defaults.update(overrides)
+        return CopyVerdict(**defaults)
+
+    def test_title_reject_raises_value_error(self, mocker):
+        """3.2 — title reject (no correction) raises; description/thumbnail-only
+        rejects never do (locked hard-rejection asymmetry)."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        self._patch_db(mocker)
+        verdict = self._make_verdict(
+            verdict="reject",
+            findings=[{"field": "title", "category": "person_name", "severity": "high"}],
+        )
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        ti = _make_ti({"upload_config": _make_upload_config()})
+        with pytest.raises(ValueError, match="rejected the title"):
+            _verify_final_copy(ti)
+
+    def test_description_reject_persists_and_does_not_raise(self, mocker):
+        """3.3 — description reject persists the audit row, publishes original,
+        surfaces via the copy_verification XCom (accumulator reads it), never raises."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker)
+        self._patch_matching_content_version(mocker, version="hash-1")
+        verdict = self._make_verdict(
+            verdict="reject",
+            findings=[{"field": "description", "category": "unsupported_claim", "severity": "high"}],
+            content_version="hash-1",
+        )
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        ti = _make_ti({"upload_config": _make_upload_config()})
+        _verify_final_copy(ti)  # should not raise
+
+        mock_db.record_copy_verification_turn.assert_called_once()
+        payload = ti.xcom_store["copy_verification"]
+        assert payload["verdict"] == "reject"
+        assert payload["persisted"] is True
+
+    def test_inconclusive_verdict_publishes_unchanged_and_writes_nothing(self, mocker):
+        """3.4 — inconclusive (verifier failure/timeout/malformed): publish
+        upload_config unchanged, no DB write, surfaces via accumulator."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker)
+        verdict_fn = mocker.patch(
+            "congress_videos.modules.final_copy_verification.verify_final_copy",
+            return_value=self._make_verdict(
+                ok=False, verdict="", title="Título original", description="Descripción original"
+            ),
+        )
+
+        config = _make_upload_config()
+        ti = _make_ti({"upload_config": config})
+        _verify_final_copy(ti)  # should not raise
+
+        verdict_fn.assert_called_once()
+        mock_db.record_copy_verification_turn.assert_not_called()
+        assert ti.xcom_store["upload_config"]["videos"][0]["title"] == "Título original"
+        assert ti.xcom_store["copy_verification"]["verdict"] == "inconclusive"
+        assert ti.xcom_store["copy_verification"]["persisted"] is False
+
+    def test_correction_patches_config_and_rewrites_sidecars(self, mocker):
+        """3.5 — correctable+contained correction patches upload_config AND
+        rewrites the sidecars via _write_orador_sidecars."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        self._patch_db(mocker)
+        self._patch_matching_content_version(mocker, version="hash-2")
+        verdict = self._make_verdict(
+            verdict="pass",
+            title="Título corregido",
+            description="Descripción corregida",
+            correction_applied=True,
+            content_version="hash-2",
+        )
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+        mock_write = mocker.patch("congress_videos.modules.youtube.youtube_upload._write_orador_sidecars")
+
+        config = _make_upload_config()
+        ti = _make_ti({"upload_config": config})
+        _verify_final_copy(ti)
+
+        mock_write.assert_called_once_with("/data/turn1/video.mp4", "Título corregido", "Descripción corregida")
+        pushed_config = ti.xcom_store["upload_config"]
+        assert pushed_config["videos"][0]["title"] == "Título corregido"
+        assert pushed_config["videos"][0]["description"] == "Descripción corregida"
+        assert ti.xcom_store["copy_verification"]["corrected_applied"] is True
+
+    def test_stale_copy_guard_skips_write_and_emits_finding(self, mocker):
+        """3.6 — recomputed content_version mismatch (about-to-publish values)
+        skips the write entirely; never persists a correction against copy
+        that changed after verification."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker)
+        verdict = self._make_verdict(verdict="pass", content_version="stale-hash-does-not-match-anything")
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        ti = _make_ti({"upload_config": _make_upload_config()})
+        _verify_final_copy(ti)  # should not raise
+
+        mock_db.record_copy_verification_turn.assert_not_called()
+        assert ti.xcom_store["copy_verification"]["persisted"] is False
+
+    def test_verifies_upload_config_values_not_thumbnail_result_xcom(self, mocker):
+        """3.9 — verification reads upload_config["videos"][0], the last
+        mutable (sidecar-round-tripped) representation, never thumbnail_result
+        or the pre-strip _extract_metadata_description XCom."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        self._patch_db(mocker)
+        verify_fn = mocker.patch(
+            "congress_videos.modules.final_copy_verification.verify_final_copy",
+            return_value=self._make_verdict(),
+        )
+
+        config = _make_upload_config(title="Config title", description="Config description")
+        ti = _make_ti(
+            {
+                "upload_config": config,
+                # Deliberately different: proves the upstream XComs are never read here.
+                "thumbnail_result": {"success": True, "title": "Stale thumbnail title"},
+                "youtube_metadata_results": {"topic_metadata": [{"description": {"description": "Stale desc"}}]},
+            }
+        )
+        _verify_final_copy(ti)
+
+        _, kwargs = verify_fn.call_args
+        assert kwargs["title"] == "Config title"
+        assert kwargs["description"] == "Config description"
+
+    def test_no_upload_config_skips_verification_without_raising(self, mocker):
+        """No videos to verify (upstream skip/failure) — a no-op, not an anomaly
+        this task should flag; _check_upload_failures already covers upstream skips."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        self._patch_db(mocker)
+        verify_fn = mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy")
+
+        ti = _make_ti({"upload_config": None})
+        _verify_final_copy(ti)  # should not raise
+
+        verify_fn.assert_not_called()
+        assert "copy_verification" not in ti.xcom_store
+
+
+# ---------------------------------------------------------------------------
 # should_upload function (REQ-GATE-01)
 # ---------------------------------------------------------------------------
 
@@ -681,6 +1030,15 @@ def _make_context_for_should_upload(queue_size: int, hour: int, uploads_today: i
 
 
 class TestShouldUpload:
+    def test_only_scheduled_runs_consume_the_daily_quota(self):
+        from congress_videos.youtube_upload_dag import _counts_toward_daily_quota
+
+        scheduled = MagicMock(run_type="scheduled")
+        manual = MagicMock(run_type="manual")
+
+        assert _counts_toward_daily_quota(scheduled) is True
+        assert _counts_toward_daily_quota(manual) is False
+
     def test_queue_above_zero_is_true_regardless_of_hour(self):
         """queue=5 at hour=11 → True (gate is queue_size > 0, no hour lookup) (REQ-GATE-01)."""
         from congress_videos.youtube_upload_dag import should_upload
@@ -718,13 +1076,14 @@ class TestShouldUpload:
 
         assert should_upload(**ctx) is False
 
-    def test_daily_limit_wins_over_manual_hour_threshold(self):
-        """Manual logical dates retain thresholds, but never bypass the daily cap."""
+    def test_manual_run_bypasses_the_daily_cap(self):
+        """A recovery is allowed even after a scheduled upload consumed the daily slot."""
         from congress_videos.youtube_upload_dag import should_upload
 
         ctx = _make_context_for_should_upload(queue_size=11, hour=11, uploads_today=1)
+        ctx["dag_run"] = MagicMock(run_type="manual")
 
-        assert should_upload(**ctx) is False
+        assert should_upload(**ctx) is True
 
     # Unknown hour — defaults to threshold 0
     def test_unknown_hour_queue_0_is_false(self):
@@ -754,6 +1113,28 @@ class TestShouldUpload:
         ctx = _make_context_for_should_upload(queue_size=11, hour=11)
         ctx["data_interval_end"] = datetime.now(UTC) - timedelta(hours=2)
         assert should_upload(**ctx) is False
+
+    def test_stale_scheduled_run_returns_false(self):
+        """An explicitly scheduled run with a stale data_interval_end is still dropped."""
+        from datetime import datetime, timedelta
+
+        from congress_videos.youtube_upload_dag import should_upload
+
+        ctx = _make_context_for_should_upload(queue_size=11, hour=11)
+        ctx["data_interval_end"] = datetime.now(UTC) - timedelta(hours=2)
+        ctx["dag_run"] = MagicMock(run_type="scheduled")
+        assert should_upload(**ctx) is False
+
+    def test_stale_manual_run_is_not_dropped(self):
+        """A manual run inherits the previous cron interval; the staleness guard must not reject it."""
+        from datetime import datetime, timedelta
+
+        from congress_videos.youtube_upload_dag import should_upload
+
+        ctx = _make_context_for_should_upload(queue_size=11, hour=11, uploads_today=1)
+        ctx["data_interval_end"] = datetime.now(UTC) - timedelta(hours=3)
+        ctx["dag_run"] = MagicMock(run_type="manual")
+        assert should_upload(**ctx) is True
 
     def test_fresh_run_proceeds_to_threshold(self):
         """data_interval_end ~1 min in the past, queue above threshold → True (threshold applies)."""
@@ -2201,12 +2582,13 @@ class TestDualQueueWiredIntoDag:
         assert item_task.task_id in upstream_ids, "generate_youtube_metadata must be downstream of get_uploadable_item"
 
     def test_dag_task_count_updated_for_wired_dual_queue(self):
-        """DAG must have 14 tasks after replacing t1_db with get_uploadable_item and adding mark_turns_uploaded."""
+        """DAG must have 15 tasks: 13 original (t1_db replaced by get_uploadable_item
+        PythonOperator), plus mark_turns_uploaded, plus verify_final_copy (issue #512)."""
         from congress_videos.youtube_upload_dag import dag
 
-        assert len(dag.tasks) == 14, (
-            f"Expected 14 tasks (13 original tasks, t1_db replaced by get_uploadable_item PythonOperator, "
-            f"plus mark_turns_uploaded), got {len(dag.tasks)}"
+        assert len(dag.tasks) == 15, (
+            f"Expected 15 tasks (13 original tasks, t1_db replaced by get_uploadable_item PythonOperator, "
+            f"plus mark_turns_uploaded, plus verify_final_copy), got {len(dag.tasks)}"
         )
 
     def test_mark_turns_uploaded_task_exists(self):
@@ -2500,6 +2882,150 @@ class TestTriggerThumbnailGenerationForwardsOutputPath:
 
         assert len(captured_confs) == 1
         assert "output_path" not in captured_confs[0]
+
+
+# ---------------------------------------------------------------------------
+# title_generation_input persistence hook (issue #549, Requirement 3/5)
+# ---------------------------------------------------------------------------
+
+
+class TestTriggerThumbnailGenerationTitleProvenance:
+    """trigger_thumbnail_generation persists title_generation_input keyed by
+    thumbnail_config["output_path"] (the turn's own video.mp4), never the
+    child result's output_path (the reconciled thumbnail.png), and never
+    lets a persistence failure block publication."""
+
+    _TITLE_PAYLOAD = {
+        "generator": "turn_title",
+        "schema_version": 1,
+        "summary": "un resumen",
+        "best": {"label": "option_a", "style": "A", "prompt": "p"},
+        "sibling_titles": None,
+        "key_speakers": None,
+        "forbidden_title": None,
+        "participant_slug": None,
+        "title": "Un título",
+    }
+
+    def _ti_with_output_path(self) -> object:
+        return _make_ti(
+            {
+                "thumbnail_config": {
+                    "chapter_id": 42,
+                    "debate_summary": "un resumen",
+                    "session": "Sesión 80",
+                    "domain": "congreso",
+                    "slug": None,
+                    "output_path": "/data/oradores/42/video.mp4",
+                }
+            }
+        )
+
+    def _mock_success(self, mocker, extra_result: dict | None = None) -> None:
+        child_run = MagicMock()
+        child_run.run_id = "thumb_run_provenance"
+        child_run.state = "success"
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=child_run)
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        result = {
+            "success": True,
+            "chapter_id": 42,
+            # D3: the child's reconciled output_path is thumbnail.png, distinct
+            # from thumbnail_config["output_path"] (video.mp4) used as the write key.
+            "output_path": "/data/oradores/42/thumbnail.png",
+            "title": "Un título",
+        }
+        if extra_result:
+            result.update(extra_result)
+        mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=result)
+
+    def test_write_key_is_thumbnail_config_output_path_not_child_result_output_path(self, mocker) -> None:
+        """Scenario 3.1/D3: the write key must be thumbnail_config['output_path']."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        self._mock_success(mocker, {"title_generation_input": self._TITLE_PAYLOAD})
+        fake_db = MagicMock()
+        fake_db.record_title_generation_input_turn.return_value = 1
+        ti = self._ti_with_output_path()
+
+        trigger_thumbnail_generation(ti, db=fake_db, run_id="test_run")
+
+        fake_db.record_title_generation_input_turn.assert_called_once()
+        call_args = fake_db.record_title_generation_input_turn.call_args
+        key_used = call_args.args[0] if call_args.args else call_args.kwargs.get("output_path")
+        assert key_used == "/data/oradores/42/video.mp4"
+        assert key_used != "/data/oradores/42/thumbnail.png"
+        assert call_args.kwargs["payload"] == self._TITLE_PAYLOAD
+
+    def test_zero_rows_is_no_row_not_success(self, mocker, caplog) -> None:
+        """Scenario 3.2b: rowcount == 0 is a loud no_row outcome, never success."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        self._mock_success(mocker, {"title_generation_input": self._TITLE_PAYLOAD})
+        fake_db = MagicMock()
+        fake_db.record_title_generation_input_turn.return_value = 0
+        ti = self._ti_with_output_path()
+
+        with caplog.at_level("WARNING"):
+            trigger_thumbnail_generation(ti, db=fake_db, run_id="test_run")
+
+        assert ti.xcom_store["title_provenance"] == {"status": "no_row", "rows": 0, "error": None}
+        assert any("0 rows" in r.message for r in caplog.records)
+
+    def test_db_exception_is_caught_and_publication_continues(self, mocker) -> None:
+        """Scenario 5.1: a persistence failure is caught, logged, and never
+        propagates — the upload task still completes with a valid thumbnail_result."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        self._mock_success(mocker, {"title_generation_input": self._TITLE_PAYLOAD})
+        fake_db = MagicMock()
+        fake_db.record_title_generation_input_turn.side_effect = RuntimeError("db unreachable")
+        ti = self._ti_with_output_path()
+
+        result = trigger_thumbnail_generation(ti, db=fake_db, run_id="test_run")
+
+        assert result == "thumb_run_provenance"
+        assert ti.xcom_store["title_provenance"] == {
+            "status": "failed",
+            "rows": 0,
+            "error": "db unreachable",
+        }
+        assert ti.xcom_store["thumbnail_result"]["success"] is True
+        assert ti.xcom_store["thumbnail_result"]["title"] == "Un título"
+
+    def test_missing_payload_records_skipped_never_fails_strict_validation(self, mocker) -> None:
+        """D2: title_generation_input absent from the result must never
+        degrade a valid title into a thumbnail failure — the strict
+        validation conjunction never sees this key."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        self._mock_success(mocker)  # no title_generation_input key at all
+        fake_db = MagicMock()
+        ti = self._ti_with_output_path()
+
+        trigger_thumbnail_generation(ti, db=fake_db, run_id="test_run")
+
+        fake_db.record_title_generation_input_turn.assert_not_called()
+        assert ti.xcom_store["title_provenance"] == {"status": "skipped", "rows": 0, "error": None}
+        assert ti.xcom_store["thumbnail_result"]["success"] is True
+
+    def test_default_db_none_constructs_congressional_video_db(self, mocker) -> None:
+        """No db= injected -> trigger_thumbnail_generation creates its own."""
+        from congress_videos.youtube_upload_dag import trigger_thumbnail_generation
+
+        self._mock_success(mocker, {"title_generation_input": self._TITLE_PAYLOAD})
+        mock_db_instance = MagicMock()
+        mock_db_instance.record_title_generation_input_turn.return_value = 1
+        mocker.patch(
+            "congress_videos.modules.database.CongressionalVideoDB",
+            return_value=mock_db_instance,
+        )
+        ti = self._ti_with_output_path()
+
+        trigger_thumbnail_generation(ti, run_id="test_run")
+
+        mock_db_instance.record_title_generation_input_turn.assert_called_once()
+        assert ti.xcom_store["title_provenance"]["status"] == "written"
 
 
 # ---------------------------------------------------------------------------

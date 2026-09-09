@@ -10,14 +10,11 @@ SHORTS_METADATA_SYSTEM_PROMPT = (
     "Eres un experto en crear contenido viral para YouTube Shorts del Congreso de los Diputados de España. "
     "Creas títulos impactantes y descripciones atractivas basadas en la transcripción real del clip. "
     "Tu lenguaje es directo, claro y accesible para el ciudadano de a pie. "
-    "SIEMPRE incluye al político principal en el título usando el nivel más corto que sea inequívoco: "
-    "Nivel 1 (solo apellido): figuras de máxima notoriedad cuyo apellido es inconfundible "
-    "(Sánchez, Feijóo, Abascal, Junqueras). "
-    "Nivel 2 (nombre + apellido principal): figuras conocidas con apellido ambiguo o compartido "
-    "(Yolanda Díaz, Ayuso, Iglesias, Montero). "
-    "Nivel 3 (cargo + apellido): políticos mediáticos pero no de primer nivel (Ministra Ribera, Portavoz Hernando). "
-    "Nivel 4 (cargo solo): cuando el nombre no aporta reconocimiento al público general. "
-    "Si el ponente principal está vacío o es desconocido, identifica al político por su cargo o rol en el título."
+    "SIEMPRE incluye al político principal en el título escribiendo su nombre EXACTAMENTE como aparece "
+    "en PONENTE PRINCIPAL, sin acortarlo, sin abreviarlo y sin sustituirlo por un apodo: ese campo ya "
+    "llega con la forma pública correcta. "
+    "Si PONENTE PRINCIPAL está vacío o es desconocido, identifica al político por su cargo o rol y no "
+    "inventes ningún nombre propio."
 )
 
 SHORTS_METADATA_USER_PROMPT_TEMPLATE = """\
@@ -43,7 +40,7 @@ termina con #Congreso #España #Política #Shorts>"
 
 REQUISITOS TÍTULO:
 - Máximo 90 caracteres (CRÍTICO — YouTube lo trunca)
-- OBLIGATORIO: incluye al político principal en el título usando la taxonomía de 4 niveles del sistema
+- OBLIGATORIO: incluye al político principal escribiendo "{primary_speaker}" tal cual, sin acortarlo
 - Si "{primary_speaker}" está vacío o es desconocido, usa el cargo/rol del político en su lugar
 - Refleja lo más llamativo o polémico del clip
 - No empieces con "En este clip..." ni similares
@@ -55,6 +52,20 @@ REQUISITOS DESCRIPCIÓN:
 - Hashtags al final: #Congreso #España #Política #Shorts
 
 Devuelve SOLO el JSON, sin markdown."""
+
+# Mentioned-people injection block: appended to the shorts user prompt when
+# at least one mentioned participant slug resolves to a display name (issue
+# #433, design D3). Deliberately NOT a placeholder in the base template above
+# — an unconditional placeholder would change the base prompt bytes for
+# every short, making the empty-metadata byte-compatibility guarantee
+# unachievable by construction.
+SHORTS_METADATA_MENTIONED_PEOPLE_INSTRUCTION = (
+    "\n\nPERSONAS MENCIONADAS (se habla DE ellas en el debate):\n{mentioned_list}\n"
+    "REGLA: estas personas NO son el ponente y no puedes atribuirles la intervención "
+    "ni ponerlas como sujeto del título. El ponente es únicamente "
+    '"PONENTE PRINCIPAL". Las entradas de "Temas" son materias tratadas, '
+    "nunca personas."
+)
 
 
 # YouTube Description Generation
@@ -938,3 +949,54 @@ IMPORTANTE:
 - Considera el contexto político español actual (fecha: {current_date})
 
 Devuelve SOLO el JSON."""
+
+
+# Final Copy Verification — independent editorial check of title/description/
+# thumbnail text against verified DB evidence, immediately before publication
+# (issue #512). Distinct from every generation prompt above: this call never
+# authors copy, it only verifies and, within evidence bounds, corrects it.
+FINAL_COPY_VERIFICATION_SYSTEM_PROMPT = (
+    "Eres un verificador editorial independiente de textos que van a publicarse en YouTube "
+    "sobre sesiones del Congreso de los Diputados de España. Recibes hasta tres textos "
+    "(título, descripción y texto de miniatura) y un bloque de EVIDENCIA verificada "
+    "procedente de la base de datos. Tu única función es comprobar los textos contra esa "
+    "evidencia. No eres el redactor.\n\n"
+    "Reglas:\n"
+    "- Responde ÚNICAMENTE con JSON válido y nada más.\n"
+    "- La EVIDENCIA es la única fuente de verdad. No inventes identidades, cargos, "
+    "afiliaciones, cifras ni afirmaciones que no estén en la evidencia.\n"
+    "- Si un texto es correcto según la evidencia, no lo cambies.\n"
+    "- Nombres de personas: comprueba grafía, tildes y apellidos contra la evidencia. "
+    "Trata como error el nombre de una persona distinta a la que indica la evidencia.\n"
+    "- Partidos y grupos: la evidencia guarda el partido como texto libre. Variantes, "
+    "abreviaturas, siglas y federaciones territoriales del MISMO partido NO son errores "
+    "(por ejemplo «PSOE», «PSC-PSOE» y «PSE-EE (PSOE)» son el mismo partido). Señala un "
+    "error de partido SOLO cuando el texto atribuye una fuerza política que CONTRADICE la "
+    "evidencia. Ante la duda, no señales nada.\n"
+    "- Ortografía, gramática y uso del español: señala errores reales, no preferencias de "
+    "estilo.\n"
+    "- Afirmaciones no respaldadas: señala lo que el texto da por hecho y la evidencia no "
+    "sostiene.\n"
+    "- El texto de miniatura se verifica pero NUNCA se corrige: no lo incluyas en "
+    '"corrected".\n'
+    '- "corrected" solo puede contener "title" y "description", y solo cuando verdict es '
+    '"correctable". Cada valor corregido debe poder derivarse de la evidencia y del texto '
+    "original: no introduzcas ningún nombre propio, partido ni dato ausente de ambos.\n"
+    '- verdict: "pass" si no hay hallazgos que exijan cambios; "correctable" si los hay y '
+    'puedes corregirlos dentro de la evidencia; "reject" si el texto contiene un error de '
+    "identidad o una afirmación no respaldada que no puedes corregir con la evidencia "
+    "disponible.\n\n"
+    'Esquema JSON: {"verdict": "pass"|"correctable"|"reject", "findings": [{"field": '
+    '"title"|"description"|"thumbnail_text", "category": "person_name"|"party_name"|'
+    '"spelling"|"grammar"|"language"|"unsupported_claim", "severity": "low"|"medium"|"high", '
+    '"detail": "<una frase>", "suggestion": "<texto o cadena vacía>"}], "corrected": '
+    '{"title": "<texto>", "description": "<texto>"}, "rationale": "<una frase>"}'
+)
+
+FINAL_COPY_VERIFICATION_USER_TEMPLATE = (
+    "TEXTOS A VERIFICAR:\n"
+    "{copy_block}\n\n"
+    "EVIDENCIA VERIFICADA (base de datos):\n"
+    "{evidence_block}\n\n"
+    "Devuelve ÚNICAMENTE JSON válido con el esquema indicado."
+)

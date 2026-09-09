@@ -21,15 +21,24 @@ Design notes:
 
 from __future__ import annotations
 
+import copy
 import logging
+import math
 import os
 import subprocess
 import tempfile
 import wave
+from collections.abc import Callable
 
 import numpy as np
 
 from congress_videos.config.constants import (
+    CHAPTER_SPLIT_ENABLED,
+    CHAPTER_SPLIT_MIN_CHILD_SECS,
+    CHAPTER_SPLIT_MIN_GAP_SECS,
+    CHAPTER_SPLIT_WINDOW_SECS,
+    CHAPTER_SPLIT_WINDOW_WIDEN_FACTOR,
+    MAX_CHAPTER_DURATION_MINUTES,
     VAD_BACKEND,
     VAD_ENABLED,
     VAD_END_MARGIN_SECS,
@@ -313,6 +322,37 @@ def _silero_segments(audio_path: str, sample_rate: int) -> list[tuple[float, flo
     return [(ts["start"], ts["end"]) for ts in timestamps]
 
 
+def detect_speech_segments(
+    audio_path: str,
+    backend: str = VAD_BACKEND,
+    *,
+    sample_rate: int = VAD_SAMPLE_RATE,
+) -> list[tuple[float, float]] | None:
+    """Run the selected VAD backend once and return its voiced segments.
+
+    Owns the single backend dispatch shared by :func:`detect_speech_bounds` (edge
+    trim) and the chapter-split gap finder: both need the SAME raw voiced
+    ``(start, end)`` segments, just consumed differently.
+
+    Args:
+        audio_path: Path to a mono WAV at ``sample_rate``.
+        backend: ``"webrtc"`` (default, stdlib ``wave`` + numpy + ``webrtcvad``,
+            no torch) or ``"silero"`` (opt-in, lazy-imports ``silero_vad``/``torch``).
+        sample_rate: WAV sample rate in Hz.
+
+    Returns:
+        Voiced ``(start, end)`` segments relative to the start of ``audio_path``.
+        An empty list means the backend ran and found no voice. ``None`` means the
+        backend name is unknown or a backend dependency is unavailable.
+    """
+    if backend == "webrtc":
+        return _webrtc_segments(audio_path, sample_rate)
+    if backend == "silero":
+        return _silero_segments(audio_path, sample_rate)
+    log.warning("vad.unknown_backend backend=%s", backend)
+    return None
+
+
 def detect_speech_bounds(
     audio_path: str,
     backend: str = VAD_BACKEND,
@@ -325,13 +365,11 @@ def detect_speech_bounds(
 ) -> tuple[float | None, float | None]:
     """Detect both sustained-speech edges from a SINGLE backend pass.
 
-    Runs the selected backend VAD EXACTLY ONCE to obtain the voiced segments, then
-    derives BOTH edges from those same segments:
-    ``first_sustained_speech_start`` for the start offset and
+    Runs the selected backend VAD EXACTLY ONCE (via :func:`detect_speech_segments`)
+    to obtain the voiced segments, then derives BOTH edges from those same
+    segments: ``first_sustained_speech_start`` for the start offset and
     ``last_sustained_speech_end`` for the end offset. Both offsets are RELATIVE to
-    the start of the analysed slice. The ``webrtc`` backend uses stdlib ``wave`` +
-    numpy + ``webrtcvad`` (no torch); the ``silero`` backend is opt-in and
-    lazy-imports ``silero_vad``/``torch`` inside its branch.
+    the start of the analysed slice.
 
     Args:
         audio_path: Path to a mono WAV at ``sample_rate``.
@@ -347,14 +385,8 @@ def detect_speech_bounds(
         ``None`` if no sustained speech defines that edge. ``(None, None)`` when
         the backend is unknown or a backend dependency is unavailable.
     """
-    if backend == "webrtc":
-        segments = _webrtc_segments(audio_path, sample_rate)
-    elif backend == "silero":
-        segments = _silero_segments(audio_path, sample_rate)
-        if segments is None:
-            return None, None
-    else:
-        log.warning("vad.unknown_backend backend=%s", backend)
+    segments = detect_speech_segments(audio_path, backend, sample_rate=sample_rate)
+    if segments is None:
         return None, None
 
     start = first_sustained_speech_start(
@@ -377,6 +409,222 @@ def detect_speech_bounds(
         end,
     )
     return start, end
+
+
+# ---------------------------------------------------------------------------
+# Chapter-duration split (issue #466) — pure planning cores.
+#
+# These functions never touch audio or a VAD backend directly; they operate on
+# already-detected ``(start, end)`` segments (or an injected ``segments_for``
+# callable), which is what makes them fully unit-testable and the coverage
+# anchor for the split feature, mirroring ``first_sustained_speech_start`` /
+# ``last_sustained_speech_end`` above.
+# ---------------------------------------------------------------------------
+
+
+def find_split_gap(
+    segments: list[tuple[float, float]],
+    target_secs: float,
+    *,
+    lo_secs: float,
+    hi_secs: float,
+    gap_merge_secs: float = VAD_GAP_MERGE_SECS,
+    min_gap_secs: float = CHAPTER_SPLIT_MIN_GAP_SECS,
+) -> float | None:
+    """Midpoint of the admissible inter-block gap nearest ``target_secs``.
+
+    Walks the SAME sustained-speech blocks as :func:`_merge_speech_blocks` and
+    takes the complement: for consecutive blocks, the gap is
+    ``(prev_block_end, next_block_start)``. A gap is admissible when its width is
+    ``>= min_gap_secs`` AND its midpoint falls inside ``[lo_secs, hi_secs]``.
+
+    Tie-break (D1, total order so the result is deterministic): nearest midpoint
+    to ``target_secs`` wins; ties broken by the WIDER gap, then by the EARLIER
+    midpoint.
+
+    Args:
+        segments: Voiced ``(start, end)`` intervals, in the same time base as
+            ``target_secs``/``lo_secs``/``hi_secs``.
+        target_secs: The arithmetic target cut point.
+        lo_secs: Lower bound of the admissible search interval (inclusive).
+        hi_secs: Upper bound of the admissible search interval (inclusive).
+        gap_merge_secs: Forwarded to :func:`_merge_speech_blocks`.
+        min_gap_secs: Minimum gap width to count as a real boundary.
+
+    Returns:
+        The nearest admissible gap's midpoint, or ``None`` if none qualifies.
+    """
+    blocks = _merge_speech_blocks(segments, gap_merge_secs)
+    if len(blocks) < 2:
+        return None
+
+    candidates: list[tuple[float, float]] = []  # (midpoint, width)
+    for (_start_a, end_a, _voiced_a), (start_b, _end_b, _voiced_b) in zip(blocks, blocks[1:], strict=False):
+        width = start_b - end_a
+        if width < min_gap_secs:
+            continue
+        midpoint = (end_a + start_b) / 2.0
+        if midpoint < lo_secs or midpoint > hi_secs:
+            continue
+        candidates.append((midpoint, width))
+
+    if not candidates:
+        return None
+
+    midpoint, _width = min(candidates, key=lambda c: (abs(c[0] - target_secs), -c[1], c[0]))
+    return midpoint
+
+
+def plan_split_points(
+    duration_secs: float,
+    *,
+    max_chapter_secs: float,
+    min_child_secs: float,
+) -> list[float]:
+    """Equal-interval arithmetic targets for splitting a chapter.
+
+    ``N = ceil(duration_secs / max_chapter_secs)`` children are needed; this
+    returns their ``N - 1`` cut targets at ``duration_secs * i / N``.
+
+    Args:
+        duration_secs: The chapter's total span.
+        max_chapter_secs: Maximum allowed span per child.
+        min_child_secs: Minimum allowed span per child (accepted for interface
+            symmetry with :func:`snap_split_points`; the equal-interval targets
+            already respect it by construction — see D2).
+
+    Returns:
+        ``[]`` when ``duration_secs <= max_chapter_secs`` (the idempotence
+        short-circuit — an already-compliant chapter is never touched).
+    """
+    del min_child_secs  # not needed for equal-interval targets (kept for symmetry)
+    if duration_secs <= max_chapter_secs:
+        return []
+    n = math.ceil(duration_secs / max_chapter_secs)
+    return [duration_secs * i / n for i in range(1, n)]
+
+
+def _admissible_interval(
+    prev_cut_secs: float,
+    duration_secs: float,
+    max_chapter_secs: float,
+    min_child_secs: float,
+    remaining_cuts: int,
+) -> tuple[float, float]:
+    """D2's per-cut admissible interval — bounds every child by MAX and MIN.
+
+    For cut ``i`` (1-based) with ``remaining_cuts = N - i`` cuts still to place
+    after this one:
+        ``lo = max(prev_cut + MIN, duration - remaining_cuts * MAX)``
+        ``hi = min(prev_cut + MAX, duration - remaining_cuts * MIN)``
+
+    This guarantees, by construction, that no child ever exceeds
+    ``max_chapter_secs`` and no child ever falls below ``min_child_secs`` —
+    proven for both the current child (bounded by ``hi``) and the final child
+    (bounded by the next cut's ``lo``).
+    """
+    lo = max(prev_cut_secs + min_child_secs, duration_secs - remaining_cuts * max_chapter_secs)
+    hi = min(prev_cut_secs + max_chapter_secs, duration_secs - remaining_cuts * min_child_secs)
+    return lo, hi
+
+
+def _snap_one_cut(
+    target_secs: float,
+    prev_cut_secs: float,
+    duration_secs: float,
+    segments_for: Callable[[float, float], list[tuple[float, float]] | None],
+    *,
+    window_secs: float,
+    widen_factor: float,
+    max_chapter_secs: float,
+    min_child_secs: float,
+    gap_merge_secs: float,
+    min_gap_secs: float,
+    remaining_cuts: int,
+) -> tuple[float, str]:
+    """Snap ONE cut: try the base window, widen ONCE, else clamp to arithmetic."""
+    lo, hi = _admissible_interval(prev_cut_secs, duration_secs, max_chapter_secs, min_child_secs, remaining_cuts)
+
+    for half_window, reason in ((window_secs, "gap"), (window_secs * widen_factor, "gap_widened")):
+        search_lo = max(lo, target_secs - half_window)
+        search_hi = min(hi, target_secs + half_window)
+        segments = segments_for(search_lo, search_hi)
+        if segments is None:
+            continue
+        gap = find_split_gap(
+            segments,
+            target_secs,
+            lo_secs=search_lo,
+            hi_secs=search_hi,
+            gap_merge_secs=gap_merge_secs,
+            min_gap_secs=min_gap_secs,
+        )
+        if gap is not None:
+            return gap, reason
+
+    return min(max(target_secs, lo), hi), "arithmetic"
+
+
+def snap_split_points(
+    targets: list[float],
+    segments_for: Callable[[float, float], list[tuple[float, float]] | None],
+    duration_secs: float,
+    *,
+    window_secs: float,
+    widen_factor: float,
+    max_chapter_secs: float,
+    min_child_secs: float,
+    gap_merge_secs: float,
+    min_gap_secs: float,
+) -> list[tuple[float, str]]:
+    """Sequentially snap every arithmetic target to a nearby speech gap (D2).
+
+    Each cut is snapped in order (cut 1 first) so the admissible interval for
+    cut ``i`` can depend on the PREVIOUS cut's actual (snapped) value, not its
+    arithmetic target — this is what keeps the ``N`` exact and every child
+    bounded by ``[min_child_secs, max_chapter_secs]`` by construction (D2).
+
+    Args:
+        targets: The ``N - 1`` arithmetic targets from :func:`plan_split_points`.
+        segments_for: Injected ``(lo_secs, hi_secs) -> segments | None`` callable.
+            Returns voiced segments for that slice, or ``None`` on failure
+            (missing video, extraction error, VAD unavailable) — this keeps the
+            planner itself pure/audio-free and fully unit-testable.
+        duration_secs: The chapter's total span.
+        window_secs: Initial half-window search radius around each target.
+        widen_factor: Multiplier applied ONCE to ``window_secs`` when no gap is
+            found in the base window.
+        max_chapter_secs: Maximum allowed span per child.
+        min_child_secs: Minimum allowed span per child.
+        gap_merge_secs: Forwarded to :func:`find_split_gap`.
+        min_gap_secs: Forwarded to :func:`find_split_gap`.
+
+    Returns:
+        One ``(cut_secs, reason)`` per target, in order. ``reason`` is one of
+        ``"gap"`` (found in the base window), ``"gap_widened"`` (found after
+        widening once), or ``"arithmetic"`` (fallback, clamped into the
+        admissible interval).
+    """
+    n = len(targets) + 1
+    results: list[tuple[float, str]] = []
+    prev_cut = 0.0
+    for i, target in enumerate(targets, start=1):
+        cut, reason = _snap_one_cut(
+            target,
+            prev_cut,
+            duration_secs,
+            segments_for,
+            window_secs=window_secs,
+            widen_factor=widen_factor,
+            max_chapter_secs=max_chapter_secs,
+            min_child_secs=min_child_secs,
+            gap_merge_secs=gap_merge_secs,
+            min_gap_secs=min_gap_secs,
+            remaining_cuts=n - i,
+        )
+        results.append((cut, reason))
+        prev_cut = cut
+    return results
 
 
 def _chapter_span_ok(new_start: float, new_end: float, min_chapter_secs: float) -> bool:
@@ -747,3 +995,293 @@ def trim_turn_silence_with_vad(
                 os.unlink(tmp_video)
             except OSError:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Chapter-duration split (issue #466) — audio wrapper + public entry point.
+# ---------------------------------------------------------------------------
+
+
+def _timeline_within(timeline: list[dict] | None, lo_secs: float, hi_secs: float) -> list[dict]:
+    """Keep timeline moments whose ABSOLUTE ``time`` falls inside ``[lo_secs, hi_secs]``.
+
+    Local counterpart to
+    ``congress_videos.modules.youtube.download._filter_timeline_by_range`` (D5) —
+    NOT an import of that private symbol: importing it would pull the heavy
+    youtube package (yt-dlp/OpenAI) into a module the turn-prepare DAG also
+    imports, and this caller already holds numeric bounds so it needs neither
+    the SRT re-parse nor that helper's unparseable-bounds fallback.
+    ``build_youtube_chapters_block`` (youtube_ai.py) short-circuits cleanly on
+    an empty timeline, so an empty result here degrades safely.
+    """
+    if not timeline:
+        return []
+    kept: list[dict] = []
+    for moment in timeline:
+        if not isinstance(moment, dict):
+            continue
+        raw_time = moment.get("time")
+        if not raw_time:
+            continue
+        try:
+            secs = parse_timestamp(str(raw_time))
+        except (ValueError, TypeError):
+            continue
+        if lo_secs <= secs <= hi_secs:
+            kept.append(moment)
+    return kept
+
+
+def _segments_for_cut(
+    source_video: str | None,
+    chapter_start: float,
+    *,
+    backend: str,
+    sample_rate: int,
+) -> Callable[[float, float], list[tuple[float, float]] | None]:
+    """Build the ``segments_for`` callable injected into :func:`snap_split_points`.
+
+    Extracts ONE candidate-cut slice per call (not the whole chapter) and runs
+    the VAD backend once over it. Never raises — any failure returns ``None``,
+    driving that cut's D4 arithmetic fallback; sibling cuts may still snap.
+    """
+
+    def segments_for(lo_secs: float, hi_secs: float) -> list[tuple[float, float]] | None:
+        if source_video is None:
+            return None
+        wav_path: str | None = None
+        try:
+            fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="vad_split_")
+            os.close(fd)
+            extract_audio_wav(
+                source_video,
+                wav_path,
+                sample_rate=sample_rate,
+                start_secs=chapter_start + lo_secs,
+                duration_secs=hi_secs - lo_secs,
+            )
+            slice_segments = detect_speech_segments(wav_path, backend, sample_rate=sample_rate)
+        except Exception as exc:  # noqa: BLE001 — best-effort per-cut, D4 falls back to arithmetic
+            log.warning(
+                "chapter_split.cut_extract_failed lo_secs=%.2f hi_secs=%.2f error=%s",
+                lo_secs,
+                hi_secs,
+                exc,
+            )
+            return None
+        finally:
+            if wav_path and os.path.exists(wav_path):
+                os.unlink(wav_path)
+        if slice_segments is None:
+            log.warning("chapter_split.cut_vad_unavailable lo_secs=%.2f hi_secs=%.2f", lo_secs, hi_secs)
+            return None
+        # Segments come back slice-relative; rebase to chapter-relative (D2/D1 share this basis).
+        return [(start + lo_secs, end + lo_secs) for start, end in slice_segments]
+
+    return segments_for
+
+
+def _split_one_chapter(
+    chapter: dict,
+    source_video: str | None,
+    *,
+    max_chapter_secs: float,
+    min_child_secs: float,
+    window_secs: float,
+    widen_factor: float,
+    gap_merge_secs: float,
+    min_gap_secs: float,
+    backend: str = VAD_BACKEND,
+    sample_rate: int = VAD_SAMPLE_RATE,
+) -> list[dict]:
+    """Split ONE chapter into contiguous children, or return it unchanged.
+
+    ``source_video=None`` forces every cut to the arithmetic fallback (D4).
+    Idempotence: :func:`plan_split_points` returns ``[]`` under threshold, so
+    the chapter comes back as the SAME dict object — no copy, no re-suffix.
+    """
+    start_raw = chapter.get("start_time")
+    end_raw = chapter.get("end_time")
+    if not start_raw or not end_raw:
+        return [chapter]
+
+    chapter_start = parse_timestamp(str(start_raw))
+    chapter_end = parse_timestamp(str(end_raw))
+    duration = chapter_end - chapter_start
+    if duration <= 0:
+        return [chapter]
+
+    targets = plan_split_points(duration, max_chapter_secs=max_chapter_secs, min_child_secs=min_child_secs)
+    if not targets:
+        return [chapter]
+
+    cuts = snap_split_points(
+        targets,
+        _segments_for_cut(source_video, chapter_start, backend=backend, sample_rate=sample_rate),
+        duration,
+        window_secs=window_secs,
+        widen_factor=widen_factor,
+        max_chapter_secs=max_chapter_secs,
+        min_child_secs=min_child_secs,
+        gap_merge_secs=gap_merge_secs,
+        min_gap_secs=min_gap_secs,
+    )
+    for cut_secs, reason in cuts:
+        if reason == "arithmetic":
+            log.warning(
+                "chapter_split.cut_fallback reason=no_gap cut_secs=%.2f start_time=%s",
+                cut_secs,
+                start_raw,
+            )
+        else:
+            log.info(
+                "chapter_split.cut_snapped reason=%s cut_secs=%.2f start_time=%s",
+                reason,
+                cut_secs,
+                start_raw,
+            )
+
+    boundaries = [0.0, *(cut_secs for cut_secs, _reason in cuts), duration]
+    total_children = len(boundaries) - 1
+    parent_title = chapter.get("title", "Untitled Chapter")
+
+    children: list[dict] = []
+    for idx in range(total_children):
+        lo, hi = boundaries[idx], boundaries[idx + 1]
+        child = copy.deepcopy(chapter)
+        child["start_time"] = format_timestamp(chapter_start + lo, with_ms=True)
+        child["end_time"] = format_timestamp(chapter_start + hi, with_ms=True)
+        child["duration_minutes"] = round((hi - lo) / 60.0, 2)
+        child["title"] = f"{parent_title} (Parte {idx + 1}/{total_children})"
+        child["timeline"] = _timeline_within(chapter.get("timeline"), chapter_start + lo, chapter_start + hi)
+        children.append(child)
+    return children
+
+
+def _split_chapter_best_effort(
+    chapter: dict,
+    source_video: str | None,
+    *,
+    max_chapter_secs: float,
+    min_child_secs: float,
+    window_secs: float,
+    widen_factor: float,
+    gap_merge_secs: float,
+    min_gap_secs: float,
+    backend: str,
+    sample_rate: int,
+) -> list[dict]:
+    """Split one chapter, degrading to a pure-arithmetic split on any failure (D4).
+
+    Retries with ``source_video=None`` on an unexpected exception. Only passes
+    the chapter through unchanged if that retry ALSO fails (infeasible config:
+    ``max_chapter_secs < min_child_secs``).
+    """
+    kwargs = {
+        "max_chapter_secs": max_chapter_secs,
+        "min_child_secs": min_child_secs,
+        "window_secs": window_secs,
+        "widen_factor": widen_factor,
+        "gap_merge_secs": gap_merge_secs,
+        "min_gap_secs": min_gap_secs,
+        "backend": backend,
+        "sample_rate": sample_rate,
+    }
+    try:
+        return _split_one_chapter(chapter, source_video, **kwargs)
+    except Exception as exc:  # noqa: BLE001 — best-effort, D4 never raises out of the task
+        log.warning(
+            "chapter_split.chapter_failed start_time=%s error=%s",
+            chapter.get("start_time"),
+            exc,
+            exc_info=True,
+        )
+        try:
+            return _split_one_chapter(chapter, None, **kwargs)
+        except Exception:  # noqa: BLE001 — infeasible_plan: MAX < MIN, arithmetic itself fails
+            log.warning("chapter_split.infeasible_plan start_time=%s", chapter.get("start_time"))
+            return [chapter]
+
+
+def split_long_chapters_with_vad(
+    scored_chapters: dict,
+    *,
+    target_date: str,
+    max_chapter_secs: float = MAX_CHAPTER_DURATION_MINUTES * 60,
+    min_child_secs: float = CHAPTER_SPLIT_MIN_CHILD_SECS,
+    window_secs: float = CHAPTER_SPLIT_WINDOW_SECS,
+    widen_factor: float = CHAPTER_SPLIT_WINDOW_WIDEN_FACTOR,
+    gap_merge_secs: float = VAD_GAP_MERGE_SECS,
+    min_gap_secs: float = CHAPTER_SPLIT_MIN_GAP_SECS,
+    backend: str = VAD_BACKEND,
+    sample_rate: int = VAD_SAMPLE_RATE,
+) -> dict:
+    """Replace every chapter over ``max_chapter_secs`` with contiguous children.
+
+    Produces ``ceil(duration / max_chapter_secs)`` contiguous children per
+    over-threshold chapter, cut at real speech gaps near equal-interval targets
+    (one on-disk VAD pass per candidate cut) or the arithmetic target otherwise
+    (D4 — never left over-threshold). Under-threshold chapters pass through as
+    the SAME dict object (idempotence). Best-effort: a disabled kill switch,
+    missing ``scored_chapters`` data, a missing source video (degrades EVERY
+    over-threshold chapter of that video to arithmetic — diverging from
+    :func:`trim_chapter_silence_with_vad`'s passthrough), or any per-cut/
+    per-chapter failure still produces a result.
+
+    Args:
+        scored_chapters: The scored-chapters dict (mutated in place and returned).
+        target_date: ``YYYY-MM-DD`` used to locate the downloaded video.
+        max_chapter_secs: Maximum allowed span per persisted chapter.
+        min_child_secs: Minimum allowed span per child.
+        window_secs: Initial half-window search radius around each target.
+        widen_factor: Multiplier applied ONCE when no gap is found in the base window.
+        gap_merge_secs: Forwarded to the gap finder.
+        min_gap_secs: Forwarded to the gap finder.
+        backend: VAD backend (``"webrtc"`` default, ``"silero"`` opt-in).
+        sample_rate: WAV sample rate fed to the backend.
+
+    Returns:
+        The SAME dict with over-threshold chapters replaced by their children,
+        list order preserved.
+    """
+    if not CHAPTER_SPLIT_ENABLED:
+        log.info("chapter_split.disabled — passthrough, chapters unchanged.")
+        return scored_chapters
+    if not scored_chapters or not scored_chapters.get("videos"):
+        return scored_chapters
+
+    for video in scored_chapters["videos"]:
+        video_id = video.get("video_id")
+        chapters = video.get("scored_chapters") or []
+        if not video_id or not chapters:
+            continue
+
+        source_video = _find_source_video(target_date, str(video_id))
+        if not source_video:
+            log.warning(
+                "chapter_split.video_not_found video_id=%s target_date=%s chapters=%s — "
+                "splitting arithmetically, never left over-threshold",
+                video_id,
+                target_date,
+                len(chapters),
+            )
+
+        rebuilt: list[dict] = []
+        for chapter in chapters:
+            rebuilt.extend(
+                _split_chapter_best_effort(
+                    chapter,
+                    source_video,
+                    max_chapter_secs=max_chapter_secs,
+                    min_child_secs=min_child_secs,
+                    window_secs=window_secs,
+                    widen_factor=widen_factor,
+                    gap_merge_secs=gap_merge_secs,
+                    min_gap_secs=min_gap_secs,
+                    backend=backend,
+                    sample_rate=sample_rate,
+                )
+            )
+        video["scored_chapters"] = rebuilt
+
+    return scored_chapters

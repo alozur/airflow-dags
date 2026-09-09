@@ -9,6 +9,7 @@ Tests:
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -280,7 +281,7 @@ class TestMarkTurnsUploadedSiblingMarking:
 
         call_args = cursor.execute.call_args
         params = call_args[0][1]
-        assert params == ("vid_abc", 7), f"Params must be (youtube_video_id, turn_id) = ('vid_abc', 7), got {params}"
+        assert params == ("vid_abc", True, 7), f"Params must include the scheduled-quota flag: got {params}"
 
 
 class TestMarkTurnsUploadedByOutputPath:
@@ -329,7 +330,9 @@ class TestMarkTurnsUploadedByOutputPath:
 
         call_args = cursor.execute.call_args
         params = call_args[0][1]
-        assert params == ("vid_abc", "/path/turn1.mp4"), f"Params must be (youtube_video_id, output_path), got {params}"
+        assert params == ("vid_abc", True, "/path/turn1.mp4"), (
+            f"Params must include the scheduled-quota flag: got {params}"
+        )
 
     def test_returns_cursor_rowcount(self):
         """Return value must be cur.rowcount, so callers can distinguish 0 rows matched."""
@@ -376,6 +379,124 @@ class TestMarkTurnsUploadedByOutputPath:
         call_args = cursor.execute.call_args
         query = call_args[0][0].upper()
         assert "SPEAKER_TURN_VIDEOS" in query
+
+
+class TestRecordCopyVerificationTurn:
+    """record_copy_verification_turn is the audit-write for the final-copy
+    verification seam (issue #512), mirroring mark_turns_uploaded_by_output_path
+    (#129): keys on output_path so grouped turns get one shared audit row set."""
+
+    def _call(self, cursor_kwargs: dict | None = None, **overrides):
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        for key, value in (cursor_kwargs or {}).items():
+            setattr(cursor, key, value)
+
+        kwargs = {
+            "output_path": "/path/turn1.mp4",
+            "verdict": "pass",
+            "findings": [],
+            "original_title": "Título original",
+            "original_description": "Descripción original",
+            "corrected_title": None,
+            "corrected_description": None,
+            "thumbnail_text": None,
+            "content_version": "abc123",
+        }
+        kwargs.update(overrides)
+
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            result = db.record_copy_verification_turn(kwargs.pop("output_path"), **kwargs)
+        return result, cursor
+
+    def test_where_clause_guards_on_content_version(self):
+        """The UPDATE predicate must include the idempotency guard (design.md D3):
+        a retry with the identical content_version affects zero rows."""
+        _, cursor = self._call()
+
+        query = cursor.execute.call_args[0][0].upper()
+        assert "WHERE OUTPUT_PATH = %S AND COPY_CONTENT_VERSION IS DISTINCT FROM %S" in query
+        assert "SPEAKER_TURN_VIDEOS" in query
+
+    def test_second_call_same_content_version_returns_zero_rowcount(self):
+        """rowcount == 0 is SUCCESS, not failure — the caller must treat it that way."""
+        result, cursor = self._call(cursor_kwargs={"rowcount": 0})
+
+        assert result == 0
+
+    def test_grouped_output_path_has_no_subquery(self):
+        """Matches every sibling row sharing output_path directly, no turn_id filter."""
+        _, cursor = self._call()
+
+        query = cursor.execute.call_args[0][0].upper()
+        assert "SELECT" not in query
+
+    def test_persists_verdict_and_content_version_columns(self):
+        _, cursor = self._call()
+
+        query = cursor.execute.call_args[0][0].upper()
+        for column in (
+            "COPY_VERIFICATION_VERDICT",
+            "COPY_VERIFICATION_FINDINGS",
+            "COPY_ORIGINAL_TITLE",
+            "COPY_ORIGINAL_DESCRIPTION",
+            "COPY_CORRECTED_TITLE",
+            "COPY_CORRECTED_DESCRIPTION",
+            "COPY_THUMBNAIL_TEXT",
+            "COPY_CONTENT_VERSION",
+            "COPY_VERIFIED_AT",
+        ):
+            assert column in query
+
+    def test_params_include_all_values_in_order(self):
+        _, cursor = self._call(
+            verdict="correctable",
+            findings=[{"field": "title", "category": "spelling"}],
+            corrected_title="Corregido",
+            corrected_description="Descripción corregida",
+            thumbnail_text="Texto miniatura",
+            content_version="v2",
+        )
+
+        params = cursor.execute.call_args[0][1]
+        assert params == (
+            "correctable",
+            json.dumps([{"field": "title", "category": "spelling"}]),
+            "Título original",
+            "Descripción original",
+            "Corregido",
+            "Descripción corregida",
+            "Texto miniatura",
+            "v2",
+            "/path/turn1.mp4",
+            "v2",
+        )
+
+    def test_returns_cursor_rowcount(self):
+        result, _ = self._call(cursor_kwargs={"rowcount": 2})
+
+        assert result == 2
+
+    def test_raises_value_error_on_empty_output_path(self):
+        from congress_videos.modules.database import CongressionalVideoDB
+
+        pg_mock, cursor = _make_conn()
+        with patch("congress_videos.modules.database.PostgresConnection", return_value=pg_mock):
+            db = CongressionalVideoDB()
+            with pytest.raises(ValueError):
+                db.record_copy_verification_turn(
+                    "",
+                    verdict="pass",
+                    findings=[],
+                    original_title="t",
+                    original_description="d",
+                    corrected_title=None,
+                    corrected_description=None,
+                    thumbnail_text=None,
+                    content_version="v1",
+                )
 
 
 class TestCountChaptersUploadedTodayUnchanged:

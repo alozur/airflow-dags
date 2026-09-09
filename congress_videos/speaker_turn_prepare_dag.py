@@ -59,7 +59,7 @@ DAG_ID = SPEAKER_TURN_PREPARE_DAG_ID
 
 def _display_name_for(participants: list[dict], slug: str) -> str | None:
     """Look up a participant's canonical display_name by slug (issue #342:
-    shared by both the narrow and the wide resolution pass)."""
+    shared by both the primary and the wide resolution pass)."""
     return next((p["display_name"] for p in participants if p["slug"] == slug), None)
 
 
@@ -246,6 +246,147 @@ def _run_ffmpeg_decode_check(path: str) -> int:
     return result.returncode
 
 
+def _resolve_qa_winner(
+    turn: dict,
+    participants: list[dict],
+    turn_id: int,
+    primary: dict,
+    primary_name: str | None,
+    promote_signal: bool,
+    mentions: list[str],
+) -> tuple[dict, str | None, str | None, str | None]:
+    """Lifted verbatim out of _prepare_turns_callable (issue #272)."""
+    winner, winner_name, winner_verdict = primary, primary_name, None
+    wide_slug = None
+    if promote_signal and QA_WIDE_CONTEXT_ENABLED:
+        # Re-resolve with turn_type='qa' on a shallow copy
+        # (never mutate turn) so speaker_resolution's
+        # qa-widened prompt path can disambiguate a
+        # monologue-truncated primary pass.
+        try:
+            wide = resolve_speaker({**turn, "turn_type": "qa"}, participants)
+        except Exception as exc:
+            logger.warning(
+                "_prepare_turns_callable: turn_id=%d wide qa "
+                "re-resolution raised (%s) — falling back to "
+                "the primary result",
+                turn_id,
+                exc,
+            )
+            wide = None
+        if wide is not None:
+            wide_slug = wide["participant_slug"]
+            wide_name = _display_name_for(participants, wide_slug)
+            # A wide-reject is silent (audit line below
+            # records it) — the WARNING is reserved for the
+            # final (primary) verdict below.
+            if wide_name and crosscheck_slug(wide_name, mentions) != "reject":
+                winner, winner_name, winner_verdict = wide, wide_name, "ok"
+
+    if winner_verdict is None:
+        # Gate B (issue #321): cross-check the winner's
+        # canonical display_name against the chapter's own
+        # key_speakers/speakers rosters before persisting.
+        # Rejection withholds BOTH the DB write and the
+        # in-memory resolved_name patch — the incident this
+        # guards against is a wrong name reaching the
+        # thumbnail/title sidecar seam via the patch, not
+        # only via the DB write.
+        winner_verdict = crosscheck_slug(winner_name or "", mentions)
+
+    return winner, winner_name, winner_verdict, wide_slug
+
+
+def _persist_turn_resolution(
+    db: CongressionalVideoDB,
+    turn: dict,
+    turn_id: int,
+    output_path: str,
+    winner: dict,
+    winner_name: str | None,
+    winner_verdict: str | None,
+    promote_signal: bool,
+    mentions: list[str],
+) -> bool:
+    """Lifted verbatim out of _prepare_turns_callable (issue #272)."""
+    promoted = False
+    if winner_verdict == "reject":
+        logger.warning(
+            "_prepare_turns_callable: turn_id=%d chapter_id=%s "
+            "roster cross-check REJECTED slug=%r display_name=%r "
+            "against mentions=%r — write withheld",
+            turn_id,
+            turn.get("chapter_id"),
+            winner["participant_slug"],
+            winner_name,
+            mentions,
+        )
+    else:
+        # Gate A (issue #321): mark_turn_resolved now scopes the
+        # write to sibling rows sharing this turn's speaker_label.
+        db.mark_turn_resolved(
+            output_path,
+            winner["participant_slug"],
+            winner["confidence"],
+            "ai_srt_context",
+            turn_id,
+            evidence=winner.get("audit") or winner.get("evidence") or None,
+        )
+        # Patch in-memory so thumbnail/title steps see the real name.
+        if winner_name:
+            turn["resolved_name"] = winner_name
+            # Rule 4 (issue #282): promotion is sticky on
+            # promote_signal — never re-evaluated against
+            # the winner's name. Promote-only; never demotes.
+            if promote_signal:
+                db.promote_turn_type_to_qa(output_path)
+                promoted = True
+        logger.info(
+            "_prepare_turns_callable: turn_id=%d resolved → slug=%r",
+            turn_id,
+            winner["participant_slug"],
+        )
+
+    return promoted
+
+
+def _prepare_turn_artifacts(db, turn, turn_id, output_path) -> None:
+    """Lifted verbatim out of _prepare_turns_callable (issue #272)."""
+    try:
+        # Step 0.5: VAD silence trim (issue #175).
+        # Best-effort: trim_turn_silence_with_vad never raises and returns (0.0, 0.0) on
+        # any failure, so preparation continues normally with the original file.
+        # Applies uniformly to monologue and qa turns (no turn_type branching).
+        trim_start, trim_end = trim_turn_silence_with_vad(output_path)
+
+        # Step 1: Write subtitles.srt sidecar (window narrowed by VAD offsets).
+        _write_turn_sidecars(turn, trim_start_secs=trim_start, trim_end_secs=trim_end)
+
+        # Step 2: ffmpeg decode integrity check (validates trimmed or original MP4).
+        rc = _run_ffmpeg_decode_check(output_path)
+        if rc != 0:
+            logger.warning(
+                "_prepare_turns_callable: ffmpeg decode check failed for turn_id=%d "
+                "(rc=%d) — prepared_at NOT set; will retry on the next chain-triggered run",
+                turn_id,
+                rc,
+            )
+            return None
+
+        # Step 3: Atomic readiness flip — called LAST.
+        db.mark_turn_prepared(turn_id)
+        logger.info("_prepare_turns_callable: turn_id=%d prepared successfully", turn_id)
+
+    except Exception as exc:
+        logger.warning(
+            "_prepare_turns_callable: turn_id=%d preparation failed (%s) "
+            "— prepared_at NOT set; will retry on the next chain-triggered run",
+            turn_id,
+            exc,
+        )
+        return None
+
+
 def _prepare_turns_callable() -> None:
     """Callable for the prepare_turns PythonOperator task.
 
@@ -310,107 +451,38 @@ def _prepare_turns_callable() -> None:
                 # combined/wide resolver (#322), and so does the
                 # qa-promotion re-pass below (#342).
                 if (turn.get("turn_type") or "monologue") != "qa":
-                    narrow = resolve_monologue_speaker(turn, participants)
+                    primary = resolve_monologue_speaker(turn, participants)
                 else:
-                    narrow = resolve_speaker(turn, participants)
-                if narrow is not None:
-                    narrow_slug = narrow["participant_slug"]
-                    narrow_name = _display_name_for(participants, narrow_slug)
+                    primary = resolve_speaker(turn, participants)
+                if primary is not None:
+                    primary_slug = primary["participant_slug"]
+                    primary_name = _display_name_for(participants, primary_slug)
 
                     # issue #342: compute the qa-promotion signal ONCE, from
-                    # the narrow result, before any write. Promotion is
+                    # the primary result, before any write. Promotion is
                     # STICKY on this signal — the (possibly widened) winner
                     # below only decides which slug is persisted, never
                     # whether promotion fires (preserves #282 rule 4 exactly).
-                    promote_signal = _is_qa_promotion_signal(previous_name, narrow_name)
+                    promote_signal = _is_qa_promotion_signal(previous_name, primary_name)
                     mentions = chapter_roster_mentions(turn.get("key_speakers"), turn.get("speakers"))
 
-                    winner, winner_name, winner_verdict = narrow, narrow_name, None
-                    wide_slug = None
-                    if promote_signal and QA_WIDE_CONTEXT_ENABLED:
-                        # Re-resolve with turn_type='qa' on a shallow copy
-                        # (never mutate turn) so speaker_resolution's
-                        # qa-widened prompt path can disambiguate a
-                        # monologue-truncated narrow pass.
-                        try:
-                            wide = resolve_speaker({**turn, "turn_type": "qa"}, participants)
-                        except Exception as exc:
-                            logger.warning(
-                                "_prepare_turns_callable: turn_id=%d wide qa "
-                                "re-resolution raised (%s) — falling back to "
-                                "the narrow result",
-                                turn_id,
-                                exc,
-                            )
-                            wide = None
-                        if wide is not None:
-                            wide_slug = wide["participant_slug"]
-                            wide_name = _display_name_for(participants, wide_slug)
-                            # A wide-reject is silent (audit line below
-                            # records it) — the WARNING is reserved for the
-                            # final (narrow) verdict below.
-                            if wide_name and crosscheck_slug(wide_name, mentions) != "reject":
-                                winner, winner_name, winner_verdict = wide, wide_name, "ok"
-
-                    if winner_verdict is None:
-                        # Gate B (issue #321): cross-check the winner's
-                        # canonical display_name against the chapter's own
-                        # key_speakers/speakers rosters before persisting.
-                        # Rejection withholds BOTH the DB write and the
-                        # in-memory resolved_name patch — the incident this
-                        # guards against is a wrong name reaching the
-                        # thumbnail/title sidecar seam via the patch, not
-                        # only via the DB write.
-                        winner_verdict = crosscheck_slug(winner_name or "", mentions)
-
-                    promoted = False
-                    if winner_verdict == "reject":
-                        logger.warning(
-                            "_prepare_turns_callable: turn_id=%d chapter_id=%s "
-                            "roster cross-check REJECTED slug=%r display_name=%r "
-                            "against mentions=%r — write withheld",
-                            turn_id,
-                            turn.get("chapter_id"),
-                            winner["participant_slug"],
-                            winner_name,
-                            mentions,
-                        )
-                    else:
-                        # Gate A (issue #321): mark_turn_resolved now scopes the
-                        # write to sibling rows sharing this turn's speaker_label.
-                        db.mark_turn_resolved(
-                            output_path,
-                            winner["participant_slug"],
-                            winner["confidence"],
-                            "ai_srt_context",
-                            turn_id,
-                            evidence=winner.get("audit") or winner.get("evidence") or None,
-                        )
-                        # Patch in-memory so thumbnail/title steps see the real name.
-                        if winner_name:
-                            turn["resolved_name"] = winner_name
-                            # Rule 4 (issue #282): promotion is sticky on
-                            # promote_signal — never re-evaluated against
-                            # the winner's name. Promote-only; never demotes.
-                            if promote_signal:
-                                db.promote_turn_type_to_qa(output_path)
-                                promoted = True
-                        logger.info(
-                            "_prepare_turns_callable: turn_id=%d resolved → slug=%r",
-                            turn_id,
-                            winner["participant_slug"],
-                        )
+                    winner, winner_name, winner_verdict, wide_slug = _resolve_qa_winner(
+                        turn, participants, turn_id, primary, primary_name, promote_signal, mentions
+                    )
+                    promoted = _persist_turn_resolution(
+                        db, turn, turn_id, output_path, winner, winner_name, winner_verdict, promote_signal, mentions
+                    )
 
                     if promote_signal:
                         # issue #342: one audit INFO line per re-pass event.
                         logger.info(
                             "_prepare_turns_callable: qa_reresolution turn_id=%d "
-                            "output_path=%s previous_name=%r narrow_slug=%r "
+                            "output_path=%s previous_name=%r primary_slug=%r "
                             "wide_slug=%r winner_slug=%r verdict=%s promoted=%s",
                             turn_id,
                             output_path,
                             previous_name,
-                            narrow_slug,
+                            primary_slug,
                             wide_slug,
                             winner["participant_slug"],
                             winner_verdict,
@@ -435,39 +507,7 @@ def _prepare_turns_callable() -> None:
                 exc,
             )
 
-        try:
-            # Step 0.5: VAD silence trim (issue #175).
-            # Best-effort: trim_turn_silence_with_vad never raises and returns (0.0, 0.0) on
-            # any failure, so preparation continues normally with the original file.
-            # Applies uniformly to monologue and qa turns (no turn_type branching).
-            trim_start, trim_end = trim_turn_silence_with_vad(output_path)
-
-            # Step 1: Write subtitles.srt sidecar (window narrowed by VAD offsets).
-            _write_turn_sidecars(turn, trim_start_secs=trim_start, trim_end_secs=trim_end)
-
-            # Step 2: ffmpeg decode integrity check (validates trimmed or original MP4).
-            rc = _run_ffmpeg_decode_check(output_path)
-            if rc != 0:
-                logger.warning(
-                    "_prepare_turns_callable: ffmpeg decode check failed for turn_id=%d "
-                    "(rc=%d) — prepared_at NOT set; will retry on the next chain-triggered run",
-                    turn_id,
-                    rc,
-                )
-                continue
-
-            # Step 3: Atomic readiness flip — called LAST.
-            db.mark_turn_prepared(turn_id)
-            logger.info("_prepare_turns_callable: turn_id=%d prepared successfully", turn_id)
-
-        except Exception as exc:
-            logger.warning(
-                "_prepare_turns_callable: turn_id=%d preparation failed (%s) "
-                "— prepared_at NOT set; will retry on the next chain-triggered run",
-                turn_id,
-                exc,
-            )
-            continue
+        _prepare_turn_artifacts(db, turn, turn_id, output_path)
 
 
 # ---------------------------------------------------------------------------

@@ -64,7 +64,7 @@ def filter_shorts_by_source_cooldown(
     return eligible
 
 
-def pending_shorts_candidate_sql(shorts_table: str, chapters_table: str) -> str:
+def pending_shorts_candidate_sql(shorts_table: str, chapters_table: str, turns_table: str) -> str:
     """Candidate query for get_pending_shorts. Params: (tier1_limit, min_virality_score, row_limit).
 
     Ranks each SOURCE UNIT's downloaded, non-abandoned clips (uploaded and
@@ -75,7 +75,9 @@ def pending_shorts_candidate_sql(shorts_table: str, chapters_table: str) -> str:
     query filter down to the still-pending, upload-eligible rows. The outer
     query no longer requires the parent chapter to already be published to
     YouTube (#467) — a candidate is eligible regardless of the parent's
-    `youtube_upload_date`.
+    `youtube_upload_date`. Within each tier, a candidate whose parent has no
+    `youtube_upload_date` derives its publish-order key from its own turn's
+    materialization timestamp instead of sorting last (#476).
     """
     return f"""
                     WITH ranked AS (
@@ -102,13 +104,22 @@ def pending_shorts_candidate_sql(shorts_table: str, chapters_table: str) -> str:
                         vc.video_id
                     FROM ranked
                     JOIN {chapters_table} vc ON vc.chapter_id = ranked.chapter_id
+                    -- #476 recency fallback. LEFT, not INNER: legacy turn_id IS
+                    -- NULL rows survive with a NULL materialized_at, so COALESCE
+                    -- degrades to today's key. turn_id is UNIQUE
+                    -- (uq_speaker_turn_videos_turn), so this matches at most one
+                    -- row and cannot fan out the candidate set. Nothing from stv
+                    -- is projected: stv.video_id is a SERIAL int and would
+                    -- collide with vc.video_id, the YouTube id the cool-down
+                    -- filter reads.
+                    LEFT JOIN {turns_table} stv ON stv.turn_id = ranked.turn_id
                     WHERE ranked.is_uploaded = FALSE
                       AND ranked.is_upload_abandoned = FALSE
                       AND ranked.local_file_path IS NOT NULL
                       AND ranked.reap_status = 'downloaded'
                       AND (ranked.reap_virality_score >= %s OR ranked.reap_virality_score IS NULL)
                     ORDER BY tier ASC,
-                             vc.youtube_upload_date DESC NULLS LAST,
+                             COALESCE(vc.youtube_upload_date, stv.materialized_at) DESC NULLS LAST,
                              ranked.reap_virality_score DESC NULLS LAST,
                              ranked.id ASC
                     LIMIT %s
@@ -451,7 +462,7 @@ class CongressionalVideoDB:
             )
             return chapters
 
-    def mark_chapter_uploaded(self, chapter_id: int, youtube_video_id: str):
+    def mark_chapter_uploaded(self, chapter_id: int, youtube_video_id: str, *, counts_toward_daily_quota: bool = True):
         """
         Mark a chapter as uploaded to YouTube.
 
@@ -468,10 +479,11 @@ class CongressionalVideoDB:
                         is_uploaded_to_youtube = TRUE,
                         youtube_video_id = %s,
                         youtube_upload_date = CURRENT_TIMESTAMP,
+                        counts_toward_daily_quota = %s,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE chapter_id = %s
                 """,
-                (youtube_video_id, chapter_id),
+                (youtube_video_id, counts_toward_daily_quota, chapter_id),
             )
             logger.info(f"Marked chapter {chapter_id} as uploaded to YouTube: {youtube_video_id}")
 
@@ -897,11 +909,16 @@ class CongressionalVideoDB:
         to Tier 2. The source unit is the turn group for turn-sourced rows
         (`turn_id` set) or the chapter for legacy rows (`turn_id IS NULL`),
         so two turn groups sharing one chapter get independent Tier-1 caps.
-        Tier is the PRIMARY sort key, then the parent chapter's YouTube
-        upload date descending NULLS LAST (most recently uploaded long-form
-        video first, unpublished parents last), then virality score
-        descending as a tie-breaker within the same tier and source unit.
-        Only clips with a local file present are returned.
+        Tier is the PRIMARY sort key, then
+        `COALESCE(parent chapter youtube_upload_date, own turn's
+        speaker_turn_videos.materialized_at)` descending NULLS LAST (issue
+        #476): a candidate with a published parent sorts by that publish
+        date; a turn-sourced candidate with an unpublished parent falls back
+        to its own turn materialization timestamp instead of sorting last;
+        a legacy candidate with an unpublished parent has no fallback and
+        keeps sorting last. Virality score is the tie-breaker within the
+        same tier and source unit. Only clips with a local file present are
+        returned.
 
         The ranking universe deliberately INCLUDES clips that are already
         uploaded (`is_uploaded = TRUE`): an upload permanently consumes its
@@ -933,11 +950,13 @@ class CongressionalVideoDB:
 
         Returns:
             List of video_shorts records (each including `video_id`,
-            `chapter_rank`, and `tier` keys) ordered by tier ASC, then parent
-            chapter youtube_upload_date DESC, then reap_virality_score DESC
+            `chapter_rank`, and `tier` keys) ordered by tier ASC, then
+            COALESCE(parent chapter youtube_upload_date, own turn's
+            materialized_at) DESC, then reap_virality_score DESC
         """
         shorts_table = self.pg_conn.get_qualified_table("video_shorts")
         chapters_table = self.pg_conn.get_qualified_table("video_chapters")
+        turns_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
 
         min_virality_score = min_virality_score if min_virality_score is not None else 0.0
 
@@ -960,7 +979,7 @@ class CongressionalVideoDB:
             upload_history = cur.fetchall()
 
             cur.execute(
-                pending_shorts_candidate_sql(shorts_table, chapters_table),
+                pending_shorts_candidate_sql(shorts_table, chapters_table, turns_table),
                 (SHORTS_TIER1_PER_CHAPTER_LIMIT, min_virality_score, SHORTS_PENDING_CANDIDATE_LIMIT),
             )
             candidates = cur.fetchall()
@@ -1075,7 +1094,9 @@ class CongressionalVideoDB:
             logger.info(f"Retrieved {len(turns)} uploadable turns (limit={limit})")
             return turns
 
-    def mark_turns_uploaded(self, turn_id: int, youtube_video_id: str) -> None:
+    def mark_turns_uploaded(
+        self, turn_id: int, youtube_video_id: str, *, counts_toward_daily_quota: bool = True
+    ) -> None:
         """Mark a speaker turn video as uploaded to YouTube.
 
         Sets is_uploaded_to_youtube=TRUE, youtube_video_id, and
@@ -1093,16 +1114,19 @@ class CongressionalVideoDB:
                     UPDATE {stv_table} SET
                         is_uploaded_to_youtube = TRUE,
                         youtube_video_id = %s,
-                        youtube_upload_date = NOW()
+                        youtube_upload_date = NOW(),
+                        counts_toward_daily_quota = %s
                     WHERE output_path = (
                         SELECT output_path FROM {stv_table} WHERE turn_id = %s
                     )
                     """,
-                (youtube_video_id, turn_id),
+                (youtube_video_id, counts_toward_daily_quota, turn_id),
             )
             logger.info(f"Marked turn {turn_id} as uploaded to YouTube: {youtube_video_id}")
 
-    def mark_turns_uploaded_by_output_path(self, output_path: str, youtube_video_id: str) -> int:
+    def mark_turns_uploaded_by_output_path(
+        self, output_path: str, youtube_video_id: str, *, counts_toward_daily_quota: bool = True
+    ) -> int:
         """Mark ALL speaker turn video rows sharing output_path as uploaded.
 
         Fallback marking path for when the caller does not have a turn_id
@@ -1132,15 +1156,275 @@ class CongressionalVideoDB:
                     UPDATE {stv_table} SET
                         is_uploaded_to_youtube = TRUE,
                         youtube_video_id = %s,
-                        youtube_upload_date = NOW()
+                        youtube_upload_date = NOW(),
+                        counts_toward_daily_quota = %s
                     WHERE output_path = %s
                     """,
-                (youtube_video_id, output_path),
+                (youtube_video_id, counts_toward_daily_quota, output_path),
             )
             logger.info(
                 "mark_turns_uploaded_by_output_path: output_path=%r marked uploaded to YouTube: %s (%d rows)",
                 output_path,
                 youtube_video_id,
+                cur.rowcount,
+            )
+            return cur.rowcount
+
+    def record_copy_verification_turn(
+        self,
+        output_path: str,
+        *,
+        verdict: str,
+        findings: list[dict],
+        original_title: str,
+        original_description: str,
+        corrected_title: str | None,
+        corrected_description: str | None,
+        thumbnail_text: str | None,
+        content_version: str,
+    ) -> int:
+        """Persist a final-copy verification audit row (issue #512, design.md D3).
+
+        Guarded UPDATE, not an insert: the WHERE clause includes
+        ``copy_content_version IS DISTINCT FROM %s`` so a retry that
+        recomputes the identical content_version affects zero rows — a
+        success, not an error. Keys by output_path, mirroring
+        ``mark_turns_uploaded_by_output_path`` (#129): grouped turns share
+        one output_path across several speaker_turn_videos rows and all
+        describe the same published video.
+
+        Args:
+            output_path: Absolute path to the grouped turn's video.mp4 file.
+            verdict: pass | correctable | reject.
+            findings: Serializable finding dicts (JSONB column).
+            original_title: Title actually published (before any correction).
+            original_description: Description actually published.
+            corrected_title: Accepted correction, or None when not applied.
+            corrected_description: Accepted correction, or None when not applied.
+            thumbnail_text: Verified thumbnail text, or None when unavailable.
+            content_version: sha256 content version this verdict was computed for.
+
+        Returns:
+            Number of rows updated (``cur.rowcount``). 0 means either no row
+            matched output_path or this exact content_version is already
+            recorded — both are success, not failure.
+
+        Raises:
+            ValueError: If output_path is falsy (would generate an unbounded
+                ``WHERE output_path = NULL`` update).
+        """
+        if not output_path:
+            raise ValueError("record_copy_verification_turn: output_path is required")
+
+        stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
+
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                    UPDATE {stv_table} SET
+                        copy_verification_verdict  = %s,
+                        copy_verification_findings = %s::jsonb,
+                        copy_original_title         = %s,
+                        copy_original_description    = %s,
+                        copy_corrected_title         = %s,
+                        copy_corrected_description   = %s,
+                        copy_thumbnail_text          = %s,
+                        copy_content_version         = %s,
+                        copy_verified_at             = NOW()
+                    WHERE output_path = %s AND copy_content_version IS DISTINCT FROM %s
+                    """,
+                (
+                    verdict,
+                    json.dumps(findings or []),
+                    original_title,
+                    original_description,
+                    corrected_title,
+                    corrected_description,
+                    thumbnail_text,
+                    content_version,
+                    output_path,
+                    content_version,
+                ),
+            )
+            logger.info(
+                "record_copy_verification_turn: output_path=%r verdict=%s content_version=%s (%d rows)",
+                output_path,
+                verdict,
+                content_version,
+                cur.rowcount,
+            )
+            return cur.rowcount
+
+    def record_copy_verification_short(
+        self,
+        short_id: int,
+        *,
+        verdict: str,
+        findings: list[dict],
+        original_title: str,
+        original_description: str,
+        corrected_title: str | None,
+        corrected_description: str | None,
+        content_version: str,
+    ) -> int:
+        """Persist a final-copy verification audit row for a short (issue #512,
+        design.md D3/D4). Guarded UPDATE, not an insert, mirroring
+        ``record_copy_verification_turn`` exactly minus ``copy_thumbnail_text``:
+        the shorts pipeline has no thumbnail-generation step at all. Keys by
+        ``video_shorts.id`` — unlike the long-form seam's output_path grouping,
+        each short is its own row.
+
+        Args:
+            short_id: video_shorts.id primary key.
+            verdict: pass | correctable | reject.
+            findings: Serializable finding dicts (JSONB column).
+            original_title: Title actually published (before any correction).
+            original_description: Description actually published.
+            corrected_title: Accepted correction, or None when not applied.
+            corrected_description: Accepted correction, or None when not applied.
+            content_version: sha256 content version this verdict was computed for.
+
+        Returns:
+            Number of rows updated (``cur.rowcount``). 0 means either no row
+            matched ``id`` or this exact content_version is already
+            recorded — both are success, not failure.
+
+        Raises:
+            ValueError: If short_id is falsy.
+        """
+        if not short_id:
+            raise ValueError("record_copy_verification_short: short_id is required")
+
+        shorts_table = self.pg_conn.get_qualified_table("video_shorts")
+
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                    UPDATE {shorts_table} SET
+                        copy_verification_verdict  = %s,
+                        copy_verification_findings = %s::jsonb,
+                        copy_original_title         = %s,
+                        copy_original_description    = %s,
+                        copy_corrected_title         = %s,
+                        copy_corrected_description   = %s,
+                        copy_content_version         = %s,
+                        copy_verified_at             = NOW()
+                    WHERE id = %s AND copy_content_version IS DISTINCT FROM %s
+                    """,
+                (
+                    verdict,
+                    json.dumps(findings or []),
+                    original_title,
+                    original_description,
+                    corrected_title,
+                    corrected_description,
+                    content_version,
+                    short_id,
+                    content_version,
+                ),
+            )
+            logger.info(
+                "record_copy_verification_short: short_id=%s verdict=%s content_version=%s (%d rows)",
+                short_id,
+                verdict,
+                content_version,
+                cur.rowcount,
+            )
+            return cur.rowcount
+
+    def record_title_generation_input_turn(self, output_path: str, *, payload: dict) -> int:
+        """Persist the title generator's input payload for provenance/replay
+        (issue #549, design.md D3). Guarded UPDATE keyed by output_path,
+        mirroring ``mark_turns_uploaded_by_output_path`` (#129) and
+        ``record_copy_verification_turn`` (#512): grouped turns share one
+        output_path across several speaker_turn_videos rows, and one call
+        writes the identical payload to every sibling row.
+
+        Unlike ``record_copy_verification_turn``, this UPDATE carries NO
+        ``IS DISTINCT FROM`` content guard, so ``rowcount == 0`` means
+        exactly one thing: the key matched no row. The caller MUST treat
+        that as a loud ``no_row`` outcome, never as success.
+
+        Args:
+            output_path: Absolute path to the grouped turn's video.mp4 file.
+            payload: Allowlisted generator-input dict (see build_turn_title_payload).
+
+        Returns:
+            Number of rows updated (``cur.rowcount``). 0 means no row
+            matched output_path — the caller must log and record this loudly.
+
+        Raises:
+            ValueError: If output_path is falsy or payload is not a
+                non-empty dict.
+        """
+        if not output_path:
+            raise ValueError("record_title_generation_input_turn: output_path is required")
+        if not isinstance(payload, dict) or not payload:
+            raise ValueError("record_title_generation_input_turn: payload must be a non-empty dict")
+
+        stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
+
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                    UPDATE {stv_table} SET
+                        title_generation_input = %s::jsonb
+                    WHERE output_path = %s
+                    """,
+                (
+                    json.dumps(payload, ensure_ascii=False),
+                    output_path,
+                ),
+            )
+            logger.info(
+                "record_title_generation_input_turn: output_path=%r (%d rows)",
+                output_path,
+                cur.rowcount,
+            )
+            return cur.rowcount
+
+    def record_title_generation_input_short(self, short_id: int, *, payload: dict) -> int:
+        """Persist the shorts title generator's input payload for
+        provenance/replay (issue #549, design.md D3). Same shape as
+        ``record_title_generation_input_turn`` minus the sibling grouping:
+        each short is its own row, keyed by ``video_shorts.id``.
+
+        No content guard — ``rowcount == 0`` means the key matched no row.
+
+        Args:
+            short_id: video_shorts.id primary key.
+            payload: Allowlisted generator-input dict (see build_shorts_title_payload).
+
+        Returns:
+            Number of rows updated (``cur.rowcount``). 0 means no row
+            matched id — the caller must log and record this loudly.
+
+        Raises:
+            ValueError: If short_id is falsy or payload is not a non-empty
+                dict.
+        """
+        if not short_id:
+            raise ValueError("record_title_generation_input_short: short_id is required")
+        if not isinstance(payload, dict) or not payload:
+            raise ValueError("record_title_generation_input_short: payload must be a non-empty dict")
+
+        shorts_table = self.pg_conn.get_qualified_table("video_shorts")
+
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                    UPDATE {shorts_table} SET
+                        title_generation_input = %s::jsonb
+                    WHERE id = %s
+                    """,
+                (
+                    json.dumps(payload, ensure_ascii=False),
+                    short_id,
+                ),
+            )
+            logger.info(
+                "record_title_generation_input_short: short_id=%s (%d rows)",
+                short_id,
                 cur.rowcount,
             )
             return cur.rowcount
@@ -1596,7 +1880,9 @@ class CongressionalVideoDB:
 
     def count_chapters_uploaded_today(self) -> int:
         """Returns the number of chapters uploaded to YouTube today (UTC date)."""
-        count = self._count_records("video_chapters", "youtube_upload_date >= CURRENT_DATE")
+        count = self._count_records(
+            "video_chapters", "youtube_upload_date >= CURRENT_DATE AND counts_toward_daily_quota = TRUE"
+        )
         logger.info(f"Chapters uploaded today: {count}")
         return count
 
@@ -1614,6 +1900,7 @@ class CongressionalVideoDB:
                     SELECT COUNT(DISTINCT output_path) AS count
                     FROM {table}
                     WHERE youtube_upload_date >= CURRENT_DATE
+                      AND counts_toward_daily_quota = TRUE
                     """
             )
             result = cur.fetchone()
@@ -1849,6 +2136,7 @@ class CongressionalVideoDB:
                 f"""SELECT vc.chapter_id, vc.title, vc.description, vc.speakers,
                                vc.key_speakers, vc.topics, vc.scoring_reasoning,
                                vc.relevance_score, vc.youtube_video_id,
+                               vc.mentioned_participant_slugs, vc.updated_at,
                                ysv.video_title AS source_video_title,
                                ysv.video_url   AS source_video_url,
                                ysv.session_number,
@@ -1857,6 +2145,30 @@ class CongressionalVideoDB:
                         LEFT JOIN {youtube_source_videos_table} ysv ON ysv.video_id = vc.video_id
                         WHERE vc.chapter_id = %s""",
                 (chapter_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def get_turn_speaker_slug(self, turn_id: int) -> dict | None:
+        """Roster-resolved speaker for one materialized turn video, or None if the row is gone.
+
+        Keyed read instead of a JOIN in pending_shorts_candidate_sql: that query owns
+        tier/cool-down semantics under 13 live-Postgres tests (design D2).
+
+        Note the two distinct absences a caller must handle (see D5, tests T1a/T1b):
+        a missing ROW returns None; an existing row with a NULL slug returns a dict
+        whose resolved_participant_slug is None.
+        """
+        stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT stv.turn_id,
+                           stv.resolved_participant_slug,
+                           stv.speaker_resolution_confidence,
+                           stv.speaker_resolution_method
+                    FROM {stv_table} stv
+                    WHERE stv.turn_id = %s""",
+                (turn_id,),
             )
             row = cur.fetchone()
             return dict(row) if row else None

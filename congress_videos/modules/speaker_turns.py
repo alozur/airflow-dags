@@ -305,6 +305,26 @@ def _union_length(spans: list[tuple[int, int]]) -> int:
     return sum(end - start for start, end in merged)
 
 
+def _collect_pattern_spans(
+    patterns: tuple[tuple[str, re.Pattern], ...],
+    normalized: str,
+    spans: list[tuple[int, int]],
+    matched_names: list[str],
+) -> None:
+    """Lifted verbatim out of is_procedural_turn (issue #272).
+
+    Scans ``normalized`` for every ``(name, pattern)`` pair, appending one
+    ``spans`` entry per match while recording each ``name`` in
+    ``matched_names`` at most once. Mutates both caller-owned lists in place;
+    returns nothing.
+    """
+    for name, pattern in patterns:
+        for m in pattern.finditer(normalized):
+            spans.append((m.start(), m.end()))
+            if name not in matched_names:
+                matched_names.append(name)
+
+
 def is_procedural_turn(text: str, duration_seconds: float, *, qa_context: bool = False) -> tuple[bool, str | None]:
     """Pure AND-gate: duration <= 15s AND phrase coverage >= threshold. Never raises.
 
@@ -334,21 +354,13 @@ def is_procedural_turn(text: str, duration_seconds: float, *, qa_context: bool =
 
     matched_names: list[str] = []
     spans: list[tuple[int, int]] = []
-    for name, pattern in PROCEDURAL_PATTERNS:
-        for m in pattern.finditer(normalized):
-            spans.append((m.start(), m.end()))
-            if name not in matched_names:
-                matched_names.append(name)
+    _collect_pattern_spans(PROCEDURAL_PATTERNS, normalized, spans, matched_names)
 
     # Core gate: fillers can never justify a flag on their own.
     if not spans:
         return (False, None)
 
-    for name, pattern in PROCEDURAL_FILLER_PATTERNS:
-        for m in pattern.finditer(normalized):
-            spans.append((m.start(), m.end()))
-            if name not in matched_names:
-                matched_names.append(name)
+    _collect_pattern_spans(PROCEDURAL_FILLER_PATTERNS, normalized, spans, matched_names)
 
     min_coverage = PROCEDURAL_MIN_COVERAGE_QA if qa_context else PROCEDURAL_MIN_COVERAGE
     coverage = _union_length(spans) / len(normalized)
@@ -378,6 +390,53 @@ def _turn_window_text(srt_blocks: list[dict], start: float, end: float) -> str:
 # ---------------------------------------------------------------------------
 # President-announcement extractor (pure)
 # ---------------------------------------------------------------------------
+
+
+def _first_named_announcement(sorted_blocks: list[dict]) -> tuple[str | None, bool] | None:
+    """Lifted verbatim out of extract_announcement (issue #272).
+
+    First pass: scans ``sorted_blocks`` (closest-preceding-block first) for a
+    named announcement. The first match in input order wins and the loop
+    stops there — a later named block never overwrites it. Returns ``None``
+    when no block matches.
+    """
+    best_named: tuple[str | None, bool] | None = None
+
+    for block in sorted_blocks:
+        text = block["text"]
+        m = _RE_NAMED.search(text)
+        if m:
+            name = m.group("name").strip()
+            # Only accept first (closest) named match
+            if best_named is None:
+                best_named = (name, True)
+                break
+
+    return best_named
+
+
+def _first_phrase_announcement(sorted_blocks: list[dict]) -> tuple[str | None, bool] | None:
+    """Lifted verbatim out of extract_announcement (issue #272).
+
+    Second pass: scans ``sorted_blocks`` for a phrase-only announcement,
+    checking ``_RE_SU_SENORIA`` before ``_RE_GRACIAS_SENORIA`` within the same
+    block (two separate ``if``s, no ``elif``). Returns ``None`` when neither
+    pattern matches any block.
+    """
+    best_phrase: tuple[str | None, bool] | None = None
+
+    for block in sorted_blocks:
+        text = block["text"]
+        if _RE_SU_SENORIA.search(text):
+            if best_phrase is None:
+                best_phrase = (None, True)
+                break
+        if _RE_GRACIAS_SENORIA.search(text):
+            if best_phrase is None:
+                best_phrase = (None, True)
+                break
+
+    return best_phrase
 
 
 def extract_announcement(
@@ -415,33 +474,11 @@ def extract_announcement(
     sorted_blocks = sorted(window_blocks, key=lambda b: t - b["end_secs"])
 
     # First pass: look for a named announcement in the best (closest preceding) blocks
-    best_named: tuple[str | None, bool] | None = None
-    best_phrase: tuple[str | None, bool] | None = None
-
-    for block in sorted_blocks:
-        text = block["text"]
-        m = _RE_NAMED.search(text)
-        if m:
-            name = m.group("name").strip()
-            # Only accept first (closest) named match
-            if best_named is None:
-                best_named = (name, True)
-                break
-
+    best_named = _first_named_announcement(sorted_blocks)
     if best_named is not None:
         return best_named
 
-    for block in sorted_blocks:
-        text = block["text"]
-        if _RE_SU_SENORIA.search(text):
-            if best_phrase is None:
-                best_phrase = (None, True)
-                break
-        if _RE_GRACIAS_SENORIA.search(text):
-            if best_phrase is None:
-                best_phrase = (None, True)
-                break
-
+    best_phrase = _first_phrase_announcement(sorted_blocks)
     if best_phrase is not None:
         return best_phrase
 

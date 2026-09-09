@@ -52,6 +52,18 @@ class TestMarkChapterUploads:
         assert result["updated_chapters"] == 1
         mock_db.mark_chapter_uploaded.assert_called_once_with("ch-01", "yt-xyz")
 
+    def test_successful_turn_upload_never_marks_its_parent_chapter(self, mock_db):
+        """turn_id is the discriminator even though turn details retain chapter_id."""
+        upload_results = {
+            "upload_details": [{"turn_id": 0, "chapter_id": "ch-01", "youtube_video_id": "yt-xyz", "success": True}]
+        }
+
+        result = mark_chapter_uploads(mock_db, upload_results)
+
+        mock_db.mark_chapter_uploaded.assert_not_called()
+        assert result["updated_chapters"] == 0
+        assert result["details"] == [{"chapter_id": "ch-01", "status": "skipped", "reason": "turn_upload"}]
+
     def test_failed_upload_records_failure(self, mock_db):
         """Failed upload with a resolvable chapter_id records the failure via the DB."""
         upload_results = {"upload_details": [{"chapter_id": "ch-02", "youtube_video_id": None, "success": False}]}
@@ -155,6 +167,15 @@ class TestMarkTurnUploads:
         assert mock_db.mark_turns_uploaded.call_count == 2
         mock_db.mark_turns_uploaded.assert_any_call(turn_id=1, youtube_video_id="abc")
         mock_db.mark_turns_uploaded.assert_any_call(turn_id=2, youtube_video_id="xyz")
+
+    def test_manual_turn_upload_is_persisted_outside_scheduled_quota(self, mock_db):
+        details = {"upload_details": [{"turn_id": 1, "youtube_video_id": "abc", "success": True}]}
+
+        mark_turn_uploads(mock_db, details, counts_toward_daily_quota=False)
+
+        mock_db.mark_turns_uploaded.assert_called_once_with(
+            turn_id=1, youtube_video_id="abc", counts_toward_daily_quota=False
+        )
 
     def test_skips_failed_uploads(self, mock_db):
         upload_results = {"upload_details": [{"turn_id": 1, "youtube_video_id": None, "success": False}]}

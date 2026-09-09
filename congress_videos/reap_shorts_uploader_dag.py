@@ -7,10 +7,13 @@ description derived from audio transcription (Whisper) + chapter metadata (GPT-4
 Flow:
 1. get_pending_shorts   — claim the highest-virality unuploaded clip
 2. generate_metadata    — extract audio → Whisper transcript → GPT title+description
+2b. verify_final_copy   — verify the final title/description against DB evidence
+                            before publication (issue #512); no fail-loud path
 3. trigger_youtube_upload — upload via generic_youtube_uploader
 4. mark_shorts_uploaded — persist youtube_video_id + is_uploaded=TRUE
 """
 
+import dataclasses
 import logging
 import os
 from datetime import date, datetime, timedelta
@@ -20,12 +23,16 @@ from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
 from airflow.operators.python import PythonOperator
 
 from congress_videos.config.ai_prompts import (
+    SHORTS_METADATA_MENTIONED_PEOPLE_INSTRUCTION,
     SHORTS_METADATA_SYSTEM_PROMPT,
     SHORTS_METADATA_USER_PROMPT_TEMPLATE,
 )
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
 from congress_videos.modules.database import CongressionalVideoDB
+from congress_videos.modules.participants_db import lookup_participant_by_slug
+from congress_videos.modules.politician_display_names import canonical_display_name
 from utils.ai_helpers import generate_json_completion, truncate_text
+from utils.airflow_helpers import utc_normalize_row
 from utils.env_loader import load_env_if_local
 from utils.llm_config import LLM_DEFAULT
 from utils.whisper_helpers import transcribe_audio_file
@@ -35,12 +42,19 @@ load_env_if_local()
 POSTGRES_SCHEMA = os.getenv("POSTGRES_SCHEMA", "development")
 
 
-def _resolve_speakers(ch: dict) -> tuple[str, str]:
+def _resolve_speakers(ch: dict, preferred_primary: str = "") -> tuple[str, str]:
     """Return (primary_speaker, rest_speakers) filtering placeholders.
 
     Priority: key_speakers (placeholder-filtered) before speakers
     (placeholder-filtered). Deduplicates order-preserving. Returns ("", "")
     when the combined pool is empty after filtering.
+
+    Args:
+        preferred_primary: when non-empty (issue #433, design D4), promotes
+            this name to the front of the pool ahead of key_speakers/speakers,
+            de-duplicating so no name is lost. Used to render a turn's
+            resolved speaker slug ahead of the chapter-level heuristic. The
+            default keeps every existing caller's behaviour unchanged.
     """
     from congress_videos.modules.speaker_placeholders import is_placeholder
 
@@ -54,9 +68,124 @@ def _resolve_speakers(ch: dict) -> tuple[str, str]:
             pool.append(name)
             seen.add(name)
 
+    if preferred_primary:
+        pool = [preferred_primary] + [n for n in pool if n.strip() != preferred_primary]
+
     if not pool:
         return ("", "")
     return (pool[0].strip(), ", ".join(pool[1:]))
+
+
+def build_shorts_metadata_context(
+    chapter: dict,
+    turn_speaker_slug: str | None,
+    participants_lookup,
+) -> dict:
+    """Resolve speaker, mentioned people and topics as three separate prompt inputs.
+
+    Speaker precedence (issue #433, design D4; spec "Speaker identity
+    precedence"): the turn's resolved_participant_slug, rendered via
+    participants_lookup, wins over the chapter-level _resolve_speakers
+    heuristic — that promotion happens at the call site, this function only
+    resolves the display name. Mentioned people are resolved the same way,
+    excluding the resolved speaker (by slug identity and by case-folded
+    display-name equality) and dropping any slug that does not resolve.
+    Topics pass through unmodified and are never merged into either people
+    list (spec "A topic never renders as a person"). Every
+    participants_lookup call is individually guarded — this function never
+    raises.
+
+    Catalogue precedence (issue #511, design D5): once turn_speaker_slug is
+    resolved, participants_lookup still runs and its raw display name is
+    retained, then canonical_display_name(turn_speaker_slug) overrides what
+    is rendered when the catalogue resolves. A None/unmapped/ambiguous slug
+    falls through unchanged to today's participants_lookup behaviour.
+    Mentioned people are never canonicalised: a bare surname is only safe
+    for the subject the short is about.
+
+    The raw name is retained deliberately. Mentioned people are excluded
+    from the speaker both by slug identity and by case-folded display-name
+    equality, and they always render their FULL name. Comparing them only
+    against a shortened speaker name would silently stop matching, so the
+    speaker is excluded on either form.
+
+    Args:
+        chapter: row from CongressionalVideoDB.get_chapter_metadata.
+        turn_speaker_slug: speaker_turn_videos.resolved_participant_slug for
+            the short's turn, or None when unavailable.
+        participants_lookup: callable slug -> row|None (injected, mirrors
+            thumbnail_config.py's participants_lookup convention).
+
+    Returns:
+        {"speaker_display_name": str, "mentioned_display_names": list[str],
+         "topics": list[str]}
+    """
+    speaker_display_name = ""
+    speaker_full_display_name = ""
+    if turn_speaker_slug:
+        try:
+            participant = participants_lookup(turn_speaker_slug)
+        except Exception as exc:
+            logging.warning(
+                "build_shorts_metadata_context: speaker slug lookup failed for "
+                "turn_speaker_slug=%r: %s — speaker_display_name stays empty",
+                turn_speaker_slug,
+                exc,
+            )
+            participant = None
+        if participant and participant.get("display_name"):
+            speaker_full_display_name = participant["display_name"]
+            speaker_display_name = speaker_full_display_name
+
+        canonical_name = canonical_display_name(turn_speaker_slug)
+        if canonical_name:
+            speaker_display_name = canonical_name
+
+    speaker_slug_key = (turn_speaker_slug or "").strip().lower()
+    speaker_name_keys = {
+        key
+        for key in (
+            speaker_display_name.strip().lower(),
+            speaker_full_display_name.strip().lower(),
+        )
+        if key
+    }
+
+    mentioned_display_names: list[str] = []
+    seen_names: set[str] = set()
+    for slug in chapter.get("mentioned_participant_slugs") or []:
+        if slug and slug.strip().lower() == speaker_slug_key:
+            continue
+        try:
+            participant = participants_lookup(slug)
+        except Exception as exc:
+            logging.info(
+                "build_shorts_metadata_context: mentioned slug lookup failed for "
+                "slug=%r: %s — dropped from mentioned people",
+                slug,
+                exc,
+            )
+            continue
+        if not participant or not participant.get("display_name"):
+            logging.info(
+                "build_shorts_metadata_context: mentioned slug %r did not resolve — dropped from mentioned people",
+                slug,
+            )
+            continue
+        display_name = participant["display_name"]
+        name_key = display_name.strip().lower()
+        if name_key in speaker_name_keys:
+            continue
+        if name_key in seen_names:
+            continue
+        seen_names.add(name_key)
+        mentioned_display_names.append(display_name)
+
+    return {
+        "speaker_display_name": speaker_display_name,
+        "mentioned_display_names": mentioned_display_names,
+        "topics": chapter.get("topics") or [],
+    }
 
 
 _MONTHS = [
@@ -94,6 +223,165 @@ def _format_session_line(session_number: int | None, session_date: date | None) 
     )
     body = " - ".join(p for p in (number_part, date_part) if p)
     return f"\n\n🏛️ {body}" if body else ""
+
+
+def _copy_verification_evidence(chapter: dict | None, turn_speaker_row: dict | None) -> dict:
+    """Assemble the final-copy verification evidence bundle for a short
+    (issue #512, design.md D5). Takes the chapter row and turn-speaker row
+    ALREADY read by `_generate_metadata` (stashed on the shorts_metadata
+    entry) instead of re-querying the DB — this DAG has done those reads
+    upstream. Mirrors `_copy_verification_evidence` in `youtube_upload_dag.py`
+    exactly, minus the two DB reads it performs internally there. No
+    `thumbnail_text` key: the shorts pipeline has no thumbnail step at all.
+
+    `mencionados` is tri-valued (design.md D5): NULL renders `"no analizado"`,
+    an empty list renders `[]`, a populated list renders resolved entries.
+    """
+    chapter = chapter or {}
+    turn_speaker_row = turn_speaker_row or {}
+    slug = turn_speaker_row.get("resolved_participant_slug")
+    participant = (lookup_participant_by_slug(slug) if slug else None) or {}
+
+    mentioned_slugs = chapter.get("mentioned_participant_slugs")
+    if mentioned_slugs is None:
+        mencionados: object = "no analizado"
+    else:
+        mencionados = []
+        for mentioned_slug in mentioned_slugs:
+            mentioned_participant = (lookup_participant_by_slug(mentioned_slug) if mentioned_slug else None) or {}
+            mencionados.append(
+                {
+                    "slug": mentioned_slug,
+                    "display_name": mentioned_participant.get("display_name"),  # raw
+                    "short_name": canonical_display_name(mentioned_slug),  # canonical (#511)
+                    "party": mentioned_participant.get("party"),
+                }
+            )
+
+    return {
+        "speaker": {
+            "slug": slug,
+            "display_name": participant.get("display_name"),  # raw — ground-truth identity
+            "short_name": canonical_display_name(slug),  # canonical (#511)
+            "party": participant.get("party"),
+            "parliamentary_group": participant.get("parliamentary_group"),
+            "resolution_confidence": turn_speaker_row.get("speaker_resolution_confidence"),
+            "resolution_method": turn_speaker_row.get("speaker_resolution_method"),
+        },
+        "chapter": {
+            "title": chapter.get("title"),
+            "description": chapter.get("description"),
+            "topics": chapter.get("topics"),
+            "speakers": chapter.get("speakers"),
+            "key_speakers": chapter.get("key_speakers"),
+            "scoring_reasoning": chapter.get("scoring_reasoning"),
+            "session_number": chapter.get("session_number"),
+            "session_date": chapter.get("session_date"),
+        },
+        "mencionados": mencionados,
+    }
+
+
+def build_shorts_title_payload(
+    transcript: str,
+    *,
+    chapter_title: str,
+    primary_speaker: str,
+    secondary_speakers: str,
+    topics: str,
+    scoring_reasoning: str,
+    mentioned_display_names: list[str] | None,
+    title: str,
+) -> dict:
+    """Build the persisted title-generation input payload for a short (issue #549).
+
+    Assembles an allowlisted, credential-free record of everything the
+    shorts metadata generator (`_generate_metadata`) fed into the prompt for
+    this run, plus the title it accepted, so the run is replayable from
+    stored data alone (`generator="shorts_metadata"`, `schema_version=1`).
+
+    `transcript` MUST be the FULL, unsliced Whisper transcript — this
+    function performs its own `transcript[:2000]` slice and derives
+    `transcript_truncated`/`transcript_full_length` from the full value.
+    Passing an already-sliced transcript in would pin `transcript_truncated`
+    to `False` and cap `transcript_full_length` at 2000 (design.md C3).
+    `scoring_reasoning` is sliced to 500 chars here, the same slice
+    `_generate_metadata` applies when building the prompt.
+
+    Built from explicit literal keys only — never a spread of any source
+    dict (such as the chapter row) — so no credential-shaped key can reach
+    the persisted jsonb.
+
+    Args:
+        transcript: Full Whisper transcript text for the clip (unsliced).
+        chapter_title: Prompt input, the same value `_generate_metadata` used.
+        primary_speaker: Prompt input, the same value used.
+        secondary_speakers: Prompt input, the same value used.
+        topics: Prompt input, the same value used.
+        scoring_reasoning: Full chapter scoring-reasoning text (unsliced);
+            sliced to 500 chars here, matching the prompt's own slice.
+        mentioned_display_names: Same value used to extend the prompt, or
+            `None`/empty when no mentioned people were resolved.
+        title: The title actually accepted from the LLM response
+            (`truncate_text(ai_title, 100)`).
+
+    Returns:
+        A dict matching the shorts payload schema documented in
+        `openspec/changes/persist-title-generator-inputs/design.md`.
+    """
+    return {
+        "generator": "shorts_metadata",
+        "schema_version": 1,
+        "transcript": transcript[:2000],
+        "transcript_truncated": len(transcript) > 2000,
+        "transcript_full_length": len(transcript),
+        "chapter_title": chapter_title,
+        "primary_speaker": primary_speaker,
+        "secondary_speakers": secondary_speakers,
+        "topics": topics,
+        "scoring_reasoning": scoring_reasoning[:500],
+        "mentioned_display_names": mentioned_display_names or None,
+        "title": title,
+    }
+
+
+def _write_shorts_title_provenance(payload: dict | None, short_id: int | None, db=None) -> dict:
+    """Persist a short's title-generation input payload (issue #549), never
+    blocking metadata assembly for the remaining pending shorts.
+
+    Follows the failure-isolation convention from
+    `congress_videos/modules/upload_marking.py` (~lines 60-108), NOT the
+    bare `record_copy_verification_short` call-site shape at
+    `reap_shorts_uploader_dag.py:571`: catches any DB exception, logs it,
+    and returns a `"failed"` outcome instead of propagating. A missing
+    payload/short_id — the non-LLM fallback branch (design D5) never builds
+    one — is recorded as `"skipped"`, not an error. `rowcount == 0`
+    (design D3/C4: the write carries no `IS DISTINCT FROM` guard) is a loud
+    `"no_row"` outcome, never treated as success.
+
+    Args:
+        payload: The built `title_generation_input` payload, or `None` when
+            the LLM branch was skipped or returned no title.
+        short_id: `video_shorts.id` — the write key.
+        db: `CongressionalVideoDB` instance (injected for testability;
+            created internally when `None`).
+
+    Returns:
+        `{"status": "written" | "no_row" | "failed" | "skipped", "rows": int, "error": str | None}`.
+    """
+    if not (isinstance(payload, dict) and payload and short_id):
+        return {"status": "skipped", "rows": 0, "error": None}
+
+    try:
+        rows = (db or CongressionalVideoDB()).record_title_generation_input_short(short_id, payload=payload)
+    except Exception as exc:
+        logging.error("title provenance write failed for short_id=%r: %s", short_id, exc)
+        return {"status": "failed", "rows": 0, "error": str(exc)}
+
+    if not rows:
+        logging.warning("title provenance: 0 rows matched for short_id=%r — key mismatch", short_id)
+        return {"status": "no_row", "rows": 0, "error": None}
+    return {"status": "written", "rows": rows, "error": None}
 
 
 default_args = {
@@ -158,9 +446,46 @@ with DAG(
             ch = db.get_chapter_metadata(chapter_id) if chapter_id else {}
             ch = ch or {}
 
+            if chapter_id:
+                # AC5/design D1 (option A): the analysis marker is operator-visible in
+                # the task log. This is a single get_chapter_metadata read — no XCom
+                # hop, no cached copy — so mentioned_participant_slugs and topics
+                # always originate from the same row snapshot.
+                logging.info(
+                    "generate_metadata: chapter_id=%s content_analysis snapshot "
+                    "updated_at=%s mentioned_participant_slugs=%s topics=%s",
+                    chapter_id,
+                    ch.get("updated_at"),
+                    ch.get("mentioned_participant_slugs"),
+                    ch.get("topics"),
+                )
+
+            turn_id = short.get("turn_id")
+            turn_speaker_slug = None
+            turn_speaker_row = None
+            if turn_id:
+                try:
+                    turn_speaker_row = db.get_turn_speaker_slug(turn_id)
+                except Exception as exc:
+                    logging.warning(
+                        "generate_metadata: turn speaker lookup failed for short_id=%s "
+                        "turn_id=%s: %s — falls back to the chapter-level heuristic",
+                        short_id,
+                        turn_id,
+                        exc,
+                    )
+                    turn_speaker_row = None
+                if turn_speaker_row:
+                    turn_speaker_slug = turn_speaker_row.get("resolved_participant_slug")
+
+            metadata_context = build_shorts_metadata_context(ch, turn_speaker_slug, lookup_participant_by_slug)
+            mentioned_display_names = metadata_context["mentioned_display_names"]
+
             chapter_title = ch.get("title") or f"Short clip {short_id}"
-            primary_speaker, secondary_speakers = _resolve_speakers(ch)
-            topics = ", ".join(ch.get("topics") or []) or "Debate parlamentario"
+            primary_speaker, secondary_speakers = _resolve_speakers(
+                ch, preferred_primary=metadata_context["speaker_display_name"]
+            )
+            topics = ", ".join(metadata_context["topics"]) or "Debate parlamentario"
             scoring_reasoning = ch.get("scoring_reasoning") or ""
 
             # Fallback metadata — used if Whisper or GPT fail
@@ -169,6 +494,10 @@ with DAG(
                 max_length=100,
             )
             description = "🏛️ Debate en el Congreso de los Diputados.\n\n#Congreso #España #Política #Shorts"
+
+            # Issue #549: default outcome for the non-LLM fallback path
+            # (design D5) — no write is attempted and the column stays NULL.
+            title_provenance = {"status": "skipped", "rows": 0, "error": None}
 
             transcript = None
             if video_path and os.path.exists(video_path):
@@ -221,6 +550,9 @@ with DAG(
                     topics=topics,
                     scoring_reasoning=scoring_reasoning[:500],
                 )
+                if mentioned_display_names:
+                    mentioned_list = "\n".join(f"- {name}" for name in mentioned_display_names)
+                    user_prompt += SHORTS_METADATA_MENTIONED_PEOPLE_INSTRUCTION.format(mentioned_list=mentioned_list)
                 ai_result = generate_json_completion(
                     system_prompt=SHORTS_METADATA_SYSTEM_PROMPT,
                     user_prompt=user_prompt,
@@ -231,6 +563,22 @@ with DAG(
                     ai_description = ai_result["data"].get("description", "").strip()
                     if ai_title:
                         title = truncate_text(ai_title, max_length=100)
+                        # Issue #549 (design D5): persist the title generator's
+                        # input payload only when the LLM actually produced a
+                        # non-empty title — build_shorts_title_payload MUST
+                        # receive the FULL, unsliced transcript (design C3),
+                        # not the [:2000] slice used for the prompt above.
+                        title_payload = build_shorts_title_payload(
+                            transcript,
+                            chapter_title=chapter_title,
+                            primary_speaker=primary_speaker,
+                            secondary_speakers=secondary_speakers,
+                            topics=topics,
+                            scoring_reasoning=scoring_reasoning,
+                            mentioned_display_names=mentioned_display_names or None,
+                            title=title,
+                        )
+                        title_provenance = _write_shorts_title_provenance(title_payload, short_id, db=db)
                     if ai_description:
                         description = ai_description
                     logging.info(f"AI metadata for short {short_id}: title='{title}'")
@@ -245,6 +593,20 @@ with DAG(
                     "short_id": short_id,
                     "title": title,
                     "description": description,
+                    # issue #512: carried for verify_final_copy (t2b) — avoids
+                    # a second get_chapter_metadata/get_turn_speaker_slug
+                    # round trip for the same short.
+                    # issue #546: normalized here, at the XCom append site —
+                    # a raw TIMESTAMPTZ row from psycopg2 breaks Airflow's
+                    # real XCom serializer (ZoneInfo ValueError). The
+                    # operator log above still prints the raw offset; this
+                    # is a transport fix, not a change to the DB snapshot.
+                    "chapter": utc_normalize_row(ch),
+                    "turn_speaker_row": utc_normalize_row(turn_speaker_row),
+                    # issue #549: rides the existing shorts_metadata XCom;
+                    # {status, rows, error} only — no datetime, so it needs
+                    # no utc_normalize_row treatment (issue #546).
+                    "title_provenance": title_provenance,
                 }
             )
 
@@ -253,6 +615,119 @@ with DAG(
     t2 = PythonOperator(
         task_id="generate_metadata",
         python_callable=_generate_metadata,
+    )
+
+    def _verify_final_copy(ti, **context):
+        """Verify each short's final publication copy before it ships (issue #512).
+
+        New task t2b, between t2 (generate_metadata) and t3
+        (trigger_youtube_upload). Runs on the `shorts_metadata` entries,
+        which `_generate_metadata` already finalized — including the
+        own-channel footer and session line appended at the end of its loop
+        — so title/description here are the truly last mutable
+        representation, matching design.md's "verify the last mutable
+        representation, never an upstream copy" rule. Shorts have no
+        thumbnail step at all, so `thumbnail_text` is never passed.
+
+        Locked asymmetry (design.md, issue #512): the shorts path has NO
+        fail-loud path anywhere — a `reject` verdict, on title OR
+        description, is recorded and logged but NEVER blocks publication.
+        There is also no accumulator on this DAG (unlike the long-form
+        `_check_upload_failures`); findings surface via the task log and the
+        `shorts_copy_verification` XCom only.
+        """
+        from congress_videos.modules.final_copy_verification import (
+            compute_content_version,
+            verify_final_copy,
+        )
+
+        pending_shorts = ti.xcom_pull(key="pending_shorts") or []
+        shorts_metadata = ti.xcom_pull(key="shorts_metadata") or []
+
+        if not shorts_metadata:
+            logging.info("_verify_final_copy: no shorts metadata — skipping verification")
+            return None
+
+        db = CongressionalVideoDB()
+        results = []
+
+        for short, meta in zip(pending_shorts, shorts_metadata):
+            short_id = short.get("id")
+            original_title = meta.get("title") or ""
+            original_description = meta.get("description") or ""
+            evidence = _copy_verification_evidence(meta.get("chapter"), meta.get("turn_speaker_row"))
+
+            verdict = verify_final_copy(title=original_title, description=original_description, evidence=evidence)
+
+            if not verdict.ok:
+                logging.info(
+                    "_verify_final_copy: inconclusive verdict for short_id=%s — publishing unchanged", short_id
+                )
+                results.append(
+                    {
+                        "short_id": short_id,
+                        "verdict": "inconclusive",
+                        "findings": [],
+                        "corrected_applied": False,
+                        "persisted": False,
+                        "content_version": "",
+                    }
+                )
+                continue
+
+            if verdict.verdict == "reject":
+                logging.warning(
+                    "_verify_final_copy: reject verdict for short_id=%s (fields=%s) — publishing "
+                    "unchanged, no fail-loud path on this DAG (issue #512)",
+                    short_id,
+                    sorted({f.field for f in verdict.findings}),
+                )
+
+            if verdict.correction_applied:
+                meta["title"] = verdict.title
+                meta["description"] = verdict.description
+
+            # Stale-copy guard (design.md D3): recompute from the values
+            # actually about to be published, immediately before the write.
+            recomputed_version = compute_content_version(
+                title=verdict.title, description=verdict.description, thumbnail_text=None, evidence=evidence
+            )
+            persisted = False
+            if short_id and recomputed_version == verdict.content_version:
+                db.record_copy_verification_short(
+                    short_id,
+                    verdict=verdict.verdict,
+                    findings=[dataclasses.asdict(f) for f in verdict.findings],
+                    original_title=original_title,
+                    original_description=original_description,
+                    corrected_title=verdict.title if verdict.correction_applied else None,
+                    corrected_description=verdict.description if verdict.correction_applied else None,
+                    content_version=verdict.content_version,
+                )
+                persisted = True
+            else:
+                logging.warning(
+                    "_verify_final_copy: stale-copy guard skipped the audit write for short_id=%s", short_id
+                )
+
+            results.append(
+                {
+                    "short_id": short_id,
+                    "verdict": verdict.verdict,
+                    "findings": [dataclasses.asdict(f) for f in verdict.findings],
+                    "corrected_applied": verdict.correction_applied,
+                    "persisted": persisted,
+                    "content_version": verdict.content_version,
+                }
+            )
+
+        ti.xcom_push(key="shorts_metadata", value=shorts_metadata)
+        ti.xcom_push(key="shorts_copy_verification", value=results)
+        return None
+
+    t2b = PythonOperator(
+        task_id="verify_final_copy",
+        python_callable=_verify_final_copy,
     )
 
     def _trigger_youtube_upload(ti, **context):
@@ -409,4 +884,4 @@ with DAG(
         python_callable=_check_short_upload_failures,
     )
 
-    t1 >> t2 >> t3 >> t4 >> t5
+    t1 >> t2 >> t2b >> t3 >> t4 >> t5

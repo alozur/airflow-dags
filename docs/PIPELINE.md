@@ -36,8 +36,9 @@ Detecta y analiza la sesión; no publica nada.
    orden del día y fecha de la sesión.
 5. **Análisis IA**: troceo del SRT por silencios → resumen por chunk → agregado
    → identificación de capítulos interesantes → merge → puntuación de
-   relevancia (0-5) → recorte de silencios de borde → normalización de
-   oradores → persistencia en `video_chapters`.
+   relevancia (0-5) → recorte de silencios de borde → división de capítulos
+   de más de 40 min por un hueco de silencio → normalización de oradores →
+   persistencia en `video_chapters`.
 
 ## Fase 1 — Subida de turnos · `congress_youtube_chapter_uploader`
 
@@ -120,6 +121,16 @@ descarta el resultado válido del otro, y un resultado vacío de temas deja
    cualquier fallo se registra y nunca hace fallar el run.
 3. **`reap_shorts_uploader`** (5 veces al día): sube un short por run con
    título generado por IA; tras 3 fallos el clip se marca abandonado.
+
+Su tarea `generate_metadata` (issue #433) construye el prompt con tres
+entradas separadas y nunca fusionadas: el ponente
+(`resolved_participant_slug` del turno vía `get_turn_speaker_slug`, con la
+heurística previa `_resolve_speakers` como fallback), las personas
+mencionadas (`mentioned_participant_slugs` del capítulo, bloque PERSONAS
+MENCIONADAS) y los temas (`topics`, línea "Temas:"). Cada slug se resuelve
+contra el roster antes de renderizarse; uno sin resolver se descarta, nunca
+se muestra en crudo. Un short heredado sin `turn_id` no consulta el
+accessor de orador y conserva el comportamiento previo sin cambios.
 
 ## Fase 4 — Post-subida · `video_analytics`
 

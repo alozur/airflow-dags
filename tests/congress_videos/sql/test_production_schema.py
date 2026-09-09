@@ -2,7 +2,7 @@
 snapshot (issues #238, #299, #304).
 
 Guards against the snapshot silently drifting from the latest applied view
-migration (currently 044) and from the live production DDL for the 11
+migration (currently 049) and from the live production DDL for the 11
 snapshotted base tables. Static SQL-text checks only — no DB connection.
 """
 
@@ -16,6 +16,14 @@ import pytest
 SCHEMA_PATH = Path(__file__).resolve().parents[3] / "congress_videos" / "sql" / "production_schema.sql"
 
 MIGRATION_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "congress_videos"
+    / "sql"
+    / "migrations"
+    / "049_freshness_bucket_turn_publish_order.sql"
+)
+
+MIGRATION_044_PATH = (
     Path(__file__).resolve().parents[3]
     / "congress_videos"
     / "sql"
@@ -224,6 +232,18 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "thumbnail_republish_attempts",
         "thumbnail_republish_abandoned",
         "last_thumbnail_republish_error",
+        # Added by migration 050 (final-copy-verification audit, issue #512)
+        "copy_verification_verdict",
+        "copy_verification_findings",
+        "copy_original_title",
+        "copy_original_description",
+        "copy_corrected_title",
+        "copy_corrected_description",
+        "copy_thumbnail_text",
+        "copy_content_version",
+        "copy_verified_at",
+        # Added by migration 051 (title generator input persistence, issue #549)
+        "title_generation_input",
     ),
     "video_analytics_snapshots": (
         "snapshot_id",
@@ -430,13 +450,14 @@ class TestUploadableTurnsUnaffectedByThumbnailRepublish:
 class TestVideoShortsTableSnapshot:
     """production.video_shorts must be present in the snapshot, folding
     migrations 004 (create) + 005 (staged_clip_path) + 006 (scoring_reasoning)
-    + 012 (upload failure tracking) + 047 (turn_id, issue #467) — 21 columns
-    total.
+    + 012 (upload failure tracking) + 047 (turn_id, issue #467) + 050
+    (final-copy-verification audit, issue #512) + 051 (title generator input
+    persistence, issue #549) — 30 columns total.
 
     Column assertions are scoped to the extracted `CREATE TABLE ... (...)`
-    block only, never the whole file: 9 of the 21 column names also exist on
-    `production.video_chapters`, so a whole-file substring search would stay
-    green even if a column were deleted from `video_shorts` alone.
+    block only, never the whole file: 9 of the 21 pre-050 column names also
+    exist on `production.video_chapters`, so a whole-file substring search
+    would stay green even if a column were deleted from `video_shorts` alone.
     """
 
     VIDEO_SHORTS_COLUMNS = (
@@ -461,6 +482,18 @@ class TestVideoShortsTableSnapshot:
         "is_upload_abandoned",
         "last_upload_error",
         "turn_id",  # migration 047 (issue #467)
+        # Added by migration 050 (final-copy-verification audit, issue #512).
+        # No copy_thumbnail_text here — the shorts path has no thumbnail step.
+        "copy_verification_verdict",
+        "copy_verification_findings",
+        "copy_original_title",
+        "copy_original_description",
+        "copy_corrected_title",
+        "copy_corrected_description",
+        "copy_content_version",
+        "copy_verified_at",
+        # Added by migration 051 (title generator input persistence, issue #549)
+        "title_generation_input",
     )
 
     @staticmethod
@@ -567,16 +600,16 @@ class TestVideoShortsIndexCompleteness:
 
 class TestSnapshotLockstepWithLatestMigration:
     """The snapshot's uploadable_turns view must be semantically identical to
-    the latest applied view migration (044), modulo comments/qualification/
+    the latest applied view migration (049), modulo comments/qualification/
     whitespace."""
 
-    def test_normalized_view_matches_migration_044(self):
+    def test_normalized_view_matches_migration_049(self):
         snapshot_sql = SCHEMA_PATH.read_text(encoding="utf-8")
         migration_sql = MIGRATION_PATH.read_text(encoding="utf-8")
 
         assert _normalize_view_sql(snapshot_sql) == _normalize_view_sql(migration_sql), (
             "production_schema.sql's uploadable_turns view has drifted from "
-            "migration 044 — update the snapshot to stay in lockstep"
+            "migration 049 — update the snapshot to stay in lockstep"
         )
 
 
@@ -585,7 +618,7 @@ class TestUploadableTurns044PublishOrder:
     deterministic by contract, not by plan stability (issue #328)."""
 
     _TIEBREAK_SUFFIX = (
-        "ORDER BY COALESCE(DEDUP.INTEREST_SCORE, 1) DESC, "
+        "COALESCE(DEDUP.INTEREST_SCORE, 1) DESC, "
         "DEDUP.RELEVANCE_SCORE DESC, "
         "DEDUP.SESSION_DATE DESC, "
         "DEDUP.MATERIALIZED_AT ASC, "
@@ -613,7 +646,7 @@ class TestUploadableTurns044PublishOrder:
         comment deleted — exactly the edit this test exists to catch.
         """
         block = TestProductionQualification._view_block()
-        marker = "ORDER BY COALESCE(dedup.interest_score"
+        marker = "ORDER BY (dedup.session_date >="
         assert marker in block, "outer ORDER BY not found in the uploadable_turns block"
         order_by_clause = block[block.index(marker) :].upper()
 
@@ -628,12 +661,74 @@ class TestUploadableTurns044PublishOrder:
         040's body with ONLY the two new tie-break keys appended. Comment-,
         whitespace- and qualification-immune — this is what makes eligibility
         preservation a mechanically enforced fact, not a reviewer's hope."""
-        migration_044 = _normalize_view_sql(MIGRATION_PATH.read_text(encoding="utf-8"))
+        migration_044 = _normalize_view_sql(MIGRATION_044_PATH.read_text(encoding="utf-8"))
         migration_040 = _normalize_view_sql(MIGRATION_040_PATH.read_text(encoding="utf-8"))
 
         assert migration_044 == migration_040 + ", DEDUP.MATERIALIZED_AT ASC, DEDUP.TURN_ID ASC", (
             "migration 044's view body must equal migration 040's body with "
             "exactly the FIFO tie-break appended to the ORDER BY"
+        )
+
+
+class TestUploadableTurns049FreshnessBucket:
+    """049: a freshness bucket is prepended to the outer ORDER BY so a turn from a
+    session in the last 14 days outranks every older turn (issue #513)."""
+
+    _LEADING_KEY = "(DEDUP.SESSION_DATE >= CURRENT_DATE - INTERVAL '14 DAYS') DESC"
+    _OUTER_ORDER_BY_044 = "ORDER BY COALESCE(DEDUP.INTEREST_SCORE, 1) DESC"
+    _FULL_ORDER_BY = (
+        "ORDER BY (DEDUP.SESSION_DATE >= CURRENT_DATE - INTERVAL '14 DAYS') DESC, "
+        "COALESCE(DEDUP.INTEREST_SCORE, 1) DESC, "
+        "DEDUP.RELEVANCE_SCORE DESC, "
+        "DEDUP.SESSION_DATE DESC, "
+        "DEDUP.MATERIALIZED_AT ASC, "
+        "DEDUP.TURN_ID ASC"
+    )
+
+    def test_outer_order_by_leads_with_freshness_bucket(self):
+        """The freshness key is FIRST and the five 044 keys follow in their exact
+        text and direction. The whole ORDER BY is the last thing in the normalized
+        view, so one suffix check covers position, text and direction at once."""
+        normalized = _normalize_view_sql(SCHEMA_PATH.read_text(encoding="utf-8"))
+        assert normalized.endswith(self._FULL_ORDER_BY), (
+            "outer ORDER BY must lead with the freshness bucket, followed by the five unchanged 044 keys"
+        )
+
+    def test_freshness_key_carries_issue_513_intent_comment(self):
+        """Scoped to the ORDER BY clause itself, not the whole block: the lineage
+        header already names 049, so a block-wide scan would stay green with the
+        inline comment deleted — exactly the edit this test exists to catch."""
+        block = TestProductionQualification._view_block()
+        marker = "ORDER BY (dedup.session_date >="
+        assert marker in block, "outer ORDER BY not found in the uploadable_turns block"
+        order_by_clause = block[block.index(marker) :].upper()
+
+        assert "FRESHNESS" in order_by_clause, (
+            "the leading key must carry an inline comment naming its freshness intent, "
+            "inside the ORDER BY clause itself — not only in the lineage header"
+        )
+        assert "#513" in order_by_clause, "the inline freshness comment must cite issue #513"
+
+    def test_migration_049_body_is_044_plus_leading_freshness_key(self):
+        """The transcription guard: migration 049's body must be migration 044's body
+        with ONLY the freshness key prepended to the outer ORDER BY. Comment-,
+        whitespace- and qualification-immune — this is what makes eligibility
+        preservation a mechanically enforced fact, not a reviewer's hope."""
+        migration_049 = _normalize_view_sql(MIGRATION_PATH.read_text(encoding="utf-8"))
+        migration_044 = _normalize_view_sql(MIGRATION_044_PATH.read_text(encoding="utf-8"))
+
+        assert migration_044.count(self._OUTER_ORDER_BY_044) == 1, (
+            "the outer ORDER BY anchor must be unique in migration 044 for this splice "
+            "to be exact — the inner ORDER BY is ORDER BY STV.OUTPUT_PATH, STV.TURN_ID"
+        )
+        expected = migration_044.replace(
+            self._OUTER_ORDER_BY_044,
+            f"ORDER BY {self._LEADING_KEY}, COALESCE(DEDUP.INTEREST_SCORE, 1) DESC",
+            1,
+        )
+        assert migration_049 == expected, (
+            "migration 049's view body must equal migration 044's body with exactly "
+            "the freshness-bucket key prepended to the outer ORDER BY — nothing else"
         )
 
 

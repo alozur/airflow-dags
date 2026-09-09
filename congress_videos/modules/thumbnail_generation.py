@@ -38,6 +38,7 @@ from congress_videos.config.ai_prompts import (
     THUMBNAIL_TITLE_USER_PROMPT_TEMPLATE,
 )
 from congress_videos.config.constants import CONGRESO_BROWSER_USER_AGENT
+from congress_videos.modules.politician_display_names import canonical_display_name
 from utils.ai_helpers import generate_json_completion
 from utils.llm_config import LLM_CHEAP, LLM_DEFAULT
 from utils.postgres_helpers import PostgresConnection
@@ -256,7 +257,11 @@ def _real_speakers(key_speakers: list | None) -> list[str]:
     return result
 
 
-def resolved_photo_speaker_name(photo_data: dict | None, key_speakers: list | None) -> str | None:
+def resolved_photo_speaker_name(
+    photo_data: dict | None,
+    key_speakers: list | None,
+    participant_slug: str | None = None,
+) -> str | None:
     """Return the speaker name to ground art_direct's 'person' field on, or None.
 
     Activation gate (issue #279): a real, non-placeholder speaker name is
@@ -265,19 +270,29 @@ def resolved_photo_speaker_name(photo_data: dict | None, key_speakers: list | No
     survives ``_real_speakers``. A party-logo source, an absent/empty photo
     result, or a placeholder-only ``key_speakers`` list all return None so
     that ``art_direct`` falls back to its default relatable-citizen framing.
+    ``participant_slug`` never opens this gate on its own.
 
     Args:
         photo_data: The XCom result from ``resolve_participant_photo``, or None.
         key_speakers: List of speaker entries (strings or dicts with a
             ``name`` key), or None.
+        participant_slug: Optional slug already produced by identity
+            resolution (issue #511). When the activation gate is open and
+            ``canonical_display_name(participant_slug)`` resolves, its
+            curated short form REPLACES the first ``_real_speakers`` entry.
+            A ``None``/unmapped/ambiguous slug leaves this byte-identical to
+            the pre-catalogue behaviour.
 
     Returns:
-        The first real speaker name when the gate opens; otherwise None.
+        The catalogued or first real speaker name when the gate opens;
+        otherwise None.
     """
     if not photo_data or photo_data.get("source") != "photo":
         return None
     real = _real_speakers(key_speakers)
-    return real[0] if real else None
+    if not real:
+        return None
+    return canonical_display_name(participant_slug) or real[0]
 
 
 def _build_art_direction_prompt(
@@ -581,8 +596,19 @@ def _build_title_prompt(
     sibling_titles: list[str] | None,
     key_speakers: list | None,
     extra_instruction: str = "",
+    participant_slug: str | None = None,
 ) -> str:
-    """Build the title user prompt, injecting sibling/speaker/extra instruction blocks."""
+    """Build the title user prompt, injecting sibling/speaker/extra instruction blocks.
+
+    Args:
+        participant_slug: Optional slug already produced by identity resolution
+            (issue #511). When ``canonical_display_name(participant_slug)``
+            resolves, its curated short form REPLACES only the first
+            ``_real_speakers`` entry in the speaker prohibition list — the
+            rest of the list, and every other instruction block, is
+            untouched. A ``None``/unmapped/ambiguous slug leaves this prompt
+            byte-identical to the pre-catalogue behaviour.
+    """
     style_text = best.get("style", "")
     prompt_text = best.get("prompt", "")
 
@@ -597,6 +623,9 @@ def _build_title_prompt(
         user_prompt += f"\n\n{sibling_block}"
     real = _real_speakers(key_speakers)
     if real:
+        canonical_name = canonical_display_name(participant_slug)
+        if canonical_name:
+            real = [canonical_name, *real[1:]]
         user_prompt += "\n\n" + THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION.format(speaker_list=", ".join(real))
     else:
         # Falsy key_speakers (None / []) and all-placeholder lists both map
@@ -658,6 +687,7 @@ def generate_title(
     sibling_titles: list[str] | None = None,
     key_speakers: list | None = None,
     forbidden_title: str | None = None,
+    participant_slug: str | None = None,
 ) -> str:
     """Generate a YouTube title for the chosen thumbnail option via OpenAI.
 
@@ -683,6 +713,10 @@ def generate_title(
             caller records the collision by comparing the returned title
             against forbidden_title itself. None (default) never triggers a
             reroll — byte-identical to the pre-change behavior.
+        participant_slug: Optional slug already produced by identity
+            resolution (issue #511), forwarded to ``_build_title_prompt`` on
+            every attempt. See its docstring for the substitution rule.
+            None (default) is byte-identical to the pre-catalogue behavior.
 
     Returns:
         A YouTube title string (≤90 chars, no emojis, no forbidden chars, no question marks).
@@ -692,7 +726,9 @@ def generate_title(
             whose sanitised result is non-blank (issue #317).
     """
     # First attempt
-    title = _request_title(_build_title_prompt(summary, best, sibling_titles, key_speakers))
+    title = _request_title(
+        _build_title_prompt(summary, best, sibling_titles, key_speakers, participant_slug=participant_slug)
+    )
 
     if title and _is_valid_title(title):
         final_title = title
@@ -701,7 +737,14 @@ def generate_title(
 
         # Second attempt
         second = _request_title(
-            _build_title_prompt(summary, best, sibling_titles, key_speakers, extra_instruction=instruction)
+            _build_title_prompt(
+                summary,
+                best,
+                sibling_titles,
+                key_speakers,
+                extra_instruction=instruction,
+                participant_slug=participant_slug,
+            )
         )
         if second and _is_valid_title(second):
             final_title = second
@@ -737,6 +780,7 @@ def generate_title(
                 sibling_titles,
                 key_speakers,
                 extra_instruction=reroll_instruction,
+                participant_slug=participant_slug,
             )
         )
         if reroll and _is_valid_title(reroll):
@@ -745,6 +789,76 @@ def generate_title(
         # infinite loop; the caller records the collision.
 
     return final_title
+
+
+def build_turn_title_payload(
+    summary: str,
+    best: dict,
+    title: str,
+    *,
+    sibling_titles: list[str] | None = None,
+    key_speakers: list | None = None,
+    forbidden_title: str | None = None,
+    participant_slug: str | None = None,
+) -> dict:
+    """Build the persisted title-generation input payload for a turn (issue #549).
+
+    Assembles an allowlisted, credential-free record of everything
+    ``generate_title`` consumed for this run plus the title it returned, so
+    the run is replayable from stored data alone (``generator="turn_title"``,
+    ``schema_version=1``).
+
+    Built from explicit literal keys only — never ``{**best}`` or a spread of
+    any source dict — so no credential-shaped key or asset URL can reach the
+    persisted jsonb.
+
+    Args:
+        summary: Debate summary text passed to ``generate_title``.
+        best: The chosen thumbnail option dict; reduced here to
+            ``{"label", "style", "prompt"}`` (drops ``local_path`` and any
+            Pikzels asset URL — ``_build_title_prompt`` only ever reads
+            ``style``/``prompt``).
+        title: The title ``generate_title`` returned for this run.
+        sibling_titles: Same value forwarded to ``generate_title``. An empty
+            list normalises to ``None``, matching ``generate_title``'s own
+            "falsy means no injection" contract.
+        key_speakers: Same value forwarded to ``generate_title``. Entries are
+            normalized to name-only strings: ``str`` kept as-is, ``dict``
+            reduced to ``entry["name"]`` (dropping ``photo_url``/slug keys),
+            anything else dropped. An empty result normalises to ``None``.
+        forbidden_title: Same value forwarded to ``generate_title``.
+        participant_slug: Same value forwarded to ``generate_title``.
+
+    Returns:
+        A dict matching the turn payload schema documented in
+        ``openspec/changes/persist-title-generator-inputs/design.md``.
+    """
+    reduced_best = {
+        "label": best.get("label", ""),
+        "style": best.get("style", ""),
+        "prompt": best.get("prompt", ""),
+    }
+
+    normalized_speakers: list[str] | None = None
+    if key_speakers:
+        names = [
+            entry if isinstance(entry, str) else entry.get("name")
+            for entry in key_speakers
+            if isinstance(entry, str) or (isinstance(entry, dict) and entry.get("name"))
+        ]
+        normalized_speakers = names or None
+
+    return {
+        "generator": "turn_title",
+        "schema_version": 1,
+        "summary": summary,
+        "best": reduced_best,
+        "sibling_titles": sibling_titles or None,
+        "key_speakers": normalized_speakers,
+        "forbidden_title": forbidden_title,
+        "participant_slug": participant_slug,
+        "title": title,
+    }
 
 
 def _summarise_sibling_brief(brief: str) -> str:

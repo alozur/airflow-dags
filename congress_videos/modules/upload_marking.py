@@ -15,7 +15,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def mark_chapter_uploads(db, upload_results: dict | None) -> dict:
+def _quota_kwargs(counts_toward_daily_quota: bool) -> dict:
+    """Preserve the legacy DB call shape for scheduled uploads."""
+    return {} if counts_toward_daily_quota else {"counts_toward_daily_quota": False}
+
+
+def mark_chapter_uploads(db, upload_results: dict | None, *, counts_toward_daily_quota: bool = True) -> dict:
     """Mark chapters as uploaded to YouTube after a successful upload run.
 
     Args:
@@ -40,9 +45,21 @@ def mark_chapter_uploads(db, upload_results: dict | None) -> dict:
         youtube_video_id = upload_detail.get("youtube_video_id")
         success = upload_detail.get("success", False)
 
-        if success and chapter_id and youtube_video_id:
+        if success and upload_detail.get("turn_id") is not None:
+            # Turn results deliberately retain chapter_id for tracking, but the
+            # turn marker owns their persistence. Marking the parent here hides
+            # every still-pending sibling from uploadable_turns (issue #499).
+            details.append(
+                {
+                    "chapter_id": chapter_id,
+                    "status": "skipped",
+                    "reason": "turn_upload",
+                }
+            )
+            logger.info("Skipping chapter mark for turn upload (chapter_id=%s)", chapter_id)
+        elif success and chapter_id and youtube_video_id:
             try:
-                db.mark_chapter_uploaded(chapter_id, youtube_video_id)
+                db.mark_chapter_uploaded(chapter_id, youtube_video_id, **_quota_kwargs(counts_toward_daily_quota))
                 updated_count += 1
                 details.append(
                     {
@@ -128,7 +145,7 @@ def mark_chapter_uploads(db, upload_results: dict | None) -> dict:
     return result
 
 
-def mark_turn_uploads(db, upload_results: dict | None) -> dict:
+def mark_turn_uploads(db, upload_results: dict | None, *, counts_toward_daily_quota: bool = True) -> dict:
     """Mark speaker turn videos as uploaded to YouTube after a successful upload run.
 
     Primary match key is `turn_id`; falls back to `output_path` (the
@@ -161,7 +178,11 @@ def mark_turn_uploads(db, upload_results: dict | None) -> dict:
 
         if success and turn_id and youtube_video_id:
             try:
-                db.mark_turns_uploaded(turn_id=turn_id, youtube_video_id=youtube_video_id)
+                db.mark_turns_uploaded(
+                    turn_id=turn_id,
+                    youtube_video_id=youtube_video_id,
+                    **_quota_kwargs(counts_toward_daily_quota),
+                )
                 updated_count += 1
                 details.append(
                     {
@@ -184,7 +205,9 @@ def mark_turn_uploads(db, upload_results: dict | None) -> dict:
                 logger.error("Failed to mark turn %s: %s", turn_id, e)
         elif success and youtube_video_id and output_path:
             try:
-                rows_matched = db.mark_turns_uploaded_by_output_path(output_path, youtube_video_id)
+                rows_matched = db.mark_turns_uploaded_by_output_path(
+                    output_path, youtube_video_id, **_quota_kwargs(counts_toward_daily_quota)
+                )
                 if rows_matched:
                     updated_count += 1
                     details.append(

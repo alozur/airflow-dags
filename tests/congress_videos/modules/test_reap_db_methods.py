@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
@@ -893,7 +894,40 @@ class TestGetPendingShorts:
         candidate_sql = mock_cursor.execute.call_args_list[1][0][0]
         outer_sql = candidate_sql.split("FROM ranked", 1)[1]
         assert "youtube_upload_date IS NOT NULL" not in outer_sql
-        assert "youtube_upload_date DESC NULLS LAST" in candidate_sql
+
+        order_by_clause = candidate_sql[candidate_sql.rfind("ORDER BY") :]
+        # The parent-recency term is still present and still NULL-safe after
+        # the #476 COALESCE wrap; the exact key expression is asserted by
+        # test_unpublished_parent_falls_back_to_turn_materialized_at.
+        assert "youtube_upload_date" in order_by_clause
+        descending_terms = [t for t in order_by_clause.split(",") if "DESC" in t]
+        assert descending_terms
+        assert all("NULLS LAST" in t for t in descending_terms)
+
+    def test_unpublished_parent_falls_back_to_turn_materialized_at(self, db):
+        """#476: the outer query LEFT JOINs speaker_turn_videos so a
+        candidate with no parent youtube_upload_date can still resolve a
+        recency key from its own turn's materialization timestamp. The join
+        and its ordering term must live in the outer query only — the
+        ranked CTE stays a single-table scan (design Decision B)."""
+        instance, mock_cursor = db
+        mock_cursor.fetchall.side_effect = [[], []]
+
+        instance.get_pending_shorts()
+
+        candidate_sql = mock_cursor.execute.call_args_list[1][0][0]
+        cte_sql = candidate_sql.split("FROM ranked", 1)[0]
+        outer_sql = candidate_sql.split("FROM ranked", 1)[1]
+
+        assert "speaker_turn_videos" not in cte_sql
+        assert "LEFT JOIN" not in cte_sql
+
+        assert "LEFT JOIN" in outer_sql
+        assert "speaker_turn_videos" in outer_sql
+        assert "stv.turn_id = ranked.turn_id" in outer_sql
+
+        order_by_clause = candidate_sql[candidate_sql.rfind("ORDER BY") :]
+        assert "COALESCE(vc.youtube_upload_date, stv.materialized_at) DESC NULLS LAST" in order_by_clause
 
     def test_tier2_row_returned_when_no_tier1_available(self, db):
         instance, mock_cursor = db
@@ -1195,3 +1229,161 @@ class TestGetSourceVideoIdForChapter:
 
         _, params = mock_cursor.execute.call_args[0]
         assert 42 in params
+
+
+# --------------------------------------------------------------------------- #
+# get_turn_speaker_slug (issue #433 — turn resolved-speaker accessor, design D2)
+# --------------------------------------------------------------------------- #
+
+
+class TestGetTurnSpeakerSlug:
+    def test_returns_slug_confidence_and_method_for_resolved_turn(self, db):
+        """T1a — a resolved turn returns the roster slug plus resolution metadata."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "turn_id": 42,
+            "resolved_participant_slug": "ana-perez",
+            "speaker_resolution_confidence": 0.92,
+            "speaker_resolution_method": "monologue_window",
+        }
+
+        result = instance.get_turn_speaker_slug(42)
+
+        assert result is not None
+        assert result["resolved_participant_slug"] == "ana-perez"
+        assert result["speaker_resolution_confidence"] == 0.92
+        assert result["speaker_resolution_method"] == "monologue_window"
+
+    def test_query_names_speaker_turn_videos_and_binds_turn_id(self, db):
+        """T1a — SQL targets speaker_turn_videos and binds the turn_id parameter."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.get_turn_speaker_slug(42)
+
+        sql, params = mock_cursor.execute.call_args[0]
+        assert "speaker_turn_videos" in sql
+        assert params == (42,)
+
+    def test_missing_row_returns_none(self, db):
+        """T1a — a turn_id with no matching row returns None, not a dict."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        result = instance.get_turn_speaker_slug(999)
+
+        assert result is None
+
+    def test_speaker_resolution_evidence_never_selected(self, db):
+        """T1a — the JSON audit blob is not part of the accessor's SELECT list."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        instance.get_turn_speaker_slug(42)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "speaker_resolution_evidence" not in sql
+
+    def test_row_exists_with_null_slug_returns_dict_not_none(self, db):
+        """T1b — an existing row with a NULL slug returns a dict, distinct from a missing row."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "turn_id": 43,
+            "resolved_participant_slug": None,
+            "speaker_resolution_confidence": None,
+            "speaker_resolution_method": None,
+        }
+
+        result = instance.get_turn_speaker_slug(43)
+
+        assert result is not None
+        assert isinstance(result, dict)
+        assert result["turn_id"] == 43
+        assert result["resolved_participant_slug"] is None
+
+
+# --------------------------------------------------------------------------- #
+# record_copy_verification_short (issue #512, design.md D3) — mirrors
+# record_copy_verification_turn, keyed by video_shorts.id (each short is its
+# own row, unlike long-form's output_path grouping), no thumbnail_text column
+# (the shorts pipeline has no thumbnail step at all).
+# --------------------------------------------------------------------------- #
+
+
+class TestRecordCopyVerificationShort:
+    def _call(self, db, **overrides):
+        instance, mock_cursor = db
+        kwargs = {
+            "short_id": 7,
+            "verdict": "pass",
+            "findings": [],
+            "original_title": "Título original",
+            "original_description": "Descripción original",
+            "corrected_title": None,
+            "corrected_description": None,
+            "content_version": "abc123",
+        }
+        kwargs.update(overrides)
+        result = instance.record_copy_verification_short(kwargs.pop("short_id"), **kwargs)
+        return result, mock_cursor
+
+    def test_where_clause_guards_on_content_version_and_id(self, db):
+        _, mock_cursor = self._call(db)
+
+        sql = mock_cursor.execute.call_args[0][0].upper()
+        assert "WHERE ID = %S AND COPY_CONTENT_VERSION IS DISTINCT FROM %S" in sql
+        assert "VIDEO_SHORTS" in sql
+        assert "COPY_THUMBNAIL_TEXT" not in sql
+
+    def test_idempotent_rerun_returns_zero_rowcount(self, db):
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 0
+
+        result, _ = self._call(db)
+
+        assert result == 0
+
+    def test_params_include_all_values_in_order(self, db):
+        _, mock_cursor = self._call(
+            db,
+            verdict="correctable",
+            findings=[{"field": "title", "category": "spelling"}],
+            corrected_title="Corregido",
+            corrected_description="Descripción corregida",
+            content_version="v2",
+        )
+
+        sql, params = mock_cursor.execute.call_args[0]
+        assert params == (
+            "correctable",
+            json.dumps([{"field": "title", "category": "spelling"}]),
+            "Título original",
+            "Descripción original",
+            "Corregido",
+            "Descripción corregida",
+            "v2",
+            7,
+            "v2",
+        )
+
+    def test_returns_cursor_rowcount(self, db):
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 3
+
+        result, _ = self._call(db)
+
+        assert result == 3
+
+    def test_raises_value_error_on_falsy_short_id(self, db):
+        instance, _ = db
+        with pytest.raises(ValueError):
+            instance.record_copy_verification_short(
+                0,
+                verdict="pass",
+                findings=[],
+                original_title="t",
+                original_description="d",
+                corrected_title=None,
+                corrected_description=None,
+                content_version="v1",
+            )

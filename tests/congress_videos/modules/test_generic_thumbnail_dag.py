@@ -234,6 +234,51 @@ class TestArtDirectionResolvedPhotoWiring:
             assert kwargs["resolved_speaker_name"] is None
 
 
+class TestArtDirectionParticipantSlugWiring:
+    """Issue #511 slice 4: _task_art_direction and _task_art_direction_retry
+    must forward conf["slug"] as participant_slug= to resolved_photo_speaker_name,
+    the same seam already wired for title generation (phase 3, conf.get("slug"))."""
+
+    def test_task_art_direction_forwards_slug_to_resolved_photo_speaker_name(self, mocker) -> None:
+        dag_mod = importlib.import_module("congress_videos.generic_thumbnail_generator_dag")
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF_WITH_SPEAKERS,
+                "fetch_recent_history": None,
+                "resolve_participant_photo": {"source": "photo"},
+            }
+        )
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mocker.patch.object(dag_mod, "art_direct", return_value={"text": "BRIEF"})
+        mock_resolved = mocker.patch.object(dag_mod, "resolved_photo_speaker_name", return_value="Sánchez")
+
+        dag_mod._task_art_direction(ti)
+
+        mock_resolved.assert_called_once_with(
+            {"source": "photo"}, _FAKE_CONF_WITH_SPEAKERS["key_speakers"], _FAKE_CONF_WITH_SPEAKERS["slug"]
+        )
+
+    def test_task_art_direction_retry_forwards_slug_to_resolved_photo_speaker_name(self, mocker) -> None:
+        dag_mod = importlib.import_module("congress_videos.generic_thumbnail_generator_dag")
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF_WITH_SPEAKERS,
+                "art_direction": _FAKE_ART_BRIEF,
+                "fetch_recent_history": None,
+                "resolve_participant_photo": {"source": "photo"},
+            }
+        )
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mocker.patch.object(dag_mod, "art_direct", return_value={"text": "NUEVO"})
+        mock_resolved = mocker.patch.object(dag_mod, "resolved_photo_speaker_name", return_value="Sánchez")
+
+        dag_mod._task_art_direction_retry(ti)
+
+        mock_resolved.assert_called_once_with(
+            {"source": "photo"}, _FAKE_CONF_WITH_SPEAKERS["key_speakers"], _FAKE_CONF_WITH_SPEAKERS["slug"]
+        )
+
+
 class TestDagTaskIds:
     """T-03: DAG must contain exactly the expected task IDs — no more, no fewer."""
 
@@ -539,7 +584,75 @@ class TestTaskThumbnailResult:
             "success": True,
             "output_path": "/thumbnails/42/option_a.png",
             "title": "A title for upload",
+            "title_generation_input": {
+                "generator": "turn_title",
+                "schema_version": 1,
+                "summary": _FAKE_CONF["debate_summary"],
+                "best": {"label": "", "style": "", "prompt": ""},
+                "sibling_titles": None,
+                "key_speakers": None,
+                "forbidden_title": None,
+                "participant_slug": _FAKE_CONF["slug"],
+                "title": "A title for upload",
+            },
         }
+
+    def test_pulls_fetch_recent_history_and_forwards_sibling_titles(self) -> None:
+        """title_generation_input.sibling_titles must come from fetch_recent_history."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "choose_best_option": {"local_path": "/thumbnails/42/option_a.png"},
+                "generate_title": "A title for upload",
+                "fetch_recent_history": {"briefs": [], "titles": ["Título anterior"]},
+            }
+        )
+
+        result = dag_mod._task_thumbnail_result(ti)
+
+        assert result["title_generation_input"]["sibling_titles"] == ["Título anterior"]
+
+    def test_title_generation_input_none_when_title_is_none(self) -> None:
+        """No title generated (E-2 path) -> no payload is built."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "choose_best_option": {"local_path": "/thumbnails/42/option_a.png"},
+                "generate_title": None,
+            }
+        )
+
+        result = dag_mod._task_thumbnail_result(ti)
+
+        assert result["title_generation_input"] is None
+
+
+class TestTaskGenerateTitleReturnTypeUnchanged:
+    """Contract test (task 2.4): widening the return dict of
+    _task_thumbnail_result must never widen _task_generate_title's bare
+    str return type — both _task_persist_results and _task_thumbnail_result
+    still pull it as task_ids="generate_title" and expect str | None."""
+
+    def test_task_generate_title_returns_bare_str(self, mocker) -> None:
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "choose_best_option": {"local_path": "/thumbnails/42/option_a.png", "style": "A", "prompt": "p"},
+                "fetch_recent_history": None,
+            }
+        )
+        mocker.patch.object(dag_mod, "generate_title", return_value="A bare string title")
+
+        result = dag_mod._task_generate_title(ti)
+
+        assert isinstance(result, str)
+        assert result == "A bare string title"
 
 
 # ---------------------------------------------------------------------------
@@ -1336,6 +1449,56 @@ class TestTaskGenerateTitleKeySpeakers:
         # Must not raise KeyError
         dag_mod._task_generate_title(ti)
         mock_generate_title.assert_called_once()
+
+
+class TestTaskGenerateTitleParticipantSlug:
+    """Issue #511 slice 3: _task_generate_title must forward conf['slug'] as participant_slug."""
+
+    def test_slug_forwarded_when_present(self, mocker) -> None:
+        """When validate_input conf has slug, _task_generate_title passes it as participant_slug."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        best = {"style": "A", "prompt": "debate", "label": "option_a", "main_score": 77.0}
+        ti = _make_fake_ti(
+            {
+                "validate_input": _FAKE_CONF,
+                "choose_best_option": best,
+                "fetch_recent_history": {"briefs": [], "titles": []},
+            }
+        )
+
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mock_generate_title = mocker.patch.object(dag_mod, "generate_title", return_value="Un título")
+
+        dag_mod._task_generate_title(ti)
+
+        mock_generate_title.assert_called_once()
+        _, kwargs = mock_generate_title.call_args
+        assert "participant_slug" in kwargs, "_task_generate_title must pass participant_slug= to generate_title"
+        assert kwargs["participant_slug"] == _FAKE_CONF["slug"]
+
+    def test_missing_slug_forwards_none(self, mocker) -> None:
+        """When validate_input conf has no slug key, participant_slug=None reaches generate_title unchanged."""
+        import congress_videos.generic_thumbnail_generator_dag as dag_mod
+
+        conf_without_slug = {k: v for k, v in _FAKE_CONF.items() if k != "slug"}
+        best = {"style": "A", "prompt": "debate", "label": "option_a", "main_score": 77.0}
+        ti = _make_fake_ti(
+            {
+                "validate_input": conf_without_slug,
+                "choose_best_option": best,
+                "fetch_recent_history": {"briefs": [], "titles": []},
+            }
+        )
+
+        mocker.patch.object(dag_mod, "get_domain_config", return_value=_FAKE_DOMAIN_CFG)
+        mock_generate_title = mocker.patch.object(dag_mod, "generate_title", return_value="Un título")
+
+        dag_mod._task_generate_title(ti)
+
+        mock_generate_title.assert_called_once()
+        _, kwargs = mock_generate_title.call_args
+        assert kwargs.get("participant_slug") is None
 
 
 # ---------------------------------------------------------------------------

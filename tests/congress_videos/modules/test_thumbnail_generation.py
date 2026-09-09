@@ -3076,6 +3076,87 @@ class TestGenerateTitlePromptInjection:
         )
 
 
+class TestGenerateTitleCanonicalDisplayName:
+    """Issue #511 slice 3: participant_slug wiring into the title speaker list.
+
+    A mapped, resolved participant_slug replaces only the FIRST
+    _real_speakers entry with the catalogued short form (design D5). An
+    unmapped/None slug leaves the prompt byte-identical to today's behaviour
+    — the catalogue is consulted, never guessed.
+    """
+
+    def _make_best(self) -> dict:
+        return {"style": "A", "prompt": "debate parlamentario"}
+
+    def _build_prompt(self, key_speakers, participant_slug=None) -> str:
+        from congress_videos.modules.thumbnail_generation import _build_title_prompt
+
+        return _build_title_prompt(
+            "Debate summary",
+            self._make_best(),
+            None,
+            key_speakers,
+            participant_slug=participant_slug,
+        )
+
+    def test_mapped_slug_replaces_first_real_speaker_only(self) -> None:
+        """Mapped slug substitutes real[0] with the catalogued name; the rest of the list is untouched."""
+        prompt = self._build_prompt(
+            ["Pedro Sánchez", "Ana López"],
+            participant_slug="pedro-sanchez-perez-castejon",
+        )
+
+        assert "Sánchez, Ana López" in prompt, "Speaker list must be [canonical_name, *untouched_rest]"
+        assert "Pedro Sánchez" not in prompt, "The uncanonicalised full name must not survive substitution"
+
+    def test_unmapped_slug_is_byte_identical_to_no_slug(self) -> None:
+        """An unmapped participant_slug must not change the built prompt at all."""
+        without_slug = self._build_prompt(["Cervera Pinar"])
+        with_unmapped_slug = self._build_prompt(["Cervera Pinar"], participant_slug="unknown-person-slug")
+
+        assert with_unmapped_slug == without_slug
+
+    def test_none_slug_is_byte_identical_to_omitted_slug(self) -> None:
+        """participant_slug=None (explicit) must behave exactly like the omitted default."""
+        without_slug = self._build_prompt(["Cervera Pinar"])
+        with_none_slug = self._build_prompt(["Cervera Pinar"], participant_slug=None)
+
+        assert with_none_slug == without_slug
+
+    def test_mapped_slug_with_no_real_speakers_does_not_inject_a_name(self) -> None:
+        """A mapped slug must never override the nameless path when no real speaker exists."""
+        prompt = self._build_prompt(None, participant_slug="pedro-sanchez-perez-castejon")
+
+        assert "no hay ponentes identificados" in prompt.lower()
+        assert "Sánchez" not in prompt
+
+    def test_pedro_sanchez_headline_case_resolves_to_surname(self, mocker) -> None:
+        """Headline acceptance criterion: pedro-sanchez-perez-castejon → 'Sánchez' in generate_title's prompt."""
+        from congress_videos.modules.thumbnail_generation import generate_title
+
+        captured: list[str] = []
+
+        def _side(system_prompt, user_prompt, **kw):
+            captured.append(user_prompt)
+            return {"data": {"title": "Un título válido"}, "error": None}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_side,
+        )
+        generate_title(
+            "Debate summary",
+            self._make_best(),
+            key_speakers=["Pedro Sánchez"],
+            participant_slug="pedro-sanchez-perez-castejon",
+        )
+
+        assert captured, "generate_json_completion must have been called"
+        assert "SOLO puedes nombrar" in captured[0]
+        assert "Sánchez" in captured[0]
+        assert "Pedro Sánchez" not in captured[0]
+
+
 # ---------------------------------------------------------------------------
 # Issue #228: characterization tests locking the C901 split's invariance
 #
@@ -3329,6 +3410,57 @@ class TestResolvedPhotoSpeakerName:
         assert resolved_photo_speaker_name({"source": "photo"}, ["Interviniente no identificado"]) is None
         assert resolved_photo_speaker_name({"source": "photo"}, None) is None
 
+    def test_mapped_participant_slug_wins_over_first_real_speaker(self) -> None:
+        """Issue #511 slice 4: a mapped participant_slug replaces real[0] with the catalogued name."""
+        from congress_videos.modules.thumbnail_generation import (
+            resolved_photo_speaker_name,
+        )
+
+        result = resolved_photo_speaker_name(
+            {"source": "photo"},
+            ["Pedro Sánchez", "Ana López"],
+            participant_slug="pedro-sanchez-perez-castejon",
+        )
+        assert result == "Sánchez"
+
+    def test_unmapped_participant_slug_is_byte_identical_to_no_slug(self) -> None:
+        """An unmapped/None participant_slug must not change the returned name at all."""
+        from congress_videos.modules.thumbnail_generation import (
+            resolved_photo_speaker_name,
+        )
+
+        without_slug = resolved_photo_speaker_name({"source": "photo"}, ["Cervera Pinar"])
+        with_unmapped_slug = resolved_photo_speaker_name(
+            {"source": "photo"}, ["Cervera Pinar"], participant_slug="unknown-person-slug"
+        )
+        with_none_slug = resolved_photo_speaker_name({"source": "photo"}, ["Cervera Pinar"], participant_slug=None)
+
+        assert with_unmapped_slug == without_slug == "Cervera Pinar"
+        assert with_none_slug == without_slug
+
+    def test_mapped_slug_still_respects_the_activation_gate(self) -> None:
+        """A mapped participant_slug must NOT open the gate on its own — source must still be 'photo'."""
+        from congress_videos.modules.thumbnail_generation import (
+            resolved_photo_speaker_name,
+        )
+
+        assert (
+            resolved_photo_speaker_name(
+                {"source": "party_logo"},
+                ["Pedro Sánchez"],
+                participant_slug="pedro-sanchez-perez-castejon",
+            )
+            is None
+        )
+        assert (
+            resolved_photo_speaker_name(
+                {"source": "photo"},
+                None,
+                participant_slug="pedro-sanchez-perez-castejon",
+            )
+            is None
+        )
+
 
 class TestArtDirectResolvedPhotoInstruction:
     """Phase 3: art_direct(..., resolved_speaker_name=) prompt injection,
@@ -3419,6 +3551,70 @@ class TestArtDirectResolvedPhotoInstruction:
         sibling_prompt = sibling_prompts[0]
         assert "NO REPITAS" in sibling_prompt and "EXCEPCIÓN DE IDENTIDAD" in sibling_prompt
         assert sibling_prompt.index("EXCEPCIÓN DE IDENTIDAD") > sibling_prompt.index("NO REPITAS")
+
+
+class TestCrossSeamDisplayNameConsistency:
+    """Issue #511 slice 4: title and art-direction MUST render the identical
+    catalogued display name for one mapped participant_slug (spec "Same slug,
+    same name across seams"). Both seams read the same conf["slug"] through
+    the same canonical_display_name lookup, so this holds by construction —
+    this test proves it, not just asserts it by design."""
+
+    def test_title_and_art_direction_render_identical_name_for_mapped_slug(self, mocker) -> None:
+        from congress_videos.modules.thumbnail_generation import (
+            art_direct,
+            generate_title,
+            resolved_photo_speaker_name,
+        )
+
+        participant_slug = "pedro-sanchez-perez-castejon"
+        key_speakers = ["Pedro Sánchez"]
+
+        title_captured: list[str] = []
+
+        def _title_side(system_prompt, user_prompt, **kw):
+            title_captured.append(user_prompt)
+            return {"data": {"title": "Un título válido"}, "error": None}
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_title_side,
+        )
+        generate_title(
+            "Debate summary",
+            {"style": "A", "prompt": "debate parlamentario"},
+            key_speakers=key_speakers,
+            participant_slug=participant_slug,
+        )
+
+        art_captured: list[str] = []
+
+        def _art_side(system_prompt, user_prompt, **kw):
+            art_captured.append(user_prompt)
+            return {
+                "data": {
+                    "text": "RETRATO REAL",
+                    "background": "pasillo del Congreso",
+                    "person": "político, expresión seria",
+                    "mood": "seriedad",
+                },
+                "error": None,
+            }
+
+        mocker.patch(
+            "congress_videos.modules.thumbnail_generation.generate_json_completion",
+            side_effect=_art_side,
+        )
+        resolved_name = resolved_photo_speaker_name(
+            {"source": "photo"}, key_speakers, participant_slug=participant_slug
+        )
+        art_direct("Debate sobre presupuesto", _make_cfg(), resolved_speaker_name=resolved_name)
+
+        assert title_captured and art_captured
+        assert resolved_name == "Sánchez"
+        assert "Sánchez" in title_captured[0]
+        assert "Sánchez" in art_captured[0]
+        assert "Pedro Sánchez" not in title_captured[0]
 
 
 # ---------------------------------------------------------------------------
@@ -3826,3 +4022,179 @@ def _is_json(value: str) -> bool:
         return True
     except (ValueError, TypeError):
         return False
+
+
+# ---------------------------------------------------------------------------
+# build_turn_title_payload (issue #549)
+# ---------------------------------------------------------------------------
+
+_TURN_PAYLOAD_DECLARED_KEYS = {
+    "generator",
+    "schema_version",
+    "summary",
+    "best",
+    "sibling_titles",
+    "key_speakers",
+    "forbidden_title",
+    "participant_slug",
+    "title",
+}
+
+
+def _scan_for_secrets(value: object) -> list[str]:
+    """Recursively collect string leaves that look like a URL/path/credential."""
+    hits: list[str] = []
+
+    def _walk(node: object) -> None:
+        if isinstance(node, dict):
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                _walk(v)
+        elif isinstance(node, str):
+            low = node.lower()
+            if "http" in low or node.startswith("/") or any(w in low for w in ("token", "key", "secret")):
+                hits.append(node)
+
+    _walk(value)
+    return hits
+
+
+class TestBuildTurnTitlePayload:
+    """build_turn_title_payload assembles an allowlisted, credential-free
+    record of generate_title's inputs plus the resulting title (issue #549)."""
+
+    def _best(self, **overrides) -> dict:
+        base = {
+            "label": "option_a",
+            "style": "Estilo A",
+            "prompt": "A gold border thumbnail prompt",
+            "local_path": "/thumbnails/42/option_a.png",
+            "output_url": "https://pikzels.com/out/option_a.png",
+            "main_score": 90.0,
+        }
+        base.update(overrides)
+        return base
+
+    def test_declared_keys_only(self):
+        """Scenario 6.1 (turn half): serialized payload has exactly the declared schema keys."""
+        from congress_videos.modules.thumbnail_generation import build_turn_title_payload
+
+        payload = build_turn_title_payload(
+            "Resumen del debate",
+            self._best(),
+            "Un título generado",
+            sibling_titles=["Título anterior 1"],
+            key_speakers=["Ana García"],
+            forbidden_title="Título prohibido",
+            participant_slug="ana-garcia",
+        )
+
+        serialized = json.loads(json.dumps(payload))
+        assert set(serialized) == _TURN_PAYLOAD_DECLARED_KEYS
+
+    def test_no_credentials_or_urls_or_paths_in_serialized_payload(self):
+        """Scenario 6.1 (turn half): recursive scan finds no http/path/token/key/secret."""
+        from congress_videos.modules.thumbnail_generation import build_turn_title_payload
+
+        payload = build_turn_title_payload(
+            "Resumen del debate",
+            self._best(),
+            "Un título generado",
+            sibling_titles=["Título anterior 1"],
+            key_speakers=["Ana García"],
+            forbidden_title="Título prohibido",
+            participant_slug="ana-garcia",
+        )
+
+        serialized = json.loads(json.dumps(payload))
+        assert _scan_for_secrets(serialized) == []
+
+    def test_best_drops_local_path_and_asset_url(self):
+        """best is reduced to {label, style, prompt} only."""
+        from congress_videos.modules.thumbnail_generation import build_turn_title_payload
+
+        payload = build_turn_title_payload("Resumen", self._best(), "Título")
+
+        assert payload["best"] == {
+            "label": "option_a",
+            "style": "Estilo A",
+            "prompt": "A gold border thumbnail prompt",
+        }
+        assert "local_path" not in payload["best"]
+        assert "output_url" not in payload["best"]
+
+    def test_key_speakers_dict_entries_reduce_to_names_only(self):
+        """key_speakers dict entries (e.g. carrying photo_url) reduce to their name."""
+        from congress_videos.modules.thumbnail_generation import build_turn_title_payload
+
+        payload = build_turn_title_payload(
+            "Resumen",
+            self._best(),
+            "Título",
+            key_speakers=[
+                "Ana García",
+                {"name": "Luis Pérez", "photo_url": "https://example.com/luis.jpg", "slug": "luis-perez"},
+                {"no_name_key": "x"},
+                42,
+            ],
+        )
+
+        assert payload["key_speakers"] == ["Ana García", "Luis Pérez"]
+        assert _scan_for_secrets(payload["key_speakers"]) == []
+
+    def test_empty_sibling_titles_and_key_speakers_normalise_to_none(self):
+        from congress_videos.modules.thumbnail_generation import build_turn_title_payload
+
+        payload = build_turn_title_payload(
+            "Resumen",
+            self._best(),
+            "Título",
+            sibling_titles=[],
+            key_speakers=[],
+        )
+
+        assert payload["sibling_titles"] is None
+        assert payload["key_speakers"] is None
+
+    def test_literal_generator_and_schema_version(self):
+        from congress_videos.modules.thumbnail_generation import build_turn_title_payload
+
+        payload = build_turn_title_payload("Resumen", self._best(), "Título")
+
+        assert payload["generator"] == "turn_title"
+        assert payload["schema_version"] == 1
+
+    def test_round_trip_replays_generate_title_from_stored_fields_only(self, mocker):
+        """Scenario 4.1 (turn half): the stored payload alone is enough to
+        replay generate_title — no live-worktree read, no fetch_recent_history
+        re-call."""
+        from congress_videos.modules.thumbnail_generation import build_turn_title_payload, generate_title
+
+        payload = build_turn_title_payload(
+            "Resumen del debate",
+            self._best(),
+            "Un título generado",
+            sibling_titles=["Título anterior 1"],
+            key_speakers=["Ana García"],
+            forbidden_title="Título prohibido distinto",
+            participant_slug="ana-garcia",
+        )
+
+        mock_request = mocker.patch(
+            "congress_videos.modules.thumbnail_generation._request_title",
+            return_value="Un título replayado",
+        )
+
+        replayed = generate_title(
+            payload["summary"],
+            payload["best"],
+            sibling_titles=payload["sibling_titles"],
+            key_speakers=payload["key_speakers"],
+            forbidden_title=payload["forbidden_title"],
+            participant_slug=payload["participant_slug"],
+        )
+
+        assert replayed == "Un título replayado"
+        mock_request.assert_called_once()
