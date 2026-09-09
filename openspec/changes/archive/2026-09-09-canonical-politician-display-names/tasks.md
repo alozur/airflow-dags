@@ -57,6 +57,11 @@ Chain strategy: stacked-to-main
 - [x] 5.1 RED: extend `TestBuildShortsMetadataContext` in `tests/congress_videos/test_reap_uploader_dag.py` — mapped `turn_speaker_slug` yields the catalogued name over `participants_lookup`; unmapped/`None` falls through unchanged; mentioned people never canonicalised; `pedro-sanchez-perez-castejon` → `Sánchez`.
 - [x] 5.2 GREEN: in `build_shorts_metadata_context` (`congress_videos/reap_shorts_uploader_dag.py` L104-117), try `canonical_display_name(turn_speaker_slug)` before `participants_lookup`.
 
+## Phase 5b: Mentioned-People Dedup Key Fix (Corrective, ~30 lines)
+
+- [x] 5b.1 Investigation: the shorts wiring initially short-circuited `participants_lookup`, which silently broke the display-name half of the speaker-vs-mentioned-people exclusion once the catalogue shortened the speaker's name.
+- [x] 5b.2 Fix: retain the raw name for comparison while the catalogue still decides what is rendered. Updated `build_shorts_metadata_context` to use the raw speaker name (before canonicalization) for dedup comparison.
+
 ## Phase 6: Prompt Taxonomy Removal (PR 6, ~90 lines)
 
 - [x] 6.1 RED: flip `test_system_prompt_contains_siempre_and_taxonomy_rule` to assert no `"Nivel 1"`–`"Nivel 4"`, presence of `"EXACTAMENTE como aparece"` + `"cargo o rol"`; assert `"taxonomía de 4 niveles"` absent from `SHORTS_METADATA_USER_PROMPT_TEMPLATE`.
@@ -66,3 +71,8 @@ Chain strategy: stacked-to-main
 
 - [x] 7.1 RED `tests/docs/test_canonical_display_names_doc.py`: `docs/CANONICAL_DISPLAY_NAMES.md` exists and mentions ownership, the "≥2 appearances" selection criterion, quarterly-plus-reshuffle cadence, add/edit procedure.
 - [x] 7.2 GREEN: write `docs/CANONICAL_DISPLAY_NAMES.md` — ownership, mechanical selection criterion (against the 11-entry roster), review cadence, step-by-step add/edit procedure (schema, provenance, `uv run pytest tests/congress_videos/test_politician_display_names.py`).
+
+## Phase 7b: Doc Language Alignment (Corrective, ~115 lines)
+
+- [x] 7b.1 Translation: `CANONICAL_DISPLAY_NAMES.md` was authored in English while all 10 other docs/ files are Spanish. Translate to neutral professional Spanish (Spain register).
+- [x] 7b.2 Test Updates: Update `tests/docs/test_canonical_display_names_doc.py` assertions to match Spanish substrings (e.g. "Ownership"→"Propiedad", "quarterly"→"trimestral", etc.).
