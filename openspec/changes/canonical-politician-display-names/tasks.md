@@ -37,8 +37,8 @@ Chain strategy: stacked-to-main
 
 ## Phase 2: Populate Roster (PR 2, ~170 lines)
 
-- [ ] 2.1 RED: extend `test_politician_display_names.py` — exactly 11 entries, no collisions, `isabel-rodriguez-garcia`→`Isabel Rodríguez` and `javier-rodriguez-palacios`→`Javier Rodríguez` distinct, `pedro-sanchez-perez-castejon`→`Sánchez`, each `display_name` a subsequence of its `full_name`.
-- [ ] 2.2 GREEN: add the remaining 10 entries (Tellado Filgueira, Gamarra Ruiz-Clavijo, Corujo Berriel, Muñoz Abrines, Rodríguez Palacios, Micó Micó, Hernández Quero, Guinart Moreno, Abascal Conde, Rodríguez García) to `politician_display_names.v1.json` with real `provenance`.
+- [x] 2.1 RED: extend `test_politician_display_names.py` — exactly 11 entries, no collisions, `isabel-rodriguez-garcia`→`Isabel Rodríguez` and `javier-rodriguez-palacios`→`Javier Rodríguez` distinct, `pedro-sanchez-perez-castejon`→`Sánchez`, each `display_name` a subsequence of its `full_name`.
+- [x] 2.2 GREEN: add the remaining 10 entries (Tellado Filgueira, Gamarra Ruiz-Clavijo, Corujo Berriel, Muñoz Abrines, Rodríguez Palacios, Micó Micó, Hernández Quero, Guinart Moreno, Abascal Conde, Rodríguez García) to `politician_display_names.v1.json` with real `provenance`.
 
 ## Phase 3: Title Wiring (PR 3, ~150 lines)
 
