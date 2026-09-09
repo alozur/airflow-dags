@@ -305,6 +305,26 @@ def _union_length(spans: list[tuple[int, int]]) -> int:
     return sum(end - start for start, end in merged)
 
 
+def _collect_pattern_spans(
+    patterns: tuple[tuple[str, re.Pattern], ...],
+    normalized: str,
+    spans: list[tuple[int, int]],
+    matched_names: list[str],
+) -> None:
+    """Lifted verbatim out of is_procedural_turn (issue #272).
+
+    Scans ``normalized`` for every ``(name, pattern)`` pair, appending one
+    ``spans`` entry per match while recording each ``name`` in
+    ``matched_names`` at most once. Mutates both caller-owned lists in place;
+    returns nothing.
+    """
+    for name, pattern in patterns:
+        for m in pattern.finditer(normalized):
+            spans.append((m.start(), m.end()))
+            if name not in matched_names:
+                matched_names.append(name)
+
+
 def is_procedural_turn(text: str, duration_seconds: float, *, qa_context: bool = False) -> tuple[bool, str | None]:
     """Pure AND-gate: duration <= 15s AND phrase coverage >= threshold. Never raises.
 
@@ -334,21 +354,13 @@ def is_procedural_turn(text: str, duration_seconds: float, *, qa_context: bool =
 
     matched_names: list[str] = []
     spans: list[tuple[int, int]] = []
-    for name, pattern in PROCEDURAL_PATTERNS:
-        for m in pattern.finditer(normalized):
-            spans.append((m.start(), m.end()))
-            if name not in matched_names:
-                matched_names.append(name)
+    _collect_pattern_spans(PROCEDURAL_PATTERNS, normalized, spans, matched_names)
 
     # Core gate: fillers can never justify a flag on their own.
     if not spans:
         return (False, None)
 
-    for name, pattern in PROCEDURAL_FILLER_PATTERNS:
-        for m in pattern.finditer(normalized):
-            spans.append((m.start(), m.end()))
-            if name not in matched_names:
-                matched_names.append(name)
+    _collect_pattern_spans(PROCEDURAL_FILLER_PATTERNS, normalized, spans, matched_names)
 
     min_coverage = PROCEDURAL_MIN_COVERAGE_QA if qa_context else PROCEDURAL_MIN_COVERAGE
     coverage = _union_length(spans) / len(normalized)
