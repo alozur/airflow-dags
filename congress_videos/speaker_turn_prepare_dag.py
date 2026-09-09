@@ -350,6 +350,43 @@ def _persist_turn_resolution(
     return promoted
 
 
+def _prepare_turn_artifacts(db, turn, turn_id, output_path) -> None:
+    """Lifted verbatim out of _prepare_turns_callable (issue #272)."""
+    try:
+        # Step 0.5: VAD silence trim (issue #175).
+        # Best-effort: trim_turn_silence_with_vad never raises and returns (0.0, 0.0) on
+        # any failure, so preparation continues normally with the original file.
+        # Applies uniformly to monologue and qa turns (no turn_type branching).
+        trim_start, trim_end = trim_turn_silence_with_vad(output_path)
+
+        # Step 1: Write subtitles.srt sidecar (window narrowed by VAD offsets).
+        _write_turn_sidecars(turn, trim_start_secs=trim_start, trim_end_secs=trim_end)
+
+        # Step 2: ffmpeg decode integrity check (validates trimmed or original MP4).
+        rc = _run_ffmpeg_decode_check(output_path)
+        if rc != 0:
+            logger.warning(
+                "_prepare_turns_callable: ffmpeg decode check failed for turn_id=%d "
+                "(rc=%d) — prepared_at NOT set; will retry on the next chain-triggered run",
+                turn_id,
+                rc,
+            )
+            return None
+
+        # Step 3: Atomic readiness flip — called LAST.
+        db.mark_turn_prepared(turn_id)
+        logger.info("_prepare_turns_callable: turn_id=%d prepared successfully", turn_id)
+
+    except Exception as exc:
+        logger.warning(
+            "_prepare_turns_callable: turn_id=%d preparation failed (%s) "
+            "— prepared_at NOT set; will retry on the next chain-triggered run",
+            turn_id,
+            exc,
+        )
+        return None
+
+
 def _prepare_turns_callable() -> None:
     """Callable for the prepare_turns PythonOperator task.
 
@@ -470,39 +507,7 @@ def _prepare_turns_callable() -> None:
                 exc,
             )
 
-        try:
-            # Step 0.5: VAD silence trim (issue #175).
-            # Best-effort: trim_turn_silence_with_vad never raises and returns (0.0, 0.0) on
-            # any failure, so preparation continues normally with the original file.
-            # Applies uniformly to monologue and qa turns (no turn_type branching).
-            trim_start, trim_end = trim_turn_silence_with_vad(output_path)
-
-            # Step 1: Write subtitles.srt sidecar (window narrowed by VAD offsets).
-            _write_turn_sidecars(turn, trim_start_secs=trim_start, trim_end_secs=trim_end)
-
-            # Step 2: ffmpeg decode integrity check (validates trimmed or original MP4).
-            rc = _run_ffmpeg_decode_check(output_path)
-            if rc != 0:
-                logger.warning(
-                    "_prepare_turns_callable: ffmpeg decode check failed for turn_id=%d "
-                    "(rc=%d) — prepared_at NOT set; will retry on the next chain-triggered run",
-                    turn_id,
-                    rc,
-                )
-                continue
-
-            # Step 3: Atomic readiness flip — called LAST.
-            db.mark_turn_prepared(turn_id)
-            logger.info("_prepare_turns_callable: turn_id=%d prepared successfully", turn_id)
-
-        except Exception as exc:
-            logger.warning(
-                "_prepare_turns_callable: turn_id=%d preparation failed (%s) "
-                "— prepared_at NOT set; will retry on the next chain-triggered run",
-                turn_id,
-                exc,
-            )
-            continue
+        _prepare_turn_artifacts(db, turn, turn_id, output_path)
 
 
 # ---------------------------------------------------------------------------

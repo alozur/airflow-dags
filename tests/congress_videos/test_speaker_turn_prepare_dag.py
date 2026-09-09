@@ -2367,3 +2367,72 @@ class TestPersistTurnResolution:
         mock_db.mark_turn_resolved.assert_called_once()
         mock_db.promote_turn_type_to_qa.assert_not_called()
         assert turn["resolved_name"] == "Stale Name"
+
+
+# ---------------------------------------------------------------------------
+# 6.2 _prepare_turn_artifacts (issue #272 PR6 lift)
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareTurnArtifacts:
+    """Quirks pinned for _prepare_turn_artifacts (issue #272)."""
+
+    def test_nonzero_decode_rc_returns_early_without_marking_prepared(self):
+        """rc != 0 from the ffmpeg decode check returns without calling
+        mark_turn_prepared — prepared_at must stay NULL for a retry."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turn_artifacts
+
+        turn = _make_turn(1, "/data/v1.mp4")
+        mock_db = MagicMock()
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag._run_ffmpeg_decode_check", return_value=1),
+        ):
+            result = _prepare_turn_artifacts(mock_db, turn, 1, "/data/v1.mp4")
+
+        assert result is None
+        mock_db.mark_turn_prepared.assert_not_called()
+
+    def test_internal_exception_is_swallowed_and_never_raises(self):
+        """Any exception raised inside (VAD, sidecar write, decode check) is
+        caught and swallowed — the helper returns None, it never raises."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turn_artifacts
+
+        turn = _make_turn(1, "/data/v1.mp4")
+        mock_db = MagicMock()
+
+        with patch(
+            "congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = _prepare_turn_artifacts(mock_db, turn, 1, "/data/v1.mp4")
+
+        assert result is None
+        mock_db.mark_turn_prepared.assert_not_called()
+
+    def test_mark_turn_prepared_is_the_last_call_on_success(self):
+        """On the success path, mark_turn_prepared is called with turn_id,
+        called exactly once, and only after the decode check passed."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turn_artifacts
+
+        turn = _make_turn(7, "/data/v7.mp4")
+        mock_db = MagicMock()
+        call_order = []
+        mock_db.mark_turn_prepared.side_effect = lambda *a, **k: call_order.append("mark_turn_prepared")
+
+        def fake_decode(path):
+            call_order.append("decode_check")
+            return 0
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag._run_ffmpeg_decode_check", side_effect=fake_decode),
+        ):
+            result = _prepare_turn_artifacts(mock_db, turn, 7, "/data/v7.mp4")
+
+        assert result is None
+        mock_db.mark_turn_prepared.assert_called_once_with(7)
+        assert call_order == ["decode_check", "mark_turn_prepared"]
