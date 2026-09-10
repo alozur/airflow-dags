@@ -122,6 +122,47 @@ def probe_live_status(
         return None
 
 
+def _log_available_streams(yt) -> None:
+    """Log all available pytubefix streams for a video, capped to the first 15.
+
+    Lifted verbatim out of download_with_pytubefix (issue #272).
+    """
+    all_streams = yt.streams.all()
+    logger.info(f"[pytubefix] Available streams ({len(all_streams)} total):")
+    for s in all_streams[:15]:  # Log first 15
+        logger.info(
+            f"  - {s.resolution or 'audio'} | {s.mime_type} | adaptive={s.is_adaptive} | progressive={s.is_progressive}"
+        )
+
+
+def _select_video_stream(yt, min_resolution):
+    """Select the best available adaptive video stream, preferring H264 (mp4).
+
+    Lifted verbatim out of download_with_pytubefix (issue #272).
+    """
+    video_stream = (
+        yt.streams.filter(adaptive=True, only_video=True, subtype="mp4")
+        .filter(lambda s: s.resolution and int(s.resolution[:-1]) >= min_resolution)
+        .order_by("resolution")
+        .desc()
+        .first()
+    )
+
+    # Fallback 1: any H264 (mp4) adaptive video, even below min_resolution
+    if not video_stream:
+        logger.info("[pytubefix] No 720p+ H264 found, trying any H264 (mp4) adaptive video...")
+        video_stream = (
+            yt.streams.filter(adaptive=True, only_video=True, subtype="mp4").order_by("resolution").desc().first()
+        )
+
+    # Fallback 2: any adaptive video (may be VP9/AV1) — last resort only
+    if not video_stream:
+        logger.info("[pytubefix] No H264 stream available, falling back to any adaptive video (may be AV1/VP9)...")
+        video_stream = yt.streams.filter(adaptive=True, only_video=True).order_by("resolution").desc().first()
+
+    return video_stream
+
+
 def download_with_pytubefix(
     youtube_url: str,
     output_dir: str,
@@ -171,13 +212,7 @@ def download_with_pytubefix(
         safe_title = "".join(c for c in yt.title if c.isalnum() or c in (" ", "-", "_")).strip()[:50]
 
         # Debug: log all available streams
-        all_streams = yt.streams.all()
-        logger.info(f"[pytubefix] Available streams ({len(all_streams)} total):")
-        for s in all_streams[:15]:  # Log first 15
-            logger.info(
-                f"  - {s.resolution or 'audio'} | {s.mime_type} | adaptive={s.is_adaptive} | "
-                f"progressive={s.is_progressive}"
-            )
+        _log_available_streams(yt)
 
         # First try: H264 (mp4) adaptive video at min_resolution or higher (720p+).
         # Force subtype='mp4' → H264/avc1. webm adaptive streams are VP9/AV1, and
@@ -185,25 +220,7 @@ def download_with_pytubefix(
         # through and re-encode chokes on it, yielding an invalid MP4 that YouTube
         # rejects on upload ("procesamiento interrumpido"). H264 is robust and, at
         # 720p/1080p, visually identical for our purposes.
-        video_stream = (
-            yt.streams.filter(adaptive=True, only_video=True, subtype="mp4")
-            .filter(lambda s: s.resolution and int(s.resolution[:-1]) >= min_resolution)
-            .order_by("resolution")
-            .desc()
-            .first()
-        )
-
-        # Fallback 1: any H264 (mp4) adaptive video, even below min_resolution
-        if not video_stream:
-            logger.info("[pytubefix] No 720p+ H264 found, trying any H264 (mp4) adaptive video...")
-            video_stream = (
-                yt.streams.filter(adaptive=True, only_video=True, subtype="mp4").order_by("resolution").desc().first()
-            )
-
-        # Fallback 2: any adaptive video (may be VP9/AV1) — last resort only
-        if not video_stream:
-            logger.info("[pytubefix] No H264 stream available, falling back to any adaptive video (may be AV1/VP9)...")
-            video_stream = yt.streams.filter(adaptive=True, only_video=True).order_by("resolution").desc().first()
+        video_stream = _select_video_stream(yt, min_resolution)
 
         if video_stream:
             logger.info(f"[pytubefix] Found adaptive video stream: {video_stream.resolution}")
@@ -309,6 +326,49 @@ def download_with_pytubefix(
     return result
 
 
+def _check_live_status_guard(youtube_url: str, cookies_file: str, guard_live_status: bool) -> dict | None:
+    """Probe live_status and return a skip result for a not-ready VOD, else None.
+
+    Lifted verbatim out of download_youtube_video_for_upload (issue #272).
+    """
+    if guard_live_status:
+        status = probe_live_status(youtube_url, cookies_file)
+        if status is not None and status not in READY_LIVE_STATUSES:
+            logger.warning(f"Skipping {youtube_url}: live_status={status!r} (not a ready VOD)")
+            return {
+                "success": False,
+                "skipped": True,
+                "file_path": None,
+                "file_size_mb": None,
+                "duration": None,
+                "title": None,
+                "error": f"live_status {status!r} not ready — skipped download",
+            }
+    return None
+
+
+def _try_pytubefix_download(
+    youtube_url: str, output_dir: str, min_resolution: int, use_pytubefix_first: bool
+) -> dict | None:
+    """Attempt a pytubefix download first; return its result dict on success, else None.
+
+    Lifted verbatim out of download_youtube_video_for_upload (issue #272).
+    """
+    if use_pytubefix_first:
+        logger.info("Trying pytubefix first...")
+        result = download_with_pytubefix(youtube_url, output_dir, min_resolution)
+        if result["success"]:
+            logger.info(f"pytubefix succeeded! Resolution: {result.get('resolution')}")
+            try:
+                _warn_if_not_h264(result["file_path"], context=youtube_url)
+            except Exception as e:
+                logger.warning("codec-mismatch check failed for %s: %s", youtube_url, e)
+            return result
+        else:
+            logger.warning(f"pytubefix failed: {result.get('error')}. Falling back to yt-dlp...")
+    return None
+
+
 def download_youtube_video_for_upload(
     youtube_url: str,
     output_dir: str,
@@ -360,37 +420,18 @@ def download_youtube_video_for_upload(
     # (post_live / is_live / is_upcoming) would otherwise crash ffmpeg later with
     # "moov atom not found". A probe error (None) is non-blocking here — the
     # pre-branch task gate is the primary defense — so the download proceeds.
-    if guard_live_status:
-        status = probe_live_status(youtube_url, cookies_file)
-        if status is not None and status not in READY_LIVE_STATUSES:
-            logger.warning(f"Skipping {youtube_url}: live_status={status!r} (not a ready VOD)")
-            return {
-                "success": False,
-                "skipped": True,
-                "file_path": None,
-                "file_size_mb": None,
-                "duration": None,
-                "title": None,
-                "error": f"live_status {status!r} not ready — skipped download",
-            }
+    skip_result = _check_live_status_guard(youtube_url, cookies_file, guard_live_status)
+    if skip_result is not None:
+        return skip_result
 
     # Map quality string to minimum resolution
     quality_to_resolution = {"720p": 720, "1080p": 1080, "best": 720}
     min_resolution = quality_to_resolution.get(quality, 720)
 
     # Try pytubefix first (often more reliable for YouTube restrictions)
-    if use_pytubefix_first:
-        logger.info("Trying pytubefix first...")
-        result = download_with_pytubefix(youtube_url, output_dir, min_resolution)
-        if result["success"]:
-            logger.info(f"pytubefix succeeded! Resolution: {result.get('resolution')}")
-            try:
-                _warn_if_not_h264(result["file_path"], context=youtube_url)
-            except Exception as e:
-                logger.warning("codec-mismatch check failed for %s: %s", youtube_url, e)
-            return result
-        else:
-            logger.warning(f"pytubefix failed: {result.get('error')}. Falling back to yt-dlp...")
+    pytubefix_result = _try_pytubefix_download(youtube_url, output_dir, min_resolution, use_pytubefix_first)
+    if pytubefix_result is not None:
+        return pytubefix_result
 
     # Fall back to yt-dlp
     logger.info("Trying yt-dlp...")
@@ -875,6 +916,68 @@ def merge_video_audio_moviepy(
     return result
 
 
+def _download_subtitle_files(youtube_url: str, video_id: str, output_dir: str, languages: list[str]) -> list[dict]:
+    """Attempt to download subtitles for each language, stopping at the first success.
+
+    Lifted verbatim out of download_youtube_subtitles (issue #272).
+    """
+    downloaded_files = []
+
+    for lang in languages:
+        try:
+            logger.info(f"Attempting to download subtitles for language: {lang}")
+
+            # Create srt_files directory
+            srt_dir = Path(output_dir) / "srt_files"
+            srt_dir.mkdir(parents=True, exist_ok=True)
+
+            ydl_opts = {
+                "skip_download": True,  # Don't download the video
+                "writesubtitles": True,  # Download subtitles
+                "writeautomaticsub": True,  # Include auto-generated subtitles
+                "subtitleslangs": [lang],  # Language to download
+                "subtitlesformat": "srt",  # SRT format
+                "outtmpl": str(srt_dir / f"{video_id}_%(lang)s"),
+                "quiet": False,
+                "no_warnings": False,
+            }
+
+            _apply_download_proxy(ydl_opts)
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([youtube_url])
+
+            # Check if file was downloaded
+            possible_files = list(srt_dir.glob(f"{video_id}*.srt"))
+
+            if possible_files:
+                for srt_file in possible_files:
+                    file_size_mb = srt_file.stat().st_size / (1024 * 1024)
+
+                    # Determine if it's auto-generated
+                    is_auto = "auto" in srt_file.name.lower() or lang == "auto"
+
+                    downloaded_files.append(
+                        {
+                            "language": lang,
+                            "file_path": str(srt_file),
+                            "file_size_mb": round(file_size_mb, 2),
+                            "is_auto_generated": is_auto,
+                        }
+                    )
+
+                    logger.info(f"✅ Downloaded {lang} subtitles: {srt_file.name} ({file_size_mb:.2f} MB)")
+
+                # If we found subtitles, we can stop trying other languages
+                break
+
+        except Exception as e:
+            logger.debug(f"Could not download {lang} subtitles: {e}")
+            continue
+
+    return downloaded_files
+
+
 def download_youtube_subtitles(youtube_url: str, output_dir: str, languages: list[str] = None) -> dict:
     """
     Download SRT subtitles directly from YouTube if available.
@@ -933,58 +1036,7 @@ def download_youtube_subtitles(youtube_url: str, output_dir: str, languages: lis
             )
 
         # Try to download subtitles in order of preference
-        downloaded_files = []
-
-        for lang in languages:
-            try:
-                logger.info(f"Attempting to download subtitles for language: {lang}")
-
-                # Create srt_files directory
-                srt_dir = Path(output_dir) / "srt_files"
-                srt_dir.mkdir(parents=True, exist_ok=True)
-
-                ydl_opts = {
-                    "skip_download": True,  # Don't download the video
-                    "writesubtitles": True,  # Download subtitles
-                    "writeautomaticsub": True,  # Include auto-generated subtitles
-                    "subtitleslangs": [lang],  # Language to download
-                    "subtitlesformat": "srt",  # SRT format
-                    "outtmpl": str(srt_dir / f"{video_id}_%(lang)s"),
-                    "quiet": False,
-                    "no_warnings": False,
-                }
-                _apply_download_proxy(ydl_opts)
-
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([youtube_url])
-
-                # Check if file was downloaded
-                possible_files = list(srt_dir.glob(f"{video_id}*.srt"))
-
-                if possible_files:
-                    for srt_file in possible_files:
-                        file_size_mb = srt_file.stat().st_size / (1024 * 1024)
-
-                        # Determine if it's auto-generated
-                        is_auto = "auto" in srt_file.name.lower() or lang == "auto"
-
-                        downloaded_files.append(
-                            {
-                                "language": lang,
-                                "file_path": str(srt_file),
-                                "file_size_mb": round(file_size_mb, 2),
-                                "is_auto_generated": is_auto,
-                            }
-                        )
-
-                        logger.info(f"✅ Downloaded {lang} subtitles: {srt_file.name} ({file_size_mb:.2f} MB)")
-
-                    # If we found subtitles, we can stop trying other languages
-                    break
-
-            except Exception as e:
-                logger.debug(f"Could not download {lang} subtitles: {e}")
-                continue
+        downloaded_files = _download_subtitle_files(youtube_url, video_id, output_dir, languages)
 
         if not downloaded_files:
             result["error"] = "Failed to download subtitles in any language"

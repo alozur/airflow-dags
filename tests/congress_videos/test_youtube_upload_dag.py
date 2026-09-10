@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
@@ -48,10 +49,10 @@ class TestYoutubeUploadDagLoads:
         assert dag.dag_id == "congress_youtube_chapter_uploader"
 
     def test_dag_has_fifteen_tasks(self):
-        """DAG must have 15 tasks: the prior 14 plus verify_final_copy (issue #512)."""
+        """DAG must have 16 tasks: the prior 15 plus apply_intro_overlay (issue #558)."""
         from congress_videos.youtube_upload_dag import dag
 
-        assert len(dag.tasks) == 15
+        assert len(dag.tasks) == 16
 
     def test_expected_task_ids_present(self):
         """New task IDs present; legacy Pillow task IDs absent."""
@@ -68,6 +69,8 @@ class TestYoutubeUploadDagLoads:
         assert "backfill_thumbnail_video_id" in task_ids
         # Issue #512
         assert "verify_final_copy" in task_ids
+        # Issue #558
+        assert "apply_intro_overlay" in task_ids
         # Legacy Pillow tasks must be gone
         assert "generate_thumbnail_text" not in task_ids
         assert "generate_thumbnails" not in task_ids
@@ -121,15 +124,18 @@ class TestYoutubeUploadDagLoads:
         assert generate.task_id in upstream_ids
 
     def test_extract_precedes_upload_config(self):
-        """extract_chapter_videos must be a direct upstream of prepare_upload_config."""
+        """extract_chapter_videos must precede prepare_upload_config (issue #558:
+        apply_intro_overlay (t5b) now sits directly between them, so the
+        relationship is ancestor, not direct-upstream — see
+        TestApplyIntroOverlayWiring for the direct t5 > t5b > t6 chain)."""
         from congress_videos.youtube_upload_dag import dag
 
         tasks_by_id = {t.task_id: t for t in dag.tasks}
         extract = tasks_by_id["extract_chapter_videos"]
         upload_config = tasks_by_id["prepare_upload_config"]
 
-        upstream_ids = {t.task_id for t in upload_config.upstream_list}
-        assert extract.task_id in upstream_ids
+        ancestor_ids = upload_config.get_flat_relative_ids(upstream=True)
+        assert extract.task_id in ancestor_ids
 
     def test_backfill_after_mark_uploaded(self):
         """backfill_thumbnail_video_id must be downstream of mark_chapters_uploaded."""
@@ -474,6 +480,31 @@ class TestCopyVerificationProblems:
         )
         problems = _copy_verification_problems(payload)
         assert len(problems) == 3
+
+    def test_copy_verification_problems_reports_unlanded_thumbnail_regen(self):
+        """3.11 (issue #545, design.md D4): a thumbnail_text finding that did
+        NOT land a regeneration is an operator-facing, non-blocking signal."""
+        from congress_videos.youtube_upload_dag import _copy_verification_problems
+
+        payload = self._clean_payload(
+            verdict="reject",
+            findings=[{"field": "thumbnail_text", "category": "person_name", "severity": "high"}],
+            thumbnail_regen_landed=False,
+        )
+        problems = _copy_verification_problems(payload)
+        assert any("thumbnail" in p.lower() and "regeneration" in p.lower() for p in problems)
+
+    def test_copy_verification_problems_landed_regen_is_not_a_finding(self):
+        """A landed regeneration is a success story — no extra finding."""
+        from congress_videos.youtube_upload_dag import _copy_verification_problems
+
+        payload = self._clean_payload(
+            verdict="reject",
+            findings=[{"field": "thumbnail_text", "category": "person_name", "severity": "high"}],
+            thumbnail_regen_landed=True,
+        )
+        problems = _copy_verification_problems(payload)
+        assert not any("regeneration did not land" in p for p in problems)
 
 
 # ---------------------------------------------------------------------------
@@ -1007,6 +1038,340 @@ class TestVerifyFinalCopy:
         verify_fn.assert_not_called()
         assert "copy_verification" not in ti.xcom_store
 
+    # -----------------------------------------------------------------
+    # Issue #545: bounded, non-blocking thumbnail-text regeneration
+    # branch, wired strictly after the title-reject raise above.
+    # -----------------------------------------------------------------
+
+    def test_verify_final_copy_thumbnail_text_finding_triggers_one_claim_and_trigger(self, mocker):
+        """3.1 — a thumbnail_text finding triggers exactly one claim and,
+        once claimed, exactly one call into _regenerate_flagged_thumbnail —
+        never a loop, never more than one attempt per t6b execution. A
+        landed regeneration also swaps thumbnail_file and pushes the
+        mutated upload_config."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker, thumbnail_row={"art_direction_brief": {"text": "old brief"}})
+        mock_db.claim_thumbnail_text_regeneration.return_value = {
+            "thumbnail_regen_attempts": 1,
+            "thumbnail_regen_exhausted": False,
+        }
+        regen = mocker.patch(
+            "congress_videos.youtube_upload_dag._regenerate_flagged_thumbnail",
+            return_value=_regen_valid_result(output_path="/data/turn1/thumbnail.png"),
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=True)
+        verdict = self._make_verdict(
+            verdict="reject",
+            findings=[{"field": "thumbnail_text", "category": "person_name", "severity": "high"}],
+        )
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        thumbnail_config = _regen_thumbnail_config()
+        config = _make_upload_config()
+        ti = _make_ti({"upload_config": config, "thumbnail_config": thumbnail_config})
+
+        _verify_final_copy(ti, run_id="run_1")
+
+        mock_db.claim_thumbnail_text_regeneration.assert_called_once_with(
+            "/data/turn1/video.mp4", prior_brief={"text": "old brief"}
+        )
+        regen.assert_called_once_with(
+            thumbnail_config, "/data/turn1/video.mp4", {"text": "old brief"}, "run_1", db=mock_db
+        )
+        ti.xcom_push.assert_any_call(key="upload_config", value=config)
+        assert config["videos"][0]["thumbnail_file"] == "/data/turn1/thumbnail.png"
+
+    def test_verify_final_copy_no_thumbnail_text_finding_zero_claims(self, mocker):
+        """3.2 — no thumbnail_text finding, no regeneration. Mutation check
+        (manually verified): temporarily always calling claim makes this
+        test fail."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker)
+        self._patch_matching_content_version(mocker)
+        verdict = self._make_verdict(verdict="pass", findings=[])
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        ti = _make_ti({"upload_config": _make_upload_config(), "thumbnail_config": _regen_thumbnail_config()})
+        _verify_final_copy(ti)
+
+        mock_db.claim_thumbnail_text_regeneration.assert_not_called()
+
+    def test_verify_final_copy_hoisted_xcom_push_fires_without_correction(self, mocker):
+        """3.4 — NON-NEGOTIABLE regression guard: the hoisted push must fire
+        for a landed regeneration even when NO title/description correction
+        was applied. Before the hoist, this push lived only inside
+        `if verdict.correction_applied:` and would silently drop this
+        exact case."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker, thumbnail_row={"art_direction_brief": {"text": "old brief"}})
+        mock_db.claim_thumbnail_text_regeneration.return_value = {
+            "thumbnail_regen_attempts": 1,
+            "thumbnail_regen_exhausted": False,
+        }
+        mocker.patch(
+            "congress_videos.youtube_upload_dag._regenerate_flagged_thumbnail",
+            return_value=_regen_valid_result(output_path="/data/turn1/thumbnail.png"),
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=True)
+        verdict = self._make_verdict(
+            verdict="reject",
+            findings=[{"field": "thumbnail_text", "category": "person_name", "severity": "high"}],
+            correction_applied=False,
+        )
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        config = _make_upload_config()
+        ti = _make_ti({"upload_config": config, "thumbnail_config": _regen_thumbnail_config()})
+
+        _verify_final_copy(ti)
+
+        ti.xcom_push.assert_any_call(key="upload_config", value=config)
+        assert config["videos"][0]["thumbnail_file"] == "/data/turn1/thumbnail.png"
+
+    def test_verify_final_copy_sibling_isolation_by_output_path(self, mocker):
+        """3.7 (design.md D6) — the triggered child conf["output_path"] is
+        turn A's own video_file, never the shared chapter_id and never a
+        sibling turn B's path. Exercises the real (unmocked)
+        _regenerate_flagged_thumbnail so the actual conf sent to
+        trigger_dag_api is inspectable end to end."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker, thumbnail_row={"art_direction_brief": {"text": "old brief"}})
+        mock_db.claim_thumbnail_text_regeneration.return_value = {
+            "thumbnail_regen_attempts": 1,
+            "thumbnail_regen_exhausted": False,
+        }
+        trigger = mocker.patch(
+            "congress_videos.youtube_upload_dag.trigger_dag_api",
+            return_value=_regen_dag_run(state="success"),
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=True)
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.XCom.get_one",
+            return_value=_regen_valid_result(output_path="/data/turn-A/thumbnail.png"),
+        )
+        verdict = self._make_verdict(
+            verdict="reject",
+            findings=[{"field": "thumbnail_text", "category": "person_name", "severity": "high"}],
+        )
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        # Turn A's own config — a sibling turn B would share chapter_id=100
+        # but have a distinct video_file/output_path, never referenced here.
+        config = _make_upload_config(chapter_id=100)
+        config["videos"][0]["video_file"] = "/data/turn-A/video.mp4"
+        thumbnail_config = _regen_thumbnail_config(chapter_id=100)
+        ti = _make_ti({"upload_config": config, "thumbnail_config": thumbnail_config})
+
+        _verify_final_copy(ti, run_id="run_1")
+
+        _, kwargs = trigger.call_args
+        assert kwargs["conf"]["output_path"] == "/data/turn-A/video.mp4"
+        assert kwargs["conf"]["output_path"] != "/data/turn-B/video.mp4"
+        assert kwargs["conf"]["output_path"] != str(100)
+
+    @pytest.mark.parametrize(
+        "mode",
+        ["timeout", "trigger_failed", "child_failed", "invalid_result", "not_claimed", "claim_exception"],
+    )
+    def test_verify_final_copy_every_failure_mode_returns_none_never_raises(self, mocker, mode):
+        """3.8 — No Code Path May Block Or Indefinitely Delay Publication:
+        every regeneration failure mode still returns None from t6b, never
+        pushes upload_config (no correction landed, no regen landed), and
+        never raises. Mutation check (manually verified): letting one
+        branch re-raise makes this test fail for that parametrized mode."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker, thumbnail_row={"art_direction_brief": {"text": "old brief"}})
+        if mode == "not_claimed":
+            mock_db.claim_thumbnail_text_regeneration.return_value = None
+        elif mode == "claim_exception":
+            mock_db.claim_thumbnail_text_regeneration.side_effect = RuntimeError("db is down")
+        else:
+            mock_db.claim_thumbnail_text_regeneration.return_value = {
+                "thumbnail_regen_attempts": 1,
+                "thumbnail_regen_exhausted": False,
+            }
+            mocker.patch(
+                "congress_videos.youtube_upload_dag._regenerate_flagged_thumbnail",
+                return_value={"outcome": mode, "error": "boom"},
+            )
+
+        verdict = self._make_verdict(
+            verdict="reject",
+            findings=[{"field": "thumbnail_text", "category": "person_name", "severity": "high"}],
+        )
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        config = _make_upload_config()
+        ti = _make_ti({"upload_config": config, "thumbnail_config": _regen_thumbnail_config()})
+
+        try:
+            result = _verify_final_copy(ti)
+        except Exception as exc:  # pragma: no cover - assertion below is the real check
+            pytest.fail(f"_verify_final_copy raised {exc!r} instead of returning None")
+
+        assert result is None
+        upload_config_pushes = [c for c in ti.xcom_push.call_args_list if c.kwargs.get("key") == "upload_config"]
+        assert upload_config_pushes == []
+
+    def test_verify_final_copy_title_reject_still_raises_before_any_claim(self, mocker):
+        """3.9 — Title hard-rejection remains the only blocking path: a
+        verdict carrying BOTH a thumbnail_text finding and a title reject
+        still raises at the existing line, and
+        claim_thumbnail_text_regeneration is never called."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker)
+        verdict = self._make_verdict(
+            verdict="reject",
+            findings=[
+                {"field": "title", "category": "person_name", "severity": "high"},
+                {"field": "thumbnail_text", "category": "person_name", "severity": "high"},
+            ],
+        )
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        ti = _make_ti({"upload_config": _make_upload_config(), "thumbnail_config": _regen_thumbnail_config()})
+        with pytest.raises(ValueError, match="rejected the title"):
+            _verify_final_copy(ti)
+
+        mock_db.claim_thumbnail_text_regeneration.assert_not_called()
+
+    def test_verify_final_copy_chapter_item_no_row_intentionally_publishes_as_is(self, mocker):
+        """Non-negotiable #4 (issue #545): chapter items have no
+        speaker_turn_videos row, so the claim naturally returns None and
+        the chapter publishes as-is. This is INTENTIONAL — not a bug for a
+        future contributor to "fix" by special-casing item_type here."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker, thumbnail_row={"art_direction_brief": {"text": "old brief"}})
+        mock_db.claim_thumbnail_text_regeneration.return_value = None  # no speaker_turn_videos row
+        regen = mocker.patch("congress_videos.youtube_upload_dag._regenerate_flagged_thumbnail")
+        verdict = self._make_verdict(
+            verdict="reject",
+            findings=[{"field": "thumbnail_text", "category": "person_name", "severity": "high"}],
+        )
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        config = _make_upload_config()
+        config["videos"][0]["turn_id"] = None  # chapter item — no turn_id
+        config["videos"][0]["video_file"] = "/data/chapter100/video.mp4"
+        ti = _make_ti({"upload_config": config, "thumbnail_config": _regen_thumbnail_config()})
+
+        result = _verify_final_copy(ti)
+
+        assert result is None
+        mock_db.claim_thumbnail_text_regeneration.assert_called_once_with(
+            "/data/chapter100/video.mp4", prior_brief={"text": "old brief"}
+        )
+        regen.assert_not_called()
+
+
+def _lookup_stub(roster: dict):
+    """Stub lookup_participant_by_slug: slug -> participant dict | None
+    (design.md D2 — mirrors test_reap_uploader_dag.py's `_lookup_stub`
+    shape; not imported across test modules by design)."""
+
+    def _fn(slug):
+        return roster.get(slug)
+
+    return _fn
+
+
+class TestCopyVerificationEvidenceNameSplit:
+    """Issue #544: `_copy_verification_evidence` must keep the raw roster
+    `display_name` and the canonical `short_name` (#511) in two distinct,
+    never-conflated fields — for the resolved speaker and for every
+    `mencionados` entry (design.md D1/D2)."""
+
+    def test_resolvable_slug_splits_raw_and_canonical(self, mocker):
+        from congress_videos.youtube_upload_dag import _copy_verification_evidence
+
+        db = MagicMock()
+        db.get_chapter_metadata.return_value = {"mentioned_participant_slugs": None}
+        db.get_turn_speaker_slug.return_value = {"resolved_participant_slug": "known-slug"}
+
+        roster = {"known-slug": {"display_name": "RAW Foo"}}
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_by_slug",
+            side_effect=_lookup_stub(roster),
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.canonical_display_name",
+            return_value="CANON-X",
+        )
+
+        evidence = _copy_verification_evidence(db, chapter_id=1, turn_id=2)
+
+        assert evidence["speaker"]["display_name"] == "RAW Foo"
+        assert evidence["speaker"]["short_name"] == "CANON-X"
+        assert evidence["speaker"]["display_name"] != evidence["speaker"]["short_name"]
+
+    def test_unmapped_slug_keeps_raw_and_nulls_canonical(self, mocker):
+        from congress_videos.youtube_upload_dag import _copy_verification_evidence
+
+        db = MagicMock()
+        db.get_chapter_metadata.return_value = {"mentioned_participant_slugs": None}
+        db.get_turn_speaker_slug.return_value = {"resolved_participant_slug": "known-slug"}
+
+        roster = {"known-slug": {"display_name": "RAW Foo"}}
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_by_slug",
+            side_effect=_lookup_stub(roster),
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.canonical_display_name",
+            return_value=None,
+        )
+
+        evidence = _copy_verification_evidence(db, chapter_id=1, turn_id=2)
+
+        assert evidence["speaker"]["short_name"] is None
+        assert evidence["speaker"]["display_name"] == "RAW Foo"
+
+    def test_mentioned_entries_split_raw_and_canonical(self, mocker):
+        from congress_videos.youtube_upload_dag import _copy_verification_evidence
+
+        db = MagicMock()
+        db.get_chapter_metadata.return_value = {
+            "mentioned_participant_slugs": ["mentioned-a", "mentioned-b"],
+        }
+        db.get_turn_speaker_slug.return_value = {"resolved_participant_slug": "speaker-slug"}
+
+        roster = {
+            "speaker-slug": {"display_name": "RAW Speaker"},
+            "mentioned-a": {"display_name": "RAW Mentioned A"},
+            "mentioned-b": {"display_name": "RAW Mentioned B"},
+        }
+        canonical = {
+            "speaker-slug": "CANON Speaker",
+            "mentioned-a": "CANON Mentioned A",
+            "mentioned-b": "CANON Mentioned B",
+        }
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_by_slug",
+            side_effect=_lookup_stub(roster),
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.canonical_display_name",
+            side_effect=lambda slug: canonical.get(slug),
+        )
+
+        evidence = _copy_verification_evidence(db, chapter_id=1, turn_id=2)
+
+        by_slug = {entry["slug"]: entry for entry in evidence["mencionados"]}
+        assert by_slug["mentioned-a"]["display_name"] == "RAW Mentioned A"
+        assert by_slug["mentioned-a"]["short_name"] == "CANON Mentioned A"
+        assert by_slug["mentioned-b"]["display_name"] == "RAW Mentioned B"
+        assert by_slug["mentioned-b"]["short_name"] == "CANON Mentioned B"
+        assert by_slug["mentioned-a"]["display_name"] != evidence["speaker"]["display_name"]
+        assert by_slug["mentioned-b"]["display_name"] != evidence["speaker"]["display_name"]
+
 
 # ---------------------------------------------------------------------------
 # should_upload function (REQ-GATE-01)
@@ -1530,6 +1895,455 @@ class TestTriggerThumbnailGeneration:
             "output_path": None,
             "title": None,
         }
+
+
+# ---------------------------------------------------------------------------
+# _regenerate_flagged_thumbnail (issue #545 — bounded thumbnail-text
+# regeneration; wired into t6b via _claim_and_regenerate_thumbnail, PR3)
+# ---------------------------------------------------------------------------
+
+
+def _regen_dag_run(state="success", run_id="thumbnail_text_regen_test_run"):
+    dag_run = MagicMock()
+    dag_run.run_id = run_id
+    dag_run.state = state
+    return dag_run
+
+
+def _regen_valid_result(output_path="/videos/turn-1/thumbnail.png"):
+    return {
+        "success": True,
+        "output_path": output_path,
+        "title": "Nuevo título",
+        "title_generation_input": None,
+    }
+
+
+def _regen_thumbnail_config(**overrides) -> dict:
+    """A complete thumbnail_config XCom — the same shape t4
+    (trigger_thumbnail_generation) reads, and the same shape
+    _prepare_thumbnail_config (t3) pushes for both turn and chapter items.
+    All four scalar values required by generic_thumbnail_generator's own
+    validate_input are present by default; tests exercising the guard
+    override one to a falsy value."""
+    config = {
+        "chapter_id": 42,
+        "debate_summary": "Debate summary",
+        "session": "Sesión 1",
+        "domain": "congreso",
+        "slug": "some-slug",
+        "key_speakers": ["Some Speaker"],
+    }
+    config.update(overrides)
+    return config
+
+
+class TestRegenerateFlaggedThumbnail:
+    """Modeled on video_analytics_actions_dag.py::_poll_thumbnail_dag_run's
+    BOUNDED loop shape (design.md D2) — NEVER trigger_thumbnail_generation's
+    unbounded ``while True`` above, which is a pre-existing risk, not a
+    template. The measured max (3989s) exceeds this helper's own 1000s
+    bound, so the timeout path is routinely exercised in production, not an
+    edge case."""
+
+    def test_completes_within_bound_returns_regenerated_result(self, mocker):
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        dag_run = _regen_dag_run(state="running")
+        # Settles on the 3rd poll — well under the 100-poll bound.
+        states = iter(["running", "running", "success"])
+        dag_run.refresh_from_db.side_effect = lambda: setattr(dag_run, "state", next(states))
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=dag_run)
+        sleep = mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=True)
+        valid_result = _regen_valid_result()
+        mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=valid_result)
+        mock_db = MagicMock()
+
+        result = _regenerate_flagged_thumbnail(
+            _regen_thumbnail_config(),
+            "/videos/turn-1/video.mp4",
+            {"archetype": "closeup"},
+            "run_1",
+            db=mock_db,
+        )
+
+        assert result == valid_result
+        assert sleep.call_count == 3
+        mock_db.record_thumbnail_text_regeneration_outcome.assert_called_once_with(
+            "/videos/turn-1/video.mp4",
+            outcome="applied",
+            error=None,
+            regenerated_brief=valid_result,
+        )
+
+    def test_forwards_full_child_conf_with_output_path_and_prior_brief(self, mocker):
+        """The child conf mirrors t4's own shape (youtube_video_id derived
+        from chapter_id + the four required scalars + slug/key_speakers),
+        PLUS previous_brief, PLUS an output_path always overridden to the
+        triggering turn's own file (design.md D6 sibling isolation)."""
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        trigger = mocker.patch(
+            "congress_videos.youtube_upload_dag.trigger_dag_api",
+            return_value=_regen_dag_run(state="success"),
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=True)
+        mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=_regen_valid_result())
+
+        _regenerate_flagged_thumbnail(
+            _regen_thumbnail_config(output_path="/some/other/path.mp4"),
+            "/videos/turn-1/video.mp4",
+            {"archetype": "closeup"},
+            "run_1",
+            db=MagicMock(),
+        )
+
+        trigger.assert_called_once_with(
+            dag_id="generic_thumbnail_generator",
+            conf={
+                "youtube_video_id": "42",
+                "chapter_id": 42,
+                "debate_summary": "Debate summary",
+                "session": "Sesión 1",
+                "domain": "congreso",
+                "slug": "some-slug",
+                "key_speakers": ["Some Speaker"],
+                "previous_brief": {"archetype": "closeup"},
+                # Overridden to the parameter, never thumbnail_config's own value.
+                "output_path": "/videos/turn-1/video.mp4",
+            },
+            run_id="thumbnail_text_regen_run_1",
+        )
+
+    def test_missing_prior_brief_omits_previous_brief_key(self, mocker):
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        trigger = mocker.patch(
+            "congress_videos.youtube_upload_dag.trigger_dag_api",
+            return_value=_regen_dag_run(state="success"),
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=True)
+        mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=_regen_valid_result())
+
+        _regenerate_flagged_thumbnail(
+            _regen_thumbnail_config(), "/videos/turn-1/video.mp4", None, "run_1", db=MagicMock()
+        )
+
+        _, kwargs = trigger.call_args
+        assert "previous_brief" not in kwargs["conf"]
+        assert kwargs["conf"]["output_path"] == "/videos/turn-1/video.mp4"
+
+    @pytest.mark.parametrize("missing_key", ["chapter_id", "debate_summary", "session", "domain"])
+    def test_incomplete_thumbnail_config_never_triggers_records_trigger_failed(self, mocker, missing_key):
+        """t4's own guard idiom (trigger_thumbnail_generation): any missing
+        or empty required scalar means generic_thumbnail_generator's
+        validate_input would reject the conf — so this function must never
+        even call trigger_dag_api, and must record the non-attempt via the
+        SAME 'trigger_failed' outcome as a real trigger exception."""
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        trigger = mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api")
+        mock_db = MagicMock()
+        incomplete_config = _regen_thumbnail_config(**{missing_key: None})
+
+        result = _regenerate_flagged_thumbnail(incomplete_config, "/videos/turn-1/video.mp4", None, "run_1", db=mock_db)
+
+        trigger.assert_not_called()
+        assert result == {"outcome": "trigger_failed", "error": mocker.ANY}
+        mock_db.record_thumbnail_text_regeneration_outcome.assert_called_once_with(
+            "/videos/turn-1/video.mp4",
+            outcome="trigger_failed",
+            error=mocker.ANY,
+            regenerated_brief=None,
+        )
+
+    def test_times_out_after_exactly_max_polls(self, mocker):
+        """Mutation check (tasks.md 2.4): the loop count must be EXACTLY
+        _THUMBNAIL_REGEN_MAX_POLLS (100), never >=100 or an off-by-one —
+        pinned via time.sleep's exact call count."""
+        from congress_videos.youtube_upload_dag import (
+            _THUMBNAIL_REGEN_MAX_POLLS,
+            _regenerate_flagged_thumbnail,
+        )
+
+        dag_run = _regen_dag_run(state="running")
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=dag_run)
+        sleep = mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mock_db = MagicMock()
+
+        result = _regenerate_flagged_thumbnail(
+            _regen_thumbnail_config(), "/videos/turn-1/video.mp4", None, "run_1", db=mock_db
+        )
+
+        assert result == {"outcome": "timeout", "error": mocker.ANY}
+        assert sleep.call_count == _THUMBNAIL_REGEN_MAX_POLLS == 100
+        assert dag_run.refresh_from_db.call_count == _THUMBNAIL_REGEN_MAX_POLLS
+        mock_db.record_thumbnail_text_regeneration_outcome.assert_called_once_with(
+            "/videos/turn-1/video.mp4",
+            outcome="timeout",
+            error=mocker.ANY,
+            regenerated_brief=None,
+        )
+
+    def test_trigger_exception_returns_trigger_failed_never_raises(self, mocker):
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.trigger_dag_api",
+            side_effect=RuntimeError("could not reach the scheduler API"),
+        )
+        mock_db = MagicMock()
+
+        result = _regenerate_flagged_thumbnail(
+            _regen_thumbnail_config(), "/videos/turn-1/video.mp4", None, "run_1", db=mock_db
+        )
+
+        assert result == {"outcome": "trigger_failed", "error": "could not reach the scheduler API"}
+        mock_db.record_thumbnail_text_regeneration_outcome.assert_called_once_with(
+            "/videos/turn-1/video.mp4",
+            outcome="trigger_failed",
+            error="could not reach the scheduler API",
+            regenerated_brief=None,
+        )
+
+    def test_child_dag_failed_state_returns_child_failed(self, mocker):
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        dag_run = _regen_dag_run(state="failed")
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=dag_run)
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        get_one = mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one")
+        mock_db = MagicMock()
+
+        result = _regenerate_flagged_thumbnail(
+            _regen_thumbnail_config(), "/videos/turn-1/video.mp4", None, "run_1", db=mock_db
+        )
+
+        assert result == {"outcome": "child_failed", "error": mocker.ANY}
+        get_one.assert_not_called()
+        mock_db.record_thumbnail_text_regeneration_outcome.assert_called_once_with(
+            "/videos/turn-1/video.mp4",
+            outcome="child_failed",
+            error=mocker.ANY,
+            regenerated_brief=None,
+        )
+
+    @pytest.mark.parametrize(
+        "xcom_result",
+        [
+            None,
+            {"success": True, "output_path": "", "title": "x"},
+            {"success": True, "title": "x"},
+            {"success": False, "output_path": "/videos/turn-1/thumbnail.png", "title": "x"},
+        ],
+        ids=["none", "empty_output_path", "missing_output_path", "success_false"],
+    )
+    def test_malformed_xcom_returns_invalid_result(self, mocker, xcom_result):
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        dag_run = _regen_dag_run(state="success")
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=dag_run)
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=xcom_result)
+        mock_db = MagicMock()
+
+        result = _regenerate_flagged_thumbnail(
+            _regen_thumbnail_config(), "/videos/turn-1/video.mp4", None, "run_1", db=mock_db
+        )
+
+        assert result == {"outcome": "invalid_result", "error": mocker.ANY}
+        mock_db.record_thumbnail_text_regeneration_outcome.assert_called_once_with(
+            "/videos/turn-1/video.mp4",
+            outcome="invalid_result",
+            error=mocker.ANY,
+            regenerated_brief=None,
+        )
+
+    def test_valid_success_shape_but_nonexistent_path_is_invalid_result(self, mocker):
+        """design.md D5: a returned path that does not exist on disk is
+        recorded as invalid_result and never swapped in — even when every
+        other field of the child's result is well-formed."""
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        dag_run = _regen_dag_run(state="success")
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=dag_run)
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=False)
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.XCom.get_one",
+            return_value=_regen_valid_result(),
+        )
+        mock_db = MagicMock()
+
+        result = _regenerate_flagged_thumbnail(
+            _regen_thumbnail_config(), "/videos/turn-1/video.mp4", None, "run_1", db=mock_db
+        )
+
+        assert result == {"outcome": "invalid_result", "error": mocker.ANY}
+
+    def test_outcome_recording_failure_is_swallowed(self, mocker, caplog):
+        """design.md D4 point 3: the outcome write uses the
+        _write_title_provenance failure-isolation shape — a DB outage on the
+        bookkeeping write cannot become a publication outage."""
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        dag_run = _regen_dag_run(state="success")
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=dag_run)
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=True)
+        valid_result = _regen_valid_result()
+        mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=valid_result)
+        mock_db = MagicMock()
+        mock_db.record_thumbnail_text_regeneration_outcome.side_effect = RuntimeError("db is down")
+
+        with caplog.at_level("ERROR"):
+            result = _regenerate_flagged_thumbnail(
+                _regen_thumbnail_config(), "/videos/turn-1/video.mp4", None, "run_1", db=mock_db
+            )
+
+        assert result == valid_result
+        assert any("db is down" in r.message for r in caplog.records)
+
+    @pytest.mark.parametrize(
+        "setup",
+        [
+            "trigger_raises",
+            "child_failed",
+            "invalid_result",
+            "timeout",
+            "unexpected_poll_exception",
+        ],
+    )
+    def test_no_path_ever_raises(self, mocker, setup):
+        """NON-NEGOTIABLE (issue #545): every failure mode converges on ONE
+        behaviour — publish as-is, record the outcome, never raise. This is
+        what makes #512's non-blocking asymmetry structural rather than
+        aspirational. Every branch, including a genuinely unexpected
+        mid-poll exception, must return a dict rather than propagate."""
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mock_db = MagicMock()
+
+        if setup == "trigger_raises":
+            mocker.patch(
+                "congress_videos.youtube_upload_dag.trigger_dag_api",
+                side_effect=RuntimeError("boom"),
+            )
+        elif setup == "child_failed":
+            mocker.patch(
+                "congress_videos.youtube_upload_dag.trigger_dag_api",
+                return_value=_regen_dag_run(state="failed"),
+            )
+        elif setup == "invalid_result":
+            mocker.patch(
+                "congress_videos.youtube_upload_dag.trigger_dag_api",
+                return_value=_regen_dag_run(state="success"),
+            )
+            mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=None)
+        elif setup == "timeout":
+            mocker.patch(
+                "congress_videos.youtube_upload_dag.trigger_dag_api",
+                return_value=_regen_dag_run(state="running"),
+            )
+        elif setup == "unexpected_poll_exception":
+            dag_run = _regen_dag_run(state="running")
+            dag_run.refresh_from_db.side_effect = RuntimeError("scheduler DB unreachable")
+            mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=dag_run)
+
+        try:
+            result = _regenerate_flagged_thumbnail(
+                _regen_thumbnail_config(), "/videos/turn-1/video.mp4", None, "run_1", db=mock_db
+            )
+        except Exception as exc:  # pragma: no cover - the assertion below is the real check
+            pytest.fail(f"_regenerate_flagged_thumbnail raised {exc!r} instead of returning a dict")
+
+        assert isinstance(result, dict)
+        assert "outcome" in result or result.get("success") is True
+
+
+# ---------------------------------------------------------------------------
+# _claim_and_regenerate_thumbnail (issue #545, PR3)
+# ---------------------------------------------------------------------------
+
+
+class TestClaimAndRegenerateThumbnail:
+    def test_claimed_attempt_calls_regenerate_flagged_thumbnail(self, mocker):
+        from congress_videos.youtube_upload_dag import _claim_and_regenerate_thumbnail
+
+        mock_db = MagicMock()
+        mock_db.claim_thumbnail_text_regeneration.return_value = {
+            "thumbnail_regen_attempts": 1,
+            "thumbnail_regen_exhausted": False,
+        }
+        regen = mocker.patch(
+            "congress_videos.youtube_upload_dag._regenerate_flagged_thumbnail",
+            return_value=_regen_valid_result(),
+        )
+        thumbnail_config = _regen_thumbnail_config()
+
+        result = _claim_and_regenerate_thumbnail(
+            mock_db,
+            output_path="/videos/turn-1/video.mp4",
+            thumbnail_config=thumbnail_config,
+            prior_brief={"archetype": "closeup"},
+            run_id="run_1",
+        )
+
+        mock_db.claim_thumbnail_text_regeneration.assert_called_once_with(
+            "/videos/turn-1/video.mp4", prior_brief={"archetype": "closeup"}
+        )
+        regen.assert_called_once_with(
+            thumbnail_config, "/videos/turn-1/video.mp4", {"archetype": "closeup"}, "run_1", db=mock_db
+        )
+        assert result == _regen_valid_result()
+
+    def test_exhausted_or_no_row_returns_none_without_triggering(self, mocker):
+        """design.md D3 / spec note 8: exhausted budget AND chapter items
+        with no speaker_turn_videos row both surface as a falsy claim —
+        both are INTENTIONAL, not errors, and must never trigger."""
+        from congress_videos.youtube_upload_dag import _claim_and_regenerate_thumbnail
+
+        mock_db = MagicMock()
+        mock_db.claim_thumbnail_text_regeneration.return_value = None
+        regen = mocker.patch("congress_videos.youtube_upload_dag._regenerate_flagged_thumbnail")
+
+        result = _claim_and_regenerate_thumbnail(
+            mock_db,
+            output_path="/videos/chapter-only/video.mp4",
+            thumbnail_config=_regen_thumbnail_config(),
+            prior_brief=None,
+            run_id="run_1",
+        )
+
+        assert result is None
+        regen.assert_not_called()
+
+    def test_claim_exception_returns_none_never_raises(self, mocker):
+        """Non-negotiable: no code path in the regeneration seam may raise —
+        including a DB outage at claim time, before any paid call."""
+        from congress_videos.youtube_upload_dag import _claim_and_regenerate_thumbnail
+
+        mock_db = MagicMock()
+        mock_db.claim_thumbnail_text_regeneration.side_effect = RuntimeError("db is down")
+        regen = mocker.patch("congress_videos.youtube_upload_dag._regenerate_flagged_thumbnail")
+
+        try:
+            result = _claim_and_regenerate_thumbnail(
+                mock_db,
+                output_path="/videos/turn-1/video.mp4",
+                thumbnail_config=_regen_thumbnail_config(),
+                prior_brief=None,
+                run_id="run_1",
+            )
+        except Exception as exc:  # pragma: no cover - the assertion below is the real check
+            pytest.fail(f"_claim_and_regenerate_thumbnail raised {exc!r} instead of returning None")
+
+        assert result is None
+        regen.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2582,13 +3396,14 @@ class TestDualQueueWiredIntoDag:
         assert item_task.task_id in upstream_ids, "generate_youtube_metadata must be downstream of get_uploadable_item"
 
     def test_dag_task_count_updated_for_wired_dual_queue(self):
-        """DAG must have 15 tasks: 13 original (t1_db replaced by get_uploadable_item
-        PythonOperator), plus mark_turns_uploaded, plus verify_final_copy (issue #512)."""
+        """DAG must have 16 tasks: 13 original (t1_db replaced by get_uploadable_item
+        PythonOperator), plus mark_turns_uploaded, plus verify_final_copy (issue #512),
+        plus apply_intro_overlay (issue #558)."""
         from congress_videos.youtube_upload_dag import dag
 
-        assert len(dag.tasks) == 15, (
-            f"Expected 15 tasks (13 original tasks, t1_db replaced by get_uploadable_item PythonOperator, "
-            f"plus mark_turns_uploaded, plus verify_final_copy), got {len(dag.tasks)}"
+        assert len(dag.tasks) == 16, (
+            f"Expected 16 tasks (13 original tasks, t1_db replaced by get_uploadable_item PythonOperator, "
+            f"plus mark_turns_uploaded, plus verify_final_copy, plus apply_intro_overlay), got {len(dag.tasks)}"
         )
 
     def test_mark_turns_uploaded_task_exists(self):
@@ -4125,3 +4940,608 @@ class TestTurnSpeakerFields:
             return_value={"slug": "lopez-pedro", "display_name": ""},
         ):
             assert _turn_speaker_fields(turn) == ([], "lopez-pedro")
+
+
+# ---------------------------------------------------------------------------
+# Issue #558: session intro-card overlay — t5b apply_intro_overlay
+# ---------------------------------------------------------------------------
+
+
+class TestBuildIntroCardText:
+    """_build_intro_card_text(session_number, session_date) — Spanish titulo/descripcion.
+
+    The card names the institution, not just an ordinal — a long-form video reaches
+    viewers with no surrounding context. descripcion carries the date as DD/MM/AAAA
+    (issue #558's stated format). Both absent raises (nothing to render on the card).
+    """
+
+    def test_session_number_and_date_present(self):
+        from congress_videos.youtube_upload_dag import _build_intro_card_text
+
+        titulo, descripcion = _build_intro_card_text(42, "2026-09-10")
+
+        assert titulo == "Sesión 42 del Congreso de los Diputados"
+        assert descripcion == "10/09/2026"
+
+    def test_only_session_number_present(self):
+        from congress_videos.youtube_upload_dag import _build_intro_card_text
+
+        titulo, descripcion = _build_intro_card_text(7, None)
+
+        assert titulo == "Sesión 7 del Congreso de los Diputados"
+        assert descripcion == ""
+
+    def test_only_session_date_present(self):
+        """No ordinal still identifies the institution, never a bare date as a title."""
+        from congress_videos.youtube_upload_dag import _build_intro_card_text
+
+        titulo, descripcion = _build_intro_card_text(None, "2026-09-10")
+
+        assert titulo == "Congreso de los Diputados"
+        assert descripcion == "10/09/2026"
+
+    def test_date_object_is_formatted_not_stringified(self):
+        from datetime import date
+
+        from congress_videos.youtube_upload_dag import _build_intro_card_text
+
+        _titulo, descripcion = _build_intro_card_text(42, date(2026, 3, 4))
+
+        assert descripcion == "04/03/2026"
+
+    def test_unparseable_date_passes_through_rather_than_raising(self):
+        """The intro card must never block a publication over a odd date value."""
+        from congress_videos.youtube_upload_dag import _build_intro_card_text
+
+        _titulo, descripcion = _build_intro_card_text(42, "sesión extraordinaria")
+
+        assert descripcion == "sesión extraordinaria"
+
+    def test_both_absent_raises(self):
+        from congress_videos.youtube_upload_dag import _build_intro_card_text
+
+        with pytest.raises(ValueError, match="session_number.*session_date"):
+            _build_intro_card_text(None, None)
+
+    def test_session_number_zero_is_not_treated_as_absent(self):
+        """session_number=0 must use the number branch, not the None-fallback branch."""
+        from congress_videos.youtube_upload_dag import _build_intro_card_text
+
+        titulo, _descripcion = _build_intro_card_text(0, "2026-09-10")
+
+        assert titulo == "Sesión 0 del Congreso de los Diputados"
+
+
+def _make_intro_overlay_store(
+    *,
+    output_path: str,
+    success: bool = True,
+    session_number=42,
+    session_date="2026-09-10",
+    chapter_id: int = 100,
+    turn_id: int | None = 1,
+) -> dict:
+    """Build the XCom store `_apply_intro_overlay` reads from (t5's output)."""
+    return {
+        "uploadable_item": {
+            "item": {
+                "chapter_id": chapter_id,
+                "turn_id": turn_id,
+                "session_number": session_number,
+                "session_date": session_date,
+                "output_path": output_path,
+            },
+            "item_type": "turn",
+        },
+        "chapter_extraction_results": {
+            "total_chapters": 1,
+            "successful_extractions": 1 if success else 0,
+            "failed_extractions": 0 if success else 1,
+            "results": [
+                {
+                    "chapter_id": chapter_id,
+                    "turn_id": turn_id,
+                    "video_id": "vid123",
+                    "success": success,
+                    "output_path": output_path if success else None,
+                    "file_size_mb": None,
+                    "duration_seconds": None,
+                    "error": None if success else "turn output_path missing",
+                }
+            ],
+        },
+    }
+
+
+def _patch_intro_overlay_fonts_ok(mocker):
+    """Fonts are not installed in every dev/CI environment; `_validate_overlay`
+    checks font-file existence via `os.path.exists`. `os` and `os.path` are
+    shared singleton modules, so patching `os.path.exists` is inherently global
+    regardless of which module's `os` attribute is used to reach it — a
+    discriminating side_effect (real check for every other path) keeps
+    unrelated real-file assertions in the same test working.
+    """
+    from congress_videos.config.paths import FONT_BOLD, FONT_REGULAR
+
+    real_exists = os.path.exists
+
+    def _fake_exists(path):
+        if path in (FONT_BOLD, FONT_REGULAR):
+            return True
+        return real_exists(path)
+
+    mocker.patch("os.path.exists", side_effect=_fake_exists)
+
+
+def _patch_apply_overlays_writes_file(mocker):
+    """Fake apply_overlays that actually writes the `_edited` sibling file, so the
+    real (unpatched) `os.path.exists` post-check in `_apply_intro_overlay` — and
+    any source-immutability / sidecar-directory assertions — see a real file.
+    """
+
+    def _fake_apply_overlays(source_path, output_path, overlays, domain_cfg, *, max_timeout=None):
+        with open(output_path, "wb") as f:
+            f.write(b"fake-edited-bytes")
+        return {"success": True, "output_path": output_path}
+
+    return mocker.patch(
+        "congress_videos.modules.video_editor.apply_overlays",
+        side_effect=_fake_apply_overlays,
+    )
+
+
+class TestApplyIntroOverlayPassThrough:
+    """t5b mirrors t6's upstream-failure tolerance: never fail loud for upstream
+    extraction problems that are not this task's own doing (D3)."""
+
+    def test_missing_chapter_extraction_results_is_pass_through(self):
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        ti = _make_ti({"uploadable_item": {"item": {}, "item_type": "turn"}})
+
+        result = _apply_intro_overlay(ti)
+
+        assert result is None
+        assert "chapter_extraction_results" not in ti.xcom_store
+
+    def test_failed_extraction_result_is_pass_through(self):
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        store = _make_intro_overlay_store(output_path="/data/turn1/video.mp4", success=False)
+        ti = _make_ti(store)
+
+        result = _apply_intro_overlay(ti)
+
+        assert result is None
+        # XCom untouched: still the original (failed) extraction payload.
+        assert ti.xcom_store["chapter_extraction_results"] == store["chapter_extraction_results"]
+
+    def test_empty_results_list_is_pass_through(self):
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        store = {
+            "uploadable_item": {"item": {}, "item_type": "turn"},
+            "chapter_extraction_results": {"total_chapters": 0, "results": []},
+        }
+        ti = _make_ti(store)
+
+        result = _apply_intro_overlay(ti)
+
+        assert result is None
+        assert ti.xcom_store["chapter_extraction_results"] == store["chapter_extraction_results"]
+
+    def test_missing_output_path_is_pass_through(self):
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        store = {
+            "uploadable_item": {"item": {}, "item_type": "turn"},
+            "chapter_extraction_results": {
+                "results": [{"chapter_id": 1, "success": True, "output_path": None}],
+            },
+        }
+        original = dict(store["chapter_extraction_results"])
+        ti = _make_ti(store)
+
+        result = _apply_intro_overlay(ti)
+
+        assert result is None
+        assert ti.xcom_store["chapter_extraction_results"] == original
+
+
+class TestApplyIntroOverlayFailLoud:
+    """Every failure CAUSED by t5b itself must raise — never a silent skip,
+    never publishing the un-overlaid source (D3)."""
+
+    def test_missing_session_fields_raises_before_apply_overlays(self, tmp_path, mocker):
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source), session_number=None, session_date=None)
+        ti = _make_ti(store)
+
+        apply_spy = mocker.patch("congress_videos.modules.video_editor.apply_overlays")
+
+        with pytest.raises(ValueError, match="session_number.*session_date"):
+            _apply_intro_overlay(ti)
+
+        apply_spy.assert_not_called()
+        assert ti.xcom_store["chapter_extraction_results"] == store["chapter_extraction_results"]
+
+    def test_missing_font_raises_filenotfounderror_before_apply_overlays(self, tmp_path, mocker):
+        """D5: validate_editor_input runs BEFORE apply_overlays. A missing font
+        must raise FileNotFoundError naming tipo/key/path before ffmpeg spawns."""
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        mocker.patch("os.path.exists", return_value=False)
+        apply_spy = mocker.patch("congress_videos.modules.video_editor.apply_overlays")
+
+        with pytest.raises(FileNotFoundError, match="intro_sesion"):
+            _apply_intro_overlay(ti)
+
+        apply_spy.assert_not_called()
+        assert ti.xcom_store["chapter_extraction_results"] == store["chapter_extraction_results"]
+
+    def test_guard_trip_raises_and_leaves_xcom_untouched(self, tmp_path, mocker):
+        """A ValueError from apply_overlays' own duration guard must propagate."""
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        mocker.patch(
+            "congress_videos.modules.video_editor.apply_overlays",
+            side_effect=ValueError("Source duration 9999.0s exceeds MAX_OVERLAY_SOURCE_SECONDS (3600s)."),
+        )
+
+        with pytest.raises(ValueError, match="MAX_OVERLAY_SOURCE_SECONDS"):
+            _apply_intro_overlay(ti)
+
+        assert ti.xcom_store["chapter_extraction_results"] == store["chapter_extraction_results"]
+
+    def test_ffmpeg_failure_raises_and_leaves_xcom_untouched(self, tmp_path, mocker):
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        mocker.patch(
+            "congress_videos.modules.video_editor.apply_overlays",
+            side_effect=RuntimeError("ffmpeg failed (rc=1): boom"),
+        )
+
+        with pytest.raises(RuntimeError, match="ffmpeg failed"):
+            _apply_intro_overlay(ti)
+
+        assert ti.xcom_store["chapter_extraction_results"] == store["chapter_extraction_results"]
+
+    def test_missing_output_file_raises_and_leaves_xcom_untouched(self, tmp_path, mocker):
+        """apply_overlays reports success but never actually wrote the file."""
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        mocker.patch(
+            "congress_videos.modules.video_editor.apply_overlays",
+            return_value={"success": True, "output_path": str(tmp_path / "video_edited.mp4")},
+        )
+
+        with pytest.raises(RuntimeError, match="missing"):
+            _apply_intro_overlay(ti)
+
+        assert ti.xcom_store["chapter_extraction_results"] == store["chapter_extraction_results"]
+
+
+class TestApplyIntroOverlayCallOrder:
+    def test_validate_editor_input_called_before_apply_overlays(self, tmp_path, mocker):
+        """D5/D8 (task 4.8): a missing font must fail before ffmpeg ever spawns."""
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        call_order: list[str] = []
+
+        def _fake_validate(conf):
+            call_order.append("validate")
+
+        def _fake_apply(source_path, output_path, overlays, domain_cfg, *, max_timeout=None):
+            call_order.append("apply")
+            with open(output_path, "wb") as f:
+                f.write(b"x")
+            return {"success": True, "output_path": output_path}
+
+        real_validate = mocker.patch(
+            "congress_videos.modules.video_editor.validate_editor_input",
+            side_effect=_fake_validate,
+        )
+        mocker.patch(
+            "congress_videos.modules.video_editor.apply_overlays",
+            side_effect=_fake_apply,
+        )
+
+        _apply_intro_overlay(ti)
+
+        assert call_order == ["validate", "apply"]
+        real_validate.assert_called_once()
+
+
+class TestApplyIntroOverlaySuccess:
+    """In-process overwrite, DB invariant, source immutability, sidecar
+    resolution, and idempotent retry — the happy path (D2/D3/D4)."""
+
+    def test_overwrites_output_path_in_memory_and_records_original(self, tmp_path, mocker):
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        _patch_apply_overlays_writes_file(mocker)
+
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        _apply_intro_overlay(ti)
+
+        pushed = ti.xcom_store["chapter_extraction_results"]
+        result0 = pushed["results"][0]
+        assert result0["output_path"] == str(tmp_path / "video_edited.mp4")
+        assert result0["original_output_path"] == str(source)
+
+    def test_card_text_from_build_intro_card_text_reaches_the_overlay_conf(self, tmp_path, mocker):
+        """Closes the verify WARNING: the pure text builder is well covered, but
+        nothing pinned that its output actually reaches the overlay conf handed
+        to `apply_overlays`. Without this, a refactor could silently drop the
+        session label and still ship a card."""
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source), session_number=77, session_date="2026-03-04")
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        apply_overlays_mock = _patch_apply_overlays_writes_file(mocker)
+
+        from congress_videos.youtube_upload_dag import (
+            _apply_intro_overlay,
+            _build_intro_card_text,
+        )
+
+        _apply_intro_overlay(ti)
+
+        expected_titulo, expected_descripcion = _build_intro_card_text(77, "2026-03-04")
+        overlays = apply_overlays_mock.call_args.args[2]
+        assert len(overlays) == 1
+        assert overlays[0]["tipo"] == "intro_sesion"
+        assert overlays[0]["titulo"] == expected_titulo
+        assert overlays[0]["descripcion"] == expected_descripcion
+
+    def test_no_database_module_imported_and_no_db_write(self, tmp_path, mocker):
+        """t5b must import no database module and issue no db.* write (D4)."""
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        _patch_apply_overlays_writes_file(mocker)
+        db_ctor = mocker.patch("congress_videos.modules.database.CongressionalVideoDB")
+
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        _apply_intro_overlay(ti)
+
+        db_ctor.assert_not_called()
+
+    def test_speaker_turn_videos_output_path_never_updated(self, tmp_path, mocker):
+        """DB invariant: no db.* write of any shape is issued (D4)."""
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        _patch_apply_overlays_writes_file(mocker)
+        mock_db = MagicMock()
+        mocker.patch("congress_videos.modules.database.CongressionalVideoDB", return_value=mock_db)
+
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        _apply_intro_overlay(ti)
+
+        mock_db.mark_turns_uploaded.assert_not_called()
+        assert mock_db.method_calls == []
+
+    def test_source_file_bytes_and_path_unchanged(self, tmp_path, mocker):
+        source = tmp_path / "video.mp4"
+        original_bytes = b"source-bytes-unchanged"
+        source.write_bytes(original_bytes)
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        _patch_apply_overlays_writes_file(mocker)
+
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        _apply_intro_overlay(ti)
+
+        assert source.exists()
+        assert source.read_bytes() == original_bytes
+
+    def test_edited_file_lands_beside_source_for_sidecar_resolution(self, tmp_path, mocker):
+        """The 4 sidecars still resolve for prepare_orador_upload_config (D-Sidecar)."""
+        turn_dir = tmp_path / "oradores" / "1"
+        turn_dir.mkdir(parents=True)
+        source = turn_dir / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        for name, content in (
+            ("title.txt", "T"),
+            ("description.txt", "D"),
+            ("thumbnail.png", "\x89PNG"),
+            ("subtitles.srt", ""),
+        ):
+            (turn_dir / name).write_text(content, encoding="utf-8")
+
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        _patch_apply_overlays_writes_file(mocker)
+
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        _apply_intro_overlay(ti)
+
+        new_output_path = ti.xcom_store["chapter_extraction_results"]["results"][0]["output_path"]
+        assert os.path.dirname(new_output_path) == str(turn_dir)
+        for sidecar in ("title.txt", "description.txt", "thumbnail.png", "subtitles.srt"):
+            assert (turn_dir / sidecar).exists()
+
+    def test_retry_writes_same_deterministic_path_no_accumulation(self, tmp_path, mocker):
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        _patch_apply_overlays_writes_file(mocker)
+
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        _apply_intro_overlay(ti)
+        first_output_path = ti.xcom_store["chapter_extraction_results"]["results"][0]["output_path"]
+
+        # Retry: same run, XCom already carries the overlaid output_path from
+        # the first attempt — mirrors what a task retry replays from t5's XCom
+        # (t5 itself is idempotent and always pushes the same source path).
+        retry_store = _make_intro_overlay_store(output_path=str(source))
+        retry_ti = _make_ti(retry_store)
+        _apply_intro_overlay(retry_ti)
+        second_output_path = retry_ti.xcom_store["chapter_extraction_results"]["results"][0]["output_path"]
+
+        assert first_output_path == second_output_path
+        edited_files = list(tmp_path.glob("*_edited.mp4"))
+        assert len(edited_files) == 1
+
+    def test_default_window_used_when_no_override_supplied(self, tmp_path, mocker):
+        """Default Intro Window requirement: [0, 5) read from INTRO_WINDOW_SECONDS."""
+        from congress_videos.modules.video_editor import INTRO_WINDOW_SECONDS
+
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        apply_spy = _patch_apply_overlays_writes_file(mocker)
+
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        _apply_intro_overlay(ti)
+
+        overlays_arg = apply_spy.call_args.args[2]
+        assert overlays_arg[0]["tiempo_inicio"] == INTRO_WINDOW_SECONDS[0]
+        assert overlays_arg[0]["tiempo_fin"] == INTRO_WINDOW_SECONDS[1]
+
+    def test_max_timeout_passed_through_to_apply_overlays(self, tmp_path, mocker):
+        from congress_videos.modules.video_editor import OVERLAY_MAX_TIMEOUT_SECONDS
+
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        apply_spy = _patch_apply_overlays_writes_file(mocker)
+
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        _apply_intro_overlay(ti)
+
+        assert apply_spy.call_args.kwargs["max_timeout"] == OVERLAY_MAX_TIMEOUT_SECONDS
+
+
+class TestTurnIdPinnedThroughIntroOverlayEditedPath:
+    """Regression pin (issue #558, D4 landmine): mark_turn_uploads' fallback
+    (`mark_turns_uploaded_by_output_path`, `WHERE output_path = %s`) would match
+    ZERO rows against an `_edited` path. It stays unreachable only because t6
+    always sets `turn_config["turn_id"]` — this test pins that guarantee even
+    when output_path has been rewritten to the overlaid `_edited` sibling.
+    """
+
+    def test_turn_id_present_in_upload_config_for_edited_output_path(self, tmp_path):
+        from congress_videos.youtube_upload_dag import _prepare_upload_config
+
+        turn_dir = tmp_path / "oradores" / "1"
+        turn_dir.mkdir(parents=True)
+        edited_path = turn_dir / "video_edited.mp4"
+        edited_path.write_bytes(b"edited")
+        for name, content in (
+            ("title.txt", "T"),
+            ("description.txt", "D"),
+            ("thumbnail.png", "\x89PNG"),
+            ("subtitles.srt", ""),
+        ):
+            (turn_dir / name).write_text(content, encoding="utf-8")
+
+        extraction = {
+            "results": [
+                {
+                    "chapter_id": 100,
+                    "turn_id": 1,
+                    "video_id": "vid123",
+                    "success": True,
+                    "output_path": str(edited_path),
+                    "original_output_path": str(turn_dir / "video.mp4"),
+                }
+            ],
+        }
+        store = {
+            "uploadable_item": {"item": {"turn_id": 1}, "item_type": "turn"},
+            "chapter_extraction_results": extraction,
+            "youtube_metadata_results": {},
+            "thumbnail_result": {"success": True, "title": "Overlaid Title"},
+        }
+        ti = _make_ti(store)
+        context = {"params": {"isTesting": False, "dry_run": False}}
+
+        _prepare_upload_config(ti, **context)
+
+        upload_config = ti.xcom_store["upload_config"]
+        turn_config = upload_config["videos"][0]
+        assert turn_config["turn_id"] == 1, (
+            "turn_id must be present so mark_turn_uploads takes the primary "
+            "turn_id branch, never the output_path fallback (which would match "
+            "0 rows against an _edited path and silently re-publish tomorrow)"
+        )
+
+
+class TestApplyIntroOverlayWiring:
+    def test_apply_intro_overlay_between_extract_and_prepare(self):
+        """t5b sits directly between t5 (extract) and t6 (prepare_upload_config)."""
+        from congress_videos.youtube_upload_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        extract = tasks_by_id["extract_chapter_videos"]
+        overlay = tasks_by_id["apply_intro_overlay"]
+        prepare = tasks_by_id["prepare_upload_config"]
+
+        assert overlay.task_id in {t.task_id for t in extract.downstream_list}
+        assert prepare.task_id in {t.task_id for t in overlay.downstream_list}

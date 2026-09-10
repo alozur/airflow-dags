@@ -212,6 +212,203 @@ class TestDownloadWithPytubefix:
 
 
 # ---------------------------------------------------------------------------
+# _log_available_streams (lifted out of download_with_pytubefix, #272 slice 5 PR9)
+# ---------------------------------------------------------------------------
+
+
+def _make_pytubefix_stream(resolution="720p", mime_type="video/mp4", is_adaptive=True, is_progressive=False):
+    stream = MagicMock()
+    stream.resolution = resolution
+    stream.mime_type = mime_type
+    stream.is_adaptive = is_adaptive
+    stream.is_progressive = is_progressive
+    return stream
+
+
+class TestLogAvailableStreams:
+    def test_returns_none(self):
+        """The helper is a pure logging side effect and returns None."""
+        yt = MagicMock()
+        yt.streams.all.return_value = []
+
+        from utils.youtube_downloader import _log_available_streams
+
+        assert _log_available_streams(yt) is None
+
+    def test_logs_at_most_first_15_streams_but_header_reports_full_count(self, mocker):
+        """20 streams in -> 1 header log line (reporting 20) + 15 detail lines, not 20."""
+        streams = [_make_pytubefix_stream() for _ in range(20)]
+        yt = MagicMock()
+        yt.streams.all.return_value = streams
+
+        mock_logger = mocker.patch("utils.youtube_downloader.logger")
+
+        from utils.youtube_downloader import _log_available_streams
+
+        _log_available_streams(yt)
+
+        assert mock_logger.info.call_count == 16  # 1 header + 15 detail lines
+        header_message = mock_logger.info.call_args_list[0].args[0]
+        assert "20" in header_message
+
+    def test_stream_with_none_resolution_logs_audio(self, mocker):
+        """A stream with resolution=None is logged as `audio`, matching `s.resolution or 'audio'`."""
+        yt = MagicMock()
+        yt.streams.all.return_value = [_make_pytubefix_stream(resolution=None)]
+
+        mock_logger = mocker.patch("utils.youtube_downloader.logger")
+
+        from utils.youtube_downloader import _log_available_streams
+
+        _log_available_streams(yt)
+
+        detail_message = mock_logger.info.call_args_list[1].args[0]
+        assert "audio" in detail_message
+
+
+# ---------------------------------------------------------------------------
+# _select_video_stream (lifted out of download_with_pytubefix, #272 slice 5 PR9)
+# ---------------------------------------------------------------------------
+
+
+def _make_filter_chain(first_return, filter_side_effect=None):
+    chain = MagicMock()
+    if filter_side_effect is not None:
+        chain.filter.side_effect = filter_side_effect
+    else:
+        chain.filter.return_value = chain
+    chain.order_by.return_value = chain
+    chain.desc.return_value = chain
+    chain.first.return_value = first_return
+    return chain
+
+
+class TestSelectVideoStream:
+    def test_prefers_mp4_adaptive_stream_at_or_above_min_resolution(self):
+        """The primary mp4-adaptive-at-min-resolution filter wins when it yields a stream."""
+        mock_stream = _make_pytubefix_stream(resolution="1080p")
+        primary_chain = _make_filter_chain(mock_stream)
+
+        yt = MagicMock()
+        yt.streams.filter.return_value = primary_chain
+
+        from utils.youtube_downloader import _select_video_stream
+
+        result = _select_video_stream(yt, 720)
+
+        assert result is mock_stream
+        assert yt.streams.filter.call_count == 1  # no fallback attempted
+
+    def test_falls_back_to_any_mp4_adaptive_stream(self):
+        """When the primary filter yields nothing, fall back to any mp4 adaptive stream."""
+        mock_stream = _make_pytubefix_stream(resolution="480p")
+        primary_chain = _make_filter_chain(None)
+        fallback1_chain = _make_filter_chain(mock_stream)
+
+        call_count = [0]
+
+        def filter_side_effect(**kwargs):
+            call_count[0] += 1
+            return primary_chain if call_count[0] == 1 else fallback1_chain
+
+        yt = MagicMock()
+        yt.streams.filter.side_effect = filter_side_effect
+
+        from utils.youtube_downloader import _select_video_stream
+
+        result = _select_video_stream(yt, 720)
+
+        assert result is mock_stream
+        assert call_count[0] == 2
+
+    def test_falls_back_to_any_adaptive_stream(self):
+        """When both mp4 filters yield nothing, fall back to any adaptive stream."""
+        mock_stream = _make_pytubefix_stream(resolution="360p")
+        primary_chain = _make_filter_chain(None)
+        fallback1_chain = _make_filter_chain(None)
+        fallback2_chain = _make_filter_chain(mock_stream)
+
+        call_count = [0]
+
+        def filter_side_effect(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return primary_chain
+            if call_count[0] == 2:
+                return fallback1_chain
+            return fallback2_chain
+
+        yt = MagicMock()
+        yt.streams.filter.side_effect = filter_side_effect
+
+        from utils.youtube_downloader import _select_video_stream
+
+        result = _select_video_stream(yt, 720)
+
+        assert result is mock_stream
+        assert call_count[0] == 3
+
+    def test_returns_none_when_all_three_yield_none(self):
+        """When none of the three filters yield a stream, the helper returns None."""
+        primary_chain = _make_filter_chain(None)
+        fallback1_chain = _make_filter_chain(None)
+        fallback2_chain = _make_filter_chain(None)
+
+        call_count = [0]
+
+        def filter_side_effect(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return primary_chain
+            if call_count[0] == 2:
+                return fallback1_chain
+            return fallback2_chain
+
+        yt = MagicMock()
+        yt.streams.filter.side_effect = filter_side_effect
+
+        from utils.youtube_downloader import _select_video_stream
+
+        result = _select_video_stream(yt, 720)
+
+        assert result is None
+        assert call_count[0] == 3
+
+    def test_none_resolution_excluded_by_short_circuit_without_raising(self):
+        """A stream with resolution=None is excluded by `s.resolution and ...` — no TypeError."""
+        captured = {}
+
+        def capture_lambda(fn):
+            captured["fn"] = fn
+            return primary_chain
+
+        primary_chain = _make_filter_chain(None, filter_side_effect=capture_lambda)
+        fallback1_chain = _make_filter_chain(None)
+        fallback2_chain = _make_filter_chain(None)
+
+        call_count = [0]
+
+        def filter_side_effect(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return primary_chain
+            if call_count[0] == 2:
+                return fallback1_chain
+            return fallback2_chain
+
+        yt = MagicMock()
+        yt.streams.filter.side_effect = filter_side_effect
+
+        from utils.youtube_downloader import _select_video_stream
+
+        result = _select_video_stream(yt, 720)
+
+        assert result is None
+        no_resolution_stream = _make_pytubefix_stream(resolution=None)
+        assert not captured["fn"](no_resolution_stream)  # falsy, not a TypeError
+
+
+# ---------------------------------------------------------------------------
 # download_youtube_video_for_upload
 # ---------------------------------------------------------------------------
 
@@ -428,6 +625,118 @@ class TestDownloadYoutubeVideoForUpload:
         )
 
         assert "1080" in captured_opts.get("format", "")
+
+
+# ---------------------------------------------------------------------------
+# _check_live_status_guard (lifted out of download_youtube_video_for_upload, #272 slice 5 PR9)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckLiveStatusGuard:
+    def test_guard_disabled_returns_none_without_probing(self, mocker):
+        """guard_live_status=False returns None without ever probing."""
+        mock_probe = mocker.patch("utils.youtube_downloader.probe_live_status")
+
+        from utils.youtube_downloader import _check_live_status_guard
+
+        result = _check_live_status_guard("https://youtube.com/watch?v=x", "cookies.txt", False)
+
+        assert result is None
+        mock_probe.assert_not_called()
+
+    def test_probe_error_none_is_non_blocking(self, mocker):
+        """A probe error (None) is non-blocking: the guard returns None."""
+        mocker.patch("utils.youtube_downloader.probe_live_status", return_value=None)
+
+        from utils.youtube_downloader import _check_live_status_guard
+
+        result = _check_live_status_guard("https://youtube.com/watch?v=x", "cookies.txt", True)
+
+        assert result is None
+
+    @pytest.mark.parametrize("status", ["was_live", "not_live"])
+    def test_ready_status_returns_none(self, mocker, status):
+        """A ready live_status (was_live/not_live) returns None — proceed to download."""
+        mocker.patch("utils.youtube_downloader.probe_live_status", return_value=status)
+
+        from utils.youtube_downloader import _check_live_status_guard
+
+        result = _check_live_status_guard("https://youtube.com/watch?v=x", "cookies.txt", True)
+
+        assert result is None
+
+    def test_not_ready_status_returns_skip_dict_with_exact_repr_quoting(self, mocker):
+        """A not-ready live_status (post_live) returns the skip dict with `!r`-quoted status."""
+        mocker.patch("utils.youtube_downloader.probe_live_status", return_value="post_live")
+
+        from utils.youtube_downloader import _check_live_status_guard
+
+        result = _check_live_status_guard("https://youtube.com/watch?v=x", "cookies.txt", True)
+
+        assert result == {
+            "success": False,
+            "skipped": True,
+            "file_path": None,
+            "file_size_mb": None,
+            "duration": None,
+            "title": None,
+            "error": "live_status 'post_live' not ready — skipped download",
+        }
+
+
+# ---------------------------------------------------------------------------
+# _try_pytubefix_download (lifted out of download_youtube_video_for_upload, #272 slice 5 PR9)
+# ---------------------------------------------------------------------------
+
+
+class TestTryPytubefixDownload:
+    def test_use_pytubefix_first_false_returns_none_without_calling(self, mocker):
+        """use_pytubefix_first=False returns None without calling download_with_pytubefix."""
+        mock_pytubefix = mocker.patch("utils.youtube_downloader.download_with_pytubefix")
+
+        from utils.youtube_downloader import _try_pytubefix_download
+
+        result = _try_pytubefix_download("https://youtube.com/watch?v=x", "/tmp/out", 720, False)
+
+        assert result is None
+        mock_pytubefix.assert_not_called()
+
+    def test_success_returns_that_exact_dict_object(self, mocker):
+        """On pytubefix success, the helper returns the exact same dict object."""
+        expected_result = {"success": True, "file_path": "/tmp/v.mp4", "resolution": "720p"}
+        mocker.patch("utils.youtube_downloader.download_with_pytubefix", return_value=expected_result)
+        mocker.patch("utils.youtube_downloader._warn_if_not_h264")
+
+        from utils.youtube_downloader import _try_pytubefix_download
+
+        result = _try_pytubefix_download("https://youtube.com/watch?v=x", "/tmp/out", 720, True)
+
+        assert result is expected_result
+
+    def test_warn_if_not_h264_raising_is_swallowed_and_result_still_returned(self, mocker):
+        """A raising _warn_if_not_h264 is swallowed; the pytubefix result is still returned."""
+        expected_result = {"success": True, "file_path": "/tmp/v.mp4", "resolution": "720p"}
+        mocker.patch("utils.youtube_downloader.download_with_pytubefix", return_value=expected_result)
+        mocker.patch("utils.youtube_downloader._warn_if_not_h264", side_effect=RuntimeError("codec check boom"))
+
+        from utils.youtube_downloader import _try_pytubefix_download
+
+        result = _try_pytubefix_download("https://youtube.com/watch?v=x", "/tmp/out", 720, True)
+
+        assert result is expected_result
+
+    def test_success_false_returns_none_falls_through_to_ytdlp(self, mocker):
+        """A failed pytubefix attempt returns None so the caller falls through to yt-dlp."""
+        mocker.patch(
+            "utils.youtube_downloader.download_with_pytubefix",
+            return_value={"success": False, "error": "stream error"},
+        )
+
+        from utils.youtube_downloader import _try_pytubefix_download
+
+        result = _try_pytubefix_download("https://youtube.com/watch?v=x", "/tmp/out", 720, True)
+
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -833,6 +1142,140 @@ class TestDownloadYoutubeSubtitles:
 
         assert result["success"] is False
         assert result["error"] is not None
+
+
+# ---------------------------------------------------------------------------
+# _download_subtitle_files (lifted out of download_youtube_subtitles, #272 slice 5 PR8)
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadSubtitleFiles:
+    def _fake_ydl_factory(self, on_download):
+        """Return a `yt_dlp.YoutubeDL(opts)` factory whose `.download()` calls `on_download()`."""
+
+        def factory(opts):
+            m = MagicMock()
+            m.__enter__ = MagicMock(return_value=m)
+            m.__exit__ = MagicMock(return_value=False)
+            m.download.side_effect = on_download
+            return m
+
+        return factory
+
+    def test_exception_for_one_language_continues_to_next(self, tmp_path, mocker):
+        """A per-language exception is swallowed; the next language is still attempted."""
+        calls = []
+
+        def on_download(urls):
+            calls.append(urls)
+            if len(calls) == 1:
+                raise RuntimeError("rate limited for this language")
+            # Second (successful) language: create the matching SRT file.
+            srt_dir = tmp_path / "srt_files"
+            srt_dir.mkdir(parents=True, exist_ok=True)
+            (srt_dir / "vid1_en.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n")
+
+        mocker.patch(
+            "utils.youtube_downloader.yt_dlp.YoutubeDL",
+            side_effect=self._fake_ydl_factory(on_download),
+        )
+
+        from utils.youtube_downloader import _download_subtitle_files
+
+        result = _download_subtitle_files("https://youtube.com/watch?v=x", "vid1", str(tmp_path), ["es", "en"])
+
+        assert len(calls) == 2  # both languages attempted, no raise propagated
+        assert len(result) == 1
+        assert result[0]["language"] == "en"
+
+    def test_breaks_after_first_language_with_files(self, tmp_path, mocker):
+        """Once a language yields files, later languages are never attempted."""
+        calls = []
+
+        def on_download(urls):
+            calls.append(urls)
+            srt_dir = tmp_path / "srt_files"
+            srt_dir.mkdir(parents=True, exist_ok=True)
+            (srt_dir / "vid1_es.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nHola\n")
+
+        mocker.patch(
+            "utils.youtube_downloader.yt_dlp.YoutubeDL",
+            side_effect=self._fake_ydl_factory(on_download),
+        )
+
+        from utils.youtube_downloader import _download_subtitle_files
+
+        result = _download_subtitle_files("https://youtube.com/watch?v=x", "vid1", str(tmp_path), ["es", "en", "auto"])
+
+        assert len(calls) == 1  # "en" and "auto" never attempted
+        assert len(result) == 1
+        assert result[0]["language"] == "es"
+
+    @pytest.mark.parametrize(
+        ("file_name", "lang", "expected_is_auto"),
+        [
+            ("vid1_es-AUTO.srt", "es", True),
+            ("vid1_zz.srt", "auto", True),
+            ("vid1_es.srt", "es", False),
+        ],
+    )
+    def test_is_auto_pinned_on_both_halves_of_the_or(self, tmp_path, mocker, file_name, lang, expected_is_auto):
+        """`is_auto` fires on either an "auto" filename or lang == "auto" — pinned on both halves."""
+
+        def on_download(urls):
+            srt_dir = tmp_path / "srt_files"
+            srt_dir.mkdir(parents=True, exist_ok=True)
+            (srt_dir / file_name).write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n")
+
+        mocker.patch(
+            "utils.youtube_downloader.yt_dlp.YoutubeDL",
+            side_effect=self._fake_ydl_factory(on_download),
+        )
+
+        from utils.youtube_downloader import _download_subtitle_files
+
+        result = _download_subtitle_files("https://youtube.com/watch?v=x", "vid1", str(tmp_path), [lang])
+
+        assert len(result) == 1
+        assert result[0]["is_auto_generated"] is expected_is_auto
+
+    def test_all_languages_failing_returns_empty_list(self, tmp_path, mocker):
+        """When every language raises, the helper returns `[]` without raising."""
+
+        def on_download(urls):
+            raise RuntimeError("always fails")
+
+        mocker.patch(
+            "utils.youtube_downloader.yt_dlp.YoutubeDL",
+            side_effect=self._fake_ydl_factory(on_download),
+        )
+
+        from utils.youtube_downloader import _download_subtitle_files
+
+        result = _download_subtitle_files("https://youtube.com/watch?v=x", "vid1", str(tmp_path), ["es", "en"])
+
+        assert result == []
+
+    def test_one_entry_per_file_sharing_the_same_language(self, tmp_path, mocker):
+        """Multiple matching files for one language each get their own entry, same language."""
+
+        def on_download(urls):
+            srt_dir = tmp_path / "srt_files"
+            srt_dir.mkdir(parents=True, exist_ok=True)
+            (srt_dir / "vid1_es_a.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nA\n")
+            (srt_dir / "vid1_es_b.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nB\n")
+
+        mocker.patch(
+            "utils.youtube_downloader.yt_dlp.YoutubeDL",
+            side_effect=self._fake_ydl_factory(on_download),
+        )
+
+        from utils.youtube_downloader import _download_subtitle_files
+
+        result = _download_subtitle_files("https://youtube.com/watch?v=x", "vid1", str(tmp_path), ["es"])
+
+        assert len(result) == 2
+        assert {entry["language"] for entry in result} == {"es"}
 
 
 # ---------------------------------------------------------------------------

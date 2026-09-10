@@ -1,0 +1,31 @@
+{
+  "corpus_version": "v1",
+  "issue": 510,
+  "extracted_at": "2026-09-09T14:42:51+00:00",
+  "source": "production schema of the congress_videos database, plus the YouTube Data API v3",
+  "generators": {
+    "chapter": "thumbnail_generation.generate_title (legacy path, unreachable since #171)",
+    "turn": "thumbnail_generation.generate_title",
+    "short": "reap_shorts_uploader_dag._generate_metadata"
+  },
+  "observed": {
+    "count": 957,
+    "by_kind": {
+      "chapter": 214,
+      "turn": 148,
+      "short": 595
+    },
+    "distinct_videos": 814,
+    "sha256": "028fcec540f2477fb11a3e33cfe550585d0e339180bea101364a5a509fab3eb3"
+  },
+  "replay": {
+    "count": 52,
+    "by_kind": {
+      "chapter": 52,
+      "turn": 0,
+      "short": 0
+    },
+    "sha256": "3691a227845bc1e597758b9720e6f12c2e5919ce70d4c356f379d8b48fab406a"
+  },
+  "labels": "empty on purpose — the human labelling pass fills the `labels` slot"
+}

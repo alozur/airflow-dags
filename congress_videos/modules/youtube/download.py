@@ -1052,47 +1052,34 @@ def _validate_chapter_ranges(chapters: list[dict], chunk_number: int = 0) -> lis
     return valid
 
 
-def _dedup_overlapping_chapters(chapters: list[dict]) -> list[dict]:
-    """Remove chapters that overlap >50 % of the shorter chapter's duration.
-
-    When two chapters overlap, the *wider* one (longer duration) is kept and the
-    narrower is discarded.  The input list MUST already have been passed through
-    ``_validate_chapter_ranges`` so that every chapter has start < end.
-
-    Algorithm:
-      1. Sort by start_time (float seconds).
-      2. Pairwise compare each consecutive pair using ``parse_timestamp``.
-      3. If ``overlap_secs / min(dur_a, dur_b) > 0.5`` → discard the shorter.
-      4. A chapter already flagged as discarded is skipped in subsequent comparisons.
-
-    Args:
-        chapters: List of chapter dicts with ``start_time``, ``end_time``, and
-            (optionally) ``duration_minutes`` keys.
-
-    Returns:
-        De-duplicated list sorted by start time.
+def _chapter_start_secs(ch: dict) -> float:
+    """Lifted verbatim out of `_dedup_overlapping_chapters` (issue #272): a
+    chapter's start time in float seconds. A missing `start_time` key
+    defaults to `"00:00:00"`; an unparseable value never raises — it
+    returns `0.0`.
     """
-    if len(chapters) <= 1:
-        return list(chapters)
+    try:
+        return parse_timestamp(ch.get("start_time", "00:00:00"))
+    except ValueError:
+        return 0.0
 
-    # Sort by start_time as float seconds for reliable ordering.
-    def _start_secs(ch: dict) -> float:
-        try:
-            return parse_timestamp(ch.get("start_time", "00:00:00"))
-        except ValueError:
-            return 0.0
 
-    def _end_secs(ch: dict) -> float:
-        try:
-            return parse_timestamp(ch.get("end_time", "00:00:00"))
-        except ValueError:
-            return 0.0
+def _chapter_end_secs(ch: dict) -> float:
+    """Lifted verbatim out of `_dedup_overlapping_chapters` (issue #272): a
+    chapter's end time in float seconds. A missing `end_time` key defaults
+    to `"00:00:00"`; an unparseable value never raises — it returns `0.0`.
+    """
+    try:
+        return parse_timestamp(ch.get("end_time", "00:00:00"))
+    except ValueError:
+        return 0.0
 
-    sorted_chapters = sorted(chapters, key=_start_secs)
 
-    # Mark chapters to keep using a boolean mask.
-    keep = [True] * len(sorted_chapters)
-
+def _mark_overlapping_chapters(sorted_chapters: list[dict], keep: list[bool]) -> None:
+    """Lifted verbatim out of `_dedup_overlapping_chapters` (issue #272):
+    mutates `keep` in place, flagging the narrower chapter of any pair that
+    overlaps >50% of the shorter chapter's duration. Returns `None`.
+    """
     for i in range(len(sorted_chapters)):
         if not keep[i]:
             continue
@@ -1100,10 +1087,10 @@ def _dedup_overlapping_chapters(chapters: list[dict]) -> list[dict]:
             if not keep[j]:
                 continue
 
-            start_a = _start_secs(sorted_chapters[i])
-            end_a = _end_secs(sorted_chapters[i])
-            start_b = _start_secs(sorted_chapters[j])
-            end_b = _end_secs(sorted_chapters[j])
+            start_a = _chapter_start_secs(sorted_chapters[i])
+            end_a = _chapter_end_secs(sorted_chapters[i])
+            start_b = _chapter_start_secs(sorted_chapters[j])
+            end_b = _chapter_end_secs(sorted_chapters[j])
 
             # Overlap = intersection of the two intervals.
             overlap = max(0.0, min(end_a, end_b) - max(start_a, start_b))
@@ -1143,6 +1130,38 @@ def _dedup_overlapping_chapters(chapters: list[dict]) -> list[dict]:
                     keep[i] = False
                     # i is now discarded; stop comparing it with further j.
                     break
+
+
+def _dedup_overlapping_chapters(chapters: list[dict]) -> list[dict]:
+    """Remove chapters that overlap >50 % of the shorter chapter's duration.
+
+    When two chapters overlap, the *wider* one (longer duration) is kept and the
+    narrower is discarded.  The input list MUST already have been passed through
+    ``_validate_chapter_ranges`` so that every chapter has start < end.
+
+    Algorithm:
+      1. Sort by start_time (float seconds).
+      2. Pairwise compare each consecutive pair using ``parse_timestamp``.
+      3. If ``overlap_secs / min(dur_a, dur_b) > 0.5`` → discard the shorter.
+      4. A chapter already flagged as discarded is skipped in subsequent comparisons.
+
+    Args:
+        chapters: List of chapter dicts with ``start_time``, ``end_time``, and
+            (optionally) ``duration_minutes`` keys.
+
+    Returns:
+        De-duplicated list sorted by start time.
+    """
+    if len(chapters) <= 1:
+        return list(chapters)
+
+    # Sort by start_time as float seconds for reliable ordering.
+    sorted_chapters = sorted(chapters, key=_chapter_start_secs)
+
+    # Mark chapters to keep using a boolean mask.
+    keep = [True] * len(sorted_chapters)
+
+    _mark_overlapping_chapters(sorted_chapters, keep)
 
     return [ch for ch, ok in zip(sorted_chapters, keep) if ok]
 
@@ -1261,6 +1280,78 @@ def _find_srt_chunk(srt_chunk_index: dict, chunk_number) -> str:
     return _chunk_text(srt_chunk)
 
 
+def _identify_chapters_for_chunk(
+    chunk_number: int,
+    summary_chunk: dict,
+    srt_content: str,
+    chunk_duration: float,
+    system_prompt: str,
+    user_prompt_template: str,
+) -> list[dict]:
+    """Lifted verbatim out of `_analyze_single_chunk` (issue #272): builds
+    `summary_text`, defines the `_identify_window` closure over it, and
+    dispatches to map-reduce for oversized SRT content or a single direct
+    call otherwise. `_identify_window` and its sole call site move together
+    as one atomic unit — `summary_text` stays entirely inside this helper's
+    own scope, with no cross-boundary capture. `completion["error"]` truthy
+    propagates a `RuntimeError` out of this helper uncaught; the caller's
+    `try`/`except` owns the fallback.
+    """
+    # Prepare chunk summary text for AI
+    summary_text = (
+        f"Chunk {chunk_number} ({summary_chunk['start_time']} - {summary_chunk['end_time']}) - "
+        f"Duration: {chunk_duration:.1f} minutes\n\n"
+    )
+
+    if summary_chunk.get("speakers"):
+        summary_text += "Speakers:\n"
+        for speaker in summary_chunk["speakers"]:
+            summary_text += f"  - {speaker.get('name', 'Unknown')} ({speaker.get('role', '')})\n"
+        summary_text += "\n"
+
+    if summary_chunk.get("topics"):
+        summary_text += f"Topics: {', '.join(summary_chunk['topics'])}\n\n"
+
+    if summary_chunk.get("summary"):
+        summary_text += f"Summary: {summary_chunk['summary']}\n"
+
+    # #2/#3: per-window LLM call routed through the idempotent
+    # cache. Defined as a closure so the >threshold path (#8)
+    # can reuse it as the injected map-reduce identify function.
+    def _identify_window(window_srt_text: str) -> list[dict]:
+        completion = cached_json_completion(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt_template.format(
+                chunk_summary=summary_text,
+                srt_content=window_srt_text,  # Full window — no truncation
+            ),
+            model=LLM_CHEAP,
+        )
+        if completion.get("error"):
+            raise RuntimeError(completion["error"])
+        chapter_data = completion["data"] or {}
+        return chapter_data.get("interesting_chapters", [])
+
+    # #1/#8: oversized SRT → map-reduce over overlapping windows
+    # so the LLM never decides blind on a truncated view. Below
+    # the threshold this is a single full-SRT call (identical to
+    # the original path).
+    if len(srt_content) > LARGE_SRT_THRESHOLD:
+        logging.info(
+            f"  🧩 Chunk {chunk_number}: SRT content is {len(srt_content):,} chars "
+            f"(>{LARGE_SRT_THRESHOLD:,} threshold). Using map-reduce windowing."
+        )
+        from congress_videos.modules.youtube.map_reduce_chapters import (
+            map_reduce_identify_chapters,
+        )
+
+        interesting_chapters = map_reduce_identify_chapters(srt_content, identify_fn=_identify_window)
+    else:
+        interesting_chapters = _identify_window(srt_content)
+
+    return interesting_chapters
+
+
 def _analyze_single_chunk(
     chunk_number: int,
     summary_chunk: dict,
@@ -1287,57 +1378,14 @@ def _analyze_single_chunk(
     logging.info(f"  🔍 Chunk {chunk_number} is {chunk_duration:.1f} minutes (>45 min). Using AI to analyze content...")
 
     try:
-        # Prepare chunk summary text for AI
-        summary_text = (
-            f"Chunk {chunk_number} ({summary_chunk['start_time']} - {summary_chunk['end_time']}) - "
-            f"Duration: {chunk_duration:.1f} minutes\n\n"
+        interesting_chapters = _identify_chapters_for_chunk(
+            chunk_number,
+            summary_chunk,
+            srt_content,
+            chunk_duration,
+            CHAPTER_IDENTIFICATION_SYSTEM_PROMPT,
+            CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE,
         )
-
-        if summary_chunk.get("speakers"):
-            summary_text += "Speakers:\n"
-            for speaker in summary_chunk["speakers"]:
-                summary_text += f"  - {speaker.get('name', 'Unknown')} ({speaker.get('role', '')})\n"
-            summary_text += "\n"
-
-        if summary_chunk.get("topics"):
-            summary_text += f"Topics: {', '.join(summary_chunk['topics'])}\n\n"
-
-        if summary_chunk.get("summary"):
-            summary_text += f"Summary: {summary_chunk['summary']}\n"
-
-        # #2/#3: per-window LLM call routed through the idempotent
-        # cache. Defined as a closure so the >threshold path (#8)
-        # can reuse it as the injected map-reduce identify function.
-        def _identify_window(window_srt_text: str) -> list[dict]:
-            completion = cached_json_completion(
-                system_prompt=CHAPTER_IDENTIFICATION_SYSTEM_PROMPT,
-                user_prompt=CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE.format(
-                    chunk_summary=summary_text,
-                    srt_content=window_srt_text,  # Full window — no truncation
-                ),
-                model=LLM_CHEAP,
-            )
-            if completion.get("error"):
-                raise RuntimeError(completion["error"])
-            chapter_data = completion["data"] or {}
-            return chapter_data.get("interesting_chapters", [])
-
-        # #1/#8: oversized SRT → map-reduce over overlapping windows
-        # so the LLM never decides blind on a truncated view. Below
-        # the threshold this is a single full-SRT call (identical to
-        # the original path).
-        if len(srt_content) > LARGE_SRT_THRESHOLD:
-            logging.info(
-                f"  🧩 Chunk {chunk_number}: SRT content is {len(srt_content):,} chars "
-                f"(>{LARGE_SRT_THRESHOLD:,} threshold). Using map-reduce windowing."
-            )
-            from congress_videos.modules.youtube.map_reduce_chapters import (
-                map_reduce_identify_chapters,
-            )
-
-            interesting_chapters = map_reduce_identify_chapters(srt_content, identify_fn=_identify_window)
-        else:
-            interesting_chapters = _identify_window(srt_content)
 
         # --- #4: Deterministic fallback for empty LLM result --------
         if not interesting_chapters:
@@ -1408,6 +1456,108 @@ def _analyze_single_chunk(
         return _build_fallback_chunk_entry(chunk_number, summary_chunk)
 
 
+def _find_srt_chunks_for_video(chunked_srt_data, video_id) -> list[dict]:
+    """Lifted verbatim out of `identify_interesting_chapters` (issue #272):
+    the first video entry in `chunked_srt_data["videos"]` whose `video_id`
+    matches wins; `[]` when `chunked_srt_data` is falsy, has no `videos`
+    key, no video matches, or the matched video has no `chunks`. Items
+    lacking a `video_id` never raise (`.get`).
+    """
+    srt_chunks = []
+    if chunked_srt_data and chunked_srt_data.get("videos"):
+        for srt_video in chunked_srt_data["videos"]:
+            if srt_video.get("video_id") == video_id:
+                srt_chunks = srt_video.get("chunks", [])
+                break
+    return srt_chunks
+
+
+def _collect_chunk_chapters(summarized_chunks, srt_chunks, min_chapter_duration, max_optimal_duration) -> list[dict]:
+    """Lifted verbatim out of `identify_interesting_chapters` (issue #272):
+    builds the per-chunk `chunks_with_chapters` list for one video, indexing
+    `srt_chunks` once (#210) and, per chunk, either returning the whole
+    chunk as a single chapter (duration `<= max_optimal_duration`) or
+    delegating to `_analyze_single_chunk`. `_find_srt_chunk` returning `""`
+    (not `None`) is treated as no-content — an intentional falsy check
+    matching `_find_srt_chunk`'s documented `""`-on-no-match contract.
+    """
+    chunks_with_chapters = []
+    # #210: index once per video instead of a linear scan per chunk.
+    srt_chunk_index = _build_srt_chunk_index(srt_chunks)
+
+    # Analyze each chunk individually
+    for summary_chunk in summarized_chunks:
+        chunk_number = summary_chunk["chunk_number"]
+        chunk_duration = summary_chunk.get("duration_minutes", 0)
+
+        # Find matching SRT content for this chunk
+        # #7: read text via the back-compat shim (path-only XCom).
+        srt_content = _find_srt_chunk(srt_chunk_index, chunk_number)
+
+        if not srt_content:
+            logging.warning(f"No SRT content found for chunk {chunk_number}")
+            chunks_with_chapters.append({"chunk_number": chunk_number, "error": "No SRT content available"})
+            continue
+
+        # DURATION CHECK: Determine if AI analysis is needed
+        # - < 15 min: Too short, return as-is
+        # - 15-45 min: Optimal duration, return as-is
+        # - > 45 min: Too long, use AI to split into 15-45 min sub-chapters
+
+        if chunk_duration <= max_optimal_duration:
+            # Chunk is in optimal range (< 15 min OR 15-45 min)
+            reason = "too short" if chunk_duration < min_chapter_duration else "optimal duration"
+            logging.info(
+                f"  ⚡ Chunk {chunk_number} is {chunk_duration:.1f} minutes ({reason}). "
+                f"Returning whole chunk without AI analysis."
+            )
+
+            # Return the entire chunk as a single "interesting chapter"
+            whole_chunk_chapter = {
+                "title": summary_chunk.get("summary", f"Chunk {chunk_number}")[
+                    :100
+                ],  # Use summary as title (truncated)
+                "description": summary_chunk.get("summary", "Chunk returned as-is"),
+                "start_time": summary_chunk["start_time"],
+                "end_time": summary_chunk["end_time"],
+                "duration_minutes": chunk_duration,
+                "speakers": [s.get("name", "Unknown") for s in summary_chunk.get("speakers", [])],
+                "topics": summary_chunk.get("topics", []),
+                # Whole chunk == whole chapter, so the full chunk timeline applies.
+                "timeline": summary_chunk.get("timeline", []),
+                "skipped_ai_analysis": True,  # Flag to indicate this wasn't analyzed by AI
+                "reason": reason,
+            }
+
+            chunks_with_chapters.append(
+                {
+                    "chunk_number": chunk_number,
+                    "start_time": summary_chunk["start_time"],
+                    "end_time": summary_chunk["end_time"],
+                    "duration_minutes": chunk_duration,
+                    "total_interesting_chapters": 1,
+                    "interesting_chapters": [whole_chunk_chapter],
+                    "skipped_ai_analysis": True,
+                }
+            )
+
+            continue
+
+        # Chunk is > 45 minutes: delegate to the AI-analysis helper (#210).
+        chunks_with_chapters.append(
+            _analyze_single_chunk(
+                chunk_number,
+                summary_chunk,
+                srt_content,
+                chunk_duration,
+                min_chapter_duration,
+                max_optimal_duration,
+            )
+        )
+
+    return chunks_with_chapters
+
+
 def identify_interesting_chapters(
     chunk_summaries, chunked_srt_data, target_date: str, min_chapter_duration: int = 15, max_optimal_duration: int = 120
 ):
@@ -1458,12 +1608,7 @@ def identify_interesting_chapters(
             continue
 
         # Find matching chunked SRT data for this video
-        srt_chunks = []
-        if chunked_srt_data and chunked_srt_data.get("videos"):
-            for srt_video in chunked_srt_data["videos"]:
-                if srt_video.get("video_id") == video_id:
-                    srt_chunks = srt_video.get("chunks", [])
-                    break
+        srt_chunks = _find_srt_chunks_for_video(chunked_srt_data, video_id)
 
         if not srt_chunks:
             logging.warning(f"No SRT chunks found for video {video_id}")
@@ -1474,79 +1619,9 @@ def identify_interesting_chapters(
             logging.info(
                 f"Analyzing {len(summarized_chunks)} chunks for video {video_id} to identify interesting chapters..."
             )
-            chunks_with_chapters = []
-            # #210: index once per video instead of a linear scan per chunk.
-            srt_chunk_index = _build_srt_chunk_index(srt_chunks)
-
-            # Analyze each chunk individually
-            for summary_chunk in summarized_chunks:
-                chunk_number = summary_chunk["chunk_number"]
-                chunk_duration = summary_chunk.get("duration_minutes", 0)
-
-                # Find matching SRT content for this chunk
-                # #7: read text via the back-compat shim (path-only XCom).
-                srt_content = _find_srt_chunk(srt_chunk_index, chunk_number)
-
-                if not srt_content:
-                    logging.warning(f"No SRT content found for chunk {chunk_number}")
-                    chunks_with_chapters.append({"chunk_number": chunk_number, "error": "No SRT content available"})
-                    continue
-
-                # DURATION CHECK: Determine if AI analysis is needed
-                # - < 15 min: Too short, return as-is
-                # - 15-45 min: Optimal duration, return as-is
-                # - > 45 min: Too long, use AI to split into 15-45 min sub-chapters
-
-                if chunk_duration <= max_optimal_duration:
-                    # Chunk is in optimal range (< 15 min OR 15-45 min)
-                    reason = "too short" if chunk_duration < min_chapter_duration else "optimal duration"
-                    logging.info(
-                        f"  ⚡ Chunk {chunk_number} is {chunk_duration:.1f} minutes ({reason}). "
-                        f"Returning whole chunk without AI analysis."
-                    )
-
-                    # Return the entire chunk as a single "interesting chapter"
-                    whole_chunk_chapter = {
-                        "title": summary_chunk.get("summary", f"Chunk {chunk_number}")[
-                            :100
-                        ],  # Use summary as title (truncated)
-                        "description": summary_chunk.get("summary", "Chunk returned as-is"),
-                        "start_time": summary_chunk["start_time"],
-                        "end_time": summary_chunk["end_time"],
-                        "duration_minutes": chunk_duration,
-                        "speakers": [s.get("name", "Unknown") for s in summary_chunk.get("speakers", [])],
-                        "topics": summary_chunk.get("topics", []),
-                        # Whole chunk == whole chapter, so the full chunk timeline applies.
-                        "timeline": summary_chunk.get("timeline", []),
-                        "skipped_ai_analysis": True,  # Flag to indicate this wasn't analyzed by AI
-                        "reason": reason,
-                    }
-
-                    chunks_with_chapters.append(
-                        {
-                            "chunk_number": chunk_number,
-                            "start_time": summary_chunk["start_time"],
-                            "end_time": summary_chunk["end_time"],
-                            "duration_minutes": chunk_duration,
-                            "total_interesting_chapters": 1,
-                            "interesting_chapters": [whole_chunk_chapter],
-                            "skipped_ai_analysis": True,
-                        }
-                    )
-
-                    continue
-
-                # Chunk is > 45 minutes: delegate to the AI-analysis helper (#210).
-                chunks_with_chapters.append(
-                    _analyze_single_chunk(
-                        chunk_number,
-                        summary_chunk,
-                        srt_content,
-                        chunk_duration,
-                        min_chapter_duration,
-                        max_optimal_duration,
-                    )
-                )
+            chunks_with_chapters = _collect_chunk_chapters(
+                summarized_chunks, srt_chunks, min_chapter_duration, max_optimal_duration
+            )
 
             # Count total interesting chapters found
             total_chapters_found = sum(

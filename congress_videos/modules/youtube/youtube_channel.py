@@ -304,6 +304,65 @@ def filter_unprocessed_videos(plenary_videos: dict) -> dict:
     return result
 
 
+def _evaluate_finished_stream_candidate(
+    video: dict, video_id, by_id: dict, guard_floor_minutes: int, cookies_file: str | None
+) -> dict | None:
+    """Evaluate one `filter_finished_streams` candidate against the Data API
+    pre-filter and the yt-dlp probe.
+
+    Lifted verbatim out of `filter_finished_streams` (issue #272): `None`
+    drops the candidate at any fail-closed check below; the candidate
+    `dict` (the same object passed in) is returned only when the probe
+    reports a `READY_LIVE_STATUSES` status. No `try`/`except` here — the
+    caller's handler owns fail-closed propagation per candidate.
+    """
+    if not video_id:
+        logging.info("Dropping candidate without video_id (fail-closed)")
+        return None
+
+    youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    item = by_id.get(video_id)
+    if item is None:
+        logging.info(f"Dropping {video_id}: not found via Data API")
+        return None
+
+    snippet = item.get("snippet", {})
+    live_details = item.get("liveStreamingDetails", {})
+
+    # (a) Data API live-state pre-filter
+    broadcast = snippet.get("liveBroadcastContent")
+    if broadcast in ("live", "upcoming"):
+        logging.info(f"Dropping {video_id}: liveBroadcastContent={broadcast!r}")
+        return None
+
+    if live_details.get("concurrentViewers") is not None:
+        logging.info(f"Dropping {video_id}: concurrentViewers present (broadcasting)")
+        return None
+
+    actual_end_time = live_details.get("actualEndTime")
+    if actual_end_time is None:
+        logging.info(f"Dropping {video_id}: no actualEndTime (still live or no data)")
+        return None
+
+    end_dt = datetime.fromisoformat(actual_end_time.replace("Z", "+00:00"))
+    elapsed = datetime.now(UTC) - end_dt
+
+    # (c) cheap pre-probe skip: obviously too fresh
+    if elapsed < timedelta(minutes=guard_floor_minutes):
+        logging.info(f"Dropping {video_id}: ended {elapsed} ago, under the {guard_floor_minutes}min floor (skip probe)")
+        return None
+
+    # (b) authoritative yt-dlp probe (only survivors reach here)
+    status = probe_live_status(youtube_url, cookies_file)
+    if status in READY_LIVE_STATUSES:
+        return video
+    else:
+        logging.info(f"Dropping {video_id}: live_status={status!r} (not a ready VOD)")
+
+    return None
+
+
 def filter_finished_streams(
     plenary_videos: dict,
     *,
@@ -371,51 +430,9 @@ def filter_finished_streams(
     for video in videos:
         video_id = video.get("video_id")
         try:
-            if not video_id:
-                logging.info("Dropping candidate without video_id (fail-closed)")
-                continue
-
-            youtube_url = f"https://www.youtube.com/watch?v={video_id}"
-
-            item = by_id.get(video_id)
-            if item is None:
-                logging.info(f"Dropping {video_id}: not found via Data API")
-                continue
-
-            snippet = item.get("snippet", {})
-            live_details = item.get("liveStreamingDetails", {})
-
-            # (a) Data API live-state pre-filter
-            broadcast = snippet.get("liveBroadcastContent")
-            if broadcast in ("live", "upcoming"):
-                logging.info(f"Dropping {video_id}: liveBroadcastContent={broadcast!r}")
-                continue
-
-            if live_details.get("concurrentViewers") is not None:
-                logging.info(f"Dropping {video_id}: concurrentViewers present (broadcasting)")
-                continue
-
-            actual_end_time = live_details.get("actualEndTime")
-            if actual_end_time is None:
-                logging.info(f"Dropping {video_id}: no actualEndTime (still live or no data)")
-                continue
-
-            end_dt = datetime.fromisoformat(actual_end_time.replace("Z", "+00:00"))
-            elapsed = datetime.now(UTC) - end_dt
-
-            # (c) cheap pre-probe skip: obviously too fresh
-            if elapsed < timedelta(minutes=guard_floor_minutes):
-                logging.info(
-                    f"Dropping {video_id}: ended {elapsed} ago, under the {guard_floor_minutes}min floor (skip probe)"
-                )
-                continue
-
-            # (b) authoritative yt-dlp probe (only survivors reach here)
-            status = probe_live_status(youtube_url, cookies_file)
-            if status in READY_LIVE_STATUSES:
-                kept.append(video)
-            else:
-                logging.info(f"Dropping {video_id}: live_status={status!r} (not a ready VOD)")
+            candidate = _evaluate_finished_stream_candidate(video, video_id, by_id, guard_floor_minutes, cookies_file)
+            if candidate is not None:
+                kept.append(candidate)
 
         except Exception as e:
             # FR5: fail-closed — drop only this candidate, never crash the task.
@@ -433,6 +450,41 @@ def filter_finished_streams(
     result["videos"] = kept
     result["total_matches"] = len(kept)
     return result
+
+
+def _fetch_enrichable_video_details(youtube, video_id, min_hours_since_end) -> tuple[dict, dict] | None:
+    """Fetch one video's Data API item and apply the VOD freshness guard.
+
+    Lifted verbatim out of `get_video_details` (issue #272): `None` when the
+    video is not found, has no `actualEndTime` yet (still live or no data),
+    or ended less than `min_hours_since_end` hours ago; otherwise the
+    `(video_details, live_details)` pair. Propagates any `.execute()`
+    exception uncaught — `get_video_details` aborts the whole batch on a
+    single API failure.
+    """
+    video_response = youtube.videos().list(part="snippet,contentDetails,liveStreamingDetails", id=video_id).execute()
+
+    if not video_response.get("items"):
+        logging.warning(f"Video not found: {video_id}")
+        return None
+
+    video_details = video_response["items"][0]
+    live_details = video_details.get("liveStreamingDetails", {})
+
+    # VOD freshness guard: skip just-ended broadcasts whose VOD may
+    # still be processing on YouTube.
+    actual_end_time = live_details.get("actualEndTime")
+    if actual_end_time is None:
+        logging.info(f"Skipping {video_id}: no actualEndTime (still live or no data)")
+        return None
+
+    end_dt = datetime.fromisoformat(actual_end_time.replace("Z", "+00:00"))
+    elapsed = datetime.now(UTC) - end_dt
+    if elapsed < timedelta(hours=min_hours_since_end):
+        logging.info(f"Skipping {video_id}: ended {elapsed} ago, under the {min_hours_since_end}h freshness margin")
+        return None
+
+    return video_details, live_details
 
 
 def get_video_details(plenary_videos, min_hours_since_end: int = 12):
@@ -478,31 +530,10 @@ def get_video_details(plenary_videos, min_hours_since_end: int = 12):
             video_id = video["video_id"]
 
             # Get detailed video information
-            video_response = (
-                youtube.videos().list(part="snippet,contentDetails,liveStreamingDetails", id=video_id).execute()
-            )
-
-            if not video_response.get("items"):
-                logging.warning(f"Video not found: {video_id}")
+            details = _fetch_enrichable_video_details(youtube, video_id, min_hours_since_end)
+            if details is None:
                 continue
-
-            video_details = video_response["items"][0]
-            live_details = video_details.get("liveStreamingDetails", {})
-
-            # VOD freshness guard: skip just-ended broadcasts whose VOD may
-            # still be processing on YouTube.
-            actual_end_time = live_details.get("actualEndTime")
-            if actual_end_time is None:
-                logging.info(f"Skipping {video_id}: no actualEndTime (still live or no data)")
-                continue
-
-            end_dt = datetime.fromisoformat(actual_end_time.replace("Z", "+00:00"))
-            elapsed = datetime.now(UTC) - end_dt
-            if elapsed < timedelta(hours=min_hours_since_end):
-                logging.info(
-                    f"Skipping {video_id}: ended {elapsed} ago, under the {min_hours_since_end}h freshness margin"
-                )
-                continue
+            video_details, live_details = details
 
             # Extract duration
             duration_iso = video_details["contentDetails"]["duration"]
@@ -889,6 +920,69 @@ def download_and_read_agenda(parsed_links, target_date: str):
     return {"total_downloaded": len(downloaded_agendas), "videos": downloaded_agendas}
 
 
+def _parse_agenda_dates(date_matches, spanish_months, target_date_obj) -> list[dict]:
+    """Parse each regex date-header match into a dated entry.
+
+    Lifted verbatim out of `extract_session_date` (issue #272): an unknown
+    month or an invalid calendar date (e.g. 31 DE FEBRERO) is skipped, not
+    raised. `original_index` counts only accepted entries, so it stays
+    contiguous even after a skip — it no longer matches the position in
+    `date_matches`. Explicit `DE <year>` beats `target_date_obj.year`.
+    """
+    parsed_dates = []
+    for match in date_matches:
+        day_name = match.group(1).lower()
+        day_num = int(match.group(2))
+        month_name = match.group(3).lower()
+        year = int(match.group(4)) if match.group(4) else target_date_obj.year
+
+        # Convert Spanish date to datetime
+        month_num = spanish_months.get(month_name)
+        if not month_num:
+            logging.warning(f"Unknown month: {month_name}")
+            continue
+
+        try:
+            section_date = datetime(year, month_num, day_num).date()
+            parsed_dates.append(
+                {
+                    "date": section_date,
+                    "day_name": day_name,
+                    "match": match,
+                    "original_index": len(parsed_dates),
+                }
+            )
+        except ValueError as e:
+            logging.warning(f"Invalid date in agenda: {day_num}/{month_num}/{year} - {e}")
+            continue
+
+    return parsed_dates
+
+
+def _locate_target_date_offset(sorted_dates, target_date_obj, target_date) -> tuple[int | None, dict | None, bool]:
+    """Find the target date's position in the chronologically sorted dates.
+
+    Lifted verbatim out of `extract_session_date` (issue #272): `offset 0`
+    for the first date is a legitimate match, indistinguishable from the
+    "not found" default by value alone — `found_target` is the sole
+    disambiguator. A duplicate date keeps the first index (`break`). The
+    comparison is against `target_date_obj.date()`, not the datetime.
+    """
+    date_offset = None
+    target_date_info = None
+    found_target = False
+
+    for i, date_info in enumerate(sorted_dates):
+        if date_info["date"] == target_date_obj.date():
+            date_offset = i  # 0 for first date, 1 for second date, etc.
+            target_date_info = date_info
+            found_target = True
+            logging.info(f"Target date {target_date} found at position {i} (offset = {date_offset})")
+            break
+
+    return date_offset, target_date_info, found_target
+
+
 def extract_session_date(agendas, target_date: str):
     """
     Extract session number and agenda section for the target date.
@@ -982,32 +1076,7 @@ def extract_session_date(agendas, target_date: str):
             continue
 
         # Step 1: Extract all dates from the agenda and parse them
-        parsed_dates = []
-        for match in date_matches:
-            day_name = match.group(1).lower()
-            day_num = int(match.group(2))
-            month_name = match.group(3).lower()
-            year = int(match.group(4)) if match.group(4) else target_date_obj.year
-
-            # Convert Spanish date to datetime
-            month_num = spanish_months.get(month_name)
-            if not month_num:
-                logging.warning(f"Unknown month: {month_name}")
-                continue
-
-            try:
-                section_date = datetime(year, month_num, day_num).date()
-                parsed_dates.append(
-                    {
-                        "date": section_date,
-                        "day_name": day_name,
-                        "match": match,
-                        "original_index": len(parsed_dates),
-                    }
-                )
-            except ValueError as e:
-                logging.warning(f"Invalid date in agenda: {day_num}/{month_num}/{year} - {e}")
-                continue
+        parsed_dates = _parse_agenda_dates(date_matches, spanish_months, target_date_obj)
 
         if not parsed_dates:
             logging.warning(f"Could not parse any dates in agenda for {video_id}")
@@ -1034,17 +1103,9 @@ def extract_session_date(agendas, target_date: str):
             logging.info(f"  Position {i}: {date_info['day_name'].upper()}, {date_info['date']}")
 
         # Step 3: Find target date position in sorted list
-        date_offset = None
-        target_date_info = None
-        found_target = False
-
-        for i, date_info in enumerate(sorted_dates):
-            if date_info["date"] == target_date_obj.date():
-                date_offset = i  # 0 for first date, 1 for second date, etc.
-                target_date_info = date_info
-                found_target = True
-                logging.info(f"Target date {target_date} found at position {i} (offset = {date_offset})")
-                break
+        date_offset, target_date_info, found_target = _locate_target_date_offset(
+            sorted_dates, target_date_obj, target_date
+        )
 
         # Step 4: Build result
         if not found_target:
@@ -1088,6 +1149,79 @@ def extract_session_date(agendas, target_date: str):
 
     logging.info(f"Total session dates processed: {len(session_results)}")
     return {"total_processed": len(session_results), "videos": session_results}
+
+
+def _find_agenda_for_video(agendas, video_id) -> dict | None:
+    """Find the agenda entry matching `video_id`.
+
+    Lifted verbatim out of `extract_agenda_section` (issue #272): first
+    match wins when `video_id` is duplicated (`break`); `None` when
+    absent. An agenda item without a `video_id` key raises `KeyError`
+    (pre-existing direct subscript, not `.get()`).
+    """
+    agenda_item = None
+    for agenda in agendas["videos"]:
+        if agenda["video_id"] == video_id:
+            agenda_item = agenda
+            break
+
+    return agenda_item
+
+
+def _locate_target_section(agenda_text, date_matches, target_date_dt, spanish_months) -> str | None:
+    """Extract the agenda text between the target date header and the next
+    date header (or end of document).
+
+    Lifted verbatim out of `extract_agenda_section` (issue #272): `None`
+    when no header matches `target_date_dt`. The next-header boundary is
+    the smallest `.start()` greater than the matched header's `.start()`
+    — scanned across all of `date_matches`, not "the next item in list
+    order" (the two coincide only when `date_matches` is produced by
+    `re.finditer` over this same `agenda_text`, which a standalone caller
+    need not guarantee). The result is `.strip()`ped, which can yield `""`
+    for a zero-width or whitespace-only slice — the caller's
+    `if target_section:` then treats that as not-found.
+    """
+    target_section = None
+
+    for i, match in enumerate(date_matches):
+        day_name = match.group(1).lower()
+        day_num = int(match.group(2))
+        month_name = match.group(3).lower()
+        year = int(match.group(4)) if match.group(4) else target_date_dt.year
+
+        # Convert Spanish date to datetime
+        month_num = spanish_months.get(month_name)
+        if not month_num:
+            continue
+
+        try:
+            section_date = datetime(year, month_num, day_num).date()
+
+            # Check if this section matches our target date
+            if section_date == target_date_dt:
+                # Extract text from this date header to the next date header (or end)
+                start_pos = match.start()
+
+                # Find next match after this one
+                next_match = None
+                for other_match in date_matches:
+                    if other_match.start() > start_pos:
+                        if next_match is None or other_match.start() < next_match.start():
+                            next_match = other_match
+
+                end_pos = next_match.start() if next_match else len(agenda_text)
+                target_section = agenda_text[start_pos:end_pos].strip()
+
+                logging.info(f"Extracted agenda section for {day_name.upper()}, {day_num} de {month_name}")
+                logging.info(f"  Section: {len(target_section)} chars (lines {start_pos} to {end_pos})")
+                break
+
+        except ValueError as e:
+            logging.warning(f"Invalid date: {day_num}/{month_num}/{year} - {e}")
+            continue
+
+    return target_section
 
 
 def extract_agenda_section(agendas, session_date_info):
@@ -1141,11 +1275,7 @@ def extract_agenda_section(agendas, session_date_info):
         target_date = session_info["target_date"]
 
         # Find corresponding agenda
-        agenda_item = None
-        for agenda in agendas["videos"]:
-            if agenda["video_id"] == video_id:
-                agenda_item = agenda
-                break
+        agenda_item = _find_agenda_for_video(agendas, video_id)
 
         if not agenda_item:
             logging.warning(f"No agenda found for video_id {video_id}")
@@ -1192,45 +1322,8 @@ def extract_agenda_section(agendas, session_date_info):
             continue
 
         # Find the match that corresponds to our target date
-        target_section = None
         target_date_dt = datetime.strptime(target_date, "%Y-%m-%d").date()
-
-        for i, match in enumerate(date_matches):
-            day_name = match.group(1).lower()
-            day_num = int(match.group(2))
-            month_name = match.group(3).lower()
-            year = int(match.group(4)) if match.group(4) else target_date_dt.year
-
-            # Convert Spanish date to datetime
-            month_num = spanish_months.get(month_name)
-            if not month_num:
-                continue
-
-            try:
-                section_date = datetime(year, month_num, day_num).date()
-
-                # Check if this section matches our target date
-                if section_date == target_date_dt:
-                    # Extract text from this date header to the next date header (or end)
-                    start_pos = match.start()
-
-                    # Find next match after this one
-                    next_match = None
-                    for other_match in date_matches:
-                        if other_match.start() > start_pos:
-                            if next_match is None or other_match.start() < next_match.start():
-                                next_match = other_match
-
-                    end_pos = next_match.start() if next_match else len(agenda_text)
-                    target_section = agenda_text[start_pos:end_pos].strip()
-
-                    logging.info(f"Extracted agenda section for {day_name.upper()}, {day_num} de {month_name}")
-                    logging.info(f"  Section: {len(target_section)} chars (lines {start_pos} to {end_pos})")
-                    break
-
-            except ValueError as e:
-                logging.warning(f"Invalid date: {day_num}/{month_num}/{year} - {e}")
-                continue
+        target_section = _locate_target_section(agenda_text, date_matches, target_date_dt, spanish_months)
 
         if target_section:
             extracted_sections.append(

@@ -1784,6 +1784,54 @@ class TestNewsFormatConstants:
 # ---------------------------------------------------------------------------
 
 
+class TestNotorietyRules:
+    """Issue #510: the notoriety gate and conflict-first ordering promoted by A/B.
+
+    These rules were not written by taste — they were derived from a human
+    labelling pass over 60 published titles and promoted by a measured
+    comparison (30-11, p = 0.0043) whose text is reproduced verbatim in the
+    prompt. The tests pin the behaviour the rules encode, so a later reword
+    that quietly drops one of them fails here instead of in production.
+    """
+
+    def test_notoriety_rules_are_part_of_the_system_prompt(self) -> None:
+        """The rules must actually reach the model, not just exist as a constant."""
+        from congress_videos.config.ai_prompts import (
+            THUMBNAIL_TITLE_NOTORIETY_RULES,
+            THUMBNAIL_TITLE_SYSTEM_PROMPT,
+        )
+
+        assert THUMBNAIL_TITLE_NOTORIETY_RULES in THUMBNAIL_TITLE_SYSTEM_PROMPT
+
+    def test_rules_prefer_the_office_over_an_unknown_name(self) -> None:
+        """An unrecognised deputy must be introduced by role, not by surname."""
+        from congress_videos.config.ai_prompts import THUMBNAIL_TITLE_NOTORIETY_RULES
+
+        rules_lower = THUMBNAIL_TITLE_NOTORIETY_RULES.lower()
+        assert "notoriedad" in rules_lower
+        assert "cargo" in rules_lower
+
+    def test_rules_ban_the_parliamentary_courtesy_form(self) -> None:
+        """ "El señor X" is chamber register; it identifies nobody to a viewer."""
+        from congress_videos.config.ai_prompts import THUMBNAIL_TITLE_NOTORIETY_RULES
+
+        rules_lower = THUMBNAIL_TITLE_NOTORIETY_RULES.lower()
+        assert "el señor x" in rules_lower or "tratamiento parlamentario" in rules_lower
+
+    def test_rules_require_the_conflict_first(self) -> None:
+        """The striking element leads; the procedure that wraps it does not."""
+        from congress_videos.config.ai_prompts import THUMBNAIL_TITLE_NOTORIETY_RULES
+
+        assert "lo más llamativo va primero" in THUMBNAIL_TITLE_NOTORIETY_RULES.lower()
+
+    def test_rules_allow_a_party_or_institution_as_subject(self) -> None:
+        """A concrete fact behind a party subject scored 9 in the labelling pass."""
+        from congress_videos.config.ai_prompts import THUMBNAIL_TITLE_NOTORIETY_RULES
+
+        rules_lower = THUMBNAIL_TITLE_NOTORIETY_RULES.lower()
+        assert "partido o una institución" in rules_lower
+
+
 class TestNewsFormatSystemPrompt:
     """Phase 2: THUMBNAIL_TITLE_SYSTEM_PROMPT must contain news-format and question ban."""
 

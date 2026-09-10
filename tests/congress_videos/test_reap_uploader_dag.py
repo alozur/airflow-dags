@@ -1068,6 +1068,204 @@ class TestVerifyFinalCopyShorts:
         assert restored[0]["chapter"]["updated_at"] == _make_short_meta()["chapter"]["updated_at"]
 
 
+class TestCopyVerificationEvidenceNameSplit:
+    """Issue #544: `_copy_verification_evidence` (reap seam) must keep the
+    raw roster `display_name` and the canonical `short_name` (#511) in two
+    distinct, never-conflated fields — mirrors the youtube_upload_dag.py
+    coverage (design.md D1/D2). Reuses this file's existing `_lookup_stub`
+    (line 1152) instead of redefining it, per design.md D2."""
+
+    def test_resolvable_slug_splits_raw_and_canonical(self, mocker):
+        from congress_videos.reap_shorts_uploader_dag import _copy_verification_evidence
+
+        chapter = {"mentioned_participant_slugs": None}
+        turn_speaker_row = {"resolved_participant_slug": "known-slug"}
+
+        roster = {"known-slug": {"display_name": "RAW Foo"}}
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.lookup_participant_by_slug",
+            side_effect=_lookup_stub(roster),
+        )
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.canonical_display_name",
+            return_value="CANON-X",
+        )
+
+        evidence = _copy_verification_evidence(chapter, turn_speaker_row)
+
+        assert evidence["speaker"]["display_name"] == "RAW Foo"
+        assert evidence["speaker"]["short_name"] == "CANON-X"
+        assert evidence["speaker"]["display_name"] != evidence["speaker"]["short_name"]
+
+    def test_unmapped_slug_keeps_raw_and_nulls_canonical(self, mocker):
+        from congress_videos.reap_shorts_uploader_dag import _copy_verification_evidence
+
+        chapter = {"mentioned_participant_slugs": None}
+        turn_speaker_row = {"resolved_participant_slug": "known-slug"}
+
+        roster = {"known-slug": {"display_name": "RAW Foo"}}
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.lookup_participant_by_slug",
+            side_effect=_lookup_stub(roster),
+        )
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.canonical_display_name",
+            return_value=None,
+        )
+
+        evidence = _copy_verification_evidence(chapter, turn_speaker_row)
+
+        assert evidence["speaker"]["short_name"] is None
+        assert evidence["speaker"]["display_name"] == "RAW Foo"
+
+    def test_mentioned_entries_split_raw_and_canonical(self, mocker):
+        from congress_videos.reap_shorts_uploader_dag import _copy_verification_evidence
+
+        chapter = {"mentioned_participant_slugs": ["mentioned-a", "mentioned-b"]}
+        turn_speaker_row = {"resolved_participant_slug": "speaker-slug"}
+
+        roster = {
+            "speaker-slug": {"display_name": "RAW Speaker"},
+            "mentioned-a": {"display_name": "RAW Mentioned A"},
+            "mentioned-b": {"display_name": "RAW Mentioned B"},
+        }
+        canonical = {
+            "speaker-slug": "CANON Speaker",
+            "mentioned-a": "CANON Mentioned A",
+            "mentioned-b": "CANON Mentioned B",
+        }
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.lookup_participant_by_slug",
+            side_effect=_lookup_stub(roster),
+        )
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.canonical_display_name",
+            side_effect=lambda slug: canonical.get(slug),
+        )
+
+        evidence = _copy_verification_evidence(chapter, turn_speaker_row)
+
+        by_slug = {entry["slug"]: entry for entry in evidence["mencionados"]}
+        assert by_slug["mentioned-a"]["display_name"] == "RAW Mentioned A"
+        assert by_slug["mentioned-a"]["short_name"] == "CANON Mentioned A"
+        assert by_slug["mentioned-b"]["display_name"] == "RAW Mentioned B"
+        assert by_slug["mentioned-b"]["short_name"] == "CANON Mentioned B"
+        assert by_slug["mentioned-a"]["display_name"] != evidence["speaker"]["display_name"]
+        assert by_slug["mentioned-b"]["display_name"] != evidence["speaker"]["display_name"]
+
+
+def _key_shape(value):
+    """Recursive key-shape extractor for cross-module parity (design.md D4).
+
+    Dicts collapse to a sorted-key dict of shapes, lists collapse to a list
+    of per-item shapes (length preserved, so a dropped entry is still
+    caught), and any leaf value collapses to `None` — values are
+    deliberately never compared, only the recursive key structure."""
+    if isinstance(value, dict):
+        return {k: _key_shape(v) for k, v in sorted(value.items())}
+    if isinstance(value, list):
+        return [_key_shape(v) for v in value]
+    return None
+
+
+class TestCopyVerificationEvidenceShapeParity:
+    """Issue #544: the long-form (`youtube_upload_dag`) and shorts
+    (`reap_shorts_uploader_dag`) `_copy_verification_evidence` builders must
+    emit bundles with identical recursive key shape for equivalent inputs,
+    despite their intentionally different call signatures (design.md D3).
+    Lives here per design.md D5: this DAG's own docstring claims the mirror,
+    so the guard belongs with the claimant."""
+
+    def test_both_helpers_emit_identical_bundle_shape(self, mocker):
+        from unittest.mock import MagicMock
+
+        from congress_videos.reap_shorts_uploader_dag import (
+            _copy_verification_evidence as shorts_evidence,
+        )
+        from congress_videos.youtube_upload_dag import (
+            _copy_verification_evidence as long_form_evidence,
+        )
+
+        chapter = {"mentioned_participant_slugs": ["mentioned-a", "mentioned-b"]}
+        turn_speaker_row = {"resolved_participant_slug": "known-slug"}
+
+        roster = {
+            "known-slug": {"display_name": "RAW Speaker"},
+            "mentioned-a": {"display_name": "RAW Mentioned A"},
+            "mentioned-b": {"display_name": "RAW Mentioned B"},
+        }
+        canonical = {
+            "known-slug": "CANON Speaker",
+            "mentioned-a": "CANON Mentioned A",
+            "mentioned-b": "CANON Mentioned B",
+        }
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_by_slug",
+            side_effect=_lookup_stub(roster),
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.canonical_display_name",
+            side_effect=lambda slug: canonical.get(slug),
+        )
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.lookup_participant_by_slug",
+            side_effect=_lookup_stub(roster),
+        )
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.canonical_display_name",
+            side_effect=lambda slug: canonical.get(slug),
+        )
+
+        db = MagicMock()
+        db.get_chapter_metadata.return_value = chapter
+        db.get_turn_speaker_slug.return_value = turn_speaker_row
+
+        long_form = long_form_evidence(db, chapter_id=1, turn_id=2)
+        shorts = shorts_evidence(chapter, turn_speaker_row)
+
+        assert _key_shape(long_form) == _key_shape(shorts)
+
+    def test_unresolved_speaker_still_yields_matching_bundle_shape(self, mocker):
+        from unittest.mock import MagicMock
+
+        from congress_videos.reap_shorts_uploader_dag import (
+            _copy_verification_evidence as shorts_evidence,
+        )
+        from congress_videos.youtube_upload_dag import (
+            _copy_verification_evidence as long_form_evidence,
+        )
+
+        chapter = {"mentioned_participant_slugs": None}
+        turn_speaker_row = {"resolved_participant_slug": None}
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_by_slug",
+            return_value=None,
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.canonical_display_name",
+            return_value=None,
+        )
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.lookup_participant_by_slug",
+            return_value=None,
+        )
+        mocker.patch(
+            "congress_videos.reap_shorts_uploader_dag.canonical_display_name",
+            return_value=None,
+        )
+
+        db = MagicMock()
+        db.get_chapter_metadata.return_value = chapter
+        db.get_turn_speaker_slug.return_value = turn_speaker_row
+
+        long_form = long_form_evidence(db, chapter_id=1, turn_id=2)
+        shorts = shorts_evidence(chapter, turn_speaker_row)
+
+        assert _key_shape(long_form) == _key_shape(shorts)
+
+
 # ---------------------------------------------------------------------------
 # _generate_metadata — AI success vs. fallback-on-error DAG-boundary coverage
 # (issue #365: no production change here, this DAG is a test subject only)
