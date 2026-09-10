@@ -1640,6 +1640,292 @@ class TestTriggerThumbnailGeneration:
 
 
 # ---------------------------------------------------------------------------
+# _regenerate_flagged_thumbnail (issue #545, PR2 — bounded, deliberately
+# UNWIRED: no caller exists yet; the t6b branch lands in a follow-up PR)
+# ---------------------------------------------------------------------------
+
+
+def _regen_dag_run(state="success", run_id="thumbnail_text_regen_test_run"):
+    dag_run = MagicMock()
+    dag_run.run_id = run_id
+    dag_run.state = state
+    return dag_run
+
+
+def _regen_valid_result(output_path="/videos/turn-1/thumbnail.png"):
+    return {
+        "success": True,
+        "output_path": output_path,
+        "title": "Nuevo título",
+        "title_generation_input": None,
+    }
+
+
+class TestRegenerateFlaggedThumbnail:
+    """Modeled on video_analytics_actions_dag.py::_poll_thumbnail_dag_run's
+    BOUNDED loop shape (design.md D2) — NEVER trigger_thumbnail_generation's
+    unbounded ``while True`` above, which is a pre-existing risk, not a
+    template. The measured max (3989s) exceeds this helper's own 1000s
+    bound, so the timeout path is routinely exercised in production, not an
+    edge case."""
+
+    def test_completes_within_bound_returns_regenerated_result(self, mocker):
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        dag_run = _regen_dag_run(state="running")
+        # Settles on the 3rd poll — well under the 100-poll bound.
+        states = iter(["running", "running", "success"])
+        dag_run.refresh_from_db.side_effect = lambda: setattr(dag_run, "state", next(states))
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=dag_run)
+        sleep = mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=True)
+        valid_result = _regen_valid_result()
+        mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=valid_result)
+        mock_db = MagicMock()
+
+        result = _regenerate_flagged_thumbnail(
+            "/videos/turn-1/video.mp4", {"archetype": "closeup"}, "run_1", db=mock_db
+        )
+
+        assert result == valid_result
+        assert sleep.call_count == 3
+        mock_db.record_thumbnail_text_regeneration_outcome.assert_called_once_with(
+            "/videos/turn-1/video.mp4",
+            outcome="applied",
+            error=None,
+            regenerated_brief=valid_result,
+        )
+
+    def test_forwards_output_path_and_prior_brief_to_child_conf(self, mocker):
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        trigger = mocker.patch(
+            "congress_videos.youtube_upload_dag.trigger_dag_api",
+            return_value=_regen_dag_run(state="success"),
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=True)
+        mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=_regen_valid_result())
+
+        _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", {"archetype": "closeup"}, "run_1", db=MagicMock())
+
+        trigger.assert_called_once_with(
+            dag_id="generic_thumbnail_generator",
+            conf={"output_path": "/videos/turn-1/video.mp4", "previous_brief": {"archetype": "closeup"}},
+            run_id="thumbnail_text_regen_run_1",
+        )
+
+    def test_missing_prior_brief_omits_previous_brief_key(self, mocker):
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        trigger = mocker.patch(
+            "congress_videos.youtube_upload_dag.trigger_dag_api",
+            return_value=_regen_dag_run(state="success"),
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=True)
+        mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=_regen_valid_result())
+
+        _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", None, "run_1", db=MagicMock())
+
+        trigger.assert_called_once_with(
+            dag_id="generic_thumbnail_generator",
+            conf={"output_path": "/videos/turn-1/video.mp4"},
+            run_id="thumbnail_text_regen_run_1",
+        )
+
+    def test_times_out_after_exactly_max_polls(self, mocker):
+        """Mutation check (tasks.md 2.4): the loop count must be EXACTLY
+        _THUMBNAIL_REGEN_MAX_POLLS (100), never >=100 or an off-by-one —
+        pinned via time.sleep's exact call count."""
+        from congress_videos.youtube_upload_dag import (
+            _THUMBNAIL_REGEN_MAX_POLLS,
+            _regenerate_flagged_thumbnail,
+        )
+
+        dag_run = _regen_dag_run(state="running")
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=dag_run)
+        sleep = mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mock_db = MagicMock()
+
+        result = _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", None, "run_1", db=mock_db)
+
+        assert result == {"outcome": "timeout", "error": mocker.ANY}
+        assert sleep.call_count == _THUMBNAIL_REGEN_MAX_POLLS == 100
+        assert dag_run.refresh_from_db.call_count == _THUMBNAIL_REGEN_MAX_POLLS
+        mock_db.record_thumbnail_text_regeneration_outcome.assert_called_once_with(
+            "/videos/turn-1/video.mp4",
+            outcome="timeout",
+            error=mocker.ANY,
+            regenerated_brief=None,
+        )
+
+    def test_trigger_exception_returns_trigger_failed_never_raises(self, mocker):
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.trigger_dag_api",
+            side_effect=RuntimeError("could not reach the scheduler API"),
+        )
+        mock_db = MagicMock()
+
+        result = _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", None, "run_1", db=mock_db)
+
+        assert result == {"outcome": "trigger_failed", "error": "could not reach the scheduler API"}
+        mock_db.record_thumbnail_text_regeneration_outcome.assert_called_once_with(
+            "/videos/turn-1/video.mp4",
+            outcome="trigger_failed",
+            error="could not reach the scheduler API",
+            regenerated_brief=None,
+        )
+
+    def test_child_dag_failed_state_returns_child_failed(self, mocker):
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        dag_run = _regen_dag_run(state="failed")
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=dag_run)
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        get_one = mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one")
+        mock_db = MagicMock()
+
+        result = _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", None, "run_1", db=mock_db)
+
+        assert result == {"outcome": "child_failed", "error": mocker.ANY}
+        get_one.assert_not_called()
+        mock_db.record_thumbnail_text_regeneration_outcome.assert_called_once_with(
+            "/videos/turn-1/video.mp4",
+            outcome="child_failed",
+            error=mocker.ANY,
+            regenerated_brief=None,
+        )
+
+    @pytest.mark.parametrize(
+        "xcom_result",
+        [
+            None,
+            {"success": True, "output_path": "", "title": "x"},
+            {"success": True, "title": "x"},
+            {"success": False, "output_path": "/videos/turn-1/thumbnail.png", "title": "x"},
+        ],
+        ids=["none", "empty_output_path", "missing_output_path", "success_false"],
+    )
+    def test_malformed_xcom_returns_invalid_result(self, mocker, xcom_result):
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        dag_run = _regen_dag_run(state="success")
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=dag_run)
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=xcom_result)
+        mock_db = MagicMock()
+
+        result = _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", None, "run_1", db=mock_db)
+
+        assert result == {"outcome": "invalid_result", "error": mocker.ANY}
+        mock_db.record_thumbnail_text_regeneration_outcome.assert_called_once_with(
+            "/videos/turn-1/video.mp4",
+            outcome="invalid_result",
+            error=mocker.ANY,
+            regenerated_brief=None,
+        )
+
+    def test_valid_success_shape_but_nonexistent_path_is_invalid_result(self, mocker):
+        """design.md D5: a returned path that does not exist on disk is
+        recorded as invalid_result and never swapped in — even when every
+        other field of the child's result is well-formed."""
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        dag_run = _regen_dag_run(state="success")
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=dag_run)
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=False)
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.XCom.get_one",
+            return_value=_regen_valid_result(),
+        )
+        mock_db = MagicMock()
+
+        result = _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", None, "run_1", db=mock_db)
+
+        assert result == {"outcome": "invalid_result", "error": mocker.ANY}
+
+    def test_outcome_recording_failure_is_swallowed(self, mocker, caplog):
+        """design.md D4 point 3: the outcome write uses the
+        _write_title_provenance failure-isolation shape — a DB outage on the
+        bookkeeping write cannot become a publication outage."""
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        dag_run = _regen_dag_run(state="success")
+        mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=dag_run)
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=True)
+        valid_result = _regen_valid_result()
+        mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=valid_result)
+        mock_db = MagicMock()
+        mock_db.record_thumbnail_text_regeneration_outcome.side_effect = RuntimeError("db is down")
+
+        with caplog.at_level("ERROR"):
+            result = _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", None, "run_1", db=mock_db)
+
+        assert result == valid_result
+        assert any("db is down" in r.message for r in caplog.records)
+
+    @pytest.mark.parametrize(
+        "setup",
+        [
+            "trigger_raises",
+            "child_failed",
+            "invalid_result",
+            "timeout",
+            "unexpected_poll_exception",
+        ],
+    )
+    def test_no_path_ever_raises(self, mocker, setup):
+        """NON-NEGOTIABLE (issue #545 PR2): six failure modes converge on ONE
+        behaviour — publish as-is, record the outcome, never raise. This is
+        what makes #512's non-blocking asymmetry structural rather than
+        aspirational. Every branch, including a genuinely unexpected
+        mid-poll exception, must return a dict rather than propagate."""
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mock_db = MagicMock()
+
+        if setup == "trigger_raises":
+            mocker.patch(
+                "congress_videos.youtube_upload_dag.trigger_dag_api",
+                side_effect=RuntimeError("boom"),
+            )
+        elif setup == "child_failed":
+            mocker.patch(
+                "congress_videos.youtube_upload_dag.trigger_dag_api",
+                return_value=_regen_dag_run(state="failed"),
+            )
+        elif setup == "invalid_result":
+            mocker.patch(
+                "congress_videos.youtube_upload_dag.trigger_dag_api",
+                return_value=_regen_dag_run(state="success"),
+            )
+            mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=None)
+        elif setup == "timeout":
+            mocker.patch(
+                "congress_videos.youtube_upload_dag.trigger_dag_api",
+                return_value=_regen_dag_run(state="running"),
+            )
+        elif setup == "unexpected_poll_exception":
+            dag_run = _regen_dag_run(state="running")
+            dag_run.refresh_from_db.side_effect = RuntimeError("scheduler DB unreachable")
+            mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=dag_run)
+
+        try:
+            result = _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", None, "run_1", db=mock_db)
+        except Exception as exc:  # pragma: no cover - the assertion below is the real check
+            pytest.fail(f"_regenerate_flagged_thumbnail raised {exc!r} instead of returning a dict")
+
+        assert isinstance(result, dict)
+        assert "outcome" in result or result.get("success") is True
+
+
+# ---------------------------------------------------------------------------
 # _backfill_thumbnail_video_id
 # ---------------------------------------------------------------------------
 

@@ -77,6 +77,17 @@ STALE_RUN_TOLERANCE_MINUTES = int(os.getenv("CHAPTER_UPLOADER_STALE_RUN_TOLERANC
 _THUMBNAIL_DAG_ID = "generic_thumbnail_generator"
 _THUMBNAIL_RESULT_TASK_ID = "thumbnail_result"
 
+# Bounded poll loop for a triggered thumbnail-text regeneration (issue #545,
+# design.md D2): 100 x 10s = 1000s. Measured production regenerations reach
+# p50=214s, p95=888s, max=3989s — 1000s clears p95 with ~13% headroom, but
+# the max EXCEEDS this bound, so the timeout branch below is a routinely
+# exercised path, not an edge case. Deliberately its OWN env var/constant
+# pair, distinct from _THUMBNAIL_MAX_POLLS in video_analytics_actions_dag.py
+# (~30 min, post-publication) — this task runs pre-publication and cannot
+# tolerate that longer wait.
+_THUMBNAIL_REGEN_POLL_INTERVAL_SECONDS = 10
+_THUMBNAIL_REGEN_MAX_POLLS = int(os.getenv("UPLOAD_THUMBNAIL_REGEN_MAX_POLLS", "100"))
+
 
 def _is_scheduled_run(dag_run) -> bool:
     """True for scheduler-created runs; a missing dag_run is treated as scheduled."""
@@ -880,6 +891,143 @@ def trigger_thumbnail_generation(ti, db=None, **context) -> str | None:
 
         ti.xcom_push(key="thumbnail_result", value=result)
         return child_run_id
+
+
+def _regenerate_flagged_thumbnail(
+    output_path: str,
+    prior_brief: dict | None,
+    run_id: str,
+    db=None,
+) -> dict | None:
+    """Trigger and poll one bounded thumbnail-text regeneration attempt (issue #545).
+
+    Standalone helper — deliberately UNWIRED in this slice: no caller exists
+    yet, the ``t6b`` branch that claims an attempt and invokes this function
+    lands in a follow-up PR. Modeled on
+    ``video_analytics_actions_dag.py::_poll_thumbnail_dag_run``'s BOUNDED
+    loop shape (design.md D2) — never this module's own
+    ``trigger_thumbnail_generation``, whose unbounded ``while True`` is a
+    pre-existing risk, not a template here.
+
+    Six outcomes converge on the SAME non-blocking contract (design.md D4):
+    a trigger failure, a child DAG ``failed`` state, a malformed/missing
+    child result (including a returned path that does not exist on disk —
+    D5), a poll timeout, and a landed success all record their outcome via
+    ``record_thumbnail_text_regeneration_outcome`` and return WITHOUT ever
+    raising. The whole body is one ``try/except Exception`` — the same
+    catch-and-return shape as ``_write_title_provenance`` above — so a bug
+    here, including one during polling that nobody anticipated, can never
+    fail the enclosing ``t6b`` task and block publication. Measured
+    production regenerations reach up to 3989s, which EXCEEDS this
+    function's own 1000s bound, so the timeout branch is a routinely
+    exercised path, not an edge case.
+
+    Args:
+        output_path: The triggering turn's own ``video.mp4`` path. Becomes
+            the child DAG's ``conf["output_path"]`` so the child's write is
+            confined to this turn's own directory (design.md D6: sibling
+            isolation is guaranteed by file, never by the shared
+            ``video_thumbnails`` DB row).
+        prior_brief: The brief snapshotted at claim time
+            (``claim_thumbnail_text_regeneration``'s return), forwarded as
+            ``previous_brief`` so the regeneration steers away from the
+            flagged original. Omitted from the child conf entirely when
+            falsy — best-effort steering, never a hard requirement.
+        run_id: The enclosing DAG run's ``run_id``, used to build a
+            deterministic, traceable child ``run_id``.
+        db: CongressionalVideoDB instance (injected for testability;
+            created internally when None), matching how
+            ``trigger_thumbnail_generation`` already receives one.
+
+    Returns:
+        The child DAG's ``thumbnail_result`` XCom dict on a landed success,
+        or ``{"outcome": ..., "error": ...}`` for any of
+        ``trigger_failed``/``child_failed``/``invalid_result``/``timeout``.
+        Never raises, and never returns anything else.
+    """
+    from congress_videos.modules.database import CongressionalVideoDB
+
+    database = db or CongressionalVideoDB()
+
+    def _record(outcome: str, *, error: str | None = None, regenerated_brief: dict | None = None) -> None:
+        # design.md D4 point 3 / _write_title_provenance shape: a DB outage
+        # on this best-effort bookkeeping write must never become a
+        # publication outage.
+        try:
+            database.record_thumbnail_text_regeneration_outcome(
+                output_path,
+                outcome=outcome,
+                error=error,
+                regenerated_brief=regenerated_brief,
+            )
+        except Exception as exc:
+            logging.error(
+                "_regenerate_flagged_thumbnail: recording outcome=%s for output_path=%r failed: %s",
+                outcome,
+                output_path,
+                exc,
+            )
+
+    child_conf: dict = {"output_path": output_path}
+    if prior_brief:
+        child_conf["previous_brief"] = prior_brief
+    child_run_id = f"thumbnail_text_regen_{run_id}"
+
+    try:
+        dag_run = trigger_dag_api(
+            dag_id=_THUMBNAIL_DAG_ID,
+            conf=child_conf,
+            run_id=child_run_id,
+        )
+
+        for _poll in range(_THUMBNAIL_REGEN_MAX_POLLS):
+            time.sleep(_THUMBNAIL_REGEN_POLL_INTERVAL_SECONDS)
+            dag_run.refresh_from_db()
+            if dag_run.state not in ("success", "failed"):
+                continue
+
+            if dag_run.state != "success":
+                error = f"thumbnail regeneration DAG run {dag_run.run_id} failed"
+                logging.warning(error)
+                _record("child_failed", error=error)
+                return {"outcome": "child_failed", "error": error}
+
+            result = XCom.get_one(
+                dag_id=_THUMBNAIL_DAG_ID,
+                task_id=_THUMBNAIL_RESULT_TASK_ID,
+                key="return_value",
+                run_id=dag_run.run_id,
+            )
+            if not (
+                isinstance(result, dict)
+                and result.get("success") is True
+                and isinstance(result.get("output_path"), str)
+                and result["output_path"]
+                and os.path.exists(result["output_path"])
+            ):
+                error = f"thumbnail regeneration DAG run {dag_run.run_id} returned no valid result"
+                logging.warning(error)
+                _record("invalid_result", error=error)
+                return {"outcome": "invalid_result", "error": error}
+
+            _record("applied", regenerated_brief=result)
+            return result
+
+        error = (
+            f"thumbnail regeneration for output_path={output_path!r} timed out after "
+            f"{_THUMBNAIL_REGEN_MAX_POLLS * _THUMBNAIL_REGEN_POLL_INTERVAL_SECONDS}s"
+        )
+        logging.warning(error)
+        _record("timeout", error=error)
+        return {"outcome": "timeout", "error": error}
+    except Exception as exc:
+        logging.exception(
+            "_regenerate_flagged_thumbnail: regeneration failed for output_path=%r: %s",
+            output_path,
+            exc,
+        )
+        _record("trigger_failed", error=str(exc))
+        return {"outcome": "trigger_failed", "error": str(exc)}
 
 
 def _backfill_thumbnail_video_id(ti, db=None) -> None:
