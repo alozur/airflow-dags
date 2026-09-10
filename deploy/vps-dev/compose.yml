@@ -1,0 +1,252 @@
+# Standalone foundation: no inheritance from the NAS Compose files.
+x-airflow: &airflow
+  image: ${AIRFLOW_IMAGE:?An immutable release image is required}
+  user: "50000:0"
+  restart: unless-stopped
+  networks: [runtime]
+  environment: &environment
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${METADATA_PASSWORD:?Required}@metadata:5432/airflow_dev
+    AIRFLOW__CORE__FERNET_KEY: ${FERNET_KEY:?Required}
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${WEBSERVER_SECRET:?Required}
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags/repo
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__PARALLELISM: "2"
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "1"
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "120"
+    # Runtime application credentials: DML-only role, isolated from metadata and
+    # from the bootstrap superuser / migration role (least privilege for scheduler/webserver).
+    POSTGRES_HOST: application
+    POSTGRES_PORT: "5432"
+    POSTGRES_DB: application_dev
+    POSTGRES_USER: airflow_dev
+    POSTGRES_PASSWORD: ${APPLICATION_RUNTIME_PASSWORD:?Required}
+    POSTGRES_SCHEMA: development
+    # External API keys: rendered by Ansible from an optional secrets env file
+    # (external.env). A stack without that file behaves exactly as today.
+    OPENAI_API_KEY: ${OPENAI_API_KEY:-dev-disabled-not-a-credential}
+    YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-dev-disabled-not-a-credential}
+    REAP_API_KEY: ${REAP_API_KEY:-dev-disabled-not-a-credential}
+    PIKZELS_API_KEY: ${PIKZELS_API_KEY:-dev-disabled-not-a-credential}
+    # ML sidecars on the same internal network (these are also the code defaults).
+    WHISPER_API_HOST: whisper-api
+    WHISPER_API_PORT: "9000"
+    DIARIZE_API_HOST: diarize-api
+    DIARIZE_API_PORT: "8080"
+    YAMNET_API_HOST: yamnet-api
+    YAMNET_API_PORT: "8081"
+  volumes:
+    - logs:/opt/airflow/logs
+    - data:/opt/airflow/data
+  mem_limit: 2g
+  cpus: 2
+  security_opt: [no-new-privileges:true]
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+# CPU-only ML sidecars: internal network only, pre-seeded model volumes, no egress,
+# no Hugging Face token. Thread caps keep native pools inside the cpus budget.
+x-sidecar: &sidecar
+  restart: unless-stopped
+  networks: [runtime]
+  security_opt: [no-new-privileges:true]
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+services:
+  metadata:
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    restart: unless-stopped
+    networks: [runtime]
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${METADATA_PASSWORD:?Required}
+      POSTGRES_DB: airflow_dev
+    volumes: [metadata:/var/lib/postgresql/data]
+    mem_limit: 1g
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U airflow -d airflow_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Isolated business/application database: starts empty, provisioned only by app-init.
+  application:
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    restart: unless-stopped
+    networks: [runtime]
+    environment:
+      # Bootstrap superuser, mirrors the NAS legacy `airflow` role that grant_permissions.sql references.
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${APPLICATION_PASSWORD:?Required}
+      POSTGRES_DB: application_dev
+    volumes: [application:/var/lib/postgresql/data]
+    mem_limit: 1g
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U airflow -d application_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  init:
+    <<: *airflow
+    restart: "no"
+    environment:
+      <<: *environment
+      DEV_ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Required}
+    depends_on:
+      metadata: {condition: service_healthy}
+    command: [python, /opt/dev-tools/init.py]
+
+  # One-shot: creates roles/schema/grants via grant_permissions.sql, sets runtime/migration
+  # passwords, then applies pending SQL migrations exactly like the NAS run_migrations DAG does.
+  app-init:
+    <<: *airflow
+    restart: "no"
+    environment:
+      <<: *environment
+      APPLICATION_PASSWORD: ${APPLICATION_PASSWORD:?Required}
+      MIGRATION_POSTGRES_USER: airflow_migrations
+      MIGRATION_POSTGRES_PASSWORD: ${APPLICATION_MIGRATION_PASSWORD:?Required}
+    depends_on:
+      application: {condition: service_healthy}
+    command: [python, /opt/dev-tools/app_init.py]
+
+  # Only container that executes DAG tasks (LocalExecutor): the sole service
+  # attached to the egress network, and the only one holding external API
+  # keys and YouTube OAuth tokens.
+  scheduler:
+    <<: *airflow
+    networks: [runtime, egress]
+    environment:
+      <<: *environment
+      # Exposed so verify.py's egress probe knows the outcome compose expects.
+      EGRESS_INTERNAL: ${EGRESS_INTERNAL:-true}
+    volumes:
+      - logs:/opt/airflow/logs
+      - data:/opt/airflow/data
+      - ${YOUTUBE_TOKENS_HOST_DIR:?Required}:/opt/airflow/data/congress_videos/youtube_tokens
+    depends_on:
+      metadata: {condition: service_healthy}
+      application: {condition: service_healthy}
+    command: scheduler
+    healthcheck:
+      test: [CMD-SHELL, 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 20s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+
+  webserver:
+    <<: *airflow
+    depends_on:
+      metadata: {condition: service_healthy}
+      application: {condition: service_healthy}
+    # Fixed address: the host loopback relay targets it; Docker publishes nothing.
+    networks:
+      runtime:
+        ipv4_address: ${UI_UPSTREAM:?Required}
+    command: webserver
+    healthcheck:
+      test: [CMD, curl, -f, http://localhost:8080/health]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+
+  diarize-api:
+    <<: *sidecar
+    # Built from benchmarks/pyannote_diarization at the release revision; runs as uid 10001.
+    image: ${DIARIZE_IMAGE:?Required}
+    environment:
+      # The server refuses to start inference without this variable; the pipeline is
+      # pre-seeded in the volume and the hub is offline, so no real token exists here.
+      HF_TOKEN: dev-offline-not-a-token
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HOME: /model-cache
+      MODEL_CACHE_DIR: /model-cache
+      DIARIZE_API_PORT: "8080"
+      IDLE_TIMEOUT_SECONDS: "900"
+      # Three of the six vCores: diarization is the longest step (about real time
+      # on two threads), and only the scheduler's short ffmpeg extract runs alongside it.
+      OMP_NUM_THREADS: "3"
+      MKL_NUM_THREADS: "3"
+      TORCH_NUM_THREADS: "3"
+    volumes: [hf_home:/model-cache]
+    mem_limit: 4g
+    cpus: 3
+    healthcheck:
+      # Single-worker uvicorn also runs inference, so /health can take tens of seconds
+      # while a diarization is in flight; a short timeout reports a working service unhealthy.
+      test: [CMD, curl, -f, http://localhost:8080/health]
+      interval: 60s
+      timeout: 60s
+      retries: 3
+      start_period: 30s
+
+  yamnet-api:
+    <<: *sidecar
+    # Built from benchmarks/yamnet_applause at the release revision; runs as uid 10001.
+    image: ${YAMNET_IMAGE:?Required}
+    environment:
+      MODEL_CACHE_DIR: /model-cache
+      YAMNET_API_PORT: "8081"
+      IDLE_TIMEOUT_SECONDS: "900"
+      OMP_NUM_THREADS: "1"
+    volumes: [yamnet_model_cache:/model-cache]
+    mem_limit: 1g
+    cpus: 1
+    healthcheck:
+      test: [CMD, curl, -f, http://localhost:8081/health]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  whisper-api:
+    <<: *sidecar
+    # Third-party image pinned by digest (same build production runs); it runs as root
+    # by upstream design. The tiny faster-whisper model is pre-seeded in the volume.
+    image: onerahmet/openai-whisper-asr-webservice:latest@sha256:03b402335881cdab2e4939b24620809df8d6ceec3bf2712217d41c8761a0f5d4
+    environment:
+      ASR_MODEL: tiny
+      ASR_ENGINE: faster_whisper
+      HF_HUB_OFFLINE: "1"
+      OMP_NUM_THREADS: "2"
+    volumes: [whisper_models:/root/.cache/whisper]
+    mem_limit: 2g
+    cpus: 2
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://localhost:9000/docs', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+networks:
+  runtime:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${RUNTIME_SUBNET:?Required}
+  # Egress network: scheduler-only. Safe default is no egress (internal: true)
+  # when EGRESS_INTERNAL is unset; Ansible sets it explicitly per release.
+  egress:
+    driver: bridge
+    internal: ${EGRESS_INTERNAL:-true}
+    ipam:
+      config:
+        - subnet: ${EGRESS_SUBNET:?Required}
+volumes:
+  metadata:
+  application:
+  logs:
+  data:
+  # Model caches: seeded from the controller bundle by Ansible, never downloaded at runtime.
+  hf_home:
+  yamnet_model_cache:
+  whisper_models:
