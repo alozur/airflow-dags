@@ -612,3 +612,186 @@ class TestLocateTargetDateOffset:
 
         assert found_target is True
         assert offset == 0
+
+
+# ---------------------------------------------------------------------------
+# extract_agenda_section — characterization tests (issue #272, slice 5 PR4).
+# Zero prior coverage; these pin current behavior BEFORE the lift so the
+# refactor commit (PR4 commit 2) can be checked against them unchanged.
+# ---------------------------------------------------------------------------
+
+AGENDA_TEXT = (
+    "Sesión nº135\nMIÉRCOLES, 21 DE MAYO\nPunto 1: Debate de totalidad\nJUEVES, 22 DE MAYO\nPunto 2: Votación\n"
+)
+AGENDAS = {
+    "total_downloaded": 1,
+    "videos": [
+        {
+            "video_id": "v1",
+            "video_title": "Plenaria",
+            "agenda_url": "http://x/a.pdf",
+            "agenda_file_path": "/data/agenda.pdf",
+            "agenda_text": AGENDA_TEXT,
+        }
+    ],
+}
+SESSION_INFO = {
+    "total_processed": 1,
+    "videos": [
+        {
+            "video_id": "v1",
+            "video_title": "Plenaria",
+            "target_date": "2025-05-22",
+            "session_number": 136,
+            "base_session_number": 135,
+            "date_offset": 1,
+        }
+    ],
+}
+
+
+def _session_info(target_date: str, video_id: str = "v1") -> dict:
+    return {
+        "total_processed": 1,
+        "videos": [
+            {
+                "video_id": video_id,
+                "video_title": "Plenaria",
+                "target_date": target_date,
+                "session_number": 136,
+                "base_session_number": 135,
+                "date_offset": 1,
+            }
+        ],
+    }
+
+
+def _agendas(agenda_text: str, video_id: str = "v1", extra: dict | None = None) -> dict:
+    video = {
+        "video_id": video_id,
+        "video_title": "Plenaria",
+        "agenda_url": "http://x/a.pdf",
+        "agenda_file_path": "/data/agenda.pdf",
+        "agenda_text": agenda_text,
+    }
+    if extra:
+        video.update(extra)
+    return {"total_downloaded": 1, "videos": [video]}
+
+
+class TestExtractAgendaSection:
+    def test_extracts_section_between_target_header_and_next_header(self):
+        from congress_videos.modules.youtube.youtube_channel import extract_agenda_section
+
+        result = extract_agenda_section(AGENDAS, _session_info("2025-05-21"))
+
+        assert result["total_extracted"] == 1
+        entry = result["videos"][0]
+        expected = "MIÉRCOLES, 21 DE MAYO\nPunto 1: Debate de totalidad"
+        assert entry["agenda_section"] == expected
+        assert entry["section_length"] == len(expected)
+        assert entry["section_length"] == 50
+        assert entry["full_agenda_file_path"] == "/data/agenda.pdf"
+        assert entry["session_number"] == 136
+        assert entry["video_title"] == "Plenaria"
+
+    def test_last_date_section_runs_to_end_of_document(self):
+        from congress_videos.modules.youtube.youtube_channel import extract_agenda_section
+
+        result = extract_agenda_section(AGENDAS, _session_info("2025-05-22"))
+
+        entry = result["videos"][0]
+        assert entry["agenda_section"] == "JUEVES, 22 DE MAYO\nPunto 2: Votación"
+
+    def test_target_date_absent_returns_full_agenda_with_warning(self):
+        """The `if target_section:` else-branch at :1235 — no header matches
+        the target date."""
+        from congress_videos.modules.youtube.youtube_channel import extract_agenda_section
+
+        result = extract_agenda_section(AGENDAS, _session_info("2025-05-23"))
+
+        entry = result["videos"][0]
+        assert entry["agenda_section"] == AGENDA_TEXT
+        assert entry["warning"].startswith("Could not find section for 2025-05-23")
+        assert "section_length" not in entry
+        assert "full_agenda_file_path" not in entry
+
+    def test_no_parseable_date_headers_returns_full_agenda(self):
+        from congress_videos.modules.youtube.youtube_channel import extract_agenda_section
+
+        agenda_text = "Sesión nº135\nPunto 1: algo\n"
+
+        result = extract_agenda_section(_agendas(agenda_text), _session_info("2025-05-22"))
+
+        entry = result["videos"][0]
+        assert entry["warning"] == "Could not parse date headers, returning full agenda"
+        assert entry["agenda_section"] == agenda_text
+
+    def test_invalid_and_unknown_month_headers_do_not_abort_the_scan(self):
+        """Pins `if not month_num: continue` (:1206) and
+        `except ValueError: continue` (:1231) — the scan keeps going past a
+        31-DE-FEBRERO and an unknown month to find the real match."""
+        from congress_videos.modules.youtube.youtube_channel import extract_agenda_section
+
+        agenda_text = "LUNES, 31 DE FEBRERO\nx\nMARTES, 5 DE FOOBAR\ny\nJUEVES, 22 DE MAYO\nPunto 2\n"
+
+        result = extract_agenda_section(_agendas(agenda_text), _session_info("2025-05-22"))
+
+        entry = result["videos"][0]
+        assert "warning" not in entry
+        assert entry["agenda_section"] == "JUEVES, 22 DE MAYO\nPunto 2"
+
+    def test_missing_agenda_for_video_id_yields_error_entry(self):
+        from congress_videos.modules.youtube.youtube_channel import extract_agenda_section
+
+        result = extract_agenda_section(AGENDAS, _session_info("2025-05-22", video_id="v2"))
+
+        entry = result["videos"][0]
+        assert entry == {
+            "video_id": "v2",
+            "target_date": "2025-05-22",
+            "error": "No agenda found for this video",
+        }
+        assert "agenda_section" not in entry
+
+    def test_empty_agenda_text_yields_error_entry(self):
+        from congress_videos.modules.youtube.youtube_channel import extract_agenda_section
+
+        result = extract_agenda_section(_agendas(""), _session_info("2025-05-22"))
+
+        entry = result["videos"][0]
+        assert entry["error"] == "No agenda text available"
+
+    def test_agenda_item_carrying_error_key_yields_error_entry(self):
+        """The `or "error" in agenda_item` half of :1162 — a non-empty
+        agenda_text is still rejected when the agenda item carries an
+        error key from a prior download failure."""
+        from congress_videos.modules.youtube.youtube_channel import extract_agenda_section
+
+        agendas = _agendas(AGENDA_TEXT, extra={"error": "boom"})
+
+        result = extract_agenda_section(agendas, _session_info("2025-05-22"))
+
+        entry = result["videos"][0]
+        assert entry["error"] == "No agenda text available"
+
+    def test_empty_inputs_return_zero_extracted(self):
+        from congress_videos.modules.youtube.youtube_channel import extract_agenda_section
+
+        assert extract_agenda_section({}, SESSION_INFO) == {"total_extracted": 0, "videos": []}
+        assert extract_agenda_section(AGENDAS, None) == {"total_extracted": 0, "videos": []}
+        assert extract_agenda_section(AGENDAS, {"videos": []}) == {"total_extracted": 0, "videos": []}
+
+    def test_first_videos_target_date_must_parse(self):
+        """Pins :1118 — `target_date_obj` is never read afterwards (masked
+        F841) but it is load-bearing: it validates the first video's
+        target_date and indexes ["videos"][0]. Deleting it as "dead code"
+        would be a behaviour change."""
+        import pytest
+
+        from congress_videos.modules.youtube.youtube_channel import extract_agenda_section
+
+        session_date_info = {"videos": [{"video_id": "v1", "target_date": "31/05/2025"}]}
+
+        with pytest.raises(ValueError):
+            extract_agenda_section(AGENDAS, session_date_info)
