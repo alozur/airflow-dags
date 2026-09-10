@@ -1989,10 +1989,11 @@ with DAG(
     def _check_upload_failures(ti):
         """Raise after DB writes so failures are visible in the Airflow UI.
 
-        Accumulates four independent findings into ONE exception (issue #320
-        design D6, extended by issue #332): chapter DB-recorded upload
+        Accumulates independent blocking findings into ONE exception (issue
+        #320 design D6, extended by issue #332): chapter DB-recorded upload
         failures, videos published without their custom thumbnail, turn
-        DB-update failures, and a missing `copy_verification` XCom. A
+        DB-update failures, turn output_path_not_found/missing-XCom
+        findings, and a missing `copy_verification` XCom. A
         first-wins raise would hide later findings permanently — the DB
         writes are already committed and the XComs are immutable, so a
         retry would just re-raise the same earlier error forever without the
