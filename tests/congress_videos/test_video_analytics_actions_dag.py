@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from airflow.utils.json import XComDecoder, XComEncoder
+from freezegun import freeze_time
 
 # ---------------------------------------------------------------------------
 # DAG shape (8.1)
@@ -299,6 +300,41 @@ class TestCandidatesXComNormalization:
         assert isinstance(collected_at, datetime)
         assert collected_at.utcoffset() == timedelta(0)
         assert collected_at == _PSYCOPG2_COLLECTED_AT
+
+    def test_empty_candidate_list_normalizes_without_raising(self, mock_task_instance):
+        """Spec: 'Empty candidate list normalizes without raising' — an
+        empty get_unactioned_snapshots() result MUST push/return [] and
+        survive the real XCom round trip, not just skip the loop body."""
+        from congress_videos.video_analytics_actions_dag import _run_select_candidates
+
+        with patch(
+            "congress_videos.modules.database.CongressionalVideoDB.get_unactioned_snapshots",
+            return_value=[],
+        ):
+            result = _run_select_candidates(ti=mock_task_instance)
+
+        assert result == []
+        assert mock_task_instance.xcom_store["candidates"] == []
+        assert _xcom_round_trip(result) == []
+
+    def test_snapshot_age_days_unchanged_by_normalization(self):
+        """Spec: 'Snapshot age in days is unchanged by normalization' —
+        _snapshot_age_days on the raw fixed non-zero-offset collected_at
+        MUST equal the same call on its utc_normalize_row-normalized form,
+        since normalization is instant-preserving (.astimezone(UTC))."""
+        from congress_videos.video_analytics_actions_dag import _snapshot_age_days
+        from utils.airflow_helpers import utc_normalize_row
+
+        raw = _PSYCOPG2_COLLECTED_AT
+        normalized = utc_normalize_row({"collected_at": raw})["collected_at"]
+        assert normalized.utcoffset() == timedelta(0)
+
+        with freeze_time("2026-09-10 12:00:00+00:00"):
+            raw_age = _snapshot_age_days(raw)
+            normalized_age = _snapshot_age_days(normalized)
+
+        assert raw_age == normalized_age
+        assert raw_age == 21
 
 
 # ---------------------------------------------------------------------------
