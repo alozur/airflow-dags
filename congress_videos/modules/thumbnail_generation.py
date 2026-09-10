@@ -30,6 +30,8 @@ from congress_videos.config.ai_prompts import (
     ART_DIRECTION_SIBLING_INSTRUCTION,
     ART_DIRECTION_SYSTEM_PROMPT,
     ART_DIRECTION_USER_PROMPT_TEMPLATE,
+    LAPIDARY_CORRECTION_SYSTEM_PROMPT,
+    LAPIDARY_CORRECTION_USER_TEMPLATE,
     LAPIDARY_RANKING_SYSTEM_PROMPT,
     LAPIDARY_RANKING_USER_TEMPLATE,
     SPEAKER_PLACEHOLDERS,
@@ -41,7 +43,7 @@ from congress_videos.config.ai_prompts import (
 )
 from congress_videos.config.constants import CONGRESO_BROWSER_USER_AGENT
 from congress_videos.modules.politician_display_names import canonical_display_name
-from utils.ai_helpers import generate_json_completion
+from utils.ai_helpers import generate_json_completion, parse_json_response
 from utils.llm_config import LLM_CHEAP, LLM_DEFAULT
 from utils.postgres_helpers import PostgresConnection
 
@@ -255,6 +257,91 @@ def _passes_correction_guard(original: str, corrected: str, flagged: frozenset[i
     )
 
 
+# Minimum confidence the correction LLM must report for its output to be used.
+_LAPIDARY_CORRECTION_MIN_CONFIDENCE = 0.8
+
+# Characters of srt_fragment kept on each side of the quote as correction context.
+_LAPIDARY_CONTEXT_RADIUS = 800
+
+
+def _context_window(srt_fragment: str, quote: str, radius: int) -> str:
+    """Return up to `radius` characters of srt_fragment on each side of `quote`.
+
+    Falls back to the full srt_fragment when the verbatim quote cannot be
+    located inside it (should not happen in practice, since the quote was
+    extracted from this same fragment).
+    """
+    idx = srt_fragment.find(quote)
+    if idx == -1:
+        return srt_fragment
+    start = max(0, idx - radius)
+    end = min(len(srt_fragment), idx + len(quote) + radius)
+    return srt_fragment[start:end]
+
+
+def _valid_correction_text(data: dict, raw_content: str) -> str | None:
+    """Validate a parsed correction payload and return the usable text, or None.
+
+    Every failure path is logged at WARNING so a fail-soft `None` is still
+    diagnosable, per the module's existing convention for AI call fallbacks.
+    """
+    corrected = data.get("corrected")
+    if not isinstance(corrected, str) or not corrected.strip():
+        logger.warning("Lapidary correction response missing usable 'corrected' text: %r", raw_content)
+        return None
+
+    confidence = data.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        logger.warning("Lapidary correction response has a non-numeric confidence: %r", raw_content)
+        return None
+    if not (0 <= confidence <= 1):
+        logger.warning("Lapidary correction response confidence out of [0, 1] range: %r", raw_content)
+        return None
+    if confidence < _LAPIDARY_CORRECTION_MIN_CONFIDENCE:
+        return None
+
+    return corrected
+
+
+def _request_quote_correction(
+    quote: str,
+    flagged: frozenset[int],
+    srt_fragment: str,
+    completion_fn,
+) -> str | None:
+    """Ask the correction LLM to fix the flagged tokens in `quote`, fail-soft.
+
+    Sends the quote, the flagged token text, and a bounded context window
+    around it in `srt_fragment` to `completion_fn` at `LLM_CHEAP`. Returns the
+    corrected text only when the reply parses as a JSON object with a
+    non-blank `corrected` string and a `confidence` >= `_LAPIDARY_CORRECTION_MIN_CONFIDENCE`.
+    Any other outcome (call error, malformed JSON, missing keys, low
+    confidence) returns None and never raises.
+    """
+    tokens = quote.split()
+    flagged_words = ", ".join(tokens[i] for i in sorted(flagged) if i < len(tokens))
+    context = _context_window(srt_fragment, quote, _LAPIDARY_CONTEXT_RADIUS)
+    user_prompt = LAPIDARY_CORRECTION_USER_TEMPLATE.format(quote=quote, flagged=flagged_words, context=context)
+
+    response = completion_fn(
+        system_prompt=LAPIDARY_CORRECTION_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        model=LLM_CHEAP,
+    )
+
+    content: str = (response or {}).get("content") or ""
+    if not content.strip():
+        return None
+
+    parsed = parse_json_response(content)
+    data = parsed.get("data")
+    if not isinstance(data, dict):
+        logger.warning("Lapidary correction response was not a JSON object: %r", content)
+        return None
+
+    return _valid_correction_text(data, content)
+
+
 def _extract_candidate_clauses(srt_fragment: str, max_chars: int, min_words: int, max_words: int) -> list[str]:
     """Split srt_fragment on clause boundaries and filter to lapidary candidates.
 
@@ -338,12 +425,18 @@ def extract_lapidary_quote(
     max_words: int = 8,
     completion_fn=None,
 ) -> str | None:
-    """Extract the most impactful verbatim quote from an SRT fragment.
+    """Extract the most impactful quote from an SRT fragment, ASR-corrected when needed.
 
     Splits the fragment on clause boundaries, filters by word count and length,
     removes stop-word-leading candidates, deduplicates, then asks an LLM to rank
-    the survivors.  Returns the verbatim candidate string at the selected index,
-    or ``None`` when no candidates survive or the LLM declines.
+    the survivors. The ranked winner is checked by a pure risky-entity gate
+    (``_risky_token_indices``, issue #611): a quote with no risky token is
+    returned verbatim, exactly as before this capability existed. A flagged
+    quote is sent to one bounded correction LLM call (``_request_quote_correction``)
+    and the reply must then pass a structural guard (``_passes_correction_guard``)
+    before it is returned; any failure at either step returns ``None`` so the
+    caller falls back to its existing invented-text path — never the
+    uncorrected risky quote.
 
     Args:
         srt_fragment: Raw SRT text for a chapter time window.
@@ -355,7 +448,7 @@ def extract_lapidary_quote(
             the real ``generate_chat_completion`` when ``None``.
 
     Returns:
-        Verbatim candidate string, or ``None``.
+        Verbatim or corrected candidate string, or ``None``.
     """
     if completion_fn is None:
         from utils.ai_helpers import generate_chat_completion as _real_fn
@@ -374,7 +467,19 @@ def extract_lapidary_quote(
     if idx is None:
         return None
 
-    return candidates[idx]
+    quote = candidates[idx]
+    flagged = _risky_token_indices(quote)
+    if not flagged:
+        return quote
+
+    corrected = _request_quote_correction(quote, flagged, srt_fragment, completion_fn)
+    if corrected is None:
+        return None
+
+    if not _passes_correction_guard(quote, corrected, flagged, max_chars):
+        return None
+
+    return corrected
 
 
 def _real_speakers(key_speakers: list | None) -> list[str]:
