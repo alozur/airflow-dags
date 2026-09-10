@@ -76,9 +76,10 @@ def get_cached(cache_key: str) -> dict | None:
     """
     try:
         pg = PostgresConnection()
+        table = pg.get_qualified_table("llm_cache")
         with pg.get_connection() as conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT response FROM llm_cache WHERE cache_key = %s",
+                f"SELECT response FROM {table} WHERE cache_key = %s",
                 (cache_key,),
             )
             row = cur.fetchone()
@@ -105,9 +106,10 @@ def put_cached(cache_key: str, model: str, response: dict) -> None:
     """
     try:
         pg = PostgresConnection()
+        table = pg.get_qualified_table("llm_cache")
         with pg.get_connection() as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO llm_cache (cache_key, model, response) "
+                f"INSERT INTO {table} (cache_key, model, response) "
                 "VALUES (%s, %s, %s) ON CONFLICT (cache_key) DO NOTHING",
                 (cache_key, model, Json(response)),
             )

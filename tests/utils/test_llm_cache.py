@@ -28,6 +28,8 @@ def _fake_pg(fetch_row=None, capture=None):
     """Build a fake PostgresConnection whose cursor returns ``fetch_row``.
 
     ``capture`` (a list) collects ``(sql, params)`` tuples passed to execute.
+    ``get_qualified_table`` mirrors the real ``PostgresConnection`` behaviour
+    (schema-qualifies the table name) so SQL assertions see a realistic name.
     """
     cursor = MagicMock()
     cursor.fetchone.return_value = fetch_row
@@ -47,6 +49,7 @@ def _fake_pg(fetch_row=None, capture=None):
     conn.cursor.side_effect = _cursor_cm
 
     pg = MagicMock()
+    pg.get_qualified_table.side_effect = lambda name: f"development.{name}"
 
     @contextmanager
     def _conn_cm():
@@ -136,6 +139,21 @@ class TestGetCached:
         assert "llm_cache" in sql
         assert "{" not in sql and "}" not in sql, "SQL must not contain f-string braces"
 
+    def test_select_sql_uses_schema_qualified_table(self, mocker):
+        """The SELECT query must go through get_qualified_table('llm_cache')
+        so it targets the connection's configured schema on every environment
+        (e.g. 'production.llm_cache'), not the unqualified table name."""
+        capture: list = []
+        pg = _fake_pg(fetch_row=None, capture=capture)
+        mocker.patch.object(llm_cache, "PostgresConnection", return_value=pg)
+
+        get_cached("anykey")
+
+        pg.get_qualified_table.assert_called_once_with("llm_cache")
+        assert len(capture) == 1
+        sql, _ = capture[0]
+        assert "development.llm_cache" in sql
+
 
 class TestPutCached:
     def test_uses_insert_on_conflict_do_nothing(self, mocker):
@@ -180,6 +198,20 @@ class TestPutCached:
         sql, _ = capture[0]
         assert "llm_cache" in sql
         assert "{" not in sql and "}" not in sql, "SQL must not contain f-string braces"
+
+    def test_insert_sql_uses_schema_qualified_table(self, mocker):
+        """The INSERT query must go through get_qualified_table('llm_cache')
+        so writes land in the connection's configured schema."""
+        capture: list = []
+        pg = _fake_pg(capture=capture)
+        mocker.patch.object(llm_cache, "PostgresConnection", return_value=pg)
+
+        put_cached("key123", "gpt-4o-mini", {"data": 1})
+
+        pg.get_qualified_table.assert_called_once_with("llm_cache")
+        assert len(capture) == 1
+        sql, _ = capture[0]
+        assert "development.llm_cache" in sql
 
 
 # ---------------------------------------------------------------------------
