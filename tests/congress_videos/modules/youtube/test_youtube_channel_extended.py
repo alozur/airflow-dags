@@ -466,3 +466,149 @@ class TestExtractSessionDate:
         assert result["total_processed"] == 1
         assert result["videos"][0]["session_number"] == 77
         assert "warning" in result["videos"][0]
+
+
+# ---------------------------------------------------------------------------
+# _parse_agenda_dates / _locate_target_date_offset — RED-first quirk tests
+# for the helpers lifted verbatim out of extract_session_date (issue #272)
+# ---------------------------------------------------------------------------
+
+_DATE_PATTERN = r"([A-ZÁÉÍÓÚÑ]+),\s*(\d{1,2})\s+[Dd][Ee]\s+([A-ZÁÉÍÓÚÑ]+)(?:\s+[Dd][Ee]\s+(\d{4}))?"
+_SPANISH_MONTHS = {
+    "enero": 1,
+    "febrero": 2,
+    "marzo": 3,
+    "abril": 4,
+    "mayo": 5,
+    "junio": 6,
+    "julio": 7,
+    "agosto": 8,
+    "septiembre": 9,
+    "octubre": 10,
+    "noviembre": 11,
+    "diciembre": 12,
+}
+
+
+class TestParseAgendaDates:
+    def test_unknown_month_is_skipped_no_entry(self):
+        import re
+        from datetime import datetime
+
+        from congress_videos.modules.youtube.youtube_channel import _parse_agenda_dates
+
+        matches = list(re.finditer(_DATE_PATTERN, "VIERNES, 8 DE FOOBAR\n"))
+
+        result = _parse_agenda_dates(matches, _SPANISH_MONTHS, datetime(2025, 10, 7))
+
+        assert result == []
+
+    def test_invalid_day_raises_value_error_caught_and_skipped(self):
+        import re
+        from datetime import datetime
+
+        from congress_videos.modules.youtube.youtube_channel import _parse_agenda_dates
+
+        matches = list(re.finditer(_DATE_PATTERN, "MARTES, 31 DE FEBRERO\n"))
+
+        result = _parse_agenda_dates(matches, _SPANISH_MONTHS, datetime(2025, 10, 7))
+
+        assert result == []
+
+    def test_original_index_counts_accepted_entries_only(self):
+        import re
+        from datetime import date, datetime
+
+        from congress_videos.modules.youtube.youtube_channel import _parse_agenda_dates
+
+        text = "LUNES, 5 DE ENERO\nMARTES, 31 DE FEBRERO\nJUEVES, 7 DE OCTUBRE DE 2024\nVIERNES, 8 DE FOOBAR\n"
+        matches = list(re.finditer(_DATE_PATTERN, text))
+
+        result = _parse_agenda_dates(matches, _SPANISH_MONTHS, datetime(2025, 10, 7))
+
+        assert len(result) == 2
+        assert result[0]["date"] == date(2025, 1, 5)
+        assert result[0]["original_index"] == 0
+        assert result[1]["date"] == date(2024, 10, 7)
+        assert result[1]["original_index"] == 1
+
+    def test_explicit_year_beats_target_date_obj_year(self):
+        import re
+        from datetime import date, datetime
+
+        from congress_videos.modules.youtube.youtube_channel import _parse_agenda_dates
+
+        matches = list(re.finditer(_DATE_PATTERN, "JUEVES, 7 DE OCTUBRE DE 2024\n"))
+
+        result = _parse_agenda_dates(matches, _SPANISH_MONTHS, datetime(2025, 10, 7))
+
+        assert result[0]["date"] == date(2024, 10, 7)
+
+    def test_original_match_object_is_kept(self):
+        import re
+        from datetime import datetime
+
+        from congress_videos.modules.youtube.youtube_channel import _parse_agenda_dates
+
+        matches = list(re.finditer(_DATE_PATTERN, "LUNES, 5 DE ENERO\n"))
+
+        result = _parse_agenda_dates(matches, _SPANISH_MONTHS, datetime(2025, 10, 7))
+
+        assert result[0]["match"] is matches[0]
+
+
+class TestLocateTargetDateOffset:
+    def test_first_date_is_offset_zero_and_found_true(self):
+        """The falsy-valid trap: offset 0 must be paired with found_target
+        True, not mistaken for "not found"."""
+        from datetime import date, datetime
+
+        from congress_videos.modules.youtube.youtube_channel import _locate_target_date_offset
+
+        sorted_dates = [{"date": date(2025, 5, 21)}, {"date": date(2025, 5, 22)}]
+
+        offset, entry, found_target = _locate_target_date_offset(sorted_dates, datetime(2025, 5, 21), "2025-05-21")
+
+        assert found_target is True
+        assert offset == 0
+        assert entry is sorted_dates[0]
+
+    def test_not_found_returns_none_none_false(self):
+        from datetime import date, datetime
+
+        from congress_videos.modules.youtube.youtube_channel import _locate_target_date_offset
+
+        sorted_dates = [{"date": date(2025, 5, 21)}]
+
+        result = _locate_target_date_offset(sorted_dates, datetime(2025, 6, 1), "2025-06-01")
+
+        assert result == (None, None, False)
+
+    def test_duplicate_dates_first_index_wins(self):
+        from datetime import date, datetime
+
+        from congress_videos.modules.youtube.youtube_channel import _locate_target_date_offset
+
+        sorted_dates = [{"date": date(2025, 5, 21)}, {"date": date(2025, 5, 21)}]
+
+        offset, entry, found_target = _locate_target_date_offset(sorted_dates, datetime(2025, 5, 21), "2025-05-21")
+
+        assert offset == 0
+        assert entry is sorted_dates[0]
+
+    def test_comparison_uses_date_not_datetime(self):
+        """target_date_obj is a datetime; the comparison must call .date()
+        so a sorted_dates entry storing a plain date still matches a
+        target with a non-midnight time component."""
+        from datetime import date, datetime
+
+        from congress_videos.modules.youtube.youtube_channel import _locate_target_date_offset
+
+        sorted_dates = [{"date": date(2025, 5, 21)}]
+
+        offset, _entry, found_target = _locate_target_date_offset(
+            sorted_dates, datetime(2025, 5, 21, 13, 45), "2025-05-21"
+        )
+
+        assert found_target is True
+        assert offset == 0
