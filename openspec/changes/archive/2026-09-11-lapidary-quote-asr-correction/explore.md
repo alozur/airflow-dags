@@ -1,0 +1,71 @@
+# Exploration: lapidary-quote-asr-correction (issue #611)
+
+## Current State
+
+`extract_lapidary_quote` (`congress_videos/modules/thumbnail_generation.py:186-229`) splits an SRT fragment on clause boundaries (`_extract_candidate_clauses`), filters by word count/char length/leading Spanish stop-word/case-insensitive dedup, then asks an LLM (`_rank_candidates_via_llm`, `LLM_CHEAP` = `gpt-5-nano`) to pick the most impactful candidate by 1-based index via `LAPIDARY_RANKING_SYSTEM_PROMPT`/`LAPIDARY_RANKING_USER_TEMPLATE` (`congress_videos/config/ai_prompts.py:544-554`) — a plain-text response ("1", "2"… or "NONE"), parsed defensively by `_parse_ranked_index`. The winning candidate is returned **verbatim, uncorrected** — there is no ASR-error correction step anywhere in this path.
+
+`_finalize_brief` (line 346-362) calls `extract_lapidary_quote(srt_fragment)` unconditionally when `srt_fragment is not None` and, if non-None, overrides `result["text"]` (the invented `art_direct` text) with the raw quote — no try/except around this call. `generate_chat_completion` (`utils/ai_helpers.py:115`) never raises (catches all exceptions internally, returns `{"content": None, "error": ...}`), so a completion failure degrades gracefully to `content=""` → `_parse_ranked_index` returns `None` → `extract_lapidary_quote` returns `None` → override skipped, `art_direct`'s invented text is kept. This is the existing fail-soft convention any new LLM call in this path must preserve.
+
+The LLM call uses **no caching** (`utils/llm_cache.cached_json_completion` is NOT used here — only `final_copy_verification.py` uses it). Each quote is unique per turn so caching would rarely hit; consistent to skip it for a new correction call too, though it's a legitimate option.
+
+`brief["text"]` (verbatim or corrected) flows into `build_pikzels_prompt` (`congress_videos/modules/thumbnail_prompt.py:90-135`), which `.upper()`s it and substitutes into one of three fixed templates (`_TEMPLATE_A/B/C`). None of the three templates contain any diacritics-preservation instruction — this is the gap issue #611 point (3) targets. `_SAFE_ZONE_LINE` is the existing precedent for a shared, template-independent instruction constant injected into all three layouts.
+
+**Both callers share this path.** `_prepare_thumbnail_config` (`congress_videos/youtube_upload_dag.py:380-499`) builds `srt_fragment` for BOTH chapter rows and turn rows (comment at line 440-444: "srt_fragment below is still needed for the lapidary thumbnail quote (chapter path) and is harmless for turns") — so a single fix in `extract_lapidary_quote` covers long-video chapter thumbnails AND speaker-turn thumbnails/shorts without any per-caller wiring.
+
+**Existing tests**: `tests/congress_videos/modules/test_thumbnail_generation.py` class `TestExtractLapidaryQuote` (~line 2329) has 8 focused unit tests using an injectable `completion_fn` (DI pattern: `completion_fn=None` → lazy-imports the real `generate_chat_completion`). `_finalize_brief`/`art_direct` tests (line ~2477, 2503) monkeypatch `congress_videos.modules.thumbnail_generation.extract_lapidary_quote` directly rather than injecting completion_fn through the public API — that monkeypatch pattern is available for any new helper too.
+
+## Overlap With Existing/Planned Work (important — do not duplicate)
+
+- **Issue #512 `verify-final-copy-before-publication`** (SHIPPED, main 786de7e) added `congress_videos/modules/final_copy_verification.py::verify_final_copy`. It calls the LLM (via `cached_json_completion`, `LLM_DEFAULT`) to check title/description/**thumbnail_text** against an evidence bundle, can classify findings by category (including `person_name`, `spelling`), and applies a bounded (1-round) contained-correction loop — **but explicitly, by design, NEVER corrects `thumbnail_text`** (`_VALID_CORRECTED_KEYS = {"title", "description"}`; docstring: "Thumbnail text is verified and reported but, per the system prompt, is never corrected"). So even after #512, a mis-transcribed thumbnail quote is flagged as a JSONB finding but still published as-is, and by the time this verifier runs (`t6b` in `youtube_upload_dag.py`, pre-publish) the **image itself is already generated** with the bad text baked in.
+- **Issue #545 `thumbnail-text-regeneration`** (proposal only, NOT implemented — worktree `airflow-dags-wt-545`) is the planned fix for that gap: when `final_copy_verification` raises a `thumbnail_text` finding, regenerate the whole Pikzels image before publish. It is a heavy, DB-migration-backed (`052_*.sql`), bounded-retry, cost-controlled mechanism scoped to the long-form path only (explicitly out of scope for shorts/turns: `reap_shorts_uploader_dag.py` never passes `thumbnail_text`).
+- **This issue (#611)** is a cheaper, narrower, root-cause fix: catch the ASR error **before the image is ever generated**, at quote-selection time, covering both chapters and turns/shorts (unlike #545 which is long-form-only and still pending). It does not require touching `final_copy_verification.py`, migrations, or the regeneration machinery — it composes with #545 as an independent, much-smaller safety layer for the single highest-frequency failure mode (misheard proper nouns / dropped diacritics), not a replacement for it.
+
+## Affected Areas
+
+- `congress_videos/modules/thumbnail_generation.py` — `extract_lapidary_quote` (add gated correction step after ranking picks the winning candidate), new helper(s) for the risky-entity gate and the correction LLM call.
+- `congress_videos/config/ai_prompts.py` — new `LAPIDARY_CORRECTION_SYSTEM_PROMPT`/`LAPIDARY_CORRECTION_USER_TEMPLATE` (or extend ranking prompt, see approaches below).
+- `congress_videos/modules/thumbnail_prompt.py` — add a shared diacritics-preservation instruction line to all three templates (same pattern as `_SAFE_ZONE_LINE`).
+- `tests/congress_videos/modules/test_thumbnail_generation.py` — new tests for the correction gate/helper, regression test for the "Aylan Kurdi"/"Aan Curdi" case (extraction produces corrected text OR falls back to `None`), happy-path-unchanged tests (no risky entities → zero extra LLM call, byte-identical behavior to the 8 existing tests).
+- `tests/congress_videos/modules/test_thumbnail_prompt.py` (if it exists — not yet confirmed by path, likely alongside `test_thumbnail_generation.py`) — assert the diacritics line renders in all three layouts.
+- `.agents/skills/congress-thumbnail/SKILL.md` — optional doc-only update to the prompt templates for consistency with the code (not required for the fix to work, code owns the actual runtime prompt via `thumbnail_prompt.py`; the skill doc is a human/agent reference copy that will drift unless updated too).
+
+## Approaches
+
+1. **Fold correction into the existing ranking prompt** — change `LAPIDARY_RANKING_SYSTEM_PROMPT` to a JSON-schema call (`generate_json_completion`) that returns both the chosen index and a corrected text, replacing `_parse_ranked_index`'s plain-text contract.
+   - Pros: one LLM call total, no extra latency/cost ever.
+   - Cons: breaks the existing robust, well-tested plain-text parsing contract (`"1"`, `"NONE"`, `"banana"`, `"99"` edge cases all covered by 8 green tests); mixes two concerns (candidate selection vs. proper-noun correction) in one prompt, raising hallucination/rewrite risk on the selection step itself; happy path (no risky entities) still pays for correction-capable JSON parsing/response shape even when unnecessary, harder to keep byte-identical; touches the highest-traffic, best-tested part of the function.
+   - Effort: Medium.
+
+2. **Separate correction pass inside `extract_lapidary_quote`, gated by a cheap regex risky-entity detector, applied only to the winning candidate** — after `_parse_ranked_index` selects the candidate, run a narrow regex check (capitalized non-first-word tokens, or digit sequences) purely in Python (no LLM cost) to decide if correction is even needed. Only when risky, call a new, narrowly-scoped LLM correction prompt (JSON schema via `generate_json_completion`, `LLM_CHEAP` tier — consistent with the existing ranking call) that must preserve word count/order (only fix spelling of flagged tokens) and returns a `confidence` field; on low confidence, malformed response, or a shape mismatch (word count changed — the "never rewrite tone/content" guard), drop the candidate entirely (return `None`, triggering the existing `art_direct`-invented-text fallback that's already wired).
+   - Pros: existing 8 `extract_lapidary_quote` tests and `_extract_candidate_clauses`/`_parse_ranked_index` remain byte-identical; happy path (no risky entities) makes **zero** extra LLM calls — directly satisfies acceptance criterion 3; isolated, independently unit-testable helper with the same DI (`completion_fn=None`) pattern as the rest of the module; smallest diff that satisfies all three acceptance criteria; fail-soft (drop-to-fallback) matches the existing convention exactly (`extract_lapidary_quote` already returns `None` on any LLM failure/uncertainty today).
+   - Cons: two sequential LLM calls in the risky-entity case (ranking, then correction) instead of one — acceptable since it is the minority path; needs a deliberately narrow regex gate to avoid false positives (e.g., legitimate capitalized words at clause-internal position are common in Spanish sentence-case text — the gate should probably target accent-stripped-looking tokens and known-shape anomalies, not just "any capital letter") — this heuristic needs explicit design-phase attention, not assumed correct here.
+   - Effort: Low-Medium.
+
+3. **Same correction pass as (2) but placed in `_finalize_brief` instead of `extract_lapidary_quote`** — keep `extract_lapidary_quote`'s docstring/contract ("verbatim") untouched; add a new `_correct_or_reject_quote(quote) -> str | None` step in `_finalize_brief`, called only when `extract_lapidary_quote` returns non-None.
+   - Pros: `extract_lapidary_quote` stays literally "extract the verbatim quote" (no docstring rewrite); new helper is trivially unit-testable in isolation.
+   - Cons: `_finalize_brief`/`art_direct` currently have no `completion_fn` injection parameter in their public signatures — testing would rely on monkeypatching the new private helper (same pattern already used for `extract_lapidary_quote` in the `_finalize_brief`/`art_direct` test classes, so this is not a blocker, just an extra indirection); splits "quote selection" and "quote correction" across two modules'-worth of responsibility for what is conceptually one concern (produce a safe, verbatim-shaped quote); no material size/risk advantage over (2).
+   - Effort: Low-Medium.
+
+## Recommendation
+
+**Approach 2** (gated correction pass inside `extract_lapidary_quote`, applied only to the LLM-selected winning candidate). It is the smallest change that satisfies all three acceptance criteria: (a) a mis-transcribed proper noun never reaches production uncorrected — corrected or dropped to the existing `art_direct` fallback, which is already wired and needs no new plumbing; (b) the "Aylan Kurdi"/"Aan Curdi" case becomes a direct regression test on `extract_lapidary_quote` alone, no DAG-level or `_finalize_brief`-level test needed; (c) the happy path (no risky named entities/figures) pays zero extra LLM cost and stays byte-identical to the 8 existing tests, because the cheap regex gate short-circuits before any correction call. It also composes cleanly with the separate, independent diacritics-preservation line in `thumbnail_prompt.py` (acceptance point 3), which should ship as its own small, orthogonal edit to `_TEMPLATE_A/B/C` + a shared constant (mirroring `_SAFE_ZONE_LINE`), with its own focused tests in whatever test module covers `thumbnail_prompt.py`.
+
+Do **not** route this through `final_copy_verification.py` or the #545 regeneration proposal — those operate post-generation on the whole title/description/thumbnail_text bundle and explicitly refuse to correct `thumbnail_text`; #611 must fix the text before the Pikzels image is ever generated, which only the extraction step can do.
+
+## Estimated Changed Lines (400-line PR budget)
+
+- `thumbnail_generation.py`: new regex gate + correction helper + wiring into `extract_lapidary_quote` ≈ 60-90 lines.
+- `ai_prompts.py`: new correction system/user prompt constants ≈ 20-30 lines.
+- `thumbnail_prompt.py`: shared diacritics-instruction constant + 3 template insertions ≈ 15-25 lines.
+- Tests (correction gate unit tests, Aylan Kurdi regression, happy-path-unchanged assertions, diacritics-line-in-prompt assertions) ≈ 150-220 lines.
+- **Total estimate: ~250-360 changed lines** — fits comfortably within the 400-line single-PR budget; no chaining/slicing expected to be required, though the diacritics-prompt piece could ship as its own trivial follow-up slice if the correction-logic slice alone approaches budget.
+
+## Risks
+
+- The risky-entity regex gate is a heuristic (design-phase decision, not resolved here): too narrow misses real ASR errors (e.g., a misheard lowercase common word that isn't a proper noun — out of scope per the issue, which specifically targets proper nouns/figures); too broad triggers unnecessary correction calls on ordinary sentence-case Spanish text, adding latency/cost to more of the "happy path" than intended.
+- The "never rewrite tone/content" constraint needs a concrete, testable guard (e.g., word-count/order preservation) or it becomes an unenforced prompt-only promise the way `final_copy_verification`'s `is_contained` deliberately does NOT trust prompt-only promises for its own corrections — this precedent should be reused, not reinvented.
+- `.agents/skills/congress-thumbnail/SKILL.md` prompt templates will drift from `thumbnail_prompt.py`'s runtime templates unless updated in the same change — cosmetic risk only (the skill doc is not executed), but worth a task-list line item.
+
+## Ready for Proposal
+
+Yes. Scope, affected files, and a clear smallest-approach recommendation are established. Design-phase should resolve: (1) exact regex/heuristic for "risky entity" detection, (2) exact JSON schema and word-count-preservation guard for the correction call, (3) exact wording of the diacritics-preservation prompt line.
