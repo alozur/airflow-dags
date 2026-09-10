@@ -79,22 +79,22 @@ Chain strategy: feature-branch-chain
 
 ## PR 4: t5b task, wiring, DAG task-count fixes (base: PR 3 branch, ~200 lines)
 
-- [ ] 4.1 RED: `tests/congress_videos/test_youtube_upload_dag.py:50` `test_dag_has_fifteen_tasks` → 15→16.
-- [ ] 4.2 RED: `tests/congress_videos/test_youtube_upload_dag.py:2584` `test_dag_task_count_updated_for_wired_dual_queue` → 15→16, update docstring/message.
-- [ ] 4.3 RED: `test_expected_task_ids_present` → add `apply_intro_overlay` to the expected task-id list.
-- [ ] 4.4 RED: `_build_intro_card_text(session_number, session_date)` builds Spanish `titulo`/`descripcion` (`titulo = f"Sesión {n}"` else date; `descripcion = str(session_date)`; both absent raises), per D6 precedent at L398.
-- [ ] 4.5 GREEN: implement `_build_intro_card_text` in `congress_videos/youtube_upload_dag.py`.
-- [ ] 4.6 RED: `_apply_intro_overlay` pass-through — missing/failed/empty `chapter_extraction_results` logs and leaves the XCom untouched.
-- [ ] 4.7 RED: `_apply_intro_overlay` fail-loud — guard trip, missing font, ffmpeg non-zero, missing output, absent session fields all raise; XCom untouched; downstream tasks do not run.
-- [ ] 4.8 RED: `_apply_intro_overlay` calls `validate_editor_input(conf)` on the built conf BEFORE `apply_overlays` (mock call-order assertion) — a missing font must raise `FileNotFoundError` naming tipo/key/path before ffmpeg spawns.
-- [ ] 4.9 RED: `_apply_intro_overlay` overwrites `chapter_extraction_results[0]["output_path"]` to the `_edited` sibling path in-memory only, records `original_output_path`, imports no database module, calls no `db.*` write.
-- [ ] 4.10 RED (regression, pins the landmine): `turn_config["turn_id"]` is always set by t6, so `upload_marking.py`'s `mark_turns_uploaded_by_output_path` fallback (`WHERE output_path = %s`) is never exercised for turn uploads even with an `_edited` path — assert `turn_id` is present in the `mark_turn_uploads` call for the turn branch.
-- [ ] 4.11 RED: `speaker_turn_videos.output_path` is never updated by `_apply_intro_overlay` — no DB write issued (DB invariant).
-- [ ] 4.12 RED: source file bytes/path unchanged after `_apply_intro_overlay` runs (source immutability).
-- [ ] 4.13 RED: retrying `_apply_intro_overlay` in the same run writes the same deterministic `_edited` path, no accumulation.
-- [ ] 4.14 RED: `_edited` file lands in `os.path.dirname(source)` so the 4 sidecars still resolve for `prepare_orador_upload_config`.
-- [ ] 4.15 GREEN: implement `_apply_intro_overlay(ti)` in `congress_videos/youtube_upload_dag.py` — read `chapter_extraction_results`, build the `intro_sesion` overlay conf (default `[0,5)` window, `_build_intro_card_text`), call `validate_editor_input(conf)`, call `apply_overlays(..., max_timeout=OVERLAY_MAX_TIMEOUT_SECONDS)`, overwrite `output_path` in-memory, push XCom.
-- [ ] 4.16 GREEN: wire `PythonOperator(task_id="apply_intro_overlay")` (t5b) between t5 (`extract_chapter_videos`) and t6 (`prepare_upload_config`) in the dependency chain.
-- [ ] 4.17 REFACTOR: confirm t6 needs zero code changes (reads the overwritten XCom transparently).
-- [ ] 4.18 Verification: `bash scripts/test-airflow-e2e.sh` — 16 tasks, clean DagBag import.
-- [ ] 4.19 Verification: `git diff --stat` confirms `reap_clip_preparer_dag.py`, `reap_processor_dag.py`, `reap_shorts_uploader_dag.py`, `speaker_turn_videos_dag.py`, and DB schema are untouched.
+- [x] 4.1 RED: `tests/congress_videos/test_youtube_upload_dag.py:50` `test_dag_has_fifteen_tasks` → 15→16.
+- [x] 4.2 RED: `tests/congress_videos/test_youtube_upload_dag.py:2584` `test_dag_task_count_updated_for_wired_dual_queue` → 15→16, update docstring/message.
+- [x] 4.3 RED: `test_expected_task_ids_present` → add `apply_intro_overlay` to the expected task-id list.
+- [x] 4.4 RED: `_build_intro_card_text(session_number, session_date)` builds Spanish `titulo`/`descripcion` (`titulo = f"Sesión {n}"` else date; `descripcion = str(session_date)`; both absent raises), per D6 precedent at L398.
+- [x] 4.5 GREEN: implement `_build_intro_card_text` in `congress_videos/youtube_upload_dag.py`.
+- [x] 4.6 RED: `_apply_intro_overlay` pass-through — missing/failed/empty `chapter_extraction_results` logs and leaves the XCom untouched.
+- [x] 4.7 RED: `_apply_intro_overlay` fail-loud — guard trip, missing font, ffmpeg non-zero, missing output, absent session fields all raise; XCom untouched; downstream tasks do not run.
+- [x] 4.8 RED: `_apply_intro_overlay` calls `validate_editor_input(conf)` on the built conf BEFORE `apply_overlays` (mock call-order assertion) — a missing font must raise `FileNotFoundError` naming tipo/key/path before ffmpeg spawns.
+- [x] 4.9 RED: `_apply_intro_overlay` overwrites `chapter_extraction_results[0]["output_path"]` to the `_edited` sibling path in-memory only, records `original_output_path`, imports no database module, calls no `db.*` write.
+- [x] 4.10 RED (regression, pins the landmine): `turn_config["turn_id"]` is always set by t6, so `upload_marking.py`'s `mark_turns_uploaded_by_output_path` fallback (`WHERE output_path = %s`) is never exercised for turn uploads even with an `_edited` path — assert `turn_id` is present in the `mark_turn_uploads` call for the turn branch.
+- [x] 4.11 RED: `speaker_turn_videos.output_path` is never updated by `_apply_intro_overlay` — no DB write issued (DB invariant).
+- [x] 4.12 RED: source file bytes/path unchanged after `_apply_intro_overlay` runs (source immutability).
+- [x] 4.13 RED: retrying `_apply_intro_overlay` in the same run writes the same deterministic `_edited` path, no accumulation.
+- [x] 4.14 RED: `_edited` file lands in `os.path.dirname(source)` so the 4 sidecars still resolve for `prepare_orador_upload_config`.
+- [x] 4.15 GREEN: implement `_apply_intro_overlay(ti)` in `congress_videos/youtube_upload_dag.py` — read `chapter_extraction_results`, build the `intro_sesion` overlay conf (default `[0,5)` window, `_build_intro_card_text`), call `validate_editor_input(conf)`, call `apply_overlays(..., max_timeout=OVERLAY_MAX_TIMEOUT_SECONDS)`, overwrite `output_path` in-memory, push XCom.
+- [x] 4.16 GREEN: wire `PythonOperator(task_id="apply_intro_overlay")` (t5b) between t5 (`extract_chapter_videos`) and t6 (`prepare_upload_config`) in the dependency chain.
+- [x] 4.17 REFACTOR: confirm t6 needs zero code changes (reads the overwritten XCom transparently).
+- [x] 4.18 Verification: `bash scripts/test-airflow-e2e.sh` — 16 tasks, clean DagBag import.
+- [x] 4.19 Verification: `git diff --stat` confirms `reap_clip_preparer_dag.py`, `reap_processor_dag.py`, `reap_shorts_uploader_dag.py`, `speaker_turn_videos_dag.py`, and DB schema are untouched.
