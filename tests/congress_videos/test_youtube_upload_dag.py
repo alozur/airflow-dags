@@ -4479,6 +4479,33 @@ class TestApplyIntroOverlaySuccess:
         assert result0["output_path"] == str(tmp_path / "video_edited.mp4")
         assert result0["original_output_path"] == str(source)
 
+    def test_card_text_from_build_intro_card_text_reaches_the_overlay_conf(self, tmp_path, mocker):
+        """Closes the verify WARNING: the pure text builder is well covered, but
+        nothing pinned that its output actually reaches the overlay conf handed
+        to `apply_overlays`. Without this, a refactor could silently drop the
+        session label and still ship a card."""
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source), session_number=77, session_date="2026-03-04")
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        apply_overlays_mock = _patch_apply_overlays_writes_file(mocker)
+
+        from congress_videos.youtube_upload_dag import (
+            _apply_intro_overlay,
+            _build_intro_card_text,
+        )
+
+        _apply_intro_overlay(ti)
+
+        expected_titulo, expected_descripcion = _build_intro_card_text(77, "2026-03-04")
+        overlays = apply_overlays_mock.call_args.args[2]
+        assert len(overlays) == 1
+        assert overlays[0]["tipo"] == "intro_sesion"
+        assert overlays[0]["titulo"] == expected_titulo
+        assert overlays[0]["descripcion"] == expected_descripcion
+
     def test_no_database_module_imported_and_no_db_write(self, tmp_path, mocker):
         """t5b must import no database module and issue no db.* write (D4)."""
         source = tmp_path / "video.mp4"
