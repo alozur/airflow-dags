@@ -16,23 +16,26 @@ Fetch-back lifecycle:
                             marker written by ``nas_archive.write_marker``,
                             recovering exactly which project-relative
                             directories were pushed for this video.
-2. ``fetch_rsync_command`` — pull one of those directories back from the NAS
+2. ``ensure_local_dir``  — create the local destination directory (a pruned
+                            ``downloads/{date}/{video_id}`` tree may no
+                            longer exist) before the pull runs.
+3. ``fetch_rsync_command`` — pull one of those directories back from the NAS
                             mirror into its original local position.
-3. ``verify_fetched``    — dry-run pull; only a byte-identical local copy
+4. ``verify_fetched``    — dry-run pull; only a byte-identical local copy
                             clears the way for the next step.
-4. ``refresh_retention`` — reset the fetched media files' mtime to "now".
+5. ``refresh_retention`` — reset the fetched media files' mtime to "now".
                             ``rsync -a`` preserves the NAS's original mtime,
                             so a naively-fetched video would still look old
                             to ``nas_archive``'s local age gate (see that
                             function's docstring for the exact rule it
                             matches).
-5. ``remove_marker``     — delete the local idempotency marker so
+6. ``remove_marker``     — delete the local idempotency marker so
                             ``nas_archive`` treats the video as a fresh
                             candidate again once it re-ages past
                             ``NAS_ARCHIVE_MIN_AGE_DAYS``. The NAS copy is
                             never touched by this module — only local state
                             changes.
-6. ``is_archived_elsewhere`` — thin wrapper so a consumer DAG that only knows
+7. ``is_archived_elsewhere`` — thin wrapper so a consumer DAG that only knows
                             ``(project_dir, channel_slug, video_id)`` can ask
                             "is this video's source on the NAS only?" without
                             importing ``nas_archive`` directly.
@@ -156,6 +159,27 @@ def is_archived_elsewhere(project_dir: Path | str, channel_slug: str, video_id: 
 
 
 # ---------------------------------------------------------------------------
+# Local destination directory
+# ---------------------------------------------------------------------------
+
+
+def ensure_local_dir(local_path: Path | str) -> Path:
+    """Create ``local_path`` (and any missing parents) before a pull runs.
+
+    A previously-archived video's local directory (e.g.
+    ``downloads/{date}/{video_id}``) may have been pruned entirely by
+    ``nas_archive.prune_local``, so it must be recreated locally before
+    rsync can write into it — the sender side (this container) is on a
+    modern rsync, but ``--mkpath`` is never used here either (see
+    :func:`fetch_rsync_command`), so this is done as an explicit step, the
+    pull-side mirror of ``nas_archive.remote_mkdir_command``.
+    """
+    local_path = Path(local_path)
+    local_path.mkdir(parents=True, exist_ok=True)
+    return local_path
+
+
+# ---------------------------------------------------------------------------
 # Command builders (pure — return argv lists, never execute anything)
 # ---------------------------------------------------------------------------
 
@@ -172,16 +196,15 @@ def fetch_rsync_command(
     swapped, so ``{user}@{host}:{root}/{remote_relative_dir}/`` is pulled
     into ``{local_path}/``.
 
-    ``--mkpath`` here applies to the LOCAL destination path, created by this
-    container's own (modern) rsync — unlike the push side, there is no old
-    receiver-side rsync involved in a pull, so no separate remote-mkdir step
-    is needed (contrast ``nas_archive.remote_mkdir_command``, which exists
-    only because the NAS's rsync 3.1.2 receiver can't honor ``--mkpath``
-    itself when it is the one creating the destination directory).
+    ``--mkpath`` is deliberately never passed. rsync forwards it to the
+    remote side of the transfer for negotiation regardless of which side is
+    the sender, and the NAS (rsync 3.1.2) rejects it outright even when it
+    is only the source here — so the local destination directory is instead
+    created ahead of time via :func:`ensure_local_dir`.
     """
     local_path = Path(local_path)
     remote = f"{settings.user}@{settings.host}:{settings.root}/{remote_relative_dir}/"
-    command = ["rsync", "-a", "--partial", "--mkpath", "--itemize-changes"]
+    command = ["rsync", "-a", "--partial", "--itemize-changes"]
     if dry_run:
         command.append("--dry-run")
     command += ["-e", shlex.join(ssh_command(settings)), remote, f"{local_path}/"]

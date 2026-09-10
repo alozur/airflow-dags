@@ -25,8 +25,9 @@ Usage::
 Pipeline::
 
     check_enabled  (ShortCircuitOperator: NAS_ARCHIVE_HOST + ssh key files present)
-      → fetch_videos  (per video: read marker → per synced dir: rsync pull →
-                        verify → refresh retention → remove marker)
+      → fetch_videos  (per video: read marker → per synced dir: ensure local
+                        dir → rsync pull → verify → refresh retention →
+                        remove marker)
 
 Each requested video is handled independently: a failure fetching or
 verifying one video aborts ONLY that video (its marker is left in place, so
@@ -109,8 +110,10 @@ def fetch_one_video(settings: ArchiveSettings, project_dir: Path, channel_slug: 
     """Restore one archived video's local material from the NAS.
 
     Reads the local marker to recover exactly which directories were pushed,
-    pulls and verifies each one, refreshes the fetched media files' mtime so
-    the video gets a fresh full retention window, then removes the marker.
+    recreates each local destination directory (it may have been pruned
+    entirely), pulls and verifies each one, refreshes the fetched media
+    files' mtime so the video gets a fresh full retention window, then
+    removes the marker.
 
     Nothing about this video is deleted anywhere: a failure at any step
     aborts before the marker is removed, leaving the video's archived state
@@ -137,6 +140,8 @@ def fetch_one_video(settings: ArchiveSettings, project_dir: Path, channel_slug: 
     restored: list[str] = []
     for remote_relative_dir in synced_dirs:
         local_path = project_dir / remote_relative_dir
+
+        nas_fetch.ensure_local_dir(local_path)
 
         rsync_cmd = nas_fetch.fetch_rsync_command(settings, remote_relative_dir, local_path, dry_run=False)
         rsync_result = _subprocess_runner(rsync_cmd)
