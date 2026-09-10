@@ -481,6 +481,31 @@ class TestCopyVerificationProblems:
         problems = _copy_verification_problems(payload)
         assert len(problems) == 3
 
+    def test_copy_verification_problems_reports_unlanded_thumbnail_regen(self):
+        """3.11 (issue #545, design.md D4): a thumbnail_text finding that did
+        NOT land a regeneration is an operator-facing, non-blocking signal."""
+        from congress_videos.youtube_upload_dag import _copy_verification_problems
+
+        payload = self._clean_payload(
+            verdict="reject",
+            findings=[{"field": "thumbnail_text", "category": "person_name", "severity": "high"}],
+            thumbnail_regen_landed=False,
+        )
+        problems = _copy_verification_problems(payload)
+        assert any("thumbnail" in p.lower() and "regeneration" in p.lower() for p in problems)
+
+    def test_copy_verification_problems_landed_regen_is_not_a_finding(self):
+        """A landed regeneration is a success story — no extra finding."""
+        from congress_videos.youtube_upload_dag import _copy_verification_problems
+
+        payload = self._clean_payload(
+            verdict="reject",
+            findings=[{"field": "thumbnail_text", "category": "person_name", "severity": "high"}],
+            thumbnail_regen_landed=True,
+        )
+        problems = _copy_verification_problems(payload)
+        assert not any("regeneration did not land" in p for p in problems)
+
 
 # ---------------------------------------------------------------------------
 # _check_upload_failures
@@ -1012,6 +1037,239 @@ class TestVerifyFinalCopy:
 
         verify_fn.assert_not_called()
         assert "copy_verification" not in ti.xcom_store
+
+    # -----------------------------------------------------------------
+    # Issue #545: bounded, non-blocking thumbnail-text regeneration
+    # branch, wired strictly after the title-reject raise above.
+    # -----------------------------------------------------------------
+
+    def test_verify_final_copy_thumbnail_text_finding_triggers_one_claim_and_trigger(self, mocker):
+        """3.1 — a thumbnail_text finding triggers exactly one claim and,
+        once claimed, exactly one call into _regenerate_flagged_thumbnail —
+        never a loop, never more than one attempt per t6b execution. A
+        landed regeneration also swaps thumbnail_file and pushes the
+        mutated upload_config."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker, thumbnail_row={"art_direction_brief": {"text": "old brief"}})
+        mock_db.claim_thumbnail_text_regeneration.return_value = {
+            "thumbnail_regen_attempts": 1,
+            "thumbnail_regen_exhausted": False,
+        }
+        regen = mocker.patch(
+            "congress_videos.youtube_upload_dag._regenerate_flagged_thumbnail",
+            return_value=_regen_valid_result(output_path="/data/turn1/thumbnail.png"),
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=True)
+        verdict = self._make_verdict(
+            verdict="reject",
+            findings=[{"field": "thumbnail_text", "category": "person_name", "severity": "high"}],
+        )
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        thumbnail_config = _regen_thumbnail_config()
+        config = _make_upload_config()
+        ti = _make_ti({"upload_config": config, "thumbnail_config": thumbnail_config})
+
+        _verify_final_copy(ti, run_id="run_1")
+
+        mock_db.claim_thumbnail_text_regeneration.assert_called_once_with(
+            "/data/turn1/video.mp4", prior_brief={"text": "old brief"}
+        )
+        regen.assert_called_once_with(
+            thumbnail_config, "/data/turn1/video.mp4", {"text": "old brief"}, "run_1", db=mock_db
+        )
+        ti.xcom_push.assert_any_call(key="upload_config", value=config)
+        assert config["videos"][0]["thumbnail_file"] == "/data/turn1/thumbnail.png"
+
+    def test_verify_final_copy_no_thumbnail_text_finding_zero_claims(self, mocker):
+        """3.2 — no thumbnail_text finding, no regeneration. Mutation check
+        (manually verified): temporarily always calling claim makes this
+        test fail."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker)
+        self._patch_matching_content_version(mocker)
+        verdict = self._make_verdict(verdict="pass", findings=[])
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        ti = _make_ti({"upload_config": _make_upload_config(), "thumbnail_config": _regen_thumbnail_config()})
+        _verify_final_copy(ti)
+
+        mock_db.claim_thumbnail_text_regeneration.assert_not_called()
+
+    def test_verify_final_copy_hoisted_xcom_push_fires_without_correction(self, mocker):
+        """3.4 — NON-NEGOTIABLE regression guard: the hoisted push must fire
+        for a landed regeneration even when NO title/description correction
+        was applied. Before the hoist, this push lived only inside
+        `if verdict.correction_applied:` and would silently drop this
+        exact case."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker, thumbnail_row={"art_direction_brief": {"text": "old brief"}})
+        mock_db.claim_thumbnail_text_regeneration.return_value = {
+            "thumbnail_regen_attempts": 1,
+            "thumbnail_regen_exhausted": False,
+        }
+        mocker.patch(
+            "congress_videos.youtube_upload_dag._regenerate_flagged_thumbnail",
+            return_value=_regen_valid_result(output_path="/data/turn1/thumbnail.png"),
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=True)
+        verdict = self._make_verdict(
+            verdict="reject",
+            findings=[{"field": "thumbnail_text", "category": "person_name", "severity": "high"}],
+            correction_applied=False,
+        )
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        config = _make_upload_config()
+        ti = _make_ti({"upload_config": config, "thumbnail_config": _regen_thumbnail_config()})
+
+        _verify_final_copy(ti)
+
+        ti.xcom_push.assert_any_call(key="upload_config", value=config)
+        assert config["videos"][0]["thumbnail_file"] == "/data/turn1/thumbnail.png"
+
+    def test_verify_final_copy_sibling_isolation_by_output_path(self, mocker):
+        """3.7 (design.md D6) — the triggered child conf["output_path"] is
+        turn A's own video_file, never the shared chapter_id and never a
+        sibling turn B's path. Exercises the real (unmocked)
+        _regenerate_flagged_thumbnail so the actual conf sent to
+        trigger_dag_api is inspectable end to end."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker, thumbnail_row={"art_direction_brief": {"text": "old brief"}})
+        mock_db.claim_thumbnail_text_regeneration.return_value = {
+            "thumbnail_regen_attempts": 1,
+            "thumbnail_regen_exhausted": False,
+        }
+        trigger = mocker.patch(
+            "congress_videos.youtube_upload_dag.trigger_dag_api",
+            return_value=_regen_dag_run(state="success"),
+        )
+        mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
+        mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=True)
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.XCom.get_one",
+            return_value=_regen_valid_result(output_path="/data/turn-A/thumbnail.png"),
+        )
+        verdict = self._make_verdict(
+            verdict="reject",
+            findings=[{"field": "thumbnail_text", "category": "person_name", "severity": "high"}],
+        )
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        # Turn A's own config — a sibling turn B would share chapter_id=100
+        # but have a distinct video_file/output_path, never referenced here.
+        config = _make_upload_config(chapter_id=100)
+        config["videos"][0]["video_file"] = "/data/turn-A/video.mp4"
+        thumbnail_config = _regen_thumbnail_config(chapter_id=100)
+        ti = _make_ti({"upload_config": config, "thumbnail_config": thumbnail_config})
+
+        _verify_final_copy(ti, run_id="run_1")
+
+        _, kwargs = trigger.call_args
+        assert kwargs["conf"]["output_path"] == "/data/turn-A/video.mp4"
+        assert kwargs["conf"]["output_path"] != "/data/turn-B/video.mp4"
+        assert kwargs["conf"]["output_path"] != str(100)
+
+    @pytest.mark.parametrize(
+        "mode",
+        ["timeout", "trigger_failed", "child_failed", "invalid_result", "not_claimed", "claim_exception"],
+    )
+    def test_verify_final_copy_every_failure_mode_returns_none_never_raises(self, mocker, mode):
+        """3.8 — No Code Path May Block Or Indefinitely Delay Publication:
+        every regeneration failure mode still returns None from t6b, never
+        pushes upload_config (no correction landed, no regen landed), and
+        never raises. Mutation check (manually verified): letting one
+        branch re-raise makes this test fail for that parametrized mode."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker, thumbnail_row={"art_direction_brief": {"text": "old brief"}})
+        if mode == "not_claimed":
+            mock_db.claim_thumbnail_text_regeneration.return_value = None
+        elif mode == "claim_exception":
+            mock_db.claim_thumbnail_text_regeneration.side_effect = RuntimeError("db is down")
+        else:
+            mock_db.claim_thumbnail_text_regeneration.return_value = {
+                "thumbnail_regen_attempts": 1,
+                "thumbnail_regen_exhausted": False,
+            }
+            mocker.patch(
+                "congress_videos.youtube_upload_dag._regenerate_flagged_thumbnail",
+                return_value={"outcome": mode, "error": "boom"},
+            )
+
+        verdict = self._make_verdict(
+            verdict="reject",
+            findings=[{"field": "thumbnail_text", "category": "person_name", "severity": "high"}],
+        )
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        config = _make_upload_config()
+        ti = _make_ti({"upload_config": config, "thumbnail_config": _regen_thumbnail_config()})
+
+        try:
+            result = _verify_final_copy(ti)
+        except Exception as exc:  # pragma: no cover - assertion below is the real check
+            pytest.fail(f"_verify_final_copy raised {exc!r} instead of returning None")
+
+        assert result is None
+        upload_config_pushes = [c for c in ti.xcom_push.call_args_list if c.kwargs.get("key") == "upload_config"]
+        assert upload_config_pushes == []
+
+    def test_verify_final_copy_title_reject_still_raises_before_any_claim(self, mocker):
+        """3.9 — Title hard-rejection remains the only blocking path: a
+        verdict carrying BOTH a thumbnail_text finding and a title reject
+        still raises at the existing line, and
+        claim_thumbnail_text_regeneration is never called."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker)
+        verdict = self._make_verdict(
+            verdict="reject",
+            findings=[
+                {"field": "title", "category": "person_name", "severity": "high"},
+                {"field": "thumbnail_text", "category": "person_name", "severity": "high"},
+            ],
+        )
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        ti = _make_ti({"upload_config": _make_upload_config(), "thumbnail_config": _regen_thumbnail_config()})
+        with pytest.raises(ValueError, match="rejected the title"):
+            _verify_final_copy(ti)
+
+        mock_db.claim_thumbnail_text_regeneration.assert_not_called()
+
+    def test_verify_final_copy_chapter_item_no_row_intentionally_publishes_as_is(self, mocker):
+        """Non-negotiable #4 (issue #545): chapter items have no
+        speaker_turn_videos row, so the claim naturally returns None and
+        the chapter publishes as-is. This is INTENTIONAL — not a bug for a
+        future contributor to "fix" by special-casing item_type here."""
+        from congress_videos.youtube_upload_dag import _verify_final_copy
+
+        mock_db = self._patch_db(mocker, thumbnail_row={"art_direction_brief": {"text": "old brief"}})
+        mock_db.claim_thumbnail_text_regeneration.return_value = None  # no speaker_turn_videos row
+        regen = mocker.patch("congress_videos.youtube_upload_dag._regenerate_flagged_thumbnail")
+        verdict = self._make_verdict(
+            verdict="reject",
+            findings=[{"field": "thumbnail_text", "category": "person_name", "severity": "high"}],
+        )
+        mocker.patch("congress_videos.modules.final_copy_verification.verify_final_copy", return_value=verdict)
+
+        config = _make_upload_config()
+        config["videos"][0]["turn_id"] = None  # chapter item — no turn_id
+        config["videos"][0]["video_file"] = "/data/chapter100/video.mp4"
+        ti = _make_ti({"upload_config": config, "thumbnail_config": _regen_thumbnail_config()})
+
+        result = _verify_final_copy(ti)
+
+        assert result is None
+        mock_db.claim_thumbnail_text_regeneration.assert_called_once_with(
+            "/data/chapter100/video.mp4", prior_brief={"text": "old brief"}
+        )
+        regen.assert_not_called()
 
 
 def _lookup_stub(roster: dict):
@@ -1640,8 +1898,8 @@ class TestTriggerThumbnailGeneration:
 
 
 # ---------------------------------------------------------------------------
-# _regenerate_flagged_thumbnail (issue #545, PR2 — bounded, deliberately
-# UNWIRED: no caller exists yet; the t6b branch lands in a follow-up PR)
+# _regenerate_flagged_thumbnail (issue #545 — bounded thumbnail-text
+# regeneration; wired into t6b via _claim_and_regenerate_thumbnail, PR3)
 # ---------------------------------------------------------------------------
 
 
@@ -1659,6 +1917,25 @@ def _regen_valid_result(output_path="/videos/turn-1/thumbnail.png"):
         "title": "Nuevo título",
         "title_generation_input": None,
     }
+
+
+def _regen_thumbnail_config(**overrides) -> dict:
+    """A complete thumbnail_config XCom — the same shape t4
+    (trigger_thumbnail_generation) reads, and the same shape
+    _prepare_thumbnail_config (t3) pushes for both turn and chapter items.
+    All four scalar values required by generic_thumbnail_generator's own
+    validate_input are present by default; tests exercising the guard
+    override one to a falsy value."""
+    config = {
+        "chapter_id": 42,
+        "debate_summary": "Debate summary",
+        "session": "Sesión 1",
+        "domain": "congreso",
+        "slug": "some-slug",
+        "key_speakers": ["Some Speaker"],
+    }
+    config.update(overrides)
+    return config
 
 
 class TestRegenerateFlaggedThumbnail:
@@ -1684,7 +1961,11 @@ class TestRegenerateFlaggedThumbnail:
         mock_db = MagicMock()
 
         result = _regenerate_flagged_thumbnail(
-            "/videos/turn-1/video.mp4", {"archetype": "closeup"}, "run_1", db=mock_db
+            _regen_thumbnail_config(),
+            "/videos/turn-1/video.mp4",
+            {"archetype": "closeup"},
+            "run_1",
+            db=mock_db,
         )
 
         assert result == valid_result
@@ -1696,7 +1977,11 @@ class TestRegenerateFlaggedThumbnail:
             regenerated_brief=valid_result,
         )
 
-    def test_forwards_output_path_and_prior_brief_to_child_conf(self, mocker):
+    def test_forwards_full_child_conf_with_output_path_and_prior_brief(self, mocker):
+        """The child conf mirrors t4's own shape (youtube_video_id derived
+        from chapter_id + the four required scalars + slug/key_speakers),
+        PLUS previous_brief, PLUS an output_path always overridden to the
+        triggering turn's own file (design.md D6 sibling isolation)."""
         from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
 
         trigger = mocker.patch(
@@ -1707,11 +1992,28 @@ class TestRegenerateFlaggedThumbnail:
         mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=True)
         mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=_regen_valid_result())
 
-        _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", {"archetype": "closeup"}, "run_1", db=MagicMock())
+        _regenerate_flagged_thumbnail(
+            _regen_thumbnail_config(output_path="/some/other/path.mp4"),
+            "/videos/turn-1/video.mp4",
+            {"archetype": "closeup"},
+            "run_1",
+            db=MagicMock(),
+        )
 
         trigger.assert_called_once_with(
             dag_id="generic_thumbnail_generator",
-            conf={"output_path": "/videos/turn-1/video.mp4", "previous_brief": {"archetype": "closeup"}},
+            conf={
+                "youtube_video_id": "42",
+                "chapter_id": 42,
+                "debate_summary": "Debate summary",
+                "session": "Sesión 1",
+                "domain": "congreso",
+                "slug": "some-slug",
+                "key_speakers": ["Some Speaker"],
+                "previous_brief": {"archetype": "closeup"},
+                # Overridden to the parameter, never thumbnail_config's own value.
+                "output_path": "/videos/turn-1/video.mp4",
+            },
             run_id="thumbnail_text_regen_run_1",
         )
 
@@ -1726,12 +2028,36 @@ class TestRegenerateFlaggedThumbnail:
         mocker.patch("congress_videos.youtube_upload_dag.os.path.exists", return_value=True)
         mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=_regen_valid_result())
 
-        _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", None, "run_1", db=MagicMock())
+        _regenerate_flagged_thumbnail(
+            _regen_thumbnail_config(), "/videos/turn-1/video.mp4", None, "run_1", db=MagicMock()
+        )
 
-        trigger.assert_called_once_with(
-            dag_id="generic_thumbnail_generator",
-            conf={"output_path": "/videos/turn-1/video.mp4"},
-            run_id="thumbnail_text_regen_run_1",
+        _, kwargs = trigger.call_args
+        assert "previous_brief" not in kwargs["conf"]
+        assert kwargs["conf"]["output_path"] == "/videos/turn-1/video.mp4"
+
+    @pytest.mark.parametrize("missing_key", ["chapter_id", "debate_summary", "session", "domain"])
+    def test_incomplete_thumbnail_config_never_triggers_records_trigger_failed(self, mocker, missing_key):
+        """t4's own guard idiom (trigger_thumbnail_generation): any missing
+        or empty required scalar means generic_thumbnail_generator's
+        validate_input would reject the conf — so this function must never
+        even call trigger_dag_api, and must record the non-attempt via the
+        SAME 'trigger_failed' outcome as a real trigger exception."""
+        from congress_videos.youtube_upload_dag import _regenerate_flagged_thumbnail
+
+        trigger = mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api")
+        mock_db = MagicMock()
+        incomplete_config = _regen_thumbnail_config(**{missing_key: None})
+
+        result = _regenerate_flagged_thumbnail(incomplete_config, "/videos/turn-1/video.mp4", None, "run_1", db=mock_db)
+
+        trigger.assert_not_called()
+        assert result == {"outcome": "trigger_failed", "error": mocker.ANY}
+        mock_db.record_thumbnail_text_regeneration_outcome.assert_called_once_with(
+            "/videos/turn-1/video.mp4",
+            outcome="trigger_failed",
+            error=mocker.ANY,
+            regenerated_brief=None,
         )
 
     def test_times_out_after_exactly_max_polls(self, mocker):
@@ -1748,7 +2074,9 @@ class TestRegenerateFlaggedThumbnail:
         sleep = mocker.patch("congress_videos.youtube_upload_dag.time.sleep")
         mock_db = MagicMock()
 
-        result = _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", None, "run_1", db=mock_db)
+        result = _regenerate_flagged_thumbnail(
+            _regen_thumbnail_config(), "/videos/turn-1/video.mp4", None, "run_1", db=mock_db
+        )
 
         assert result == {"outcome": "timeout", "error": mocker.ANY}
         assert sleep.call_count == _THUMBNAIL_REGEN_MAX_POLLS == 100
@@ -1769,7 +2097,9 @@ class TestRegenerateFlaggedThumbnail:
         )
         mock_db = MagicMock()
 
-        result = _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", None, "run_1", db=mock_db)
+        result = _regenerate_flagged_thumbnail(
+            _regen_thumbnail_config(), "/videos/turn-1/video.mp4", None, "run_1", db=mock_db
+        )
 
         assert result == {"outcome": "trigger_failed", "error": "could not reach the scheduler API"}
         mock_db.record_thumbnail_text_regeneration_outcome.assert_called_once_with(
@@ -1788,7 +2118,9 @@ class TestRegenerateFlaggedThumbnail:
         get_one = mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one")
         mock_db = MagicMock()
 
-        result = _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", None, "run_1", db=mock_db)
+        result = _regenerate_flagged_thumbnail(
+            _regen_thumbnail_config(), "/videos/turn-1/video.mp4", None, "run_1", db=mock_db
+        )
 
         assert result == {"outcome": "child_failed", "error": mocker.ANY}
         get_one.assert_not_called()
@@ -1818,7 +2150,9 @@ class TestRegenerateFlaggedThumbnail:
         mocker.patch("congress_videos.youtube_upload_dag.XCom.get_one", return_value=xcom_result)
         mock_db = MagicMock()
 
-        result = _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", None, "run_1", db=mock_db)
+        result = _regenerate_flagged_thumbnail(
+            _regen_thumbnail_config(), "/videos/turn-1/video.mp4", None, "run_1", db=mock_db
+        )
 
         assert result == {"outcome": "invalid_result", "error": mocker.ANY}
         mock_db.record_thumbnail_text_regeneration_outcome.assert_called_once_with(
@@ -1844,7 +2178,9 @@ class TestRegenerateFlaggedThumbnail:
         )
         mock_db = MagicMock()
 
-        result = _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", None, "run_1", db=mock_db)
+        result = _regenerate_flagged_thumbnail(
+            _regen_thumbnail_config(), "/videos/turn-1/video.mp4", None, "run_1", db=mock_db
+        )
 
         assert result == {"outcome": "invalid_result", "error": mocker.ANY}
 
@@ -1864,7 +2200,9 @@ class TestRegenerateFlaggedThumbnail:
         mock_db.record_thumbnail_text_regeneration_outcome.side_effect = RuntimeError("db is down")
 
         with caplog.at_level("ERROR"):
-            result = _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", None, "run_1", db=mock_db)
+            result = _regenerate_flagged_thumbnail(
+                _regen_thumbnail_config(), "/videos/turn-1/video.mp4", None, "run_1", db=mock_db
+            )
 
         assert result == valid_result
         assert any("db is down" in r.message for r in caplog.records)
@@ -1880,7 +2218,7 @@ class TestRegenerateFlaggedThumbnail:
         ],
     )
     def test_no_path_ever_raises(self, mocker, setup):
-        """NON-NEGOTIABLE (issue #545 PR2): six failure modes converge on ONE
+        """NON-NEGOTIABLE (issue #545): every failure mode converges on ONE
         behaviour — publish as-is, record the outcome, never raise. This is
         what makes #512's non-blocking asymmetry structural rather than
         aspirational. Every branch, including a genuinely unexpected
@@ -1917,12 +2255,95 @@ class TestRegenerateFlaggedThumbnail:
             mocker.patch("congress_videos.youtube_upload_dag.trigger_dag_api", return_value=dag_run)
 
         try:
-            result = _regenerate_flagged_thumbnail("/videos/turn-1/video.mp4", None, "run_1", db=mock_db)
+            result = _regenerate_flagged_thumbnail(
+                _regen_thumbnail_config(), "/videos/turn-1/video.mp4", None, "run_1", db=mock_db
+            )
         except Exception as exc:  # pragma: no cover - the assertion below is the real check
             pytest.fail(f"_regenerate_flagged_thumbnail raised {exc!r} instead of returning a dict")
 
         assert isinstance(result, dict)
         assert "outcome" in result or result.get("success") is True
+
+
+# ---------------------------------------------------------------------------
+# _claim_and_regenerate_thumbnail (issue #545, PR3)
+# ---------------------------------------------------------------------------
+
+
+class TestClaimAndRegenerateThumbnail:
+    def test_claimed_attempt_calls_regenerate_flagged_thumbnail(self, mocker):
+        from congress_videos.youtube_upload_dag import _claim_and_regenerate_thumbnail
+
+        mock_db = MagicMock()
+        mock_db.claim_thumbnail_text_regeneration.return_value = {
+            "thumbnail_regen_attempts": 1,
+            "thumbnail_regen_exhausted": False,
+        }
+        regen = mocker.patch(
+            "congress_videos.youtube_upload_dag._regenerate_flagged_thumbnail",
+            return_value=_regen_valid_result(),
+        )
+        thumbnail_config = _regen_thumbnail_config()
+
+        result = _claim_and_regenerate_thumbnail(
+            mock_db,
+            output_path="/videos/turn-1/video.mp4",
+            thumbnail_config=thumbnail_config,
+            prior_brief={"archetype": "closeup"},
+            run_id="run_1",
+        )
+
+        mock_db.claim_thumbnail_text_regeneration.assert_called_once_with(
+            "/videos/turn-1/video.mp4", prior_brief={"archetype": "closeup"}
+        )
+        regen.assert_called_once_with(
+            thumbnail_config, "/videos/turn-1/video.mp4", {"archetype": "closeup"}, "run_1", db=mock_db
+        )
+        assert result == _regen_valid_result()
+
+    def test_exhausted_or_no_row_returns_none_without_triggering(self, mocker):
+        """design.md D3 / spec note 8: exhausted budget AND chapter items
+        with no speaker_turn_videos row both surface as a falsy claim —
+        both are INTENTIONAL, not errors, and must never trigger."""
+        from congress_videos.youtube_upload_dag import _claim_and_regenerate_thumbnail
+
+        mock_db = MagicMock()
+        mock_db.claim_thumbnail_text_regeneration.return_value = None
+        regen = mocker.patch("congress_videos.youtube_upload_dag._regenerate_flagged_thumbnail")
+
+        result = _claim_and_regenerate_thumbnail(
+            mock_db,
+            output_path="/videos/chapter-only/video.mp4",
+            thumbnail_config=_regen_thumbnail_config(),
+            prior_brief=None,
+            run_id="run_1",
+        )
+
+        assert result is None
+        regen.assert_not_called()
+
+    def test_claim_exception_returns_none_never_raises(self, mocker):
+        """Non-negotiable: no code path in the regeneration seam may raise —
+        including a DB outage at claim time, before any paid call."""
+        from congress_videos.youtube_upload_dag import _claim_and_regenerate_thumbnail
+
+        mock_db = MagicMock()
+        mock_db.claim_thumbnail_text_regeneration.side_effect = RuntimeError("db is down")
+        regen = mocker.patch("congress_videos.youtube_upload_dag._regenerate_flagged_thumbnail")
+
+        try:
+            result = _claim_and_regenerate_thumbnail(
+                mock_db,
+                output_path="/videos/turn-1/video.mp4",
+                thumbnail_config=_regen_thumbnail_config(),
+                prior_brief=None,
+                run_id="run_1",
+            )
+        except Exception as exc:  # pragma: no cover - the assertion below is the real check
+            pytest.fail(f"_claim_and_regenerate_thumbnail raised {exc!r} instead of returning None")
+
+        assert result is None
+        regen.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

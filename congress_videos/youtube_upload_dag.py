@@ -718,16 +718,23 @@ def _copy_verification_problems(payload: dict | None) -> list[str]:
     appended to the _check_upload_failures `problems` accumulator.
 
     `payload` is the `copy_verification` XCom
-    (`{verdict, findings, corrected_applied, persisted, content_version}`).
-    `None` means the XCom is missing entirely — always an anomaly once a
-    turn was actually verified — reported as a finding, never a
-    short-circuit raise, so it cannot mask the other findings.
+    (`{verdict, findings, corrected_applied, persisted, content_version,
+    thumbnail_regen_landed}`). `None` means the XCom is missing entirely —
+    always an anomaly once a turn was actually verified — reported as a
+    finding, never a short-circuit raise, so it cannot mask the other
+    findings.
 
     A title `reject` never reaches this function: it raises upstream in
     `_verify_final_copy`, before the XCom is ever pushed (the locked
     hard-rejection asymmetry). A successfully applied correction is a
     success story, not a finding, even though its originating findings are
     still kept in the payload for audit purposes.
+
+    Issue #545 / design.md D4: a `thumbnail_text` finding that did NOT land
+    a regeneration (timeout, trigger/child failure, invalid result, or the
+    attempt budget already exhausted) is an operator-facing signal too —
+    informational and non-blocking, exactly like every other finding here,
+    never a reason to fail `t6b` itself.
     """
     if payload is None:
         return ["copy_verification XCom missing after prepare_upload_config succeeded"]
@@ -757,6 +764,13 @@ def _copy_verification_problems(payload: dict | None) -> list[str]:
 
     if verdict in ("pass", "correctable", "reject") and not payload.get("persisted"):
         problems.append("Final-copy verification audit write was skipped (stale-copy guard)")
+
+    has_thumbnail_text_finding = any(isinstance(f, dict) and f.get("field") == "thumbnail_text" for f in findings)
+    if has_thumbnail_text_finding and not payload.get("thumbnail_regen_landed"):
+        problems.append(
+            "Final-copy verification flagged thumbnail text and regeneration did not land; "
+            "published with the existing thumbnail"
+        )
 
     return problems
 
@@ -893,7 +907,43 @@ def trigger_thumbnail_generation(ti, db=None, **context) -> str | None:
         return child_run_id
 
 
+_REGEN_REQUIRED_CONF_KEYS = ("chapter_id", "debate_summary", "session", "domain")
+
+
+def _build_regen_child_conf(thumbnail_config: dict, output_path: str, prior_brief: dict | None) -> dict | None:
+    """Build ``generic_thumbnail_generator``'s child ``conf`` for a bounded
+    thumbnail-text regeneration (issue #545), the SAME way
+    ``trigger_thumbnail_generation`` (t4) builds it, from the SAME
+    ``thumbnail_config`` XCom.
+
+    Returns ``None`` when any of the four required scalar values
+    (``_REGEN_REQUIRED_CONF_KEYS``) is missing/empty — t4's own guard idiom:
+    the caller must not trigger and must record a non-blocking
+    ``trigger_failed`` outcome instead.
+    """
+    if not all(thumbnail_config.get(key) for key in _REGEN_REQUIRED_CONF_KEYS):
+        return None
+
+    chapter_id = thumbnail_config.get("chapter_id")
+    child_conf: dict = {
+        "youtube_video_id": str(chapter_id),
+        **{key: thumbnail_config[key] for key in _REGEN_REQUIRED_CONF_KEYS},
+        "slug": thumbnail_config.get("slug"),
+        "key_speakers": thumbnail_config.get("key_speakers") or [],
+    }
+    if "srt_fragment" in thumbnail_config:
+        child_conf["srt_fragment"] = thumbnail_config["srt_fragment"]
+    if prior_brief:
+        child_conf["previous_brief"] = prior_brief
+    # design.md D6: sibling isolation is guaranteed by FILE — always override
+    # with the triggering turn's own output_path, never trust whatever
+    # thumbnail_config itself carries under that key.
+    child_conf["output_path"] = output_path
+    return child_conf
+
+
 def _regenerate_flagged_thumbnail(
+    thumbnail_config: dict,
     output_path: str,
     prior_brief: dict | None,
     run_id: str,
@@ -901,35 +951,51 @@ def _regenerate_flagged_thumbnail(
 ) -> dict | None:
     """Trigger and poll one bounded thumbnail-text regeneration attempt (issue #545).
 
-    Standalone helper — deliberately UNWIRED in this slice: no caller exists
-    yet, the ``t6b`` branch that claims an attempt and invokes this function
-    lands in a follow-up PR. Modeled on
-    ``video_analytics_actions_dag.py::_poll_thumbnail_dag_run``'s BOUNDED
-    loop shape (design.md D2) — never this module's own
+    Wired from ``t6b`` (``_verify_final_copy``) via ``_claim_and_regenerate_thumbnail``.
+    Modeled on ``video_analytics_actions_dag.py::_poll_thumbnail_dag_run``'s
+    BOUNDED loop shape (design.md D2) — never this module's own
     ``trigger_thumbnail_generation``, whose unbounded ``while True`` is a
     pre-existing risk, not a template here.
 
-    Six outcomes converge on the SAME non-blocking contract (design.md D4):
-    a trigger failure, a child DAG ``failed`` state, a malformed/missing
-    child result (including a returned path that does not exist on disk —
-    D5), a poll timeout, and a landed success all record their outcome via
-    ``record_thumbnail_text_regeneration_outcome`` and return WITHOUT ever
-    raising. The whole body is one ``try/except Exception`` — the same
-    catch-and-return shape as ``_write_title_provenance`` above — so a bug
-    here, including one during polling that nobody anticipated, can never
-    fail the enclosing ``t6b`` task and block publication. Measured
-    production regenerations reach up to 3989s, which EXCEEDS this
-    function's own 1000s bound, so the timeout branch is a routinely
-    exercised path, not an edge case.
+    The child ``conf`` is built the SAME way ``trigger_thumbnail_generation``
+    (t4) builds it, from the same ``thumbnail_config`` XCom, because
+    ``generic_thumbnail_generator``'s own ``validate_input`` requires
+    ``youtube_video_id``, ``chapter_id``, ``debate_summary``, ``session`` and
+    ``domain`` (all five, not merely the four scalar values named in
+    ``_REGEN_REQUIRED_CONF_KEYS`` — ``youtube_video_id`` is derived from
+    ``chapter_id`` exactly as t4 does). When any of the four scalar values is
+    missing/empty, this function follows t4's own guard idiom: it does NOT
+    trigger, records ``trigger_failed`` (best-effort), and returns — the
+    same non-blocking contract as every other outcome below.
+
+    Seven outcomes converge on the SAME non-blocking contract (design.md D4):
+    an incomplete conf, a trigger failure, a child DAG ``failed`` state, a
+    malformed/missing child result (including a returned path that does not
+    exist on disk — D5), a poll timeout, and a landed success all record
+    their outcome via ``record_thumbnail_text_regeneration_outcome`` and
+    return WITHOUT ever raising. The trigger/poll body is one
+    ``try/except Exception`` — the same catch-and-return shape as
+    ``_write_title_provenance`` above — so a bug here, including one during
+    polling that nobody anticipated, can never fail the enclosing ``t6b``
+    task and block publication. Measured production regenerations reach up
+    to 3989s, which EXCEEDS this function's own 1000s bound, so the timeout
+    branch is a routinely exercised path, not an edge case.
 
     Args:
+        thumbnail_config: The ``thumbnail_config`` XCom pushed once per DAG
+            run by ``_prepare_thumbnail_config`` (t3) — the SAME source t4
+            reads. Supplies ``chapter_id``/``debate_summary``/``session``/
+            ``domain``/``slug``/``key_speakers``/``srt_fragment`` for the
+            child conf. Its own ``output_path`` (if any) is ALWAYS
+            overridden below by the ``output_path`` argument — see D6.
         output_path: The triggering turn's own ``video.mp4`` path. Becomes
-            the child DAG's ``conf["output_path"]`` so the child's write is
-            confined to this turn's own directory (design.md D6: sibling
-            isolation is guaranteed by file, never by the shared
-            ``video_thumbnails`` DB row).
-        prior_brief: The brief snapshotted at claim time
-            (``claim_thumbnail_text_regeneration``'s return), forwarded as
+            the child DAG's ``conf["output_path"]``, unconditionally
+            overriding anything ``thumbnail_config`` might carry, so the
+            child's write is confined to this turn's own directory
+            (design.md D6: sibling isolation is guaranteed by file, never by
+            the shared ``video_thumbnails`` DB row).
+        prior_brief: The brief snapshotted at claim time (the ``prior_brief``
+            passed into ``claim_thumbnail_text_regeneration``), forwarded as
             ``previous_brief`` so the regeneration steers away from the
             flagged original. Omitted from the child conf entirely when
             falsy — best-effort steering, never a hard requirement.
@@ -968,9 +1034,16 @@ def _regenerate_flagged_thumbnail(
                 exc,
             )
 
-    child_conf: dict = {"output_path": output_path}
-    if prior_brief:
-        child_conf["previous_brief"] = prior_brief
+    child_conf = _build_regen_child_conf(thumbnail_config, output_path, prior_brief)
+    if child_conf is None:
+        error = (
+            f"thumbnail regeneration input incomplete for output_path={output_path!r} "
+            f"(chapter_id={thumbnail_config.get('chapter_id')}); skipping regeneration trigger"
+        )
+        logging.info(error)
+        _record("trigger_failed", error=error)
+        return {"outcome": "trigger_failed", "error": error}
+
     child_run_id = f"thumbnail_text_regen_{run_id}"
 
     try:
@@ -1028,6 +1101,116 @@ def _regenerate_flagged_thumbnail(
         )
         _record("trigger_failed", error=str(exc))
         return {"outcome": "trigger_failed", "error": str(exc)}
+
+
+def _claim_and_regenerate_thumbnail(
+    db,
+    *,
+    output_path: str,
+    thumbnail_config: dict,
+    prior_brief: dict | None,
+    run_id: str,
+) -> dict | None:
+    """Claim a bounded regeneration attempt and, if claimed, trigger it (issue #545).
+
+    Wired from ``t6b`` (``_verify_final_copy``) whenever a ``thumbnail_text``
+    finding is present. The claim call itself is wrapped in its own
+    ``try/except``: a claim-time DB exception converges on the SAME
+    non-blocking contract as every outcome inside
+    ``_regenerate_flagged_thumbnail`` (design.md D4) — never raise, publish
+    as-is.
+
+    A falsy claim (``None``) is NOT an error and is never logged as one: it
+    means either the per-video attempt budget is already exhausted, OR —
+    intentionally, by design (design.md D3 / spec note 8) — the item has no
+    matching ``speaker_turn_videos`` row at all. Chapter items fall into the
+    second case: their own extraction ``output_path`` never appears in
+    ``speaker_turn_videos`` (that table is turn-scoped only), so
+    ``claim_thumbnail_text_regeneration`` naturally returns ``None`` for
+    them and this function triggers nothing. This is the CORRECT, intended
+    behaviour for chapter items — not a bug to "fix" by special-casing
+    ``item_type`` here.
+
+    Returns:
+        The child DAG's result dict on a landed regeneration, or one of
+        ``_regenerate_flagged_thumbnail``'s failure-mode dicts, or ``None``
+        when no attempt was claimed (exhausted, no row, or a claim-time
+        exception).
+    """
+    try:
+        claimed = db.claim_thumbnail_text_regeneration(output_path, prior_brief=prior_brief)
+    except Exception as exc:
+        logging.exception(
+            "_claim_and_regenerate_thumbnail: claim failed for output_path=%r: %s",
+            output_path,
+            exc,
+        )
+        return None
+
+    if not claimed:
+        logging.info(
+            "_claim_and_regenerate_thumbnail: attempt not claimed for output_path=%r "
+            "(exhausted, at ceiling, or no speaker_turn_videos row)",
+            output_path,
+        )
+        return None
+
+    return _regenerate_flagged_thumbnail(thumbnail_config, output_path, prior_brief, run_id, db=db)
+
+
+def _apply_thumbnail_regeneration_if_flagged(
+    db,
+    ti,
+    *,
+    video: dict,
+    output_path: str | None,
+    findings,
+    run_id: str | None,
+    chosen_thumbnail_row: dict | None,
+) -> tuple[bool, bool]:
+    """Extracted from ``_verify_final_copy`` (t6b) to keep its cyclomatic
+    complexity bounded. Runs the entire issue #545 regeneration seam for one
+    verdict: no-op when there is no ``thumbnail_text`` finding or no
+    ``output_path``, otherwise claim-then-trigger via
+    ``_claim_and_regenerate_thumbnail`` and, on a landed result whose file
+    still exists on disk, swap ``video["thumbnail_file"]`` in place
+    (design.md D5).
+
+    Returns:
+        ``(landed, mutated)`` — ``landed`` is ``True`` whenever the
+        regeneration itself succeeded (``result["success"] is True``,
+        i.e. outcome ``applied``), independent of the local disk swap;
+        ``mutated`` is ``True`` only when ``video["thumbnail_file"]`` was
+        actually rewritten. Both are ``False`` for every non-blocking
+        failure mode (timeout, trigger/child failure, invalid result, not
+        claimed, or a claim-time exception) — this function never raises,
+        matching every function it calls.
+    """
+    if not (output_path and any(f.field == "thumbnail_text" for f in findings)):
+        return False, False
+
+    thumbnail_config = ti.xcom_pull(key="thumbnail_config") or {}
+    prior_brief = (chosen_thumbnail_row or {}).get("art_direction_brief")
+    regen_result = _claim_and_regenerate_thumbnail(
+        db,
+        output_path=output_path,
+        thumbnail_config=thumbnail_config,
+        prior_brief=prior_brief,
+        run_id=run_id,
+    )
+    if not (isinstance(regen_result, dict) and regen_result.get("success") is True):
+        return False, False
+
+    landed = True
+    regen_path = regen_result.get("output_path")
+    # design.md D5: a returned path that does not exist on disk is never
+    # swapped in — _regenerate_flagged_thumbnail already only records
+    # "applied" for a result whose path exists, but this is the
+    # load-bearing check for the actual XCom mutation.
+    if regen_path and os.path.exists(regen_path):
+        video["thumbnail_file"] = regen_path
+        return landed, True
+    return landed, False
 
 
 def _backfill_thumbnail_video_id(ti, db=None) -> None:
@@ -1532,7 +1715,8 @@ with DAG(
 
         db = CongressionalVideoDB()
         evidence = _copy_verification_evidence(db, chapter_id=chapter_id, turn_id=turn_id)
-        thumbnail_text = _thumbnail_brief_text(db.get_chosen_thumbnail(chapter_id) if chapter_id is not None else None)
+        chosen_thumbnail_row = db.get_chosen_thumbnail(chapter_id) if chapter_id is not None else None
+        thumbnail_text = _thumbnail_brief_text(chosen_thumbnail_row)
 
         verdict = verify_final_copy(
             title=original_title,
@@ -1555,6 +1739,7 @@ with DAG(
                     "corrected_applied": False,
                     "persisted": False,
                     "content_version": "",
+                    "thumbnail_regen_landed": False,
                 },
             )
             return None
@@ -1566,11 +1751,36 @@ with DAG(
                 "refusing to publish a flagged title (issue #512)."
             )
 
+        # Issue #545: bounded, non-blocking thumbnail-text regeneration.
+        # Placed strictly AFTER the title-reject raise above (never before
+        # it), so the locked hard-rejection asymmetry (design.md D2/D7) can
+        # never be reordered or suppressed by anything below this line.
+        mutated = False
+
         if verdict.correction_applied:
             video["title"] = verdict.title
             video["description"] = verdict.description
             if output_path:
                 _write_orador_sidecars(output_path, verdict.title, verdict.description)
+            mutated = True
+
+        thumbnail_regen_landed, regen_mutated = _apply_thumbnail_regeneration_if_flagged(
+            db,
+            ti,
+            video=video,
+            output_path=output_path,
+            findings=verdict.findings,
+            run_id=context.get("run_id"),
+            chosen_thumbnail_row=chosen_thumbnail_row,
+        )
+        mutated = mutated or regen_mutated
+
+        # Non-negotiable (issue #545): ONE push covers BOTH the correction
+        # mutation and the thumbnail-file swap. This push MUST NOT live only
+        # inside `if verdict.correction_applied:` — a landed regeneration
+        # with no title/description correction would otherwise be silently
+        # dropped and t7 would publish the pre-attempt thumbnail.
+        if mutated:
             ti.xcom_push(key="upload_config", value=config)
 
         # Stale-copy guard (design.md D3): recompute from the values actually
@@ -1614,6 +1824,7 @@ with DAG(
                 "corrected_applied": verdict.correction_applied,
                 "persisted": persisted,
                 "content_version": verdict.content_version,
+                "thumbnail_regen_landed": thumbnail_regen_landed,
             },
         )
         return None
@@ -1666,6 +1877,14 @@ with DAG(
     )
 
     # Step 6b (new, issue #512): verify the final copy before publication
+    # (issue #545, design.md D4 — regression guard, do NOT "fix" this):
+    # deliberately NO `execution_timeout=` on this operator. Its bounded
+    # in-code thumbnail-regeneration poll (_regenerate_flagged_thumbnail,
+    # up to _THUMBNAIL_REGEN_MAX_POLLS * _THUMBNAIL_REGEN_POLL_INTERVAL_SECONDS)
+    # is the only guarantee against an unbounded wait. An Airflow task
+    # timeout here would FAIL t6b, SKIP t7, and convert a soft,
+    # non-blocking thumbnail-text finding into a hard publication block —
+    # exactly what #545 exists to prevent.
     t6b = PythonOperator(
         task_id="verify_final_copy",
         python_callable=_verify_final_copy,
