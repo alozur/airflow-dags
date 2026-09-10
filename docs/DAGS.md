@@ -146,7 +146,9 @@ ensure_data_directory (PythonOperator)
                                   --> verify_final_copy (PythonOperator, issue #512: verifica
                                       titulo/descripcion contra evidencia de BD antes de publicar;
                                       un reject de titulo aborta el run, descripcion/miniatura solo
-                                      se registran)
+                                      se registran. Issue #545: un finding de miniatura ademas
+                                      dispara, como maximo, UN intento acotado de regeneracion
+                                      antes de trigger_youtube_upload — ver mas abajo)
                                       --> trigger_youtube_upload (trigger_dag_api + polling 10s)
                                           --> [mark_chapters_uploaded, mark_turns_uploaded]  (en paralelo)
                                               --> backfill_thumbnail_video_id (PythonOperator)
@@ -187,6 +189,41 @@ resuelta por slug y titulo por IA) y espera su resultado. La composicion se docu
 `thumbnail_config`, `thumbnail_dag_run_id`, `thumbnail_result`,
 `chapter_extraction_results`, `upload_config`, `upload_results`,
 `chapter_upload_updates`, `turn_upload_updates`
+
+### Regeneracion acotada de miniatura por texto flagged (issue #545)
+
+Cuando `verify_final_copy` encuentra un finding `field == "thumbnail_text"` (un texto de
+miniatura con un nombre o dato no respaldado por la evidencia), el DAG intenta UNA
+regeneracion antes de publicar. Nunca bloquea la publicacion: cualquier fallo, timeout o
+presupuesto agotado simplemente conserva la miniatura existente.
+
+- **Tope de gasto por video: 2 intentos** (`THUMBNAIL_TEXT_REGEN_MAX_ATTEMPTS`, en
+  `congress_videos/modules/database.py`). Cada intento paga 1-2 imagenes Pikzels + 1 llamada
+  OpenAI y no existe ningun throttle en el codigo, asi que este contador es el UNICO limite
+  de gasto, no solo una guarda contra bucles. El intento se cobra ANTES de la llamada
+  paga (`claim_thumbnail_text_regeneration`, UPDATE atomico), asi que un crash tras el
+  cobro nunca vuelve a cobrar gratis.
+- **Espera acotada: 1000 s** (`_THUMBNAIL_REGEN_MAX_POLLS=100` x
+  `_THUMBNAIL_REGEN_POLL_INTERVAL_SECONDS=10`, en `congress_videos/youtube_upload_dag.py`).
+  Medido en produccion: p50 214s, p95 888s, maximo 3989s — el timeout es un camino
+  rutinario, no un caso raro. Al vencer el plazo, o ante cualquier fallo del trigger o del
+  DAG hijo, la tarea publica con la miniatura previa y registra el desenlace
+  (`record_thumbnail_text_regeneration_outcome`, columnas en `speaker_turn_videos`).
+- **Deliberadamente SIN `execution_timeout` en el operador `verify_final_copy`**: un
+  timeout de Airflow fallaria la tarea, saltaria `trigger_youtube_upload` y convertiria un
+  finding de miniatura (no bloqueante) en un bloqueo real de publicacion. La unica garantia
+  contra una espera indefinida es el bound en codigo de arriba.
+- **La fila de `video_thumbnails` es solo auditoria, nunca autoritativa para un turno
+  hermano.** Varios turnos de un mismo `chapter_id` comparten esa fila
+  (`(chapter_id, label)` UNIQUE); la regeneracion aisla el efecto real por ARCHIVO —
+  `conf["output_path"]` es siempre el `video.mp4` propio del turno que dispara el intento,
+  nunca el `chapter_id` compartido ni el archivo de un hermano. El riesgo residual (un
+  hermano verificado despues de una regeneracion podria leer el brief nuevo en BD mientras
+  su propio `thumbnail.png` sigue con el texto viejo) es preexistente a #545 y queda
+  documentado, no resuelto, para un follow-up.
+- **Los items de capitulo no tienen fila en `speaker_turn_videos`** (esa tabla es solo de
+  turnos, #129/#231): el claim devuelve `None` para ellos y publican sin cambios. Esto es
+  intencional, no un bug.
 
 ### Nomenclatura: por que los nombres dicen "chapter"
 
