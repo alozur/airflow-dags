@@ -92,6 +92,47 @@ def probe_live_status(
         return None
 
 
+def _log_available_streams(yt) -> None:
+    """Log all available pytubefix streams for a video, capped to the first 15.
+
+    Lifted verbatim out of download_with_pytubefix (issue #272).
+    """
+    all_streams = yt.streams.all()
+    logger.info(f"[pytubefix] Available streams ({len(all_streams)} total):")
+    for s in all_streams[:15]:  # Log first 15
+        logger.info(
+            f"  - {s.resolution or 'audio'} | {s.mime_type} | adaptive={s.is_adaptive} | progressive={s.is_progressive}"
+        )
+
+
+def _select_video_stream(yt, min_resolution):
+    """Select the best available adaptive video stream, preferring H264 (mp4).
+
+    Lifted verbatim out of download_with_pytubefix (issue #272).
+    """
+    video_stream = (
+        yt.streams.filter(adaptive=True, only_video=True, subtype="mp4")
+        .filter(lambda s: s.resolution and int(s.resolution[:-1]) >= min_resolution)
+        .order_by("resolution")
+        .desc()
+        .first()
+    )
+
+    # Fallback 1: any H264 (mp4) adaptive video, even below min_resolution
+    if not video_stream:
+        logger.info("[pytubefix] No 720p+ H264 found, trying any H264 (mp4) adaptive video...")
+        video_stream = (
+            yt.streams.filter(adaptive=True, only_video=True, subtype="mp4").order_by("resolution").desc().first()
+        )
+
+    # Fallback 2: any adaptive video (may be VP9/AV1) — last resort only
+    if not video_stream:
+        logger.info("[pytubefix] No H264 stream available, falling back to any adaptive video (may be AV1/VP9)...")
+        video_stream = yt.streams.filter(adaptive=True, only_video=True).order_by("resolution").desc().first()
+
+    return video_stream
+
+
 def download_with_pytubefix(
     youtube_url: str,
     output_dir: str,
@@ -137,13 +178,7 @@ def download_with_pytubefix(
         safe_title = "".join(c for c in yt.title if c.isalnum() or c in (" ", "-", "_")).strip()[:50]
 
         # Debug: log all available streams
-        all_streams = yt.streams.all()
-        logger.info(f"[pytubefix] Available streams ({len(all_streams)} total):")
-        for s in all_streams[:15]:  # Log first 15
-            logger.info(
-                f"  - {s.resolution or 'audio'} | {s.mime_type} | adaptive={s.is_adaptive} | "
-                f"progressive={s.is_progressive}"
-            )
+        _log_available_streams(yt)
 
         # First try: H264 (mp4) adaptive video at min_resolution or higher (720p+).
         # Force subtype='mp4' → H264/avc1. webm adaptive streams are VP9/AV1, and
@@ -151,25 +186,7 @@ def download_with_pytubefix(
         # through and re-encode chokes on it, yielding an invalid MP4 that YouTube
         # rejects on upload ("procesamiento interrumpido"). H264 is robust and, at
         # 720p/1080p, visually identical for our purposes.
-        video_stream = (
-            yt.streams.filter(adaptive=True, only_video=True, subtype="mp4")
-            .filter(lambda s: s.resolution and int(s.resolution[:-1]) >= min_resolution)
-            .order_by("resolution")
-            .desc()
-            .first()
-        )
-
-        # Fallback 1: any H264 (mp4) adaptive video, even below min_resolution
-        if not video_stream:
-            logger.info("[pytubefix] No 720p+ H264 found, trying any H264 (mp4) adaptive video...")
-            video_stream = (
-                yt.streams.filter(adaptive=True, only_video=True, subtype="mp4").order_by("resolution").desc().first()
-            )
-
-        # Fallback 2: any adaptive video (may be VP9/AV1) — last resort only
-        if not video_stream:
-            logger.info("[pytubefix] No H264 stream available, falling back to any adaptive video (may be AV1/VP9)...")
-            video_stream = yt.streams.filter(adaptive=True, only_video=True).order_by("resolution").desc().first()
+        video_stream = _select_video_stream(yt, min_resolution)
 
         if video_stream:
             logger.info(f"[pytubefix] Found adaptive video stream: {video_stream.resolution}")
