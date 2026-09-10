@@ -2322,6 +2322,120 @@ class TestLapidaryPrompts:
 
 
 # ---------------------------------------------------------------------------
+# T-09: Risky-entity gate (issue #611, Phase 1)
+# ---------------------------------------------------------------------------
+
+
+class TestRiskyTokenIndices:
+    """_risky_token_indices() flags proper-noun-shaped tokens and digit tokens."""
+
+    @pytest.mark.parametrize(
+        ("quote", "expected"),
+        [
+            ("Aan Curdi tenía 3 años", {0, 1, 3}),
+            ("Aan Curdi tenía años", {0, 1}),
+            ("nos costó 300 millones", {2}),
+            ("lo dijo Pedro Sánchez ayer", {2, 3}),
+        ],
+    )
+    def test_positive_cases_flag_expected_indices(self, quote, expected):
+        """Design table positives must yield the exact expected index set."""
+        from congress_videos.modules.thumbnail_generation import _risky_token_indices
+
+        assert _risky_token_indices(quote) == frozenset(expected)
+
+    @pytest.mark.parametrize(
+        "quote",
+        [
+            "esto es una prueba seria",
+            "Esto es una vergüenza absoluta",
+            "Ustedes engañan al Gobierno",
+            "¡Basta ya de mentiras!",
+        ],
+    )
+    def test_negative_cases_flag_nothing(self, quote):
+        """Sentence-case openers and exempt words must never be flagged."""
+        from congress_videos.modules.thumbnail_generation import _risky_token_indices
+
+        assert _risky_token_indices(quote) == frozenset()
+
+
+# ---------------------------------------------------------------------------
+# T-10: Structural correction guard (issue #611, Phase 2)
+# ---------------------------------------------------------------------------
+
+_LAPIDARY_ORIGINAL = "Aan Curdi tenía 3 años"
+_LAPIDARY_FLAGGED = frozenset({0, 1, 3})
+
+
+class TestPassesCorrectionGuard:
+    """_passes_correction_guard() enforces word count, order, and per-token rules."""
+
+    def test_identical_text_is_accepted(self):
+        """o == c must pass the guard."""
+        from congress_videos.modules.thumbnail_generation import _passes_correction_guard
+
+        assert _passes_correction_guard(_LAPIDARY_ORIGINAL, _LAPIDARY_ORIGINAL, _LAPIDARY_FLAGGED, 40) is True
+
+    def test_flagged_replacement_and_diacritic_restoration_accepted(self):
+        """A flagged-name fix plus a non-flagged diacritic restoration both pass."""
+        from congress_videos.modules.thumbnail_generation import _passes_correction_guard
+
+        original = "Aan Curdi tenia 3 años"  # non-flagged 'tenia' missing its accent
+        corrected = "Aylan Kurdi tenía 3 años"
+        assert _passes_correction_guard(original, corrected, _LAPIDARY_FLAGGED, 40) is True
+
+    def test_extra_word_rejected(self):
+        """A corrected text with an added word must be rejected."""
+        from congress_videos.modules.thumbnail_generation import _passes_correction_guard
+
+        corrected = "Aylan Kurdi tenía 3 años más"
+        assert _passes_correction_guard(_LAPIDARY_ORIGINAL, corrected, _LAPIDARY_FLAGGED, 40) is False
+
+    def test_reordered_tokens_rejected(self):
+        """Swapping two flagged tokens' positions must be rejected."""
+        from congress_videos.modules.thumbnail_generation import _passes_correction_guard
+
+        corrected = "Kurdi Aylan tenía 3 años"
+        assert _passes_correction_guard(_LAPIDARY_ORIGINAL, corrected, _LAPIDARY_FLAGGED, 40) is False
+
+    def test_non_flagged_non_diacritic_change_rejected(self):
+        """Rewriting a non-flagged word ('tenía' -> 'meses') must be rejected."""
+        from congress_videos.modules.thumbnail_generation import _passes_correction_guard
+
+        corrected = "Aylan Kurdi meses 3 años"
+        assert _passes_correction_guard(_LAPIDARY_ORIGINAL, corrected, _LAPIDARY_FLAGGED, 40) is False
+
+    def test_changed_digit_rejected(self):
+        """A figure change, even on a flagged digit token, must be rejected."""
+        from congress_videos.modules.thumbnail_generation import _passes_correction_guard
+
+        corrected = "Aylan Kurdi tenía 4 años"
+        assert _passes_correction_guard(_LAPIDARY_ORIGINAL, corrected, _LAPIDARY_FLAGGED, 40) is False
+
+    def test_implausible_name_rejected(self):
+        """A low-similarity replacement ('Curdi' -> 'Sánchez') must be rejected."""
+        from congress_videos.modules.thumbnail_generation import _passes_correction_guard
+
+        corrected = "Aylan Sánchez tenía 3 años"
+        assert _passes_correction_guard(_LAPIDARY_ORIGINAL, corrected, _LAPIDARY_FLAGGED, 40) is False
+
+    def test_accent_removed_rejected(self):
+        """Dropping a diacritic on a non-flagged token must be rejected, never just accepted as unchanged."""
+        from congress_videos.modules.thumbnail_generation import _passes_correction_guard
+
+        corrected = "Aylan Kurdi tenia 3 años"
+        assert _passes_correction_guard(_LAPIDARY_ORIGINAL, corrected, _LAPIDARY_FLAGGED, 40) is False
+
+    def test_over_max_chars_rejected(self):
+        """A correction longer than max_chars must be rejected regardless of content."""
+        from congress_videos.modules.thumbnail_generation import _passes_correction_guard
+
+        corrected = "Aylan Kurdi tenía 3 años"
+        assert _passes_correction_guard(_LAPIDARY_ORIGINAL, corrected, _LAPIDARY_FLAGGED, 10) is False
+
+
+# ---------------------------------------------------------------------------
 # T-07: extract_lapidary_quote (Phase 2)
 # ---------------------------------------------------------------------------
 

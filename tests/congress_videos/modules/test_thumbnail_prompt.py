@@ -340,3 +340,52 @@ class TestSafeZone:
         result = build_pikzels_prompt(brief, "C")
         assert "BOTTOM-RIGHT corner" in result, "Layout C with logo must still render _LOGO_LINE_C"
         assert "SAFE ZONE" in result, "Layout C with logo must also contain the safe-zone line"
+
+
+# ---------------------------------------------------------------------------
+# T-07: Diacritics-preservation instruction (issue #611, Phase 5)
+# ---------------------------------------------------------------------------
+
+
+class TestDiacriticsLine:
+    """build_pikzels_prompt must instruct Pikzels to preserve Spanish accents/tildes."""
+
+    def test_diacritics_line_present_layout_a(self) -> None:
+        """Layout A output must contain the diacritics-preservation instruction."""
+        from congress_videos.modules.thumbnail_prompt import build_pikzels_prompt
+
+        assert "TEXT ACCENTS" in build_pikzels_prompt(_BRIEF, "A")
+
+    def test_diacritics_line_present_layout_b(self) -> None:
+        """Layout B output must contain the diacritics-preservation instruction."""
+        from congress_videos.modules.thumbnail_prompt import build_pikzels_prompt
+
+        assert "TEXT ACCENTS" in build_pikzels_prompt(_BRIEF, "B")
+
+    def test_diacritics_line_present_layout_c(self) -> None:
+        """Layout C output must contain the diacritics-preservation instruction."""
+        from congress_videos.modules.thumbnail_prompt import build_pikzels_prompt
+
+        assert "TEXT ACCENTS" in build_pikzels_prompt(_BRIEF, "C")
+
+    def test_diacritics_line_mentions_accented_letters(self) -> None:
+        """All layouts must reference the accented-letter set Á É Í Ó Ú Ü Ñ."""
+        from congress_videos.modules.thumbnail_prompt import build_pikzels_prompt
+
+        for layout in ("A", "B", "C"):
+            result = build_pikzels_prompt(_BRIEF, layout)
+            assert "Á" in result and "Ñ" in result, f"Layout {layout} missing accented-letter set"
+
+    def test_accented_text_survives_uppercasing(self) -> None:
+        """An accented quote in brief['text'] must keep its accents after .upper()."""
+        from congress_videos.modules.thumbnail_prompt import build_pikzels_prompt
+
+        brief = {**_BRIEF, "text": "tenía razón"}
+        result = build_pikzels_prompt(brief, "A")
+        assert "TENÍA" in result
+
+    def test_diacritics_line_contains_no_http(self) -> None:
+        """The diacritics line itself must not contain the substring 'http'."""
+        from congress_videos.modules.thumbnail_prompt import _DIACRITICS_LINE
+
+        assert "http" not in _DIACRITICS_LINE
