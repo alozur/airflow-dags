@@ -1836,6 +1836,88 @@ class TestDynamicDateInScoringPrompt:
 # ---------------------------------------------------------------------------
 
 
+class TestChapterStartEndSecs:
+    """Lifted verbatim out of `_dedup_overlapping_chapters` (issue #272):
+    ``_chapter_start_secs`` / ``_chapter_end_secs`` never raise, defaulting to
+    ``0.0`` for a missing key or an unparseable value."""
+
+    def test_start_secs_missing_key_defaults_to_zero(self):
+        from congress_videos.modules.youtube.download import _chapter_start_secs
+
+        assert _chapter_start_secs({}) == 0.0
+
+    def test_start_secs_unparseable_value_swallows_value_error(self):
+        from congress_videos.modules.youtube.download import _chapter_start_secs
+
+        assert _chapter_start_secs({"start_time": "abc"}) == 0.0
+
+    def test_end_secs_missing_key_defaults_to_zero(self):
+        from congress_videos.modules.youtube.download import _chapter_end_secs
+
+        assert _chapter_end_secs({}) == 0.0
+
+    def test_end_secs_unparseable_value_swallows_value_error(self):
+        from congress_videos.modules.youtube.download import _chapter_end_secs
+
+        assert _chapter_end_secs({"end_time": "abc"}) == 0.0
+
+
+class TestMarkOverlappingChapters:
+    """Lifted verbatim out of `_dedup_overlapping_chapters` (issue #272):
+    ``_mark_overlapping_chapters`` mutates ``keep`` in place and returns
+    ``None``. Pins the ``overlap <= 0.0`` boundary (touching-but-not-overlapping
+    chapters both survive) — the design's landmine at `download.py:1110`."""
+
+    def _ch(self, start: str, end: str, title: str = "Chapter") -> dict:
+        return {"title": title, "start_time": start, "end_time": end}
+
+    def test_returns_none_and_mutates_keep_in_place(self):
+        from congress_videos.modules.youtube.download import _mark_overlapping_chapters
+
+        chapters = [self._ch("00:00:00", "00:01:00", "A"), self._ch("00:02:00", "00:04:00", "B")]
+        keep = [True, True]
+        result = _mark_overlapping_chapters(chapters, keep)
+
+        assert result is None
+        assert keep == [True, True]
+
+    def test_touching_boundary_uses_lte_not_lt(self):
+        """The `<=` boundary (not `<`): b touches a with overlap == 0.0 and
+        `break`s the row before c is ever compared, so all three survive.
+        With `<` instead of `<=`, c would be discarded — this is the only
+        input class where the two operators differ."""
+        from congress_videos.modules.youtube.download import _mark_overlapping_chapters
+
+        # Deliberately unsorted: a, b touch at 00:10:00; c sits inside a's
+        # would-be gap but is never reached because the i=0 row breaks at j=1.
+        a = self._ch("00:00:00", "00:10:00", "A")
+        b = self._ch("00:10:00", "00:20:00", "B")
+        c = self._ch("00:05:00", "00:07:00", "C")
+        chapters = [a, b, c]
+        keep = [True, True, True]
+
+        _mark_overlapping_chapters(chapters, keep)
+
+        assert keep == [True, True, True]
+
+    def test_narrower_chapter_i_is_discarded_and_row_breaks(self):
+        """When the narrower chapter is i (not j), keep[i] = False and the
+        inner loop breaks — i is not compared against any further j."""
+        from congress_videos.modules.youtube.download import _mark_overlapping_chapters
+
+        # i=0 "Narrow" (60s) fully inside j=1 "Wide" (600s) → i is narrower,
+        # discarded, and the row breaks (so j=2 is never compared against i).
+        narrow = self._ch("00:01:00", "00:02:00", "Narrow")
+        wide = self._ch("00:00:00", "00:10:00", "Wide")
+        other = self._ch("00:20:00", "00:21:00", "Other")
+        chapters = [narrow, wide, other]
+        keep = [True, True, True]
+
+        _mark_overlapping_chapters(chapters, keep)
+
+        assert keep == [False, True, True]
+
+
 class TestDedupOverlappingChapters:
     """Tests for spec #6: dedup overlapping chapters in merge step."""
 
