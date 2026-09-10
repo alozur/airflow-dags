@@ -738,6 +738,34 @@ class TestTryPytubefixDownload:
 
         assert result is None
 
+    def test_proxy_configured_skips_pytubefix_entirely(self, monkeypatch, mocker):
+        """With YOUTUBE_DOWNLOAD_PROXY set, download_with_pytubefix (and thus
+        pytubefix's YouTube) is never called — pytubefix fails deterministically
+        behind a proxy, so we go straight to yt-dlp instead of a doomed attempt."""
+        monkeypatch.setenv("YOUTUBE_DOWNLOAD_PROXY", "http://proxy.test:8888")
+        mock_pytubefix = mocker.patch("utils.youtube_downloader.download_with_pytubefix")
+
+        from utils.youtube_downloader import _try_pytubefix_download
+
+        result = _try_pytubefix_download("https://youtube.com/watch?v=x", "/tmp/out", 720, True)
+
+        assert result is None
+        mock_pytubefix.assert_not_called()
+
+    def test_no_proxy_still_tries_pytubefix(self, monkeypatch, mocker):
+        """Without YOUTUBE_DOWNLOAD_PROXY, behaviour is unchanged: pytubefix is tried."""
+        monkeypatch.delenv("YOUTUBE_DOWNLOAD_PROXY", raising=False)
+        expected_result = {"success": True, "file_path": "/tmp/v.mp4", "resolution": "720p"}
+        mock_pytubefix = mocker.patch("utils.youtube_downloader.download_with_pytubefix", return_value=expected_result)
+        mocker.patch("utils.youtube_downloader._warn_if_not_h264")
+
+        from utils.youtube_downloader import _try_pytubefix_download
+
+        result = _try_pytubefix_download("https://youtube.com/watch?v=x", "/tmp/out", 720, True)
+
+        assert result is expected_result
+        mock_pytubefix.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # download_audio_only
@@ -874,6 +902,70 @@ class TestDownloadAudioOnly:
         download_audio_only("https://youtube.com/watch?v=x", str(tmp_path), audio_format="mp3")
 
         assert "postprocessors" in captured_opts
+
+    def test_cookies_file_added_to_opts_when_exists(self, tmp_path, mocker):
+        """cookiefile is set in ydl_opts when the cookies file exists on disk,
+        same handling as the video download path (download_youtube_video_for_upload)."""
+        cookies_file = tmp_path / "cookies.txt"
+        cookies_file.write_text("cookies content")
+
+        fake_file = tmp_path / "vid123_Test Video_audio.webm"
+        fake_file.write_bytes(b"\x00" * 512)
+
+        fake_info = _make_ydl_info()
+        captured_opts: dict = {}
+
+        fake_ydl = MagicMock()
+        fake_ydl.__enter__ = MagicMock(return_value=fake_ydl)
+        fake_ydl.__exit__ = MagicMock(return_value=False)
+        fake_ydl.extract_info.return_value = fake_info
+        fake_ydl.prepare_filename.return_value = str(fake_file)
+
+        def capture_ydl(opts):
+            captured_opts.update(opts)
+            return fake_ydl
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", side_effect=capture_ydl)
+
+        from utils.youtube_downloader import download_audio_only
+
+        download_audio_only(
+            "https://youtube.com/watch?v=x",
+            str(tmp_path),
+            cookies_file=str(cookies_file),
+        )
+
+        assert captured_opts.get("cookiefile") == str(cookies_file)
+
+    def test_no_cookiefile_key_when_cookies_file_missing(self, tmp_path, mocker):
+        """No cookiefile key is set when the cookies file does not exist on disk."""
+        fake_file = tmp_path / "vid123_Test Video_audio.webm"
+        fake_file.write_bytes(b"\x00" * 512)
+
+        fake_info = _make_ydl_info()
+        captured_opts: dict = {}
+
+        fake_ydl = MagicMock()
+        fake_ydl.__enter__ = MagicMock(return_value=fake_ydl)
+        fake_ydl.__exit__ = MagicMock(return_value=False)
+        fake_ydl.extract_info.return_value = fake_info
+        fake_ydl.prepare_filename.return_value = str(fake_file)
+
+        def capture_ydl(opts):
+            captured_opts.update(opts)
+            return fake_ydl
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", side_effect=capture_ydl)
+
+        from utils.youtube_downloader import download_audio_only
+
+        download_audio_only(
+            "https://youtube.com/watch?v=x",
+            str(tmp_path),
+            cookies_file=str(tmp_path / "does_not_exist.txt"),
+        )
+
+        assert "cookiefile" not in captured_opts
 
 
 # ---------------------------------------------------------------------------

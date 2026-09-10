@@ -352,8 +352,17 @@ def _try_pytubefix_download(
 ) -> dict | None:
     """Attempt a pytubefix download first; return its result dict on success, else None.
 
-    Lifted verbatim out of download_youtube_video_for_upload (issue #272).
+    Lifted verbatim out of download_youtube_video_for_upload (issue #272). Skips
+    pytubefix entirely when a download proxy is configured: behind a proxy
+    pytubefix fails deterministically (BotDetection / KeyError 'videoDetails')
+    before yt-dlp even gets a chance, so trying it is a wasted, doomed attempt.
     """
+    if use_pytubefix_first and _download_proxy():
+        logger.info(
+            "Skipping pytubefix: YOUTUBE_DOWNLOAD_PROXY is configured and "
+            "pytubefix fails deterministically behind a proxy — using yt-dlp directly"
+        )
+        return None
     if use_pytubefix_first:
         logger.info("Trying pytubefix first...")
         result = download_with_pytubefix(youtube_url, output_dir, min_resolution)
@@ -531,6 +540,7 @@ def download_audio_only(
     output_dir: str,
     convert_to_mp3: bool = False,
     audio_format: str = "webm",
+    cookies_file: str = "/opt/airflow/data/congress_videos/youtube_cookies.txt",
 ) -> dict[str, any]:
     """
     Download audio only from YouTube video.
@@ -542,6 +552,7 @@ def download_audio_only(
         output_dir: Directory to save audio
         convert_to_mp3: If True, convert to MP3 (requires ffmpeg)
         audio_format: Audio format to use ("webm" for lighter, "mp3" for compatibility)
+        cookies_file: Path to YouTube cookies.txt file (for bypassing restrictions)
 
     Returns:
         Dictionary with download info
@@ -553,6 +564,12 @@ def download_audio_only(
         "outtmpl": f"{output_dir}/%(id)s_%(title)s_audio.%(ext)s",
         "quiet": False,
     }
+
+    # Use cookies file if it exists (bypasses YouTube restrictions), same as
+    # the video download path in download_youtube_video_for_upload.
+    if cookies_file and Path(cookies_file).exists():
+        ydl_opts["cookiefile"] = cookies_file
+        logger.info(f"Using cookies file: {cookies_file}")
     proxy = _download_proxy()
     if proxy:
         logger.info("download_audio_only using YouTube download proxy: %s", proxy)
