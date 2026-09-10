@@ -34,6 +34,7 @@ from congress_videos.modules.nas_archive import (
     remote_mkdir_command,
     rsync_command,
     ssh_command,
+    validate_video_id,
     verify_synced,
     video_paths,
     write_marker,
@@ -119,6 +120,51 @@ class TestArchiveSettingsFromEnv:
     def test_negative_min_age_days_raises(self):
         with pytest.raises(ValueError, match=">= 0"):
             ArchiveSettings.from_env({"NAS_ARCHIVE_MIN_AGE_DAYS": "-1"})
+
+    def test_legacy_root_defaults_to_empty_string(self):
+        settings = ArchiveSettings.from_env({})
+        assert settings.legacy_root == ""
+
+    def test_enabled_with_valid_legacy_root_parses_cleanly(self, tmp_path):
+        ssh_dir = _make_ssh_dir(tmp_path)
+        env = _enabled_env(ssh_dir)
+        env["NAS_FETCH_LEGACY_ROOT"] = "/volume1/docker/airflow/congress_videos"
+        settings = ArchiveSettings.from_env(env)
+        assert settings.legacy_root == "/volume1/docker/airflow/congress_videos"
+
+    def test_enabled_relative_legacy_root_raises(self, tmp_path):
+        ssh_dir = _make_ssh_dir(tmp_path)
+        env = _enabled_env(ssh_dir)
+        env["NAS_FETCH_LEGACY_ROOT"] = "relative/path"
+        with pytest.raises(ValueError, match="NAS_FETCH_LEGACY_ROOT"):
+            ArchiveSettings.from_env(env)
+
+
+# ---------------------------------------------------------------------------
+# validate_video_id
+# ---------------------------------------------------------------------------
+
+
+class TestValidateVideoId:
+    @pytest.mark.parametrize("video_id", ["abc123", "def456", "a" * 20, "with-hyphen_ok"])
+    def test_valid_ids_do_not_raise(self, video_id):
+        validate_video_id(video_id)
+
+    @pytest.mark.parametrize(
+        "video_id",
+        [
+            "",
+            "short",  # 5 chars, below the 6-char minimum
+            "a" * 21,  # above the 20-char maximum
+            "has spaces",
+            "has/slash",
+            "has.dot",
+            "../etc/passwd",
+        ],
+    )
+    def test_invalid_ids_raise(self, video_id):
+        with pytest.raises(ValueError, match="Invalid video_id"):
+            validate_video_id(video_id)
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +308,46 @@ class TestVideoPaths:
         paths = video_paths(tmp_path, "congreso-es-tv", "abc123")
         assert paths == [tmp_path / "congreso-es-tv" / "abc123"]
 
+    def test_includes_legacy_top_level_scheme_when_present(self, tmp_path):
+        (tmp_path / "downloads" / "2026-03-01" / "abc123").mkdir(parents=True)
+        (tmp_path / "congreso-es-tv" / "abc123").mkdir(parents=True)
+        (tmp_path / "abc123" / "7").mkdir(parents=True)  # legacy {video_id}/{chapter_id}/...
+
+        paths = video_paths(tmp_path, "congreso-es-tv", "abc123")
+
+        assert paths == [
+            tmp_path / "downloads" / "2026-03-01" / "abc123",
+            tmp_path / "congreso-es-tv" / "abc123",
+            tmp_path / "abc123",
+        ]
+
+    def test_legacy_top_level_scheme_only_still_returns(self, tmp_path):
+        (tmp_path / "abc123" / "7" / "chapter_video.mp4").parent.mkdir(parents=True)
+        (tmp_path / "abc123" / "7" / "chapter_video.mp4").write_bytes(b"video")
+
+        paths = video_paths(tmp_path, "congreso-es-tv", "abc123")
+
+        assert paths == [tmp_path / "abc123"]
+
+    def test_video_id_equal_to_channel_slug_raises(self, tmp_path):
+        (tmp_path / "congreso-es-tv").mkdir()
+        with pytest.raises(ValueError, match="reserved name"):
+            video_paths(tmp_path, "congreso-es-tv", "congreso-es-tv")
+
+    def test_video_id_equal_to_downloads_raises(self, tmp_path):
+        (tmp_path / "downloads").mkdir()
+        with pytest.raises(ValueError, match="reserved name"):
+            video_paths(tmp_path, "congreso-es-tv", "downloads")
+
+    @pytest.mark.parametrize("protected_video_id", ["assets", "youtube_tokens", "thumbnails"])
+    def test_video_id_equal_to_protected_top_level_name_raises(self, tmp_path, protected_video_id):
+        with pytest.raises(ValueError, match="reserved name"):
+            video_paths(tmp_path, "congreso-es-tv", protected_video_id)
+
+    def test_invalid_video_id_raises_before_touching_the_filesystem(self, tmp_path):
+        with pytest.raises(ValueError, match="Invalid video_id"):
+            video_paths(tmp_path, "congreso-es-tv", "ab")  # too short
+
 
 # ---------------------------------------------------------------------------
 # mirror_paths / MIRROR_ONLY_DIRS
@@ -365,6 +451,24 @@ class TestPruneLocal:
         assert removed == [str(video_file)]
         assert not video_file.exists()
         assert srt_file.exists()
+
+    def test_legacy_top_level_video_id_deletes_only_mp4_files(self, tmp_path):
+        # video_paths() returns tmp_path / video_id for the still-live legacy
+        # {video_id}/{chapter_id}/chapter_video.mp4 scheme — prune_local must
+        # apply the SAME mp4-only rule as the channel subtree.
+        video_id_dir = tmp_path / "abc123"
+        chapter_dir = video_id_dir / "7"
+        chapter_dir.mkdir(parents=True)
+        video_file = chapter_dir / "chapter_video.mp4"
+        video_file.write_bytes(b"video")
+        thumbnail = chapter_dir / "thumbnail.png"
+        thumbnail.write_bytes(b"png")
+
+        removed = prune_local([video_id_dir], tmp_path)
+
+        assert removed == [str(video_file)]
+        assert not video_file.exists()
+        assert thumbnail.exists()
 
     def test_no_deletion_when_any_path_fails_validation(self, tmp_path):
         video_dir = tmp_path / "downloads" / "2026-03-01" / "abc123"

@@ -7,9 +7,11 @@ Test organisation:
   TestDagLoads          — DAG import smoke test, schedule, task graph shape.
   TestCheckEnabled       — check_enabled ShortCircuitOperator callable.
   TestRequestedVideoIds  — conf -> deduplicated video_id list.
-  TestFetchOneVideo      — fetch -> verify -> refresh -> remove-marker happy
-                            path and the abort-before-marker-removal failure
-                            paths.
+  TestFetchOneVideo      — marker-mode fetch -> verify -> refresh ->
+                            remove-marker happy path, the marker-less
+                            fallback (archive root / legacy root, no marker
+                            to remove, never writes to the legacy root), and
+                            the abort-before-marker-removal failure paths.
   TestRunFetchVideos     — per-video isolation across a batch.
 """
 
@@ -175,6 +177,7 @@ class TestFetchOneVideo:
 
         assert result["video_id"] == "abc123"
         assert result["restored"] == ["downloads/2026-08-01/abc123", "congreso-es-tv/abc123"]
+        assert result["source"] == "marker"
         marker_path = tmp_path / "congreso-es-tv" / "abc123" / ".nas_archived.json"
         assert not marker_path.exists()
 
@@ -211,12 +214,114 @@ class TestFetchOneVideo:
         # for each of the two synced directories in the marker.
         assert calls == ["mkdir", "rsync", "rsync", "mkdir", "rsync", "rsync"]
 
-    def test_missing_marker_raises_file_not_found_and_touches_nothing(self, tmp_path):
+    def test_missing_marker_falls_back_to_discovery_and_raises_when_nothing_found(self, monkeypatch, tmp_path):
         mod = _fresh()
         settings = self._settings(tmp_path)
 
+        empty_result = SimpleNamespace(returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(mod, "_subprocess_runner", lambda command: empty_result)
+
         with pytest.raises(FileNotFoundError):
             mod.fetch_one_video(settings, tmp_path, "congreso-es-tv", "abc123")
+
+    def _settings_with_legacy(self, tmp_path):
+        from congress_videos.modules.nas_archive import ArchiveSettings
+
+        ssh_dir = tmp_path / "nas_sync"
+        ssh_dir.mkdir()
+        (ssh_dir / "id_ed25519").write_text("key")
+        (ssh_dir / "known_hosts").write_text("hosts")
+        return ArchiveSettings.from_env(
+            {
+                "NAS_ARCHIVE_HOST": "100.64.0.1",
+                "NAS_ARCHIVE_USER": "nas-archive",
+                "NAS_ARCHIVE_ROOT": "/volume1/congress_archive",
+                "NAS_FETCH_LEGACY_ROOT": "/volume1/docker/airflow/congress_videos",
+                "NAS_ARCHIVE_SSH_DIR": str(ssh_dir),
+            }
+        )
+
+    def test_fallback_pulls_from_the_archive_root_when_it_has_a_match(self, monkeypatch, tmp_path):
+        """No local marker, but the video exists under NAS_ARCHIVE_ROOT — the
+        video is fetched from there, and there is no marker to remove."""
+        mod = _fresh()
+        settings = self._settings_with_legacy(tmp_path)
+
+        def fake_runner(command):
+            if "sh" in command and "-c" in command:
+                assert "--mkpath" not in command
+                return SimpleNamespace(returncode=0, stdout=f"{settings.root}/congreso-es-tv/abc123\n", stderr="")
+            assert "--mkpath" not in command
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(mod, "_subprocess_runner", fake_runner)
+        monkeypatch.setattr(mod.nas_fetch, "refresh_retention", lambda paths, now: paths)
+
+        result = mod.fetch_one_video(settings, tmp_path, "congreso-es-tv", "abc123")
+
+        assert result["source"] == "archive-root"
+        assert result["restored"] == ["congreso-es-tv/abc123"]
+        marker_path = tmp_path / "congreso-es-tv" / "abc123" / ".nas_archived.json"
+        assert not marker_path.exists()  # nothing to remove — none was ever written by this test
+
+    def test_fallback_pulls_from_the_legacy_root_when_archive_root_has_nothing(self, monkeypatch, tmp_path):
+        mod = _fresh()
+        settings = self._settings_with_legacy(tmp_path)
+
+        def fake_runner(command):
+            snippet = command[-1] if ("sh" in command and "-c" in command) else ""
+            if settings.legacy_root in snippet:
+                return SimpleNamespace(
+                    returncode=0, stdout=f"{settings.legacy_root}/congreso-es-tv/abc123\n", stderr=""
+                )
+            if "sh" in command and "-c" in command:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            # rsync pull / verify dry-run against the legacy root
+            assert settings.legacy_root in command[-2] or settings.legacy_root in command[-1]
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(mod, "_subprocess_runner", fake_runner)
+        monkeypatch.setattr(mod.nas_fetch, "refresh_retention", lambda paths, now: paths)
+
+        result = mod.fetch_one_video(settings, tmp_path, "congreso-es-tv", "abc123")
+
+        assert result["source"] == "legacy-root"
+        assert result["restored"] == ["congreso-es-tv/abc123"]
+
+    def test_fallback_never_writes_deletes_or_pushes_to_the_legacy_root(self, monkeypatch, tmp_path):
+        """Every command issued while pulling from the legacy root is a read
+        (discovery sh -c, or an rsync PULL where the legacy root is the
+        source, never the destination)."""
+        mod = _fresh()
+        settings = self._settings_with_legacy(tmp_path)
+        commands = []
+
+        def fake_runner(command):
+            commands.append(command)
+            snippet = command[-1] if ("sh" in command and "-c" in command) else ""
+            if settings.legacy_root in snippet:
+                return SimpleNamespace(
+                    returncode=0, stdout=f"{settings.legacy_root}/congreso-es-tv/abc123\n", stderr=""
+                )
+            if "sh" in command and "-c" in command:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(mod, "_subprocess_runner", fake_runner)
+        monkeypatch.setattr(mod.nas_fetch, "refresh_retention", lambda paths, now: paths)
+
+        mod.fetch_one_video(settings, tmp_path, "congreso-es-tv", "abc123")
+
+        for command in commands:
+            if "rsync" not in command:
+                continue
+            # rsync argv is [..., source, destination]: the legacy root must
+            # only ever appear as the remote SOURCE (second-to-last, prefixed
+            # with the ssh user@host), never as the destination (last token,
+            # always a local filesystem path).
+            assert settings.legacy_root not in command[-1]
+            if settings.legacy_root in command[-2]:
+                assert command[-2].startswith(f"nas-archive@100.64.0.1:{settings.legacy_root}")
 
     def test_rsync_failure_aborts_before_marker_removal(self, monkeypatch, tmp_path):
         mod = _fresh()

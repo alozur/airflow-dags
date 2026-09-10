@@ -142,6 +142,8 @@ class DevContract(unittest.TestCase):
         self.assertEqual(env["NAS_ARCHIVE_ROOT"], "${NAS_ARCHIVE_ROOT:-}")
         self.assertEqual(env["NAS_ARCHIVE_MIN_AGE_DAYS"], "${NAS_ARCHIVE_MIN_AGE_DAYS:-14}")
         self.assertEqual(env["NAS_ARCHIVE_SSH_DIR"], "/opt/airflow/nas_sync")
+        # nas_fetch fallback source (read-only legacy production tree); empty disables it.
+        self.assertEqual(env["NAS_FETCH_LEGACY_ROOT"], "${NAS_FETCH_LEGACY_ROOT:-}")
 
     def test_external_api_keys_come_from_environment_with_safe_default(self):
         env = self.compose()["services"]["scheduler"]["environment"]
