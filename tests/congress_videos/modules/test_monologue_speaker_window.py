@@ -28,10 +28,12 @@ from congress_videos.config.ai_prompts import (
     MONOLOGUE_IDENTITY_RESOLUTION_USER_TEMPLATE,
 )
 from congress_videos.modules.monologue_speaker_window import (
+    MONOLOGUE_INTRO_MAX_GAP_SECS,
     MONOLOGUE_WINDOW_SECS,
     AnnouncedIdentity,
     FloorHolder,
     identify_floor_holder,
+    monologue_window_start,
     resolve_announced_identity,
     resolve_monologue_speaker,
     select_preceding_window,
@@ -155,6 +157,137 @@ def test_multiple_blocks_only_the_in_window_ones_are_kept():
     result = select_preceding_window([too_early, in_window_1, in_window_2, at_anchor], anchor)
 
     assert result == [in_window_1, in_window_2]
+
+
+# ---------------------------------------------------------------------------
+# monologue_window_start — pure helper (issue #613, design.md D3)
+# ---------------------------------------------------------------------------
+
+
+def _chapter_first_turn(
+    start_time: str = "03:57:15,840",
+    end_time: str = "04:14:07,700",
+    is_first_substantive: bool = True,
+) -> dict:
+    turn = {"turn_id": 335, "start_seconds": 14416.84, "start_time": start_time, "end_time": end_time}
+    if is_first_substantive:
+        turn["is_chapter_first_substantive"] = True
+    return turn
+
+
+def test_monologue_window_start_turn_335_geometry():
+    """Spec scenario: 'Chapter's first substantive turn reaches the
+    pre-chapter announcement'."""
+    turn = _chapter_first_turn()
+    anchor = 14416.84
+
+    result = monologue_window_start(turn, anchor)
+
+    assert result == pytest.approx(14115.84)
+
+
+def test_monologue_window_start_mid_chapter_non_regression_is_byte_identical():
+    """Spec scenario: 'Mid-chapter monologue window is unchanged'."""
+    turn = _chapter_first_turn(is_first_substantive=False)
+    anchor = 500.0
+
+    result = monologue_window_start(turn, anchor)
+
+    assert result == max(0.0, anchor - MONOLOGUE_WINDOW_SECS)
+
+
+def test_monologue_window_start_missing_chapter_start_falls_back_to_legacy():
+    turn = {"turn_id": 1, "is_chapter_first_substantive": True}
+    anchor = 500.0
+
+    result = monologue_window_start(turn, anchor)
+
+    assert result == max(0.0, anchor - MONOLOGUE_WINDOW_SECS)
+
+
+def test_monologue_window_start_unparseable_chapter_start_falls_back_to_legacy():
+    """Spec scenario: 'Unparseable or missing chapter start falls back to
+    the standard window'."""
+    turn = _chapter_first_turn(start_time="not-a-timestamp")
+    anchor = 500.0
+
+    result = monologue_window_start(turn, anchor)
+
+    assert result == max(0.0, anchor - MONOLOGUE_WINDOW_SECS)
+
+
+def test_monologue_window_start_chapter_start_at_or_after_anchor_falls_back_to_legacy():
+    turn = _chapter_first_turn(start_time="00:10:00,000", end_time="00:10:05,000")
+    anchor = 600.0  # equals the parsed chapter_start_seconds -> gap is not > 0
+
+    result = monologue_window_start(turn, anchor)
+
+    assert result == max(0.0, anchor - MONOLOGUE_WINDOW_SECS)
+
+
+def test_monologue_window_start_gap_above_cap_keeps_standard_window():
+    """Spec scenario: 'Gap above the cap keeps the standard window'."""
+    turn = _chapter_first_turn(start_time="00:00:00,000", end_time="00:00:01,000")
+    anchor = MONOLOGUE_INTRO_MAX_GAP_SECS + 50.0
+
+    result = monologue_window_start(turn, anchor)
+
+    assert result == max(0.0, anchor - MONOLOGUE_WINDOW_SECS)
+
+
+def test_monologue_window_start_extended_window_still_clamps_at_zero():
+    """Spec scenario: 'Extended window still clamps at zero'."""
+    turn = _chapter_first_turn(start_time="00:00:05,000", end_time="00:00:06,000")
+    anchor = 100.0  # gap = 95s (within cap); min(anchor, chapter_start) - 120 < 0
+
+    result = monologue_window_start(turn, anchor)
+
+    assert result == 0.0
+
+
+# ---------------------------------------------------------------------------
+# select_preceding_window — explicit window_start override (issue #613 D5)
+# ---------------------------------------------------------------------------
+
+
+def test_select_preceding_window_explicit_start_includes_boundary_block():
+    anchor = 500.0
+    window_start = 100.0
+    block = _block(window_start, window_start + 5)
+
+    result = select_preceding_window([block], anchor, window_start=window_start)
+
+    assert result == [block]
+
+
+def test_select_preceding_window_explicit_start_excludes_block_just_before():
+    anchor = 500.0
+    window_start = 100.0
+    block = _block(window_start - 0.001, window_start)
+
+    result = select_preceding_window([block], anchor, window_start=window_start)
+
+    assert result == []
+
+
+def test_select_preceding_window_explicit_start_excludes_block_at_anchor():
+    anchor = 500.0
+    window_start = 100.0
+    block = _block(anchor, anchor + 5)
+
+    result = select_preceding_window([block], anchor, window_start=window_start)
+
+    assert result == []
+
+
+def test_select_preceding_window_explicit_start_includes_block_overlapping_anchor():
+    anchor = 500.0
+    window_start = 100.0
+    block = _block(anchor - 1, anchor + 10)
+
+    result = select_preceding_window([block], anchor, window_start=window_start)
+
+    assert result == [block]
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +708,77 @@ def test_resolve_monologue_speaker_never_raises_end_to_end(raising_step, caplog)
 
     assert result is None
     assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# resolve_monologue_speaker — turn-335 end-to-end (issue #613)
+# ---------------------------------------------------------------------------
+
+
+def _turn_335(is_chapter_first_substantive: bool = True) -> dict:
+    turn = {
+        "turn_id": 335,
+        "start_seconds": 14416.84,
+        "video_id": "vidABC",
+        "chapter_id": 522,
+        "session_date": "2026-01-01",
+        "start_time": "03:57:15,840",
+        "end_time": "04:14:07,700",
+    }
+    if is_chapter_first_substantive:
+        turn["is_chapter_first_substantive"] = True
+    return turn
+
+
+def test_resolve_monologue_speaker_turn_335_resolves_when_signal_true():
+    """Spec scenario: 'Chapter's first substantive turn reaches the
+    pre-chapter announcement'. The announcement at 14212 sits outside the
+    legacy window ([14296.84, 14416.84)) but inside the extended one
+    ([14115.84, 14416.84)); a blip block near the anchor is also present."""
+    all_blocks = [
+        _block(14212.0, 14224.0, _MONOLOGUE_ANNOUNCEMENT_TEXT),
+        _block(14411.79, 14416.0, "blip text unrelated to the handover"),
+    ]
+
+    def fake_completion(system, user, **kw):
+        if "ANNOUNCEMENT WINDOW" in user:
+            return _ok_step1("García", _MONOLOGUE_ANNOUNCEMENT_TEXT)
+        return _ok_step2("Pedro García", "pedro-garcia", 0.95)
+
+    p1, p2 = _patched_monologue(all_blocks)
+    with p1, p2:
+        result = resolve_monologue_speaker(_turn_335(), _monologue_participants(), completion_fn=fake_completion)
+
+    assert result is not None
+    assert result["participant_slug"] == "pedro-garcia"
+    audit = json.loads(result["audit"])
+    assert audit["window_start_seconds"] == pytest.approx(14115.84)
+
+
+def test_resolve_monologue_speaker_turn_335_unresolved_and_zero_calls_when_signal_false():
+    """The identical fixture with the signal false: the announcement stays
+    outside the legacy window, so the pre-gate short-circuits before either
+    LLM call."""
+    all_blocks = [
+        _block(14212.0, 14224.0, _MONOLOGUE_ANNOUNCEMENT_TEXT),
+        _block(14411.79, 14416.0, "blip text unrelated to the handover"),
+    ]
+    call_count = []
+
+    def fake_completion(system, user, **kw):
+        call_count.append(1)
+        return _ok_step1("García", _MONOLOGUE_ANNOUNCEMENT_TEXT)
+
+    p1, p2 = _patched_monologue(all_blocks)
+    with p1, p2:
+        result = resolve_monologue_speaker(
+            _turn_335(is_chapter_first_substantive=False),
+            _monologue_participants(),
+            completion_fn=fake_completion,
+        )
+
+    assert result is None
+    assert len(call_count) == 0
 
 
 # ---------------------------------------------------------------------------
