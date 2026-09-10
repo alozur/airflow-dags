@@ -212,6 +212,203 @@ class TestDownloadWithPytubefix:
 
 
 # ---------------------------------------------------------------------------
+# _log_available_streams (lifted out of download_with_pytubefix, #272 slice 5 PR9)
+# ---------------------------------------------------------------------------
+
+
+def _make_pytubefix_stream(resolution="720p", mime_type="video/mp4", is_adaptive=True, is_progressive=False):
+    stream = MagicMock()
+    stream.resolution = resolution
+    stream.mime_type = mime_type
+    stream.is_adaptive = is_adaptive
+    stream.is_progressive = is_progressive
+    return stream
+
+
+class TestLogAvailableStreams:
+    def test_returns_none(self):
+        """The helper is a pure logging side effect and returns None."""
+        yt = MagicMock()
+        yt.streams.all.return_value = []
+
+        from utils.youtube_downloader import _log_available_streams
+
+        assert _log_available_streams(yt) is None
+
+    def test_logs_at_most_first_15_streams_but_header_reports_full_count(self, mocker):
+        """20 streams in -> 1 header log line (reporting 20) + 15 detail lines, not 20."""
+        streams = [_make_pytubefix_stream() for _ in range(20)]
+        yt = MagicMock()
+        yt.streams.all.return_value = streams
+
+        mock_logger = mocker.patch("utils.youtube_downloader.logger")
+
+        from utils.youtube_downloader import _log_available_streams
+
+        _log_available_streams(yt)
+
+        assert mock_logger.info.call_count == 16  # 1 header + 15 detail lines
+        header_message = mock_logger.info.call_args_list[0].args[0]
+        assert "20" in header_message
+
+    def test_stream_with_none_resolution_logs_audio(self, mocker):
+        """A stream with resolution=None is logged as `audio`, matching `s.resolution or 'audio'`."""
+        yt = MagicMock()
+        yt.streams.all.return_value = [_make_pytubefix_stream(resolution=None)]
+
+        mock_logger = mocker.patch("utils.youtube_downloader.logger")
+
+        from utils.youtube_downloader import _log_available_streams
+
+        _log_available_streams(yt)
+
+        detail_message = mock_logger.info.call_args_list[1].args[0]
+        assert "audio" in detail_message
+
+
+# ---------------------------------------------------------------------------
+# _select_video_stream (lifted out of download_with_pytubefix, #272 slice 5 PR9)
+# ---------------------------------------------------------------------------
+
+
+def _make_filter_chain(first_return, filter_side_effect=None):
+    chain = MagicMock()
+    if filter_side_effect is not None:
+        chain.filter.side_effect = filter_side_effect
+    else:
+        chain.filter.return_value = chain
+    chain.order_by.return_value = chain
+    chain.desc.return_value = chain
+    chain.first.return_value = first_return
+    return chain
+
+
+class TestSelectVideoStream:
+    def test_prefers_mp4_adaptive_stream_at_or_above_min_resolution(self):
+        """The primary mp4-adaptive-at-min-resolution filter wins when it yields a stream."""
+        mock_stream = _make_pytubefix_stream(resolution="1080p")
+        primary_chain = _make_filter_chain(mock_stream)
+
+        yt = MagicMock()
+        yt.streams.filter.return_value = primary_chain
+
+        from utils.youtube_downloader import _select_video_stream
+
+        result = _select_video_stream(yt, 720)
+
+        assert result is mock_stream
+        assert yt.streams.filter.call_count == 1  # no fallback attempted
+
+    def test_falls_back_to_any_mp4_adaptive_stream(self):
+        """When the primary filter yields nothing, fall back to any mp4 adaptive stream."""
+        mock_stream = _make_pytubefix_stream(resolution="480p")
+        primary_chain = _make_filter_chain(None)
+        fallback1_chain = _make_filter_chain(mock_stream)
+
+        call_count = [0]
+
+        def filter_side_effect(**kwargs):
+            call_count[0] += 1
+            return primary_chain if call_count[0] == 1 else fallback1_chain
+
+        yt = MagicMock()
+        yt.streams.filter.side_effect = filter_side_effect
+
+        from utils.youtube_downloader import _select_video_stream
+
+        result = _select_video_stream(yt, 720)
+
+        assert result is mock_stream
+        assert call_count[0] == 2
+
+    def test_falls_back_to_any_adaptive_stream(self):
+        """When both mp4 filters yield nothing, fall back to any adaptive stream."""
+        mock_stream = _make_pytubefix_stream(resolution="360p")
+        primary_chain = _make_filter_chain(None)
+        fallback1_chain = _make_filter_chain(None)
+        fallback2_chain = _make_filter_chain(mock_stream)
+
+        call_count = [0]
+
+        def filter_side_effect(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return primary_chain
+            if call_count[0] == 2:
+                return fallback1_chain
+            return fallback2_chain
+
+        yt = MagicMock()
+        yt.streams.filter.side_effect = filter_side_effect
+
+        from utils.youtube_downloader import _select_video_stream
+
+        result = _select_video_stream(yt, 720)
+
+        assert result is mock_stream
+        assert call_count[0] == 3
+
+    def test_returns_none_when_all_three_yield_none(self):
+        """When none of the three filters yield a stream, the helper returns None."""
+        primary_chain = _make_filter_chain(None)
+        fallback1_chain = _make_filter_chain(None)
+        fallback2_chain = _make_filter_chain(None)
+
+        call_count = [0]
+
+        def filter_side_effect(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return primary_chain
+            if call_count[0] == 2:
+                return fallback1_chain
+            return fallback2_chain
+
+        yt = MagicMock()
+        yt.streams.filter.side_effect = filter_side_effect
+
+        from utils.youtube_downloader import _select_video_stream
+
+        result = _select_video_stream(yt, 720)
+
+        assert result is None
+        assert call_count[0] == 3
+
+    def test_none_resolution_excluded_by_short_circuit_without_raising(self):
+        """A stream with resolution=None is excluded by `s.resolution and ...` — no TypeError."""
+        captured = {}
+
+        def capture_lambda(fn):
+            captured["fn"] = fn
+            return primary_chain
+
+        primary_chain = _make_filter_chain(None, filter_side_effect=capture_lambda)
+        fallback1_chain = _make_filter_chain(None)
+        fallback2_chain = _make_filter_chain(None)
+
+        call_count = [0]
+
+        def filter_side_effect(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return primary_chain
+            if call_count[0] == 2:
+                return fallback1_chain
+            return fallback2_chain
+
+        yt = MagicMock()
+        yt.streams.filter.side_effect = filter_side_effect
+
+        from utils.youtube_downloader import _select_video_stream
+
+        result = _select_video_stream(yt, 720)
+
+        assert result is None
+        no_resolution_stream = _make_pytubefix_stream(resolution=None)
+        assert not captured["fn"](no_resolution_stream)  # falsy, not a TypeError
+
+
+# ---------------------------------------------------------------------------
 # download_youtube_video_for_upload
 # ---------------------------------------------------------------------------
 
