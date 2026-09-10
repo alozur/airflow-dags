@@ -110,12 +110,12 @@ run the AST-equality proof script and capture `OK` lines; `uv run ruff check .`;
 
 ## PR8 — `download_youtube_subtitles` (`utils/youtube_downloader.py:883-933`)
 
-- [ ] 8.1 Rebase onto PR7's tip. Baseline: confirm `download_youtube_subtitles` measures 11.
-- [ ] 8.2 RED-first tests in `tests/utils/test_youtube_downloader.py`, class `TestDownloadSubtitleFiles`: per-language exception → `continue`, next language attempted, no raise; `break` after the first language that yields files (later languages never attempted); `is_auto` pinned on both halves of `"auto" in srt_file.name.lower() or lang == "auto"` — `("v1_es-AUTO.srt", lang="es") → True`, `("v1_zz.srt", lang="auto") → True`, `("v1_es.srt", lang="es") → False`; all languages failing → `[]`; one entry per file in the glob, all sharing the same `language`. Confirm RED.
-- [ ] 8.3 Lift `_download_subtitle_files(youtube_url, video_id, output_dir, languages) -> list[dict]` from base 883-933, immediately above `download_youtube_subtitles`. Replace with `downloaded_files = _download_subtitle_files(youtube_url, video_id, output_dir, languages)`, applying (c). The 948-973 merge block stays untouched, unmoved.
-- [ ] 8.4 Complexity re-measure: confirm `download_youtube_subtitles` ≤10 (predicted 7), `_download_subtitle_files` ≤10 (predicted 5).
-- [ ] 8.5 PR8 closing tasks, scoped to `utils/youtube_downloader.py`; `git diff --shortstat` ≤400; existing-test-diff additions-only check.
-- [ ] 8.6 Commit: `refactor(youtube-downloader): lift subtitle-file download out of download_youtube_subtitles (#272)`. PR8 body: 📍 PR8, base = PR7 branch, `Refs #272`, revert-pairing note (with PR9).
+- [x] 8.1 Rebase onto PR7's tip. Baseline: confirm `download_youtube_subtitles` measures 11.
+- [x] 8.2 RED-first tests in `tests/utils/test_youtube_downloader.py`, class `TestDownloadSubtitleFiles`: per-language exception → `continue`, next language attempted, no raise; `break` after the first language that yields files (later languages never attempted); `is_auto` pinned on both halves of `"auto" in srt_file.name.lower() or lang == "auto"` — `("v1_es-AUTO.srt", lang="es") → True`, `("v1_zz.srt", lang="auto") → True`, `("v1_es.srt", lang="es") → False`; all languages failing → `[]`; one entry per file in the glob, all sharing the same `language`. Confirm RED.
+- [x] 8.3 Lift `_download_subtitle_files(youtube_url, video_id, output_dir, languages) -> list[dict]` from base 883-933, immediately above `download_youtube_subtitles`. Replace with `downloaded_files = _download_subtitle_files(youtube_url, video_id, output_dir, languages)`, applying (c). The 948-973 merge block stays untouched, unmoved.
+- [x] 8.4 Complexity re-measure: confirm `download_youtube_subtitles` ≤10 (predicted 7), `_download_subtitle_files` ≤10 (predicted 5).
+- [x] 8.5 PR8 closing tasks, scoped to `utils/youtube_downloader.py`; `git diff --shortstat` ≤400; existing-test-diff additions-only check.
+- [x] 8.6 Commit: `refactor(youtube-downloader): lift subtitle-file download out of download_youtube_subtitles (#272)`. PR8 body: 📍 PR8, base = PR7 branch, `Refs #272`, revert-pairing note (with PR9).
 
 ## PR9 — `download_with_pytubefix` + `download_youtube_video_for_upload` (`utils/youtube_downloader.py`) + C901 prune + counter 5→4
 

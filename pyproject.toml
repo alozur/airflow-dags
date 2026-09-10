@@ -159,7 +159,7 @@ indent-style = "space"
 "tests/utils/test_whisper_helpers_extended.py" = ["F841"]
 "tests/utils/test_youtube_downloader.py" = ["F841"]
 "utils/time_utils.py" = ["B904"]
-"utils/youtube_downloader.py" = ["C901", "F841"]
+"utils/youtube_downloader.py" = ["F841"]
 "utils/youtube_helpers.py" = ["F841"]
 # --- end ruff baseline ---
 
