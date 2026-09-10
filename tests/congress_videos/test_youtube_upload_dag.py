@@ -1014,6 +1014,107 @@ class TestVerifyFinalCopy:
         assert "copy_verification" not in ti.xcom_store
 
 
+def _lookup_stub(roster: dict):
+    """Stub lookup_participant_by_slug: slug -> participant dict | None
+    (design.md D2 — mirrors test_reap_uploader_dag.py's `_lookup_stub`
+    shape; not imported across test modules by design)."""
+
+    def _fn(slug):
+        return roster.get(slug)
+
+    return _fn
+
+
+class TestCopyVerificationEvidenceNameSplit:
+    """Issue #544: `_copy_verification_evidence` must keep the raw roster
+    `display_name` and the canonical `short_name` (#511) in two distinct,
+    never-conflated fields — for the resolved speaker and for every
+    `mencionados` entry (design.md D1/D2)."""
+
+    def test_resolvable_slug_splits_raw_and_canonical(self, mocker):
+        from congress_videos.youtube_upload_dag import _copy_verification_evidence
+
+        db = MagicMock()
+        db.get_chapter_metadata.return_value = {"mentioned_participant_slugs": None}
+        db.get_turn_speaker_slug.return_value = {"resolved_participant_slug": "known-slug"}
+
+        roster = {"known-slug": {"display_name": "RAW Foo"}}
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_by_slug",
+            side_effect=_lookup_stub(roster),
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.canonical_display_name",
+            return_value="CANON-X",
+        )
+
+        evidence = _copy_verification_evidence(db, chapter_id=1, turn_id=2)
+
+        assert evidence["speaker"]["display_name"] == "RAW Foo"
+        assert evidence["speaker"]["short_name"] == "CANON-X"
+        assert evidence["speaker"]["display_name"] != evidence["speaker"]["short_name"]
+
+    def test_unmapped_slug_keeps_raw_and_nulls_canonical(self, mocker):
+        from congress_videos.youtube_upload_dag import _copy_verification_evidence
+
+        db = MagicMock()
+        db.get_chapter_metadata.return_value = {"mentioned_participant_slugs": None}
+        db.get_turn_speaker_slug.return_value = {"resolved_participant_slug": "known-slug"}
+
+        roster = {"known-slug": {"display_name": "RAW Foo"}}
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_by_slug",
+            side_effect=_lookup_stub(roster),
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.canonical_display_name",
+            return_value=None,
+        )
+
+        evidence = _copy_verification_evidence(db, chapter_id=1, turn_id=2)
+
+        assert evidence["speaker"]["short_name"] is None
+        assert evidence["speaker"]["display_name"] == "RAW Foo"
+
+    def test_mentioned_entries_split_raw_and_canonical(self, mocker):
+        from congress_videos.youtube_upload_dag import _copy_verification_evidence
+
+        db = MagicMock()
+        db.get_chapter_metadata.return_value = {
+            "mentioned_participant_slugs": ["mentioned-a", "mentioned-b"],
+        }
+        db.get_turn_speaker_slug.return_value = {"resolved_participant_slug": "speaker-slug"}
+
+        roster = {
+            "speaker-slug": {"display_name": "RAW Speaker"},
+            "mentioned-a": {"display_name": "RAW Mentioned A"},
+            "mentioned-b": {"display_name": "RAW Mentioned B"},
+        }
+        canonical = {
+            "speaker-slug": "CANON Speaker",
+            "mentioned-a": "CANON Mentioned A",
+            "mentioned-b": "CANON Mentioned B",
+        }
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.lookup_participant_by_slug",
+            side_effect=_lookup_stub(roster),
+        )
+        mocker.patch(
+            "congress_videos.youtube_upload_dag.canonical_display_name",
+            side_effect=lambda slug: canonical.get(slug),
+        )
+
+        evidence = _copy_verification_evidence(db, chapter_id=1, turn_id=2)
+
+        by_slug = {entry["slug"]: entry for entry in evidence["mencionados"]}
+        assert by_slug["mentioned-a"]["display_name"] == "RAW Mentioned A"
+        assert by_slug["mentioned-a"]["short_name"] == "CANON Mentioned A"
+        assert by_slug["mentioned-b"]["display_name"] == "RAW Mentioned B"
+        assert by_slug["mentioned-b"]["short_name"] == "CANON Mentioned B"
+        assert by_slug["mentioned-a"]["display_name"] != evidence["speaker"]["display_name"]
+        assert by_slug["mentioned-b"]["display_name"] != evidence["speaker"]["display_name"]
+
+
 # ---------------------------------------------------------------------------
 # should_upload function (REQ-GATE-01)
 # ---------------------------------------------------------------------------
