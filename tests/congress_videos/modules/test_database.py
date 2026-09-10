@@ -833,6 +833,33 @@ class TestSelectUnpreparedTurnsChapterSpan:
 
 
 # --------------------------------------------------------------------------- #
+# select_unprepared_turns — chapter-first-substantive-turn signal (issue #613)
+# --------------------------------------------------------------------------- #
+
+
+class TestSelectUnpreparedTurnsChapterFirstSubstantive:
+    """Spec: 'Chapter First-Substantive-Turn Signal' — an additive BOOL_OR
+    window column that must be computed over ALL chapter turns (prepared,
+    procedural, or unprepared), not just the rows surviving the WHERE/dedup
+    filters (design.md D1/D2). One SQL-shape scenario per design.md's
+    Testing Strategy table, asserted as one test."""
+
+    def test_query_shape_matches_design_d1_d2(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchall.return_value = []
+
+        instance.select_unprepared_turns(limit=2)
+
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "is_chapter_first_substantive" in sql, f"missing column alias; got: {sql}"
+        assert "BOOL_OR" in sql, f"must use BOOL_OR; got: {sql}"
+        assert "PARTITION BY stv.output_path" in sql, f"must partition by output_path; got: {sql}"
+        assert "NOT EXISTS" in sql, f"must use NOT EXISTS; got: {sql}"
+        assert "st2.chapter_id = st.chapter_id" in sql, f"must correlate st2 on chapter_id; got: {sql}"
+        assert ">= 30.0" in sql, f"must use the 30.0s substantive threshold; got: {sql}"
+
+
+# --------------------------------------------------------------------------- #
 # record_title_generation_input_turn / _short (issue #549)
 # --------------------------------------------------------------------------- #
 
