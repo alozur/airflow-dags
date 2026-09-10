@@ -987,3 +987,192 @@ class TestRecordTitleGenerationInputShort:
 
         with pytest.raises(ValueError):
             instance.record_title_generation_input_short(42, payload=bad_payload)
+
+
+# --------------------------------------------------------------------------- #
+# claim_thumbnail_text_regeneration / record_thumbnail_text_regeneration_outcome
+# (issue #545, design.md D1/D3)
+# --------------------------------------------------------------------------- #
+
+
+class TestClaimThumbnailTextRegeneration:
+    """claim_thumbnail_text_regeneration is a claim-before-act atomic UPDATE
+    (design.md D3): it charges the attempt (and, at the ceiling, sets
+    thumbnail_regen_exhausted) BEFORE any paid Pikzels/OpenAI call is made,
+    so a crash after the claim cannot re-spend for free. The WHERE clause
+    is the sole guard against re-claiming an exhausted/at-ceiling row —
+    every assertion below pins the exact guard text so removing it (the
+    mutation check) fails these tests.
+
+    THUMBNAIL_TEXT_REGEN_MAX_ATTEMPTS is 2, not #331's 3: each attempt here
+    spends 1-2 Pikzels images + 1 OpenAI call with NO throttle anywhere in
+    the codebase, so this counter is the only spend ceiling (design.md D3).
+    """
+
+    def test_charges_before_second_call(self, db):
+        """First claim on a fresh row: attempts becomes 1, not yet exhausted
+        (ceiling is 2). The UPDATE must increment atomically and gate on
+        the WHERE clause, never a read-then-write from Python."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "thumbnail_regen_attempts": 1,
+            "thumbnail_regen_exhausted": False,
+        }
+
+        result = instance.claim_thumbnail_text_regeneration("/path/turn1.mp4", prior_brief=None)
+
+        sql = mock_cursor.execute.call_args[0][0].upper()
+        assert "UPDATE" in sql
+        assert "SPEAKER_TURN_VIDEOS" in sql
+        assert "THUMBNAIL_REGEN_ATTEMPTS = COALESCE(THUMBNAIL_REGEN_ATTEMPTS, 0) + 1" in sql
+        assert ">= 2" in sql  # exhausted flips true only once attempts reach the ceiling
+        assert "WHERE OUTPUT_PATH = %S" in sql
+        assert "AND NOT COALESCE(THUMBNAIL_REGEN_EXHAUSTED, FALSE)" in sql
+        assert "AND COALESCE(THUMBNAIL_REGEN_ATTEMPTS, 0) < 2" in sql
+        assert "RETURNING" in sql
+        assert result == {"thumbnail_regen_attempts": 1, "thumbnail_regen_exhausted": False}
+
+    def test_refuses_at_ceiling(self, db):
+        """GIVEN 2 prior attempts already recorded and thumbnail_regen_exhausted
+        = TRUE, WHEN claim is called again, THEN it returns None and the
+        WHERE guard means Postgres would affect zero rows — no attempts
+        column bump is possible from this call."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None  # WHERE guard matched zero rows
+
+        result = instance.claim_thumbnail_text_regeneration("/path/exhausted.mp4", prior_brief=None)
+
+        assert result is None
+
+    def test_idempotent_on_rerun(self, db):
+        """Retrying the upload step for the same output_path must not
+        double-count: the atomic WHERE guard (attempts < 2 AND NOT
+        exhausted) is the only thing preventing a second concurrent/rerun
+        claim from over-charging. Mutation check: this exact guard text
+        must be present, or a removed guard would let every rerun re-claim
+        indefinitely."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "thumbnail_regen_attempts": 2,
+            "thumbnail_regen_exhausted": True,
+        }
+
+        instance.claim_thumbnail_text_regeneration("/path/turn1.mp4", prior_brief=None)
+
+        sql = mock_cursor.execute.call_args[0][0].upper()
+        assert "AND NOT COALESCE(THUMBNAIL_REGEN_EXHAUSTED, FALSE)" in sql
+        assert "AND COALESCE(THUMBNAIL_REGEN_ATTEMPTS, 0) < 2" in sql
+
+    def test_unknown_output_path_returns_none(self, db):
+        """Chapter items have no speaker_turn_videos row at all (design.md
+        D3 / spec note 8) — the claim must return None, not raise, so the
+        caller publishes as-is. This is intended behaviour, not a bug."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = None
+
+        result = instance.claim_thumbnail_text_regeneration("/no/such/row.mp4", prior_brief={"a": 1})
+
+        assert result is None
+
+    def test_prior_brief_write_once(self, db):
+        """A second successful claim on the same row must NOT overwrite
+        thumbnail_regen_prior_brief — COALESCE keeps the first/true-original
+        brief across attempts (spec: "Prior brief is snapshotted before
+        triggering")."""
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "thumbnail_regen_attempts": 1,
+            "thumbnail_regen_exhausted": False,
+        }
+        prior_brief = {"title": "Original Brief"}
+
+        instance.claim_thumbnail_text_regeneration("/path/turn1.mp4", prior_brief=prior_brief)
+
+        sql = mock_cursor.execute.call_args[0][0].upper()
+        params = mock_cursor.execute.call_args[0][1]
+        assert "THUMBNAIL_REGEN_PRIOR_BRIEF = COALESCE(THUMBNAIL_REGEN_PRIOR_BRIEF, %S::JSONB)" in sql
+        assert params[0] == json.dumps(prior_brief, ensure_ascii=False)
+
+    def test_prior_brief_none_binds_null(self, db):
+        instance, mock_cursor = db
+        mock_cursor.fetchone.return_value = {
+            "thumbnail_regen_attempts": 1,
+            "thumbnail_regen_exhausted": False,
+        }
+
+        instance.claim_thumbnail_text_regeneration("/path/turn1.mp4", prior_brief=None)
+
+        params = mock_cursor.execute.call_args[0][1]
+        assert params[0] is None
+
+    def test_raises_value_error_on_empty_output_path(self, db):
+        instance, _ = db
+
+        with pytest.raises(ValueError):
+            instance.claim_thumbnail_text_regeneration("", prior_brief=None)
+
+
+class TestRecordThumbnailTextRegenerationOutcome:
+    """record_thumbnail_text_regeneration_outcome is the terminal write for
+    a claimed attempt (design.md D4): outcome is one of {applied, timeout,
+    trigger_failed, child_failed, invalid_result, not_claimed}. It must
+    never touch thumbnail_regen_prior_brief — the claim call already
+    snapshotted it write-once — so both briefs stay independently
+    retrievable after a landed regeneration."""
+
+    def test_persists_regenerated_brief(self, db):
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 1
+        regenerated_brief = {"title": "New Brief"}
+
+        instance.record_thumbnail_text_regeneration_outcome(
+            "/path/turn1.mp4",
+            outcome="applied",
+            regenerated_brief=regenerated_brief,
+        )
+
+        sql = " ".join(mock_cursor.execute.call_args[0][0].upper().split())
+        params = mock_cursor.execute.call_args[0][1]
+        assert "UPDATE" in sql
+        assert "SPEAKER_TURN_VIDEOS" in sql
+        assert "THUMBNAIL_REGEN_OUTCOME = %S" in sql
+        assert "THUMBNAIL_REGEN_BRIEF = %S::JSONB" in sql
+        assert "THUMBNAIL_REGEN_PRIOR_BRIEF" not in sql  # never touched by this call
+        assert "WHERE OUTPUT_PATH = %S" in sql
+        assert json.dumps(regenerated_brief, ensure_ascii=False) in params
+        assert "applied" in params
+
+    def test_failure_outcome_binds_error_and_null_brief(self, db):
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 1
+
+        instance.record_thumbnail_text_regeneration_outcome(
+            "/path/turn1.mp4",
+            outcome="timeout",
+            error="poll bound exceeded",
+        )
+
+        params = mock_cursor.execute.call_args[0][1]
+        assert "timeout" in params
+        assert "poll bound exceeded" in params
+        assert None in params  # no regenerated_brief for a non-landed outcome
+
+    def test_returns_cursor_rowcount(self, db):
+        instance, mock_cursor = db
+        mock_cursor.rowcount = 3
+
+        result = instance.record_thumbnail_text_regeneration_outcome("/path/grouped.mp4", outcome="not_claimed")
+
+        assert result == 3
+
+    def test_raises_value_error_on_empty_output_path(self, db):
+        instance, _ = db
+
+        with pytest.raises(ValueError):
+            instance.record_thumbnail_text_regeneration_outcome("", outcome="applied")
+
+    def test_raises_value_error_on_empty_outcome(self, db):
+        instance, _ = db
+
+        with pytest.raises(ValueError):
+            instance.record_thumbnail_text_regeneration_outcome("/path/turn1.mp4", outcome="")
