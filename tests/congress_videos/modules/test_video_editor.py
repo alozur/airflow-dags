@@ -12,6 +12,8 @@ Test groups:
     TestResolveSourcePath     — T-06 _resolve_source_path + _default_output_path (REQ-03, REQ-10)
     TestValidateEditorInput   — T-07 validate_editor_input (REQ-01, REQ-02, REQ-08)
     TestApplyOverlays         — T-08 apply_overlays (REQ-07)
+    TestIntroSesionConfig     — T-14 intro_sesion tipo schema (session-intro-card-overlay PR 1)
+    TestIntroSesionRenderer   — T-15 _render_intro_sesion + registration (session-intro-card-overlay PR 1)
 """
 
 from __future__ import annotations
@@ -1165,3 +1167,151 @@ class TestApplyOverlaysPillow:
         call_args = mock_pillow_render.call_args[0]
         assert 1280 in call_args
         assert 720 in call_args
+
+
+# ---------------------------------------------------------------------------
+# T-14: TestIntroSesionConfig — intro_sesion tipo schema (session-intro-card-overlay PR 1)
+# ---------------------------------------------------------------------------
+
+
+class TestIntroSesionConfig:
+    """T-14: intro_sesion must declare the same style schema as extracto_sesion, style only."""
+
+    def _cfg(self) -> dict:
+        from congress_videos.config.video_editor_config import get_domain_config
+
+        return get_domain_config("congreso")
+
+    def test_intro_sesion_exists_in_congreso(self) -> None:
+        """intro_sesion must be present under congreso.tipos."""
+        assert "intro_sesion" in self._cfg()["tipos"]
+
+    def test_intro_sesion_matches_extracto_sesion_schema(self) -> None:
+        """intro_sesion must declare exactly the same style keys as extracto_sesion."""
+        tipos = self._cfg()["tipos"]
+        intro_keys = set(tipos["intro_sesion"].keys())
+        extracto_keys = set(tipos["extracto_sesion"].keys())
+        assert intro_keys == extracto_keys
+
+    def test_intro_sesion_has_required_style_fields(self) -> None:
+        """intro_sesion must declare all required Pillow style keys."""
+        style = self._cfg()["tipos"]["intro_sesion"]
+        for key in (
+            "renderer",
+            "fontfile",
+            "fontfile_sub",
+            "fontsize_title",
+            "fontsize_sub",
+            "bg_color",
+            "accent_color",
+            "title_color",
+            "sub_color",
+            "width_pct",
+            "height",
+            "margin_y",
+        ):
+            assert key in style, f"Missing required style key: {key}"
+        assert style["renderer"] == "pillow"
+
+    def test_intro_sesion_carries_no_per_call_timing_state(self) -> None:
+        """intro_sesion style must never carry timing keys — timing belongs to the overlay, not the tipo."""
+        style = self._cfg()["tipos"]["intro_sesion"]
+        for timing_key in ("tiempo_inicio", "tiempo_fin", "start", "end", "duration"):
+            assert timing_key not in style
+
+
+# ---------------------------------------------------------------------------
+# T-15: TestIntroSesionRenderer — _render_intro_sesion + registration (session-intro-card-overlay PR 1)
+# ---------------------------------------------------------------------------
+
+_INTRO_SESION_OVERLAY = {
+    "tipo": "intro_sesion",
+    "tiempo_inicio": 0.0,
+    "tiempo_fin": 5.0,
+    "titulo": "Sesión 42",
+    "descripcion": "10 de enero de 2026",
+}
+
+
+class TestIntroSesionRenderer:
+    """T-15: a config entry without a registered renderer must fail loudly; a registered one must render."""
+
+    def test_intro_sesion_without_renderer_fails_loudly(self, monkeypatch, mocker) -> None:
+        """A tipo present in config but absent from _PILLOW_RENDERERS must raise, never silently skip."""
+        from congress_videos.config.video_editor_config import get_domain_config
+        from congress_videos.modules.video_editor import _PILLOW_RENDERERS, apply_overlays
+
+        # Simulate the "no renderer registered" state regardless of the current registry,
+        # so this regression test stays meaningful even after intro_sesion is registered.
+        monkeypatch.delitem(_PILLOW_RENDERERS, "intro_sesion", raising=False)
+        mocker.patch("congress_videos.modules.video_editor.subprocess.run")
+        mocker.patch("congress_videos.modules.video_editor._get_source_duration", return_value=60.0)
+        mocker.patch("congress_videos.modules.video_editor._get_source_dimensions", return_value=(1280, 720))
+
+        cfg = get_domain_config("congreso")
+        with pytest.raises(KeyError, match="intro_sesion"):
+            apply_overlays(
+                source_path="/data/in.mp4",
+                output_path="/data/out.mp4",
+                overlays=[{**_INTRO_SESION_OVERLAY}],
+                domain_cfg=cfg,
+            )
+
+    def test_intro_sesion_renderer_returns_rgba_image_of_correct_size(self) -> None:
+        """The registered intro_sesion renderer must return an RGBA image sized (W, H)."""
+        from congress_videos.config.video_editor_config import get_domain_config
+        from congress_videos.modules.video_editor import render_pillow_overlay
+
+        cfg = get_domain_config("congreso")
+        img = render_pillow_overlay(_INTRO_SESION_OVERLAY, cfg, _W, _H)
+        assert img.size == (_W, _H)
+        assert img.mode == "RGBA"
+
+    def test_intro_sesion_renderer_is_not_fully_transparent(self) -> None:
+        """The rendered intro_sesion card must contain at least one non-transparent pixel."""
+        from congress_videos.config.video_editor_config import get_domain_config
+        from congress_videos.modules.video_editor import render_pillow_overlay
+
+        cfg = get_domain_config("congreso")
+        img = render_pillow_overlay(_INTRO_SESION_OVERLAY, cfg, _W, _H)
+        pixels = list(img.getdata())
+        assert any(px[3] > 0 for px in pixels), "All pixels are transparent — nothing was drawn."
+
+    def test_intro_sesion_renders_without_descripcion(self) -> None:
+        """The renderer must succeed when 'descripcion' is absent."""
+        from congress_videos.config.video_editor_config import get_domain_config
+        from congress_videos.modules.video_editor import render_pillow_overlay
+
+        cfg = get_domain_config("congreso")
+        overlay = {**_INTRO_SESION_OVERLAY, "descripcion": None}
+        img = render_pillow_overlay(overlay, cfg, _W, _H)
+        assert img.size == (_W, _H)
+
+    def test_apply_overlays_composites_intro_sesion_within_time_window(self, mocker) -> None:
+        """apply_overlays must dispatch to the real renderer and burn the card into [0, 5)."""
+        from congress_videos.config.video_editor_config import get_domain_config
+        from congress_videos.modules import video_editor as ve
+
+        completed = MagicMock(returncode=0, stdout="", stderr="")
+        mock_run = mocker.patch("congress_videos.modules.video_editor.subprocess.run", return_value=completed)
+        mocker.patch("congress_videos.modules.video_editor._get_source_duration", return_value=300.0)
+        mocker.patch("congress_videos.modules.video_editor._get_source_dimensions", return_value=(1280, 720))
+        render_spy = mocker.patch(
+            "congress_videos.modules.video_editor.render_pillow_overlay",
+            wraps=ve.render_pillow_overlay,
+        )
+
+        cfg = get_domain_config("congreso")
+        result = ve.apply_overlays(
+            source_path="/data/in.mp4",
+            output_path="/data/out.mp4",
+            overlays=[{**_INTRO_SESION_OVERLAY}],
+            domain_cfg=cfg,
+        )
+
+        assert result["success"] is True
+        render_spy.assert_called_once()
+
+        ffmpeg_cmd = mock_run.call_args[0][0]
+        filter_complex = ffmpeg_cmd[ffmpeg_cmd.index("-filter_complex") + 1]
+        assert "between(t,0.0,5.0)" in filter_complex

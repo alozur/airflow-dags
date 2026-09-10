@@ -48,13 +48,13 @@ Chain strategy: feature-branch-chain
 
 ## PR 1: `intro_sesion` tipo + renderer + registration (base: tracker branch, ~140 lines)
 
-- [ ] 1.1 RED: `tests/congress_videos/modules/test_video_editor.py` — `intro_sesion` in `congreso` tipos declares the same keys as `extracto_sesion` (`renderer`, `fontfile`, `fontfile_sub`, `fontsize_title/_sub`, `bg_color`, `accent_color`, `title_color`, `sub_color`, `width_pct`, `height`, `margin_y`), no per-call timing state.
-- [ ] 1.2 GREEN: add `intro_sesion` entry (centered variant) to `congress_videos/config/video_editor_config.py` `congreso` domain.
-- [ ] 1.3 RED: `apply_overlays`/dispatch raises an explicit error when `intro_sesion` has no registered renderer — never a silent/partial overlay.
-- [ ] 1.4 GREEN: implement `_render_intro_sesion(overlay, style, W, H)` in `congress_videos/modules/video_editor.py` using `textbbox()`/`textlength()` (never `textsize()` — Pillow 12.3.0), matching `_draw_text_block` idiom of the 5 existing renderers.
-- [ ] 1.5 GREEN: register `"intro_sesion": _render_intro_sesion` in `_PILLOW_RENDERERS`.
-- [ ] 1.6 GREEN: test registered renderer composites the card within its time window (`apply_overlays` with ffmpeg subprocess patched, render call asserted).
-- [ ] 1.7 REFACTOR: check for duplication vs `_render_extracto_sesion`; extract only if trivial.
+- [x] 1.1 RED: `tests/congress_videos/modules/test_video_editor.py` — `intro_sesion` in `congreso` tipos declares the same keys as `extracto_sesion` (`renderer`, `fontfile`, `fontfile_sub`, `fontsize_title/_sub`, `bg_color`, `accent_color`, `title_color`, `sub_color`, `width_pct`, `height`, `margin_y`), no per-call timing state.
+- [x] 1.2 GREEN: add `intro_sesion` entry (centered variant) to `congress_videos/config/video_editor_config.py` `congreso` domain.
+- [x] 1.3 RED: `apply_overlays`/dispatch raises an explicit error when `intro_sesion` has no registered renderer — never a silent/partial overlay.
+- [x] 1.4 GREEN: implement `_render_intro_sesion(overlay, style, W, H)` in `congress_videos/modules/video_editor.py` using `textbbox()`/`textlength()` (never `textsize()` — Pillow 12.3.0), matching `_draw_text_block` idiom of the 5 existing renderers.
+- [x] 1.5 GREEN: register `"intro_sesion": _render_intro_sesion` in `_PILLOW_RENDERERS`.
+- [x] 1.6 GREEN: test registered renderer composites the card within its time window (`apply_overlays` with ffmpeg subprocess patched, render call asserted).
+- [x] 1.7 REFACTOR: check for duplication vs `_render_extracto_sesion`; extract only if trivial.
 
 ## PR 2: `resolve_overlay_slot` + default-window constant (base: PR 1 branch, ~120 lines)
 

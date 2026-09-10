@@ -446,8 +446,12 @@ def _render_dato_contexto(overlay: dict, style: dict, W: int, H: int):
     return img
 
 
-def _render_extracto_sesion(overlay: dict, style: dict, W: int, H: int):
-    """Bottom-centered 90% bar: session extract label, same language as speaker_id."""
+def _render_horizontal_bar_card(overlay: dict, style: dict, W: int, H: int, by: int):
+    """Shared bar-card drawing: bg + accent bars + centered text block, given a pre-computed box top-y.
+
+    Factored out of ``_render_extracto_sesion`` and ``_render_intro_sesion``, which are
+    identical except for where the bar sits vertically (bottom-anchored vs. centered).
+    """
     from PIL import Image, ImageDraw
 
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -456,7 +460,6 @@ def _render_extracto_sesion(overlay: dict, style: dict, W: int, H: int):
     bw = int(W * style["width_pct"])
     bh = style["height"]
     bx = (W - bw) // 2
-    by = H - bh - style["margin_y"]
 
     draw.rectangle([bx, by, bx + bw, by + bh], fill=style["bg_color"])
     draw.rectangle([bx, by, bx + bw, by + 6], fill=style["accent_color"])
@@ -478,8 +481,21 @@ def _render_extracto_sesion(overlay: dict, style: dict, W: int, H: int):
     return img
 
 
+def _render_extracto_sesion(overlay: dict, style: dict, W: int, H: int):
+    """Bottom-centered 90% bar: session extract label, same language as speaker_id."""
+    by = H - style["height"] - style["margin_y"]
+    return _render_horizontal_bar_card(overlay, style, W, H, by)
+
+
+def _render_intro_sesion(overlay: dict, style: dict, W: int, H: int):
+    """Centered card shown at the start of the video: session identification."""
+    by = (H - style["height"]) // 2 + style["margin_y"]
+    return _render_horizontal_bar_card(overlay, style, W, H, by)
+
+
 _PILLOW_RENDERERS = {
     "extracto_sesion": _render_extracto_sesion,
+    "intro_sesion": _render_intro_sesion,
     "speaker_id": _render_speaker_id,
     "cita_destacada": _render_cita_destacada,
     "urgente": _render_urgente,
