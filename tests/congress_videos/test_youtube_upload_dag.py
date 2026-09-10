@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
@@ -48,10 +49,10 @@ class TestYoutubeUploadDagLoads:
         assert dag.dag_id == "congress_youtube_chapter_uploader"
 
     def test_dag_has_fifteen_tasks(self):
-        """DAG must have 15 tasks: the prior 14 plus verify_final_copy (issue #512)."""
+        """DAG must have 16 tasks: the prior 15 plus apply_intro_overlay (issue #558)."""
         from congress_videos.youtube_upload_dag import dag
 
-        assert len(dag.tasks) == 15
+        assert len(dag.tasks) == 16
 
     def test_expected_task_ids_present(self):
         """New task IDs present; legacy Pillow task IDs absent."""
@@ -68,6 +69,8 @@ class TestYoutubeUploadDagLoads:
         assert "backfill_thumbnail_video_id" in task_ids
         # Issue #512
         assert "verify_final_copy" in task_ids
+        # Issue #558
+        assert "apply_intro_overlay" in task_ids
         # Legacy Pillow tasks must be gone
         assert "generate_thumbnail_text" not in task_ids
         assert "generate_thumbnails" not in task_ids
@@ -121,15 +124,18 @@ class TestYoutubeUploadDagLoads:
         assert generate.task_id in upstream_ids
 
     def test_extract_precedes_upload_config(self):
-        """extract_chapter_videos must be a direct upstream of prepare_upload_config."""
+        """extract_chapter_videos must precede prepare_upload_config (issue #558:
+        apply_intro_overlay (t5b) now sits directly between them, so the
+        relationship is ancestor, not direct-upstream — see
+        TestApplyIntroOverlayWiring for the direct t5 > t5b > t6 chain)."""
         from congress_videos.youtube_upload_dag import dag
 
         tasks_by_id = {t.task_id: t for t in dag.tasks}
         extract = tasks_by_id["extract_chapter_videos"]
         upload_config = tasks_by_id["prepare_upload_config"]
 
-        upstream_ids = {t.task_id for t in upload_config.upstream_list}
-        assert extract.task_id in upstream_ids
+        ancestor_ids = upload_config.get_flat_relative_ids(upstream=True)
+        assert extract.task_id in ancestor_ids
 
     def test_backfill_after_mark_uploaded(self):
         """backfill_thumbnail_video_id must be downstream of mark_chapters_uploaded."""
@@ -2582,13 +2588,14 @@ class TestDualQueueWiredIntoDag:
         assert item_task.task_id in upstream_ids, "generate_youtube_metadata must be downstream of get_uploadable_item"
 
     def test_dag_task_count_updated_for_wired_dual_queue(self):
-        """DAG must have 15 tasks: 13 original (t1_db replaced by get_uploadable_item
-        PythonOperator), plus mark_turns_uploaded, plus verify_final_copy (issue #512)."""
+        """DAG must have 16 tasks: 13 original (t1_db replaced by get_uploadable_item
+        PythonOperator), plus mark_turns_uploaded, plus verify_final_copy (issue #512),
+        plus apply_intro_overlay (issue #558)."""
         from congress_videos.youtube_upload_dag import dag
 
-        assert len(dag.tasks) == 15, (
-            f"Expected 15 tasks (13 original tasks, t1_db replaced by get_uploadable_item PythonOperator, "
-            f"plus mark_turns_uploaded, plus verify_final_copy), got {len(dag.tasks)}"
+        assert len(dag.tasks) == 16, (
+            f"Expected 16 tasks (13 original tasks, t1_db replaced by get_uploadable_item PythonOperator, "
+            f"plus mark_turns_uploaded, plus verify_final_copy, plus apply_intro_overlay), got {len(dag.tasks)}"
         )
 
     def test_mark_turns_uploaded_task_exists(self):
@@ -4125,3 +4132,590 @@ class TestTurnSpeakerFields:
             return_value={"slug": "lopez-pedro", "display_name": ""},
         ):
             assert _turn_speaker_fields(turn) == ([], "lopez-pedro")
+
+
+# ---------------------------------------------------------------------------
+# Issue #558: session intro-card overlay — t5b apply_intro_overlay
+# ---------------------------------------------------------------------------
+
+
+class TestBuildIntroCardText:
+    """_build_intro_card_text(session_number, session_date) — Spanish titulo/descripcion.
+
+    Mirrors the D6 session-label precedent (L398): titulo prefers "Sesión {n}",
+    falling back to the session date; descripcion always reflects the date when
+    present. Both absent raises (nothing to render on the card).
+    """
+
+    def test_session_number_and_date_present(self):
+        from congress_videos.youtube_upload_dag import _build_intro_card_text
+
+        titulo, descripcion = _build_intro_card_text(42, "2026-09-10")
+
+        assert titulo == "Sesión 42"
+        assert descripcion == "2026-09-10"
+
+    def test_only_session_number_present(self):
+        from congress_videos.youtube_upload_dag import _build_intro_card_text
+
+        titulo, descripcion = _build_intro_card_text(7, None)
+
+        assert titulo == "Sesión 7"
+        assert descripcion == ""
+
+    def test_only_session_date_present(self):
+        from congress_videos.youtube_upload_dag import _build_intro_card_text
+
+        titulo, descripcion = _build_intro_card_text(None, "2026-09-10")
+
+        assert titulo == "2026-09-10"
+        assert descripcion == "2026-09-10"
+
+    def test_both_absent_raises(self):
+        from congress_videos.youtube_upload_dag import _build_intro_card_text
+
+        with pytest.raises(ValueError, match="session_number.*session_date"):
+            _build_intro_card_text(None, None)
+
+    def test_session_number_zero_is_not_treated_as_absent(self):
+        """session_number=0 must use the number branch, not the None-fallback branch."""
+        from congress_videos.youtube_upload_dag import _build_intro_card_text
+
+        titulo, _descripcion = _build_intro_card_text(0, "2026-09-10")
+
+        assert titulo == "Sesión 0"
+
+
+def _make_intro_overlay_store(
+    *,
+    output_path: str,
+    success: bool = True,
+    session_number=42,
+    session_date="2026-09-10",
+    chapter_id: int = 100,
+    turn_id: int | None = 1,
+) -> dict:
+    """Build the XCom store `_apply_intro_overlay` reads from (t5's output)."""
+    return {
+        "uploadable_item": {
+            "item": {
+                "chapter_id": chapter_id,
+                "turn_id": turn_id,
+                "session_number": session_number,
+                "session_date": session_date,
+                "output_path": output_path,
+            },
+            "item_type": "turn",
+        },
+        "chapter_extraction_results": {
+            "total_chapters": 1,
+            "successful_extractions": 1 if success else 0,
+            "failed_extractions": 0 if success else 1,
+            "results": [
+                {
+                    "chapter_id": chapter_id,
+                    "turn_id": turn_id,
+                    "video_id": "vid123",
+                    "success": success,
+                    "output_path": output_path if success else None,
+                    "file_size_mb": None,
+                    "duration_seconds": None,
+                    "error": None if success else "turn output_path missing",
+                }
+            ],
+        },
+    }
+
+
+def _patch_intro_overlay_fonts_ok(mocker):
+    """Fonts are not installed in every dev/CI environment; `_validate_overlay`
+    checks font-file existence via `os.path.exists`. `os` and `os.path` are
+    shared singleton modules, so patching `os.path.exists` is inherently global
+    regardless of which module's `os` attribute is used to reach it — a
+    discriminating side_effect (real check for every other path) keeps
+    unrelated real-file assertions in the same test working.
+    """
+    from congress_videos.config.paths import FONT_BOLD, FONT_REGULAR
+
+    real_exists = os.path.exists
+
+    def _fake_exists(path):
+        if path in (FONT_BOLD, FONT_REGULAR):
+            return True
+        return real_exists(path)
+
+    mocker.patch("os.path.exists", side_effect=_fake_exists)
+
+
+def _patch_apply_overlays_writes_file(mocker):
+    """Fake apply_overlays that actually writes the `_edited` sibling file, so the
+    real (unpatched) `os.path.exists` post-check in `_apply_intro_overlay` — and
+    any source-immutability / sidecar-directory assertions — see a real file.
+    """
+
+    def _fake_apply_overlays(source_path, output_path, overlays, domain_cfg, *, max_timeout=None):
+        with open(output_path, "wb") as f:
+            f.write(b"fake-edited-bytes")
+        return {"success": True, "output_path": output_path}
+
+    return mocker.patch(
+        "congress_videos.modules.video_editor.apply_overlays",
+        side_effect=_fake_apply_overlays,
+    )
+
+
+class TestApplyIntroOverlayPassThrough:
+    """t5b mirrors t6's upstream-failure tolerance: never fail loud for upstream
+    extraction problems that are not this task's own doing (D3)."""
+
+    def test_missing_chapter_extraction_results_is_pass_through(self):
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        ti = _make_ti({"uploadable_item": {"item": {}, "item_type": "turn"}})
+
+        result = _apply_intro_overlay(ti)
+
+        assert result is None
+        assert "chapter_extraction_results" not in ti.xcom_store
+
+    def test_failed_extraction_result_is_pass_through(self):
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        store = _make_intro_overlay_store(output_path="/data/turn1/video.mp4", success=False)
+        ti = _make_ti(store)
+
+        result = _apply_intro_overlay(ti)
+
+        assert result is None
+        # XCom untouched: still the original (failed) extraction payload.
+        assert ti.xcom_store["chapter_extraction_results"] == store["chapter_extraction_results"]
+
+    def test_empty_results_list_is_pass_through(self):
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        store = {
+            "uploadable_item": {"item": {}, "item_type": "turn"},
+            "chapter_extraction_results": {"total_chapters": 0, "results": []},
+        }
+        ti = _make_ti(store)
+
+        result = _apply_intro_overlay(ti)
+
+        assert result is None
+        assert ti.xcom_store["chapter_extraction_results"] == store["chapter_extraction_results"]
+
+    def test_missing_output_path_is_pass_through(self):
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        store = {
+            "uploadable_item": {"item": {}, "item_type": "turn"},
+            "chapter_extraction_results": {
+                "results": [{"chapter_id": 1, "success": True, "output_path": None}],
+            },
+        }
+        original = dict(store["chapter_extraction_results"])
+        ti = _make_ti(store)
+
+        result = _apply_intro_overlay(ti)
+
+        assert result is None
+        assert ti.xcom_store["chapter_extraction_results"] == original
+
+
+class TestApplyIntroOverlayFailLoud:
+    """Every failure CAUSED by t5b itself must raise — never a silent skip,
+    never publishing the un-overlaid source (D3)."""
+
+    def test_missing_session_fields_raises_before_apply_overlays(self, tmp_path, mocker):
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source), session_number=None, session_date=None)
+        ti = _make_ti(store)
+
+        apply_spy = mocker.patch("congress_videos.modules.video_editor.apply_overlays")
+
+        with pytest.raises(ValueError, match="session_number.*session_date"):
+            _apply_intro_overlay(ti)
+
+        apply_spy.assert_not_called()
+        assert ti.xcom_store["chapter_extraction_results"] == store["chapter_extraction_results"]
+
+    def test_missing_font_raises_filenotfounderror_before_apply_overlays(self, tmp_path, mocker):
+        """D5: validate_editor_input runs BEFORE apply_overlays. A missing font
+        must raise FileNotFoundError naming tipo/key/path before ffmpeg spawns."""
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        mocker.patch("os.path.exists", return_value=False)
+        apply_spy = mocker.patch("congress_videos.modules.video_editor.apply_overlays")
+
+        with pytest.raises(FileNotFoundError, match="intro_sesion"):
+            _apply_intro_overlay(ti)
+
+        apply_spy.assert_not_called()
+        assert ti.xcom_store["chapter_extraction_results"] == store["chapter_extraction_results"]
+
+    def test_guard_trip_raises_and_leaves_xcom_untouched(self, tmp_path, mocker):
+        """A ValueError from apply_overlays' own duration guard must propagate."""
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        mocker.patch(
+            "congress_videos.modules.video_editor.apply_overlays",
+            side_effect=ValueError("Source duration 9999.0s exceeds MAX_OVERLAY_SOURCE_SECONDS (3600s)."),
+        )
+
+        with pytest.raises(ValueError, match="MAX_OVERLAY_SOURCE_SECONDS"):
+            _apply_intro_overlay(ti)
+
+        assert ti.xcom_store["chapter_extraction_results"] == store["chapter_extraction_results"]
+
+    def test_ffmpeg_failure_raises_and_leaves_xcom_untouched(self, tmp_path, mocker):
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        mocker.patch(
+            "congress_videos.modules.video_editor.apply_overlays",
+            side_effect=RuntimeError("ffmpeg failed (rc=1): boom"),
+        )
+
+        with pytest.raises(RuntimeError, match="ffmpeg failed"):
+            _apply_intro_overlay(ti)
+
+        assert ti.xcom_store["chapter_extraction_results"] == store["chapter_extraction_results"]
+
+    def test_missing_output_file_raises_and_leaves_xcom_untouched(self, tmp_path, mocker):
+        """apply_overlays reports success but never actually wrote the file."""
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        mocker.patch(
+            "congress_videos.modules.video_editor.apply_overlays",
+            return_value={"success": True, "output_path": str(tmp_path / "video_edited.mp4")},
+        )
+
+        with pytest.raises(RuntimeError, match="missing"):
+            _apply_intro_overlay(ti)
+
+        assert ti.xcom_store["chapter_extraction_results"] == store["chapter_extraction_results"]
+
+
+class TestApplyIntroOverlayCallOrder:
+    def test_validate_editor_input_called_before_apply_overlays(self, tmp_path, mocker):
+        """D5/D8 (task 4.8): a missing font must fail before ffmpeg ever spawns."""
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        call_order: list[str] = []
+
+        def _fake_validate(conf):
+            call_order.append("validate")
+
+        def _fake_apply(source_path, output_path, overlays, domain_cfg, *, max_timeout=None):
+            call_order.append("apply")
+            with open(output_path, "wb") as f:
+                f.write(b"x")
+            return {"success": True, "output_path": output_path}
+
+        real_validate = mocker.patch(
+            "congress_videos.modules.video_editor.validate_editor_input",
+            side_effect=_fake_validate,
+        )
+        mocker.patch(
+            "congress_videos.modules.video_editor.apply_overlays",
+            side_effect=_fake_apply,
+        )
+
+        _apply_intro_overlay(ti)
+
+        assert call_order == ["validate", "apply"]
+        real_validate.assert_called_once()
+
+
+class TestApplyIntroOverlaySuccess:
+    """In-process overwrite, DB invariant, source immutability, sidecar
+    resolution, and idempotent retry — the happy path (D2/D3/D4)."""
+
+    def test_overwrites_output_path_in_memory_and_records_original(self, tmp_path, mocker):
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        _patch_apply_overlays_writes_file(mocker)
+
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        _apply_intro_overlay(ti)
+
+        pushed = ti.xcom_store["chapter_extraction_results"]
+        result0 = pushed["results"][0]
+        assert result0["output_path"] == str(tmp_path / "video_edited.mp4")
+        assert result0["original_output_path"] == str(source)
+
+    def test_card_text_from_build_intro_card_text_reaches_the_overlay_conf(self, tmp_path, mocker):
+        """Closes the verify WARNING: the pure text builder is well covered, but
+        nothing pinned that its output actually reaches the overlay conf handed
+        to `apply_overlays`. Without this, a refactor could silently drop the
+        session label and still ship a card."""
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source), session_number=77, session_date="2026-03-04")
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        apply_overlays_mock = _patch_apply_overlays_writes_file(mocker)
+
+        from congress_videos.youtube_upload_dag import (
+            _apply_intro_overlay,
+            _build_intro_card_text,
+        )
+
+        _apply_intro_overlay(ti)
+
+        expected_titulo, expected_descripcion = _build_intro_card_text(77, "2026-03-04")
+        overlays = apply_overlays_mock.call_args.args[2]
+        assert len(overlays) == 1
+        assert overlays[0]["tipo"] == "intro_sesion"
+        assert overlays[0]["titulo"] == expected_titulo
+        assert overlays[0]["descripcion"] == expected_descripcion
+
+    def test_no_database_module_imported_and_no_db_write(self, tmp_path, mocker):
+        """t5b must import no database module and issue no db.* write (D4)."""
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        _patch_apply_overlays_writes_file(mocker)
+        db_ctor = mocker.patch("congress_videos.modules.database.CongressionalVideoDB")
+
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        _apply_intro_overlay(ti)
+
+        db_ctor.assert_not_called()
+
+    def test_speaker_turn_videos_output_path_never_updated(self, tmp_path, mocker):
+        """DB invariant: no db.* write of any shape is issued (D4)."""
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        _patch_apply_overlays_writes_file(mocker)
+        mock_db = MagicMock()
+        mocker.patch("congress_videos.modules.database.CongressionalVideoDB", return_value=mock_db)
+
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        _apply_intro_overlay(ti)
+
+        mock_db.mark_turns_uploaded.assert_not_called()
+        assert mock_db.method_calls == []
+
+    def test_source_file_bytes_and_path_unchanged(self, tmp_path, mocker):
+        source = tmp_path / "video.mp4"
+        original_bytes = b"source-bytes-unchanged"
+        source.write_bytes(original_bytes)
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        _patch_apply_overlays_writes_file(mocker)
+
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        _apply_intro_overlay(ti)
+
+        assert source.exists()
+        assert source.read_bytes() == original_bytes
+
+    def test_edited_file_lands_beside_source_for_sidecar_resolution(self, tmp_path, mocker):
+        """The 4 sidecars still resolve for prepare_orador_upload_config (D-Sidecar)."""
+        turn_dir = tmp_path / "oradores" / "1"
+        turn_dir.mkdir(parents=True)
+        source = turn_dir / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        for name, content in (
+            ("title.txt", "T"),
+            ("description.txt", "D"),
+            ("thumbnail.png", "\x89PNG"),
+            ("subtitles.srt", ""),
+        ):
+            (turn_dir / name).write_text(content, encoding="utf-8")
+
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        _patch_apply_overlays_writes_file(mocker)
+
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        _apply_intro_overlay(ti)
+
+        new_output_path = ti.xcom_store["chapter_extraction_results"]["results"][0]["output_path"]
+        assert os.path.dirname(new_output_path) == str(turn_dir)
+        for sidecar in ("title.txt", "description.txt", "thumbnail.png", "subtitles.srt"):
+            assert (turn_dir / sidecar).exists()
+
+    def test_retry_writes_same_deterministic_path_no_accumulation(self, tmp_path, mocker):
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        _patch_apply_overlays_writes_file(mocker)
+
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        _apply_intro_overlay(ti)
+        first_output_path = ti.xcom_store["chapter_extraction_results"]["results"][0]["output_path"]
+
+        # Retry: same run, XCom already carries the overlaid output_path from
+        # the first attempt — mirrors what a task retry replays from t5's XCom
+        # (t5 itself is idempotent and always pushes the same source path).
+        retry_store = _make_intro_overlay_store(output_path=str(source))
+        retry_ti = _make_ti(retry_store)
+        _apply_intro_overlay(retry_ti)
+        second_output_path = retry_ti.xcom_store["chapter_extraction_results"]["results"][0]["output_path"]
+
+        assert first_output_path == second_output_path
+        edited_files = list(tmp_path.glob("*_edited.mp4"))
+        assert len(edited_files) == 1
+
+    def test_default_window_used_when_no_override_supplied(self, tmp_path, mocker):
+        """Default Intro Window requirement: [0, 5) read from INTRO_WINDOW_SECONDS."""
+        from congress_videos.modules.video_editor import INTRO_WINDOW_SECONDS
+
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        apply_spy = _patch_apply_overlays_writes_file(mocker)
+
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        _apply_intro_overlay(ti)
+
+        overlays_arg = apply_spy.call_args.args[2]
+        assert overlays_arg[0]["tiempo_inicio"] == INTRO_WINDOW_SECONDS[0]
+        assert overlays_arg[0]["tiempo_fin"] == INTRO_WINDOW_SECONDS[1]
+
+    def test_max_timeout_passed_through_to_apply_overlays(self, tmp_path, mocker):
+        from congress_videos.modules.video_editor import OVERLAY_MAX_TIMEOUT_SECONDS
+
+        source = tmp_path / "video.mp4"
+        source.write_bytes(b"source-bytes")
+        store = _make_intro_overlay_store(output_path=str(source))
+        ti = _make_ti(store)
+
+        _patch_intro_overlay_fonts_ok(mocker)
+        apply_spy = _patch_apply_overlays_writes_file(mocker)
+
+        from congress_videos.youtube_upload_dag import _apply_intro_overlay
+
+        _apply_intro_overlay(ti)
+
+        assert apply_spy.call_args.kwargs["max_timeout"] == OVERLAY_MAX_TIMEOUT_SECONDS
+
+
+class TestTurnIdPinnedThroughIntroOverlayEditedPath:
+    """Regression pin (issue #558, D4 landmine): mark_turn_uploads' fallback
+    (`mark_turns_uploaded_by_output_path`, `WHERE output_path = %s`) would match
+    ZERO rows against an `_edited` path. It stays unreachable only because t6
+    always sets `turn_config["turn_id"]` — this test pins that guarantee even
+    when output_path has been rewritten to the overlaid `_edited` sibling.
+    """
+
+    def test_turn_id_present_in_upload_config_for_edited_output_path(self, tmp_path):
+        from congress_videos.youtube_upload_dag import _prepare_upload_config
+
+        turn_dir = tmp_path / "oradores" / "1"
+        turn_dir.mkdir(parents=True)
+        edited_path = turn_dir / "video_edited.mp4"
+        edited_path.write_bytes(b"edited")
+        for name, content in (
+            ("title.txt", "T"),
+            ("description.txt", "D"),
+            ("thumbnail.png", "\x89PNG"),
+            ("subtitles.srt", ""),
+        ):
+            (turn_dir / name).write_text(content, encoding="utf-8")
+
+        extraction = {
+            "results": [
+                {
+                    "chapter_id": 100,
+                    "turn_id": 1,
+                    "video_id": "vid123",
+                    "success": True,
+                    "output_path": str(edited_path),
+                    "original_output_path": str(turn_dir / "video.mp4"),
+                }
+            ],
+        }
+        store = {
+            "uploadable_item": {"item": {"turn_id": 1}, "item_type": "turn"},
+            "chapter_extraction_results": extraction,
+            "youtube_metadata_results": {},
+            "thumbnail_result": {"success": True, "title": "Overlaid Title"},
+        }
+        ti = _make_ti(store)
+        context = {"params": {"isTesting": False, "dry_run": False}}
+
+        _prepare_upload_config(ti, **context)
+
+        upload_config = ti.xcom_store["upload_config"]
+        turn_config = upload_config["videos"][0]
+        assert turn_config["turn_id"] == 1, (
+            "turn_id must be present so mark_turn_uploads takes the primary "
+            "turn_id branch, never the output_path fallback (which would match "
+            "0 rows against an _edited path and silently re-publish tomorrow)"
+        )
+
+
+class TestApplyIntroOverlayWiring:
+    def test_apply_intro_overlay_between_extract_and_prepare(self):
+        """t5b sits directly between t5 (extract) and t6 (prepare_upload_config)."""
+        from congress_videos.youtube_upload_dag import dag
+
+        tasks_by_id = {t.task_id: t for t in dag.tasks}
+        extract = tasks_by_id["extract_chapter_videos"]
+        overlay = tasks_by_id["apply_intro_overlay"]
+        prepare = tasks_by_id["prepare_upload_config"]
+
+        assert overlay.task_id in {t.task_id for t in extract.downstream_list}
+        assert prepare.task_id in {t.task_id for t in overlay.downstream_list}
