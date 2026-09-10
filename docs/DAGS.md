@@ -188,7 +188,7 @@ resuelta por slug y titulo por IA) y espera su resultado. La composicion se docu
 `data_directory_path`, `upload_quota`, `uploadable_item`, `youtube_metadata_results`,
 `thumbnail_config`, `thumbnail_dag_run_id`, `thumbnail_result`,
 `chapter_extraction_results`, `upload_config`, `upload_results`,
-`chapter_upload_updates`, `turn_upload_updates`
+`chapter_upload_updates`, `turn_upload_updates`, `copy_verification_warnings`
 
 ### Regeneracion acotada de miniatura por texto flagged (issue #545)
 

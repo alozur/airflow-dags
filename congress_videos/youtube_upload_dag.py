@@ -712,10 +712,13 @@ def _thumbnail_brief_text(thumbnail_row: dict | None) -> str | None:
 
 
 def _copy_verification_problems(payload: dict | None) -> list[str]:
-    """Describe final-copy verification findings worth failing the daily
-    upload gate for (issue #512, design.md D7). Shaped like
-    _turn_marking_problems: returns finished operator-facing sentences,
-    appended to the _check_upload_failures `problems` accumulator.
+    """Describe final-copy verification findings for the daily upload gate
+    (issue #512, design.md D7; non-blocking split by issue #604). Shaped
+    like _turn_marking_problems: returns finished operator-facing sentences.
+    A missing payload's sentence stays in the `_check_upload_failures`
+    blocking `problems` accumulator; every other sentence feeds the
+    `copy_verification_warnings` XCom instead, logged at WARNING and never
+    raised on its own (issue #604).
 
     `payload` is the `copy_verification` XCom
     (`{verdict, findings, corrected_applied, persisted, content_version,
@@ -1705,9 +1708,9 @@ with DAG(
         Hard-rejection asymmetry (design.md D2/D7, locked): a `reject`
         verdict blocks publication ONLY for the title, reusing the ValueError
         fail-loud convention already established at this seam (issue #245).
-        Description and thumbnail-text findings are recorded and surfaced
-        through the `_check_upload_failures` accumulator; publication
-        proceeds with the existing values.
+        Description and thumbnail-text findings are recorded and surfaced by
+        `_check_upload_failures` as non-blocking WARNING + XCom (issue #604);
+        publication proceeds with the existing values.
 
         Chapter items reach this task too (both paths push `upload_config`
         with the same "videos" shape); an item with no videos to verify
@@ -1986,14 +1989,21 @@ with DAG(
     def _check_upload_failures(ti):
         """Raise after DB writes so failures are visible in the Airflow UI.
 
-        Accumulates four independent findings into ONE exception (issue #320
-        design D6, extended by issue #332): chapter DB-recorded upload
+        Accumulates independent blocking findings into ONE exception (issue
+        #320 design D6, extended by issue #332): chapter DB-recorded upload
         failures, videos published without their custom thumbnail, turn
-        DB-update failures, and turn output_path_not_found/missing-XCom
-        findings. A first-wins raise would hide later findings permanently —
-        the DB writes are already committed and the XComs are immutable, so a
+        DB-update failures, turn output_path_not_found/missing-XCom
+        findings, and a missing `copy_verification` XCom. A
+        first-wins raise would hide later findings permanently — the DB
+        writes are already committed and the XComs are immutable, so a
         retry would just re-raise the same earlier error forever without the
         other findings ever surfacing.
+
+        Copy-verification findings (other than a missing XCom) are
+        non-blocking (issue #604): each is logged at WARNING and pushed to
+        the `copy_verification_warnings` XCom instead of joining `problems`,
+        since by this point the video is already published and there is no
+        re-upload consequence.
         """
         updates = ti.xcom_pull(key="chapter_upload_updates")
         if updates is None:
@@ -2028,12 +2038,22 @@ with DAG(
         # short-circuit raise: it must not mask the two findings above.
         problems.extend(_turn_marking_problems(ti.xcom_pull(key="turn_upload_updates")))
 
-        # NEW (issue #512). A reject on description/thumbnail text, a
-        # discarded unsupported correction, an inconclusive verdict, or a
-        # skipped audit write is a finding, not a short-circuit raise: it
-        # must not mask the findings above. A title reject never reaches
-        # here — it already raised in _verify_final_copy.
-        problems.extend(_copy_verification_problems(ti.xcom_pull(key="copy_verification")))
+        # Issue #604 (supersedes #512 design D7 for these findings): by t9
+        # the video is already published, so copy-verification findings
+        # carry no re-upload consequence. They surface as WARNING logs plus
+        # the `copy_verification_warnings` XCom and never fail this task on
+        # their own. A MISSING `copy_verification` XCom is structural (t6b
+        # may not have run) and stays a blocking finding. A title reject
+        # never reaches here — it already raised in _verify_final_copy.
+        copy_payload = ti.xcom_pull(key="copy_verification")
+        if copy_payload is None:
+            problems.extend(_copy_verification_problems(None))
+            copy_warnings: list[str] = []
+        else:
+            copy_warnings = _copy_verification_problems(copy_payload)
+        for warning in copy_warnings:
+            logging.warning("Non-blocking final-copy verification finding: %s", warning)
+        ti.xcom_push(key="copy_verification_warnings", value=copy_warnings)
 
         if problems:
             raise Exception(" | ".join(problems))
