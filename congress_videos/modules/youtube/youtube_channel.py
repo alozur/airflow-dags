@@ -435,6 +435,41 @@ def filter_finished_streams(
     return result
 
 
+def _fetch_enrichable_video_details(youtube, video_id, min_hours_since_end) -> tuple[dict, dict] | None:
+    """Fetch one video's Data API item and apply the VOD freshness guard.
+
+    Lifted verbatim out of `get_video_details` (issue #272): `None` when the
+    video is not found, has no `actualEndTime` yet (still live or no data),
+    or ended less than `min_hours_since_end` hours ago; otherwise the
+    `(video_details, live_details)` pair. Propagates any `.execute()`
+    exception uncaught — `get_video_details` aborts the whole batch on a
+    single API failure.
+    """
+    video_response = youtube.videos().list(part="snippet,contentDetails,liveStreamingDetails", id=video_id).execute()
+
+    if not video_response.get("items"):
+        logging.warning(f"Video not found: {video_id}")
+        return None
+
+    video_details = video_response["items"][0]
+    live_details = video_details.get("liveStreamingDetails", {})
+
+    # VOD freshness guard: skip just-ended broadcasts whose VOD may
+    # still be processing on YouTube.
+    actual_end_time = live_details.get("actualEndTime")
+    if actual_end_time is None:
+        logging.info(f"Skipping {video_id}: no actualEndTime (still live or no data)")
+        return None
+
+    end_dt = datetime.fromisoformat(actual_end_time.replace("Z", "+00:00"))
+    elapsed = datetime.now(UTC) - end_dt
+    if elapsed < timedelta(hours=min_hours_since_end):
+        logging.info(f"Skipping {video_id}: ended {elapsed} ago, under the {min_hours_since_end}h freshness margin")
+        return None
+
+    return video_details, live_details
+
+
 def get_video_details(plenary_videos, min_hours_since_end: int = 12):
     """
     Get detailed information for videos (duration, timing, etc.).
@@ -478,31 +513,10 @@ def get_video_details(plenary_videos, min_hours_since_end: int = 12):
             video_id = video["video_id"]
 
             # Get detailed video information
-            video_response = (
-                youtube.videos().list(part="snippet,contentDetails,liveStreamingDetails", id=video_id).execute()
-            )
-
-            if not video_response.get("items"):
-                logging.warning(f"Video not found: {video_id}")
+            details = _fetch_enrichable_video_details(youtube, video_id, min_hours_since_end)
+            if details is None:
                 continue
-
-            video_details = video_response["items"][0]
-            live_details = video_details.get("liveStreamingDetails", {})
-
-            # VOD freshness guard: skip just-ended broadcasts whose VOD may
-            # still be processing on YouTube.
-            actual_end_time = live_details.get("actualEndTime")
-            if actual_end_time is None:
-                logging.info(f"Skipping {video_id}: no actualEndTime (still live or no data)")
-                continue
-
-            end_dt = datetime.fromisoformat(actual_end_time.replace("Z", "+00:00"))
-            elapsed = datetime.now(UTC) - end_dt
-            if elapsed < timedelta(hours=min_hours_since_end):
-                logging.info(
-                    f"Skipping {video_id}: ended {elapsed} ago, under the {min_hours_since_end}h freshness margin"
-                )
-                continue
+            video_details, live_details = details
 
             # Extract duration
             duration_iso = video_details["contentDetails"]["duration"]
