@@ -46,6 +46,7 @@ from airflow.operators.python import PythonOperator
 
 from congress_videos.config.analytics_config import TITLE_UPDATE_CHECKPOINTS
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL, resolve_token_path
+from utils.airflow_helpers import utc_normalize_rows
 from utils.env_loader import load_env_if_local
 
 load_env_if_local()
@@ -73,12 +74,17 @@ _POLL_PROGRESS_EVERY = 6
 def _run_select_candidates(ti):
     """Return NULL-action_taken snapshot rows joined to conf fields.
 
-    Pushes XCom key 'candidates'.
+    Pushes XCom key 'candidates'. Rows are normalized to UTC via
+    utc_normalize_rows before the push (issue #605): psycopg2 returns
+    TIMESTAMPTZ as a datetime with an unnamed non-UTC fixed offset, which
+    Airflow's XCom serializer cannot round-trip. Normalizing once here also
+    covers the 'decisions' XCom pushed downstream by _run_evaluate_candidates,
+    since it spreads **candidate into each decision row.
     """
     from congress_videos.modules.database import CongressionalVideoDB
 
     db = CongressionalVideoDB()
-    result = db.get_unactioned_snapshots()
+    result = utc_normalize_rows(db.get_unactioned_snapshots())
     logging.info("video_analytics_actions: %d unactioned candidates found", len(result))
     ti.xcom_push(key="candidates", value=result)
     return result
