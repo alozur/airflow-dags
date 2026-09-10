@@ -129,6 +129,7 @@ class TestRunChapterTurns:
     def test_missing_source_video_skips(self, monkeypatch):
         mod = _fresh()
         monkeypatch.setattr(mod, "_find_source_video", lambda *a, **k: None)
+        monkeypatch.setattr(mod.nas_fetch, "is_archived_elsewhere", lambda *a, **k: False)
         detect = MagicMock()
         monkeypatch.setattr(mod, "detect_turns", detect)
 
@@ -137,6 +138,21 @@ class TestRunChapterTurns:
         assert result["status"] == "skipped_no_video"
         assert result["turns"] == []
         detect.assert_not_called()
+
+    def test_missing_source_video_archived_on_nas_skips_with_distinct_status(self, monkeypatch):
+        mod = _fresh()
+        monkeypatch.setattr(mod, "_find_source_video", lambda *a, **k: None)
+        is_archived = MagicMock(return_value=True)
+        monkeypatch.setattr(mod.nas_fetch, "is_archived_elsewhere", is_archived)
+        detect = MagicMock()
+        monkeypatch.setattr(mod, "detect_turns", detect)
+
+        result = mod.run_chapter_turns(self._chapter())
+
+        assert result["status"] == "skipped_archived"
+        assert result["turns"] == []
+        detect.assert_not_called()
+        is_archived.assert_called_once_with(mod.PROJECT_DATA_DIR, mod.DEFAULT_CHANNEL, "abc123")
 
     def test_happy_path_returns_detected_turns(self, monkeypatch):
         """Detection returns the Turn list directly — no upsert, no cursor."""

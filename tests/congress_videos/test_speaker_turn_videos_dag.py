@@ -598,6 +598,7 @@ class TestMaterializeTurns:
     def test_missing_source_video_skips_without_ffmpeg(self, monkeypatch):
         mod = _fresh()
         monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: None)
+        monkeypatch.setattr(mod.nas_fetch, "is_archived_elsewhere", lambda *a, **k: False)
         execute_plan = MagicMock()
         monkeypatch.setattr(mod, "execute_plan", execute_plan)
 
@@ -616,6 +617,33 @@ class TestMaterializeTurns:
 
         execute_plan.assert_not_called()
         assert result["skipped"] >= 1
+        assert result["skipped_archived"] == 0
+
+    def test_missing_source_video_archived_on_nas_skips_with_distinct_counter(self, monkeypatch):
+        mod = _fresh()
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: None)
+        is_archived = MagicMock(return_value=True)
+        monkeypatch.setattr(mod.nas_fetch, "is_archived_elsewhere", is_archived)
+        execute_plan = MagicMock()
+        monkeypatch.setattr(mod, "execute_plan", execute_plan)
+
+        ti = MagicMock()
+        ti.xcom_pull.return_value = [self._turn()]
+
+        pg = MagicMock()
+        conn = MagicMock()
+        cur = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+        pg.get_connection.return_value.__enter__.return_value = conn
+        pg.get_qualified_table.side_effect = lambda n: f"test.{n}"
+        monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
+
+        result = mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        execute_plan.assert_not_called()
+        assert result["skipped"] == 0
+        assert result["skipped_archived"] >= 1
+        is_archived.assert_called_once_with(mod.PROJECT_DATA_DIR, mod.DEFAULT_CHANNEL, "vid1")
 
     def test_inserts_row_on_success(self, monkeypatch):
         mod = _fresh()

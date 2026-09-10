@@ -6,7 +6,7 @@ COPY --from=uv /uv /usr/local/bin/uv
 # Root and airflow must not share cache files created by the other user.
 ENV UV_NO_CACHE=true
 # Remaining reproducibility gap: Debian package repositories are not snapshotted.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl unzip nodejs npm git \
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl unzip nodejs npm git rsync openssh-client \
     && rm -rf /var/lib/apt/lists/* \
     && uv venv --python /usr/local/bin/python3 /opt/dev-venv \
     && mkdir -p /opt/build-input /opt/airflow/data /opt/dev-tools \

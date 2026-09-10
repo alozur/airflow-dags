@@ -20,9 +20,9 @@ x-airflow: &airflow
     POSTGRES_HOST: application
     POSTGRES_PORT: "5432"
     POSTGRES_DB: application_dev
-    POSTGRES_USER: airflow_dev
+    POSTGRES_USER: ${POSTGRES_RUNTIME_ROLE:-airflow_dev}
     POSTGRES_PASSWORD: ${APPLICATION_RUNTIME_PASSWORD:?Required}
-    POSTGRES_SCHEMA: development
+    POSTGRES_SCHEMA: ${POSTGRES_SCHEMA:-development}
     # External API keys: rendered by Ansible from an optional secrets env file
     # (external.env). A stack without that file behaves exactly as today.
     OPENAI_API_KEY: ${OPENAI_API_KEY:-dev-disabled-not-a-credential}
@@ -125,10 +125,18 @@ services:
       <<: *environment
       # Exposed so verify.py's egress probe knows the outcome compose expects.
       EGRESS_INTERNAL: ${EGRESS_INTERNAL:-true}
+      # nas_archive DAG (congress_videos/nas_archive_dag.py): empty host disables it.
+      NAS_ARCHIVE_HOST: ${NAS_ARCHIVE_HOST:-}
+      NAS_ARCHIVE_PORT: ${NAS_ARCHIVE_PORT:-22}
+      NAS_ARCHIVE_USER: ${NAS_ARCHIVE_USER:-}
+      NAS_ARCHIVE_ROOT: ${NAS_ARCHIVE_ROOT:-}
+      NAS_ARCHIVE_MIN_AGE_DAYS: ${NAS_ARCHIVE_MIN_AGE_DAYS:-14}
+      NAS_ARCHIVE_SSH_DIR: /opt/airflow/nas_sync
     volumes:
       - logs:/opt/airflow/logs
       - data:/opt/airflow/data
       - ${YOUTUBE_TOKENS_HOST_DIR:?Required}:/opt/airflow/data/congress_videos/youtube_tokens
+      - ${NAS_SYNC_HOST_DIR:?Required}:/opt/airflow/nas_sync:ro
     depends_on:
       metadata: {condition: service_healthy}
       application: {condition: service_healthy}

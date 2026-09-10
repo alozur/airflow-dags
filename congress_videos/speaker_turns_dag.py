@@ -49,6 +49,9 @@ from airflow.operators.python import PythonOperator
 from congress_videos.config.constants import (
     SPEAKER_TURN_VIDEOS_DAG_ID as MATERIALIZE_DAG_ID,
 )
+from congress_videos.config.paths import PROJECT_DATA_DIR
+from congress_videos.config.youtube_channels import DEFAULT_CHANNEL
+from congress_videos.modules import nas_fetch
 from congress_videos.modules.participants_db import lookup_participant_fuzzy
 from congress_videos.modules.sidecar_api_error import SidecarApiError
 from congress_videos.modules.speaker_turns import (
@@ -162,6 +165,16 @@ def run_chapter_turns(
 
     video_path = _find_source_video(session_date, video_id)
     if not video_path:
+        if nas_fetch.is_archived_elsewhere(PROJECT_DATA_DIR, DEFAULT_CHANNEL, str(video_id)):
+            logger.warning(
+                "chapter %s: source video %s/%s archived to the NAS; trigger the nas_fetch DAG "
+                "with video_id=%s before reprocessing",
+                chapter_id,
+                session_date,
+                video_id,
+                video_id,
+            )
+            return {"status": "skipped_archived", "chapter_id": chapter_id, "turns": []}
         logger.warning(
             "chapter %s: no source video for %s/%s — skipping",
             chapter_id,
