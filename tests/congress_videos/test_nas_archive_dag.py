@@ -64,15 +64,25 @@ class TestDagLoads:
     def test_expected_task_ids_present(self):
         mod = _fresh()
         task_ids = {t.task_id for t in mod.dag.tasks}
-        assert task_ids == {"check_enabled", "select_candidates", "archive_videos"}
+        assert task_ids == {"check_enabled", "select_candidates", "archive_videos", "mirror_shared"}
 
     def test_task_order(self):
         mod = _fresh()
         check_enabled = mod.dag.get_task("check_enabled")
         select_candidates = mod.dag.get_task("select_candidates")
         archive_videos = mod.dag.get_task("archive_videos")
+        mirror_shared = mod.dag.get_task("mirror_shared")
         assert select_candidates.task_id in check_enabled.downstream_task_ids
         assert archive_videos.task_id in select_candidates.downstream_task_ids
+        assert mirror_shared.task_id in archive_videos.downstream_task_ids
+
+    def test_mirror_shared_uses_default_trigger_rule(self):
+        """mirror_shared must run every enabled run, including zero-candidate
+        runs — archive_videos already succeeds on an empty candidate loop, so
+        the default "all_success" trigger rule is sufficient; no override
+        needed."""
+        mod = _fresh()
+        assert mod.dag.get_task("mirror_shared").trigger_rule == "all_success"
 
     def test_no_pool_declared(self):
         """DAG-level max_active_tasks=1 already serializes; no extra pool needed
@@ -295,3 +305,86 @@ class TestArchiveOneVideo:
         summary = mod._run_archive_videos(ti=mock_task_instance)
 
         assert summary == {"archived": 2, "bytes_freed": 200}
+
+
+# ---------------------------------------------------------------------------
+# mirror_shared_dirs
+# ---------------------------------------------------------------------------
+
+
+class TestMirrorSharedDirs:
+    def _settings(self, tmp_path):
+        from congress_videos.modules.nas_archive import ArchiveSettings
+
+        ssh_dir = tmp_path / "nas_sync"
+        ssh_dir.mkdir()
+        (ssh_dir / "id_ed25519").write_text("key")
+        (ssh_dir / "known_hosts").write_text("hosts")
+        return ArchiveSettings.from_env(
+            {
+                "NAS_ARCHIVE_HOST": "100.64.0.1",
+                "NAS_ARCHIVE_USER": "nas-archive",
+                "NAS_ARCHIVE_ROOT": "/volume1/congress_archive",
+                "NAS_ARCHIVE_SSH_DIR": str(ssh_dir),
+            }
+        )
+
+    def test_no_mirror_dirs_returns_empty_summary(self, monkeypatch, tmp_path):
+        mod = _fresh()
+        settings = self._settings(tmp_path)
+        monkeypatch.setattr(mod.subprocess, "run", MagicMock(side_effect=AssertionError("must not be called")))
+        monkeypatch.setattr(mod, "_subprocess_runner", MagicMock(side_effect=AssertionError("must not be called")))
+
+        summary = mod.mirror_shared_dirs(settings, tmp_path)
+
+        assert summary == {"mirrored": [], "changed_lines": 0}
+
+    def test_mirrors_thumbnails_and_counts_changed_lines(self, monkeypatch, tmp_path):
+        mod = _fresh()
+        (tmp_path / "thumbnails").mkdir()
+        settings = self._settings(tmp_path)
+
+        mkdir_ok = SimpleNamespace(returncode=0, stdout="", stderr="")
+        rsync_ok = SimpleNamespace(returncode=0, stdout=">f+++++++++ abc.png\n>f+++++++++ abc.json\n", stderr="")
+        monkeypatch.setattr(mod.subprocess, "run", MagicMock(return_value=mkdir_ok))
+        monkeypatch.setattr(mod, "_subprocess_runner", lambda command: rsync_ok)
+
+        summary = mod.mirror_shared_dirs(settings, tmp_path)
+
+        assert summary == {"mirrored": ["thumbnails"], "changed_lines": 2}
+
+    def test_remote_mkdir_failure_raises(self, monkeypatch, tmp_path):
+        mod = _fresh()
+        (tmp_path / "thumbnails").mkdir()
+        settings = self._settings(tmp_path)
+
+        mkdir_failed = SimpleNamespace(returncode=1, stdout="", stderr="permission denied")
+        monkeypatch.setattr(mod.subprocess, "run", MagicMock(return_value=mkdir_failed))
+
+        with pytest.raises(AirflowException, match="remote mkdir failed"):
+            mod.mirror_shared_dirs(settings, tmp_path)
+
+    def test_rsync_failure_raises(self, monkeypatch, tmp_path):
+        mod = _fresh()
+        (tmp_path / "thumbnails").mkdir()
+        settings = self._settings(tmp_path)
+
+        mkdir_ok = SimpleNamespace(returncode=0, stdout="", stderr="")
+        rsync_failed = SimpleNamespace(returncode=1, stdout="", stderr="connection refused")
+        monkeypatch.setattr(mod.subprocess, "run", MagicMock(return_value=mkdir_ok))
+        monkeypatch.setattr(mod, "_subprocess_runner", lambda command: rsync_failed)
+
+        with pytest.raises(AirflowException, match="rsync failed"):
+            mod.mirror_shared_dirs(settings, tmp_path)
+
+    def test_run_mirror_shared_reads_settings_and_project_dir(self, monkeypatch, tmp_path):
+        mod = _fresh()
+        monkeypatch.setattr(mod, "ArchiveSettings", MagicMock())
+        monkeypatch.setattr(mod, "PROJECT_DATA_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            mod, "mirror_shared_dirs", lambda settings, project_dir: {"mirrored": ["thumbnails"], "changed_lines": 3}
+        )
+
+        summary = mod._run_mirror_shared()
+
+        assert summary == {"mirrored": ["thumbnails"], "changed_lines": 3}

@@ -33,10 +33,18 @@ Pipeline::
     check_enabled     (ShortCircuitOperator: NAS_ARCHIVE_HOST + ssh key files present)
       → select_candidates  (eligibility SQL + local age gate + marker skip)
           → archive_videos (remote mkdir → rsync → verify → prune_local → write_marker)
+              → mirror_shared (remote mkdir → rsync each MIRROR_ONLY_DIRS entry — never pruned)
 
 One failed video aborts the run: the failing video has no partial local
 deletion (sync+verify happens for every local path before any pruning), and
 every not-yet-processed video in the batch is left completely untouched.
+
+``mirror_shared`` runs on every enabled run, independent of ``select_candidates``
+picking zero videos: it mirrors ``PROJECT_DATA_DIR/thumbnails/`` (small
+PNG/JSON files keyed by the *uploaded* YouTube video id, so no single source
+video owns that material) to the NAS with a plain, non-deleting rsync. Unlike
+per-video material, mirrored directories are never verified or pruned locally
+— see ``congress_videos/modules/nas_archive.mirror_paths``.
 """
 
 from __future__ import annotations
@@ -346,6 +354,56 @@ def _run_archive_videos(**context) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# mirror_shared — remote mkdir -> rsync (no verify, no prune) for shared dirs
+# ---------------------------------------------------------------------------
+
+
+def mirror_shared_dirs(settings: ArchiveSettings, project_dir: Path) -> dict:
+    """Mirror every ``nas_archive.MIRROR_ONLY_DIRS`` entry to the NAS.
+
+    Unlike :func:`archive_one_video`, this never verifies or prunes: mirrored
+    directories (e.g. ``thumbnails/``) are shared, unattributable to one
+    video, and archived indefinitely — see ``nas_archive.mirror_paths``.
+
+    Raises:
+        AirflowException: On any remote-mkdir failure or rsync failure.
+    """
+    mirrored: list[str] = []
+    changed_lines = 0
+
+    for local_path in nas_archive.mirror_paths(project_dir):
+        remote_relative_dir = local_path.relative_to(project_dir).as_posix()
+
+        mkdir_cmd = nas_archive.remote_mkdir_command(settings, remote_relative_dir)
+        mkdir_result = subprocess.run(mkdir_cmd, capture_output=True, text=True, timeout=_SSH_TIMEOUT_SECS, check=False)
+        if mkdir_result.returncode != 0:
+            raise AirflowException(
+                f"nas_archive: remote mkdir failed for mirror dir={remote_relative_dir}: {mkdir_result.stderr.strip()}"
+            )
+
+        rsync_cmd = nas_archive.rsync_command(settings, local_path, remote_relative_dir, dry_run=False)
+        rsync_result = _subprocess_runner(rsync_cmd)
+        _log_itemized(rsync_result.stdout, "mirror", local_path)
+        if rsync_result.returncode != 0:
+            raise AirflowException(
+                f"nas_archive: rsync failed (exit={rsync_result.returncode}) for mirror dir={remote_relative_dir}: "
+                f"{rsync_result.stderr.strip()}"
+            )
+
+        mirrored.append(remote_relative_dir)
+        changed_lines += len(rsync_result.stdout.splitlines())
+
+    summary = {"mirrored": mirrored, "changed_lines": changed_lines}
+    logger.info("nas_archive: mirror complete — %s", summary)
+    return summary
+
+
+def _run_mirror_shared(**context) -> dict:
+    settings = ArchiveSettings.from_env()
+    return mirror_shared_dirs(settings, Path(PROJECT_DATA_DIR))
+
+
+# ---------------------------------------------------------------------------
 # DAG definition
 # ---------------------------------------------------------------------------
 
@@ -385,4 +443,9 @@ with DAG(
         python_callable=_run_archive_videos,
     )
 
-    t0_check_enabled >> t1_select_candidates >> t2_archive_videos
+    t3_mirror_shared = PythonOperator(
+        task_id="mirror_shared",
+        python_callable=_run_mirror_shared,
+    )
+
+    t0_check_enabled >> t1_select_candidates >> t2_archive_videos >> t3_mirror_shared

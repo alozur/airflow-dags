@@ -20,6 +20,14 @@ Archival lifecycle, orchestrated by ``congress_videos/nas_archive_dag.py``:
 6. ``write_marker`` /
    ``is_archived``            — idempotency marker so a video is archived
                                  at most once.
+7. ``mirror_paths``           — every ``MIRROR_ONLY_DIRS`` entry that exists
+                                 under ``PROJECT_DATA_DIR`` (e.g.
+                                 ``thumbnails/``): rsynced every run like any
+                                 other path above, but NEVER pruned — those
+                                 directories are keyed by an identifier
+                                 (``youtube_video_id``) that cannot be
+                                 attributed to one source video, so there is
+                                 no safe per-video deletion rule for them.
 """
 
 from __future__ import annotations
@@ -168,6 +176,35 @@ def video_paths(project_dir: Path | str, channel_slug: str, video_id: str) -> li
     return paths
 
 
+# Top-level directories under PROJECT_DATA_DIR that are mirrored to the NAS
+# every run but are NEVER pruned from local disk (see ``mirror_paths``).
+MIRROR_ONLY_DIRS: tuple[str, ...] = ("thumbnails",)
+
+
+def mirror_paths(project_dir: Path | str) -> list[Path]:
+    """Return every existing ``MIRROR_ONLY_DIRS`` directory under ``project_dir``.
+
+    ``thumbnails/{youtube_video_id}/...`` holds small PNG/JSON files keyed by
+    the *uploaded* YouTube video id, not the source ``video_id`` used
+    elsewhere in this module — a single directory can't be attributed to one
+    source video, so it is synced wholesale instead of per-video like
+    :func:`video_paths`.
+
+    A mirror directory that does not (yet) exist locally is simply omitted
+    (nothing to sync), rather than raising like :func:`video_paths` does for
+    a missing per-video path.
+
+    Callers must sync these paths WITHOUT ``rsync --delete`` and must never
+    pass them to :func:`prune_local` — every name in ``MIRROR_ONLY_DIRS`` is
+    also listed in ``_PROTECTED_TOP_LEVEL_NAMES``, so ``prune_local`` refuses
+    them outright. A file removed locally therefore stays archived on the
+    NAS indefinitely; that is the intended behavior for shared material with
+    no safe per-video deletion rule.
+    """
+    project_dir = Path(project_dir)
+    return [project_dir / name for name in MIRROR_ONLY_DIRS if (project_dir / name).is_dir()]
+
+
 # ---------------------------------------------------------------------------
 # Command builders (pure — return argv lists, never execute anything)
 # ---------------------------------------------------------------------------
@@ -259,7 +296,10 @@ def verify_synced(
 # ---------------------------------------------------------------------------
 
 # Top-level names directly under PROJECT_DATA_DIR that must never be pruned.
-_PROTECTED_TOP_LEVEL_NAMES = frozenset({"assets", "youtube_tokens", "youtube_cookies.txt", "thumbnails"})
+# Includes every name in MIRROR_ONLY_DIRS (currently just "thumbnails"): those
+# directories are synced to the NAS every run (see mirror_paths) but are
+# shared/unattributable to a single video, so they are never deleted locally.
+_PROTECTED_TOP_LEVEL_NAMES = frozenset({"assets", "youtube_tokens", "youtube_cookies.txt", *MIRROR_ONLY_DIRS})
 
 _MARKER_NAME = ".nas_archived.json"
 

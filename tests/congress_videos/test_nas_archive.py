@@ -25,8 +25,11 @@ from types import SimpleNamespace
 import pytest
 
 from congress_videos.modules.nas_archive import (
+    _PROTECTED_TOP_LEVEL_NAMES,
+    MIRROR_ONLY_DIRS,
     ArchiveSettings,
     is_archived,
+    mirror_paths,
     prune_local,
     remote_mkdir_command,
     rsync_command,
@@ -254,6 +257,47 @@ class TestVideoPaths:
         (tmp_path / "congreso-es-tv" / "abc123").mkdir(parents=True)
         paths = video_paths(tmp_path, "congreso-es-tv", "abc123")
         assert paths == [tmp_path / "congreso-es-tv" / "abc123"]
+
+
+# ---------------------------------------------------------------------------
+# mirror_paths / MIRROR_ONLY_DIRS
+# ---------------------------------------------------------------------------
+
+
+class TestMirrorPaths:
+    def test_returns_empty_list_when_no_mirror_dirs_exist(self, tmp_path):
+        assert mirror_paths(tmp_path) == []
+
+    def test_returns_existing_mirror_dirs(self, tmp_path):
+        (tmp_path / "thumbnails").mkdir()
+
+        paths = mirror_paths(tmp_path)
+
+        assert paths == [tmp_path / "thumbnails"]
+
+    def test_skips_mirror_dirs_that_do_not_exist(self, tmp_path):
+        # No "thumbnails" directory created — must not raise or fabricate a path.
+        assert mirror_paths(tmp_path) == []
+
+    def test_mirror_only_dirs_are_protected_from_pruning(self):
+        assert set(MIRROR_ONLY_DIRS) <= _PROTECTED_TOP_LEVEL_NAMES
+
+    def test_prune_local_refuses_a_mirror_dir(self, tmp_path):
+        (tmp_path / "thumbnails").mkdir()
+        with pytest.raises(ValueError, match="protected root"):
+            prune_local([tmp_path / "thumbnails"], tmp_path)
+        assert (tmp_path / "thumbnails").exists()
+
+
+class TestRsyncCommandForMirrorPath:
+    def test_rsync_argv_targets_the_mirror_dir(self, settings, tmp_path):
+        (tmp_path / "thumbnails").mkdir()
+        [local_path] = mirror_paths(tmp_path)
+
+        command = rsync_command(settings, local_path, "thumbnails")
+
+        assert command[-1] == "nas-archive@100.64.0.1:/volume1/congress_archive/thumbnails/"
+        assert command[-2] == f"{local_path}/"
 
 
 # ---------------------------------------------------------------------------

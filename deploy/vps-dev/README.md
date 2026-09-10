@@ -57,7 +57,9 @@ exactly as before this contract existed. When enabled, that DAG offloads
 local raw/derived material for fully-completed videos (uploaded, verified,
 and at least `NAS_ARCHIVE_MIN_AGE_DAYS` days old — default 14) to
 `NAS_ARCHIVE_HOST:NAS_ARCHIVE_ROOT` over rsync-over-SSH, then prunes it from
-local disk.
+local disk; `PROJECT_DATA_DIR/thumbnails/` is mirrored to the same target on
+every enabled run but is never pruned locally, since its files are keyed by
+the uploaded YouTube video id and can't be attributed to one source video.
 
 `utils/git_sync_dag.py` is excluded from DAG loading on this image: the
 Dockerfile appends `git_sync_dag` to `.airflowignore` before the tree is made
