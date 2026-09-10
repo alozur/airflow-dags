@@ -1687,6 +1687,133 @@ class TestFilterFinishedStreams:
 
 
 # --------------------------------------------------------------------------- #
+# _evaluate_finished_stream_candidate — RED-first quirk tests for the helper
+# lifted verbatim out of filter_finished_streams (issue #272)
+# --------------------------------------------------------------------------- #
+
+
+class TestEvaluateFinishedStreamCandidate:
+    def _video(self, video_id: str = "A") -> dict:
+        return {"video_id": video_id, "title": f"T-{video_id}"}
+
+    def test_falsy_video_id_returns_none(self, mocker):
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        probe = mocker.patch("congress_videos.modules.youtube.youtube_channel.probe_live_status")
+
+        result = _evaluate_finished_stream_candidate({"video_id": None, "title": "T"}, None, {}, 10, None)
+
+        assert result is None
+        assert probe.call_count == 0
+
+    def test_by_id_miss_returns_none(self):
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        result = _evaluate_finished_stream_candidate(self._video("A"), "A", {}, 10, None)
+
+        assert result is None
+
+    @pytest.mark.parametrize("broadcast", ["live", "upcoming"])
+    def test_live_or_upcoming_broadcast_returns_none(self, broadcast):
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        by_id = {"A": _item(broadcast=broadcast)}
+
+        result = _evaluate_finished_stream_candidate(self._video("A"), "A", by_id, 10, None)
+
+        assert result is None
+
+    def test_none_broadcast_passes_the_data_api_prefilter(self, mocker):
+        """`liveBroadcastContent == "none"` does not itself drop the
+        candidate — only "live"/"upcoming" do."""
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            return_value="was_live",
+        )
+        by_id = {"A": _item(broadcast="none", actual_end=_iso_minutes_ago(600))}
+        video = self._video("A")
+
+        result = _evaluate_finished_stream_candidate(video, "A", by_id, 10, None)
+
+        assert result is video
+
+    def test_concurrent_viewers_zero_returns_none(self):
+        """`is not None`, not truthiness: `concurrentViewers=0` is still
+        "present" and drops the candidate."""
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        by_id = {"A": _item(concurrent=0, actual_end=_iso_minutes_ago(600))}
+
+        result = _evaluate_finished_stream_candidate(self._video("A"), "A", by_id, 10, None)
+
+        assert result is None
+
+    def test_missing_actual_end_time_returns_none(self):
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        by_id = {"A": _item(actual_end=None)}
+
+        result = _evaluate_finished_stream_candidate(self._video("A"), "A", by_id, 10, None)
+
+        assert result is None
+
+    def test_elapsed_under_floor_returns_none_without_probing(self, mocker):
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        probe = mocker.patch("congress_videos.modules.youtube.youtube_channel.probe_live_status")
+        by_id = {"A": _item(actual_end=_iso_minutes_ago(3))}
+
+        result = _evaluate_finished_stream_candidate(self._video("A"), "A", by_id, 10, None)
+
+        assert result is None
+        assert probe.call_count == 0
+
+    def test_probe_was_live_returns_the_same_video_object(self, mocker):
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            return_value="was_live",
+        )
+        by_id = {"A": _item(actual_end=_iso_minutes_ago(600))}
+        video = self._video("A")
+
+        result = _evaluate_finished_stream_candidate(video, "A", by_id, 10, None)
+
+        assert result is video
+
+    @pytest.mark.parametrize("status", ["post_live", None])
+    def test_probe_not_ready_returns_none(self, mocker, status):
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            return_value=status,
+        )
+        by_id = {"A": _item(actual_end=_iso_minutes_ago(600))}
+
+        result = _evaluate_finished_stream_candidate(self._video("A"), "A", by_id, 10, None)
+
+        assert result is None
+
+    def test_raising_probe_propagates(self, mocker):
+        """The caller's try/except owns fail-closed — the helper itself does
+        not swallow exceptions."""
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            side_effect=RuntimeError("probe boom"),
+        )
+        by_id = {"A": _item(actual_end=_iso_minutes_ago(600))}
+
+        with pytest.raises(RuntimeError, match="probe boom"):
+            _evaluate_finished_stream_candidate(self._video("A"), "A", by_id, 10, None)
+
+
+# --------------------------------------------------------------------------- #
 # Package export (FR12)
 # --------------------------------------------------------------------------- #
 

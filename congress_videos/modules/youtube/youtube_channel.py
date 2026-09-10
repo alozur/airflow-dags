@@ -304,6 +304,65 @@ def filter_unprocessed_videos(plenary_videos: dict) -> dict:
     return result
 
 
+def _evaluate_finished_stream_candidate(
+    video: dict, video_id, by_id: dict, guard_floor_minutes: int, cookies_file: str | None
+) -> dict | None:
+    """Evaluate one `filter_finished_streams` candidate against the Data API
+    pre-filter and the yt-dlp probe.
+
+    Lifted verbatim out of `filter_finished_streams` (issue #272): `None`
+    drops the candidate at any fail-closed check below; the candidate
+    `dict` (the same object passed in) is returned only when the probe
+    reports a `READY_LIVE_STATUSES` status. No `try`/`except` here — the
+    caller's handler owns fail-closed propagation per candidate.
+    """
+    if not video_id:
+        logging.info("Dropping candidate without video_id (fail-closed)")
+        return None
+
+    youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    item = by_id.get(video_id)
+    if item is None:
+        logging.info(f"Dropping {video_id}: not found via Data API")
+        return None
+
+    snippet = item.get("snippet", {})
+    live_details = item.get("liveStreamingDetails", {})
+
+    # (a) Data API live-state pre-filter
+    broadcast = snippet.get("liveBroadcastContent")
+    if broadcast in ("live", "upcoming"):
+        logging.info(f"Dropping {video_id}: liveBroadcastContent={broadcast!r}")
+        return None
+
+    if live_details.get("concurrentViewers") is not None:
+        logging.info(f"Dropping {video_id}: concurrentViewers present (broadcasting)")
+        return None
+
+    actual_end_time = live_details.get("actualEndTime")
+    if actual_end_time is None:
+        logging.info(f"Dropping {video_id}: no actualEndTime (still live or no data)")
+        return None
+
+    end_dt = datetime.fromisoformat(actual_end_time.replace("Z", "+00:00"))
+    elapsed = datetime.now(UTC) - end_dt
+
+    # (c) cheap pre-probe skip: obviously too fresh
+    if elapsed < timedelta(minutes=guard_floor_minutes):
+        logging.info(f"Dropping {video_id}: ended {elapsed} ago, under the {guard_floor_minutes}min floor (skip probe)")
+        return None
+
+    # (b) authoritative yt-dlp probe (only survivors reach here)
+    status = probe_live_status(youtube_url, cookies_file)
+    if status in READY_LIVE_STATUSES:
+        return video
+    else:
+        logging.info(f"Dropping {video_id}: live_status={status!r} (not a ready VOD)")
+
+    return None
+
+
 def filter_finished_streams(
     plenary_videos: dict,
     *,
@@ -371,51 +430,9 @@ def filter_finished_streams(
     for video in videos:
         video_id = video.get("video_id")
         try:
-            if not video_id:
-                logging.info("Dropping candidate without video_id (fail-closed)")
-                continue
-
-            youtube_url = f"https://www.youtube.com/watch?v={video_id}"
-
-            item = by_id.get(video_id)
-            if item is None:
-                logging.info(f"Dropping {video_id}: not found via Data API")
-                continue
-
-            snippet = item.get("snippet", {})
-            live_details = item.get("liveStreamingDetails", {})
-
-            # (a) Data API live-state pre-filter
-            broadcast = snippet.get("liveBroadcastContent")
-            if broadcast in ("live", "upcoming"):
-                logging.info(f"Dropping {video_id}: liveBroadcastContent={broadcast!r}")
-                continue
-
-            if live_details.get("concurrentViewers") is not None:
-                logging.info(f"Dropping {video_id}: concurrentViewers present (broadcasting)")
-                continue
-
-            actual_end_time = live_details.get("actualEndTime")
-            if actual_end_time is None:
-                logging.info(f"Dropping {video_id}: no actualEndTime (still live or no data)")
-                continue
-
-            end_dt = datetime.fromisoformat(actual_end_time.replace("Z", "+00:00"))
-            elapsed = datetime.now(UTC) - end_dt
-
-            # (c) cheap pre-probe skip: obviously too fresh
-            if elapsed < timedelta(minutes=guard_floor_minutes):
-                logging.info(
-                    f"Dropping {video_id}: ended {elapsed} ago, under the {guard_floor_minutes}min floor (skip probe)"
-                )
-                continue
-
-            # (b) authoritative yt-dlp probe (only survivors reach here)
-            status = probe_live_status(youtube_url, cookies_file)
-            if status in READY_LIVE_STATUSES:
-                kept.append(video)
-            else:
-                logging.info(f"Dropping {video_id}: live_status={status!r} (not a ready VOD)")
+            candidate = _evaluate_finished_stream_candidate(video, video_id, by_id, guard_floor_minutes, cookies_file)
+            if candidate is not None:
+                kept.append(candidate)
 
         except Exception as e:
             # FR5: fail-closed — drop only this candidate, never crash the task.
