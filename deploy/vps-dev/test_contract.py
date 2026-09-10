@@ -145,6 +145,12 @@ class DevContract(unittest.TestCase):
         # nas_fetch fallback source (read-only legacy production tree); empty disables it.
         self.assertEqual(env["NAS_FETCH_LEGACY_ROOT"], "${NAS_FETCH_LEGACY_ROOT:-}")
 
+    def test_youtube_download_proxy_has_safe_default(self):
+        env = self.compose()["services"]["scheduler"]["environment"]
+        # Empty YOUTUBE_DOWNLOAD_PROXY is the safe default: youtube_downloader.py
+        # downloads direct when unset.
+        self.assertEqual(env["YOUTUBE_DOWNLOAD_PROXY"], "${YOUTUBE_DOWNLOAD_PROXY:-}")
+
     def test_external_api_keys_come_from_environment_with_safe_default(self):
         env = self.compose()["services"]["scheduler"]["environment"]
         for key in ("OPENAI_API_KEY", "YOUTUBE_API_KEY", "REAP_API_KEY", "PIKZELS_API_KEY"):

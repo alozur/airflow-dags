@@ -6,6 +6,7 @@ ready for processing and uploading.
 """
 
 import logging
+import os
 from pathlib import Path
 
 import yt_dlp
@@ -21,6 +22,31 @@ FFMPEG_MERGE_TIMEOUT_SECS = 3600
 
 # yt-dlp live_status values that correspond to a genuinely-downloadable VOD.
 READY_LIVE_STATUSES = frozenset({"was_live", "not_live"})
+
+
+def _download_proxy() -> str:
+    """Return the configured YouTube download proxy URL, or ``""`` when unset.
+
+    Reads ``YOUTUBE_DOWNLOAD_PROXY`` at call time (never cached at import
+    time), so tests need no ``importlib.reload`` and an Airflow env change
+    takes effect on the very next task run without a scheduler restart.
+    Scoped to yt-dlp/pytubefix media downloads only — never read by the
+    YouTube Data API or OAuth clients (``utils/youtube_helpers.py``,
+    ``congress_videos/modules/youtube/youtube_channel.py``), which always
+    talk to YouTube directly.
+    """
+    return os.getenv("YOUTUBE_DOWNLOAD_PROXY", "").strip()
+
+
+def _apply_download_proxy(ydl_opts: dict) -> None:
+    """Set ``ydl_opts["proxy"]`` in place when a download proxy is configured.
+
+    No-op when ``YOUTUBE_DOWNLOAD_PROXY`` is empty/unset, so direct download
+    stays the default. Keeps every yt-dlp call site a one-liner.
+    """
+    proxy = _download_proxy()
+    if proxy:
+        ydl_opts["proxy"] = proxy
 
 
 def _warn_if_not_h264(file_path: str, *, context: str) -> str:
@@ -82,6 +108,10 @@ def probe_live_status(
     }
     if cookies_file and Path(cookies_file).exists():
         ydl_opts["cookiefile"] = cookies_file
+    proxy = _download_proxy()
+    if proxy:
+        logger.info("probe_live_status using YouTube download proxy: %s", proxy)
+    _apply_download_proxy(ydl_opts)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -131,7 +161,11 @@ def download_with_pytubefix(
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
         logger.info(f"[pytubefix] Downloading: {youtube_url}")
-        yt = YouTube(youtube_url, on_progress_callback=on_progress)
+        proxy = _download_proxy()
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        if proxies:
+            logger.info("[pytubefix] Using YouTube download proxy: %s", proxy)
+        yt = YouTube(youtube_url, on_progress_callback=on_progress, proxies=proxies)
 
         video_id = yt.video_id
         safe_title = "".join(c for c in yt.title if c.isalnum() or c in (" ", "-", "_")).strip()[:50]
@@ -392,6 +426,10 @@ def download_youtube_video_for_upload(
     if cookies_file and Path(cookies_file).exists():
         ydl_opts["cookiefile"] = cookies_file
         logger.info(f"Using cookies file: {cookies_file}")
+    proxy = _download_proxy()
+    if proxy:
+        logger.info("download_youtube_video_for_upload using YouTube download proxy: %s", proxy)
+    _apply_download_proxy(ydl_opts)
 
     result = {
         "success": False,
@@ -474,6 +512,10 @@ def download_audio_only(
         "outtmpl": f"{output_dir}/%(id)s_%(title)s_audio.%(ext)s",
         "quiet": False,
     }
+    proxy = _download_proxy()
+    if proxy:
+        logger.info("download_audio_only using YouTube download proxy: %s", proxy)
+    _apply_download_proxy(ydl_opts)
 
     # Add format conversion if requested AND ffmpeg is available
     if convert_to_mp3 or audio_format == "mp3":
@@ -603,10 +645,15 @@ def download_audio_in_chunks(
         # First, get video info without downloading
         logger.info(f"Getting video info from: {youtube_url}")
 
+        proxy = _download_proxy()
+        if proxy:
+            logger.info("download_audio_in_chunks using YouTube download proxy: %s", proxy)
+
         ydl_opts_info = {
             "quiet": True,
             "no_warnings": True,
         }
+        _apply_download_proxy(ydl_opts_info)
 
         with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
@@ -653,6 +700,7 @@ def download_audio_in_chunks(
                 "download_ranges": yt_dlp.utils.download_range_func(None, [(start_time, end_time)]),
                 "force_keyframes_at_cuts": True,
             }
+            _apply_download_proxy(ydl_opts_chunk)
 
             try:
                 with yt_dlp.YoutubeDL(ydl_opts_chunk) as ydl:
@@ -860,7 +908,12 @@ def download_youtube_subtitles(youtube_url: str, output_dir: str, languages: lis
         logger.info(f"Checking for available subtitles: {youtube_url}")
 
         # First, get video info to check available subtitles
+        proxy = _download_proxy()
+        if proxy:
+            logger.info("download_youtube_subtitles using YouTube download proxy: %s", proxy)
+
         ydl_opts_info = {"quiet": True, "no_warnings": True, "skip_download": True}
+        _apply_download_proxy(ydl_opts_info)
 
         with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
@@ -900,6 +953,7 @@ def download_youtube_subtitles(youtube_url: str, output_dir: str, languages: lis
                     "quiet": False,
                     "no_warnings": False,
                 }
+                _apply_download_proxy(ydl_opts)
 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([youtube_url])
