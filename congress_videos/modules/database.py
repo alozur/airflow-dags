@@ -23,6 +23,8 @@ SHORTS_TIER1_PER_CHAPTER_LIMIT = 3  # Tier-1 upload slots per source chapter
 THUMBNAIL_TEXT_REGEN_MAX_ATTEMPTS = 2  # spend ceiling (design.md D3), not a loop guard —
 # each attempt spends 1-2 Pikzels images + 1 OpenAI call with no throttle
 # elsewhere in the codebase, unlike #331's free thumbnails.set() retries
+SUBSTANTIVE_TURN_MIN_SECS = 30.0  # issue #613 D2: minimum duration for a turn to count
+# as "substantive" when computing is_chapter_first_substantive
 
 
 def filter_shorts_by_source_cooldown(
@@ -1785,6 +1787,13 @@ class CongressionalVideoDB:
         ordered by COALESCE(interest_score, 1) DESC (uploadable_turns priority order).
         Used exclusively by the speaker_turn_prepare DAG preparation loop.
 
+        Each row also carries ``is_chapter_first_substantive`` (issue #613): true
+        iff no other turn in the same chapter has both an earlier start_seconds
+        and a duration >= SUBSTANTIVE_TURN_MIN_SECS. The signal is computed over
+        every turn in the chapter (prepared, procedural, or unprepared), via a
+        NOT EXISTS subquery correlated on chapter_id — not just the rows
+        surviving this method's own WHERE/dedup filters.
+
         Args:
             limit: Maximum number of turns to return (default: 2, the per-run buffer).
 
@@ -1812,7 +1821,17 @@ class CongressionalVideoDB:
                             vc.start_time, vc.end_time,
                             ysv.session_number, ysv.session_date, stv.materialized_at,
                             stv.resolved_participant_slug,
-                            stv.speaker_resolution_confidence
+                            stv.speaker_resolution_confidence,
+                            BOOL_OR(
+                                (st.end_seconds - st.start_seconds) >= {SUBSTANTIVE_TURN_MIN_SECS}
+                                AND NOT EXISTS (
+                                    SELECT 1 FROM {st_table} st2
+                                    WHERE st2.chapter_id = st.chapter_id
+                                      AND st2.turn_id <> st.turn_id
+                                      AND (st2.end_seconds - st2.start_seconds) >= {SUBSTANTIVE_TURN_MIN_SECS}
+                                      AND st2.start_seconds < st.start_seconds
+                                )
+                            ) OVER (PARTITION BY stv.output_path) AS is_chapter_first_substantive
                         FROM {stv_table} stv
                         JOIN {st_table} st ON stv.turn_id = st.turn_id
                         JOIN {vc_table} vc ON st.chapter_id = vc.chapter_id

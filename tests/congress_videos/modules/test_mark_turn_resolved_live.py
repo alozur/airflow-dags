@@ -216,11 +216,17 @@ def _seed_turn(
     video_id: str,
     speaker_label: str,
     output_path: str,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+    is_procedural: bool = False,
 ) -> None:
     """Seed one speaker_turns + speaker_turn_videos row, creating the parent
     youtube_source_videos/video_chapters rows on first use per chapter_id.
     start_seconds defaults to turn_id so multiple turns sharing a chapter
-    never collide on the (chapter_id, start_seconds) UNIQUE constraint."""
+    never collide on the (chapter_id, start_seconds) UNIQUE constraint.
+    end_seconds defaults to the table's own DEFAULT (600) when omitted."""
+    if start_seconds is None:
+        start_seconds = turn_id
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO youtube_source_videos (video_id) VALUES (%s) ON CONFLICT (video_id) DO NOTHING",
@@ -230,10 +236,19 @@ def _seed_turn(
             "INSERT INTO video_chapters (chapter_id, video_id) VALUES (%s, %s) ON CONFLICT (chapter_id) DO NOTHING",
             (chapter_id, video_id),
         )
-        cur.execute(
-            "INSERT INTO speaker_turns (turn_id, chapter_id, speaker_label, start_seconds) VALUES (%s, %s, %s, %s)",
-            (turn_id, chapter_id, speaker_label, turn_id),
-        )
+        if end_seconds is None:
+            cur.execute(
+                "INSERT INTO speaker_turns (turn_id, chapter_id, speaker_label, start_seconds, is_procedural) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (turn_id, chapter_id, speaker_label, start_seconds, is_procedural),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO speaker_turns "
+                "(turn_id, chapter_id, speaker_label, start_seconds, end_seconds, is_procedural) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (turn_id, chapter_id, speaker_label, start_seconds, end_seconds, is_procedural),
+            )
         cur.execute(
             "INSERT INTO speaker_turn_videos (turn_id, output_path) VALUES (%s, %s)",
             (turn_id, output_path),
@@ -409,3 +424,78 @@ class TestMarkTurnResolvedLive:
 
         assert rows[501]["speaker_resolution_evidence"] == audit
         assert rows[601]["speaker_resolution_evidence"] is None
+
+
+class TestSelectUnpreparedTurnsChapterFirstSubstantiveLive:
+    """Spec: 'Chapter First-Substantive-Turn Signal' (issue #613) — proves the
+    BOOL_OR/NOT EXISTS signal against real row-level SQL, including a
+    procedural turn that the outer WHERE clause filters out of the result
+    set but that STILL counts toward the signal (design.md D1: computed
+    over ALL chapter turns, not just the rows surviving this method's own
+    filters)."""
+
+    def test_signal_true_when_only_a_short_blip_precedes(self, clean_tables, db_env):
+        """Chapter A: a 10s blip (below SUBSTANTIVE_TURN_MIN_SECS = 30.0)
+        precedes a 400s turn — the blip never counts as substantive, so the
+        long turn is the chapter's first substantive turn."""
+        _seed_turn(
+            clean_tables,
+            turn_id=701,
+            chapter_id=7,
+            video_id="vid_a",
+            speaker_label="SPEAKER_00",
+            output_path="/data/a1.mp4",
+            start_seconds=100.0,
+            end_seconds=110.0,
+        )
+        _seed_turn(
+            clean_tables,
+            turn_id=702,
+            chapter_id=7,
+            video_id="vid_a",
+            speaker_label="SPEAKER_00",
+            output_path="/data/a2.mp4",
+            start_seconds=200.0,
+            end_seconds=600.0,
+        )
+
+        db = CongressionalVideoDB()
+        rows = db.select_unprepared_turns(limit=10)
+        by_path = {row["output_path"]: row for row in rows}
+
+        assert by_path["/data/a2.mp4"]["is_chapter_first_substantive"] is True
+
+    def test_signal_false_when_an_earlier_procedural_turn_is_substantive(self, clean_tables, db_env):
+        """Chapter B: an earlier 40s procedural turn is filtered out of this
+        method's own result set by `NOT st.is_procedural`, but it STILL
+        counts toward the signal — the later turn is NOT the chapter's
+        first substantive turn."""
+        _seed_turn(
+            clean_tables,
+            turn_id=801,
+            chapter_id=8,
+            video_id="vid_b",
+            speaker_label="SPEAKER_00",
+            output_path="/data/b1.mp4",
+            start_seconds=100.0,
+            end_seconds=140.0,
+            is_procedural=True,
+        )
+        _seed_turn(
+            clean_tables,
+            turn_id=802,
+            chapter_id=8,
+            video_id="vid_b",
+            speaker_label="SPEAKER_00",
+            output_path="/data/b2.mp4",
+            start_seconds=200.0,
+            end_seconds=600.0,
+        )
+
+        db = CongressionalVideoDB()
+        rows = db.select_unprepared_turns(limit=10)
+        by_path = {row["output_path"]: row for row in rows}
+
+        # The procedural turn's own row is filtered by NOT st.is_procedural.
+        assert "/data/b1.mp4" not in by_path
+        assert by_path["/data/b2.mp4"]["is_chapter_first_substantive"] is False
