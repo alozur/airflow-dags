@@ -23,7 +23,7 @@ SUBJECT (RIGHT HALF): {person}. Face fills 35-40%. Looks at camera or left towar
 TEXT (LEFT HALF, 42% from top): Bold ALL-CAPS white (#FFFFFF) '{text}'.
 Font: bold compressed sans-serif (Impact / Bebas Neue).
 3-4px black (#000000) outline + drop shadow (4px down, 6px blur, 80% opacity).
-
+{diacritics_line}
 {logo_line}{safe_zone_line}NO logos, icons, watermarks, play buttons, channel symbols, or brand marks.
 NO data charts, infographic overlays, or economic graphs.
 NO government chambers or parliamentary hemiciclo.
@@ -41,7 +41,7 @@ SUBJECT (LEFT HALF): {person}. Face fills 35-40%. Looks toward right (toward tex
 TEXT (RIGHT HALF, 42% from top): Bold ALL-CAPS white (#FFFFFF) '{text}'.
 Font: bold compressed sans-serif (Impact / Bebas Neue).
 3-4px black (#000000) outline + drop shadow (4px down, 6px blur, 80% opacity).
-
+{diacritics_line}
 {logo_line}{safe_zone_line}NO logos, icons, watermarks, play buttons, channel symbols, or brand marks.
 NO data charts, infographic overlays, or economic graphs.
 NO government chambers or parliamentary hemiciclo.
@@ -60,7 +60,7 @@ TEXT (LOWER THIRD, centered horizontally): One or two GIANT words in bold ALL-CA
 The text dominates the bottom third of the image, filling most of its width. \
 Font: bold compressed sans-serif (Impact / Bebas Neue). \
 3-4px black (#000000) outline + drop shadow (4px down, 6px blur, 80% opacity).
-
+{diacritics_line}
 {logo_line}{safe_zone_line}NO logos, icons, watermarks, play buttons, channel symbols, or brand marks.
 NO data charts, infographic overlays, or economic graphs.
 NO government chambers or parliamentary hemiciclo.
@@ -79,6 +79,15 @@ _LOGO_LINE_C = "BOTTOM-RIGHT corner, small {logo} logo.\n\n"
 _SAFE_ZONE_LINE = (
     "SAFE ZONE: keep the text, the face, and any key subject element out of the "
     "bottom-right corner (reserved for the YouTube duration overlay); the logo is exempt.\n"
+)
+
+# Diacritics-preservation constraint: an ASR-corrected or verbatim quote can
+# carry Spanish accents/tildes (issue #611); Pikzels must render them as-is
+# rather than dropping or transliterating them. Must contain no "http"
+# substring (build_pikzels_prompt strips "http").
+_DIACRITICS_LINE = (
+    "TEXT ACCENTS: render the quoted text exactly as written, keeping every Spanish accent and tilde "
+    "(Á É Í Ó Ú Ü Ñ); never drop, replace, or transliterate them.\n"
 )
 
 _TEMPLATES = {"A": _TEMPLATE_A, "B": _TEMPLATE_B, "C": _TEMPLATE_C}
@@ -127,6 +136,7 @@ def build_pikzels_prompt(art_brief: dict, layout: str) -> str:
         mood=mood,
         logo_line=logo_line,
         safe_zone_line=_SAFE_ZONE_LINE,
+        diacritics_line=_DIACRITICS_LINE,
     )
 
     # Defensive: strip any accidental "http" that may have leaked from brief values.
