@@ -292,6 +292,49 @@ def download_with_pytubefix(
     return result
 
 
+def _check_live_status_guard(youtube_url: str, cookies_file: str, guard_live_status: bool) -> dict | None:
+    """Probe live_status and return a skip result for a not-ready VOD, else None.
+
+    Lifted verbatim out of download_youtube_video_for_upload (issue #272).
+    """
+    if guard_live_status:
+        status = probe_live_status(youtube_url, cookies_file)
+        if status is not None and status not in READY_LIVE_STATUSES:
+            logger.warning(f"Skipping {youtube_url}: live_status={status!r} (not a ready VOD)")
+            return {
+                "success": False,
+                "skipped": True,
+                "file_path": None,
+                "file_size_mb": None,
+                "duration": None,
+                "title": None,
+                "error": f"live_status {status!r} not ready — skipped download",
+            }
+    return None
+
+
+def _try_pytubefix_download(
+    youtube_url: str, output_dir: str, min_resolution: int, use_pytubefix_first: bool
+) -> dict | None:
+    """Attempt a pytubefix download first; return its result dict on success, else None.
+
+    Lifted verbatim out of download_youtube_video_for_upload (issue #272).
+    """
+    if use_pytubefix_first:
+        logger.info("Trying pytubefix first...")
+        result = download_with_pytubefix(youtube_url, output_dir, min_resolution)
+        if result["success"]:
+            logger.info(f"pytubefix succeeded! Resolution: {result.get('resolution')}")
+            try:
+                _warn_if_not_h264(result["file_path"], context=youtube_url)
+            except Exception as e:
+                logger.warning("codec-mismatch check failed for %s: %s", youtube_url, e)
+            return result
+        else:
+            logger.warning(f"pytubefix failed: {result.get('error')}. Falling back to yt-dlp...")
+    return None
+
+
 def download_youtube_video_for_upload(
     youtube_url: str,
     output_dir: str,
@@ -343,37 +386,18 @@ def download_youtube_video_for_upload(
     # (post_live / is_live / is_upcoming) would otherwise crash ffmpeg later with
     # "moov atom not found". A probe error (None) is non-blocking here — the
     # pre-branch task gate is the primary defense — so the download proceeds.
-    if guard_live_status:
-        status = probe_live_status(youtube_url, cookies_file)
-        if status is not None and status not in READY_LIVE_STATUSES:
-            logger.warning(f"Skipping {youtube_url}: live_status={status!r} (not a ready VOD)")
-            return {
-                "success": False,
-                "skipped": True,
-                "file_path": None,
-                "file_size_mb": None,
-                "duration": None,
-                "title": None,
-                "error": f"live_status {status!r} not ready — skipped download",
-            }
+    skip_result = _check_live_status_guard(youtube_url, cookies_file, guard_live_status)
+    if skip_result is not None:
+        return skip_result
 
     # Map quality string to minimum resolution
     quality_to_resolution = {"720p": 720, "1080p": 1080, "best": 720}
     min_resolution = quality_to_resolution.get(quality, 720)
 
     # Try pytubefix first (often more reliable for YouTube restrictions)
-    if use_pytubefix_first:
-        logger.info("Trying pytubefix first...")
-        result = download_with_pytubefix(youtube_url, output_dir, min_resolution)
-        if result["success"]:
-            logger.info(f"pytubefix succeeded! Resolution: {result.get('resolution')}")
-            try:
-                _warn_if_not_h264(result["file_path"], context=youtube_url)
-            except Exception as e:
-                logger.warning("codec-mismatch check failed for %s: %s", youtube_url, e)
-            return result
-        else:
-            logger.warning(f"pytubefix failed: {result.get('error')}. Falling back to yt-dlp...")
+    pytubefix_result = _try_pytubefix_download(youtube_url, output_dir, min_resolution, use_pytubefix_first)
+    if pytubefix_result is not None:
+        return pytubefix_result
 
     # Fall back to yt-dlp
     logger.info("Trying yt-dlp...")

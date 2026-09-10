@@ -628,6 +628,118 @@ class TestDownloadYoutubeVideoForUpload:
 
 
 # ---------------------------------------------------------------------------
+# _check_live_status_guard (lifted out of download_youtube_video_for_upload, #272 slice 5 PR9)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckLiveStatusGuard:
+    def test_guard_disabled_returns_none_without_probing(self, mocker):
+        """guard_live_status=False returns None without ever probing."""
+        mock_probe = mocker.patch("utils.youtube_downloader.probe_live_status")
+
+        from utils.youtube_downloader import _check_live_status_guard
+
+        result = _check_live_status_guard("https://youtube.com/watch?v=x", "cookies.txt", False)
+
+        assert result is None
+        mock_probe.assert_not_called()
+
+    def test_probe_error_none_is_non_blocking(self, mocker):
+        """A probe error (None) is non-blocking: the guard returns None."""
+        mocker.patch("utils.youtube_downloader.probe_live_status", return_value=None)
+
+        from utils.youtube_downloader import _check_live_status_guard
+
+        result = _check_live_status_guard("https://youtube.com/watch?v=x", "cookies.txt", True)
+
+        assert result is None
+
+    @pytest.mark.parametrize("status", ["was_live", "not_live"])
+    def test_ready_status_returns_none(self, mocker, status):
+        """A ready live_status (was_live/not_live) returns None — proceed to download."""
+        mocker.patch("utils.youtube_downloader.probe_live_status", return_value=status)
+
+        from utils.youtube_downloader import _check_live_status_guard
+
+        result = _check_live_status_guard("https://youtube.com/watch?v=x", "cookies.txt", True)
+
+        assert result is None
+
+    def test_not_ready_status_returns_skip_dict_with_exact_repr_quoting(self, mocker):
+        """A not-ready live_status (post_live) returns the skip dict with `!r`-quoted status."""
+        mocker.patch("utils.youtube_downloader.probe_live_status", return_value="post_live")
+
+        from utils.youtube_downloader import _check_live_status_guard
+
+        result = _check_live_status_guard("https://youtube.com/watch?v=x", "cookies.txt", True)
+
+        assert result == {
+            "success": False,
+            "skipped": True,
+            "file_path": None,
+            "file_size_mb": None,
+            "duration": None,
+            "title": None,
+            "error": "live_status 'post_live' not ready — skipped download",
+        }
+
+
+# ---------------------------------------------------------------------------
+# _try_pytubefix_download (lifted out of download_youtube_video_for_upload, #272 slice 5 PR9)
+# ---------------------------------------------------------------------------
+
+
+class TestTryPytubefixDownload:
+    def test_use_pytubefix_first_false_returns_none_without_calling(self, mocker):
+        """use_pytubefix_first=False returns None without calling download_with_pytubefix."""
+        mock_pytubefix = mocker.patch("utils.youtube_downloader.download_with_pytubefix")
+
+        from utils.youtube_downloader import _try_pytubefix_download
+
+        result = _try_pytubefix_download("https://youtube.com/watch?v=x", "/tmp/out", 720, False)
+
+        assert result is None
+        mock_pytubefix.assert_not_called()
+
+    def test_success_returns_that_exact_dict_object(self, mocker):
+        """On pytubefix success, the helper returns the exact same dict object."""
+        expected_result = {"success": True, "file_path": "/tmp/v.mp4", "resolution": "720p"}
+        mocker.patch("utils.youtube_downloader.download_with_pytubefix", return_value=expected_result)
+        mocker.patch("utils.youtube_downloader._warn_if_not_h264")
+
+        from utils.youtube_downloader import _try_pytubefix_download
+
+        result = _try_pytubefix_download("https://youtube.com/watch?v=x", "/tmp/out", 720, True)
+
+        assert result is expected_result
+
+    def test_warn_if_not_h264_raising_is_swallowed_and_result_still_returned(self, mocker):
+        """A raising _warn_if_not_h264 is swallowed; the pytubefix result is still returned."""
+        expected_result = {"success": True, "file_path": "/tmp/v.mp4", "resolution": "720p"}
+        mocker.patch("utils.youtube_downloader.download_with_pytubefix", return_value=expected_result)
+        mocker.patch("utils.youtube_downloader._warn_if_not_h264", side_effect=RuntimeError("codec check boom"))
+
+        from utils.youtube_downloader import _try_pytubefix_download
+
+        result = _try_pytubefix_download("https://youtube.com/watch?v=x", "/tmp/out", 720, True)
+
+        assert result is expected_result
+
+    def test_success_false_returns_none_falls_through_to_ytdlp(self, mocker):
+        """A failed pytubefix attempt returns None so the caller falls through to yt-dlp."""
+        mocker.patch(
+            "utils.youtube_downloader.download_with_pytubefix",
+            return_value={"success": False, "error": "stream error"},
+        )
+
+        from utils.youtube_downloader import _try_pytubefix_download
+
+        result = _try_pytubefix_download("https://youtube.com/watch?v=x", "/tmp/out", 720, True)
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
 # download_audio_only
 # ---------------------------------------------------------------------------
 
