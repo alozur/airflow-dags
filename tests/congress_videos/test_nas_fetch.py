@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -360,7 +361,11 @@ class TestDiscoverRemoteDirs:
 
         assert len(calls) == 1
 
-    def test_command_shape_is_ssh_sh_c_snippet(self, settings):
+    def test_command_shape_is_ssh_single_trailing_argv(self, settings):
+        """No ``sh -c`` wrapper: ssh already runs its trailing argv through the
+        remote login shell, so the command is appended directly after
+        ``user@host`` as ONE argv element — exactly like
+        ``nas_archive.remote_mkdir_command`` does for ``mkdir -p``."""
         captured = {}
 
         def runner(command):
@@ -373,12 +378,13 @@ class TestDiscoverRemoteDirs:
         base_ssh = ssh_command(settings)
         assert command[: len(base_ssh)] == base_ssh
         assert command[len(base_ssh)] == "nas-archive@100.64.0.1"
-        assert command[len(base_ssh) + 1] == "sh"
-        assert command[len(base_ssh) + 2] == "-c"
-        snippet = command[len(base_ssh) + 3]
+        assert len(command) == len(base_ssh) + 2  # user@host + exactly one trailing argv element
+        snippet = command[len(base_ssh) + 1]
         assert settings.root in snippet
         assert "congreso-es-tv/abc123" in snippet
         assert "downloads/*/abc123" in snippet
+        assert "sh" not in command
+        assert "-c" not in command
 
     def test_video_id_is_validated_before_building_the_command(self, settings):
         runner = MagicMock(side_effect=AssertionError("must not be called"))
@@ -396,6 +402,79 @@ class TestDiscoverRemoteDirs:
         runner = lambda command: SimpleNamespace(stdout=stdout, returncode=0)  # noqa: E731
         with pytest.raises(ValueError, match="outside source_root"):
             discover_remote_dirs(settings, settings.root, "congreso-es-tv", "abc123", runner)
+
+
+class TestDiscoverRemoteDirsRealShell:
+    """Real-shell integration: build the discovery argv, then actually
+    execute its remote command string locally via ``sh -c``.
+
+    A runner-injection test can only ever assert the argv shape — it never
+    catches that ssh naively space-joins a multi-element remote command and
+    the remote shell re-parses the result, which is exactly the production
+    bug this fix addresses (see ``discover_remote_dirs``'s docstring). This
+    class instead runs the produced snippet for real, against a real
+    directory tree, so a regression back to the ``["sh", "-c", snippet]``
+    shape — or any other quoting break — fails here even without a NAS.
+    """
+
+    def _build_discovery_command(
+        self, settings: ArchiveSettings, root: Path, channel_slug: str, video_id: str
+    ) -> list[str]:
+        captured = {}
+
+        def runner(command):
+            captured["command"] = command
+            return SimpleNamespace(stdout="", returncode=0)
+
+        discover_remote_dirs(settings, str(root), channel_slug, video_id, runner)
+        return captured["command"]
+
+    def test_finds_all_three_shapes_and_ignores_decoys(self, settings, tmp_path):
+        root = tmp_path / "root"
+        channel_slug = "congreso-es-tv"
+        video_id = "abc123def"
+        other_video_id = "zzz999yyy"
+
+        expected_dirs = (
+            root / "downloads" / "2026-02-12" / video_id,
+            root / channel_slug / video_id,
+            root / video_id,
+        )
+        for directory in expected_dirs:
+            directory.mkdir(parents=True)
+        (root / "downloads" / "2026-02-12" / other_video_id).mkdir(parents=True)  # decoy: different video_id
+
+        command = self._build_discovery_command(settings, root, channel_slug, video_id)
+        base_ssh = ssh_command(settings)
+        assert command[: len(base_ssh)] == base_ssh
+        assert command[len(base_ssh)] == f"{settings.user}@{settings.host}"
+        assert len(command) == len(base_ssh) + 2  # user@host + exactly one trailing argv element
+        remote_command = command[-1]
+
+        result = subprocess.run(["sh", "-c", remote_command], capture_output=True, text=True, check=False)
+
+        assert result.returncode == 0, result.stderr
+        lines = result.stdout.splitlines()
+        assert set(lines) == {str(directory) for directory in expected_dirs}
+        assert len(lines) == len(expected_dirs)
+
+    def test_root_containing_space_and_single_quote_still_works(self, settings, tmp_path):
+        root = tmp_path / "weird root's name"
+        channel_slug = "congreso-es-tv"
+        video_id = "abc123def"
+
+        matched_dir = root / "downloads" / "2026-02-12" / video_id
+        matched_dir.mkdir(parents=True)
+
+        command = self._build_discovery_command(settings, root, channel_slug, video_id)
+        base_ssh = ssh_command(settings)
+        assert len(command) == len(base_ssh) + 2  # user@host + exactly one trailing argv element
+        remote_command = command[-1]
+
+        result = subprocess.run(["sh", "-c", remote_command], capture_output=True, text=True, check=False)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [str(matched_dir)]
 
 
 class TestDiscoverFetchSource:
@@ -453,8 +532,8 @@ class TestDiscoverFetchSource:
 
     def test_never_writes_to_the_legacy_root_only_reads(self, tmp_path):
         """discover_fetch_source only ever calls the injected runner — a pure
-        read via SSH `sh -c` glob/test, never rsync, mkdir, or any other
-        mutating command against either root."""
+        read via a single SSH remote-command argv element (glob/test), never
+        rsync, mkdir, or any other mutating command against either root."""
         settings = self._settings_with_legacy(tmp_path)
         commands = []
 
@@ -467,7 +546,8 @@ class TestDiscoverFetchSource:
         discover_fetch_source(settings, "congreso-es-tv", "abc123", runner)
 
         for command in commands:
-            assert command[-3:-1] == ["sh", "-c"]
+            assert command[-2] == "nas-archive@100.64.0.1"
+            assert "for d in" in command[-1]
             assert "rsync" not in command
             assert "mkdir" not in command
 

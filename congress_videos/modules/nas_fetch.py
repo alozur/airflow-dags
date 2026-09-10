@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -68,6 +69,22 @@ _MARKER_NAME = ".nas_archived.json"
 # Media suffixes whose mtime nas_archive_dag._newest_mtime() uses to gate the
 # local-age eligibility check — see refresh_retention() below.
 _MEDIA_SUFFIXES = (".mp4", ".mkv", ".webm")
+
+# Channel slugs are lowercase-alphanumeric-with-hyphens tokens (e.g.
+# "congreso-es-tv"). Enforced before channel_slug is ever interpolated
+# unquoted into a remote shell command — see discover_remote_dirs below.
+_CHANNEL_SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+
+
+def _validate_channel_slug(channel_slug: str) -> None:
+    """Raise ``ValueError`` unless ``channel_slug`` looks like a safe slug.
+
+    A defensive boundary check mirroring ``nas_archive.validate_video_id``:
+    exists so a malformed or adversarial ``channel_slug`` can never reach an
+    interpolated remote shell command unquoted.
+    """
+    if not isinstance(channel_slug, str) or not _CHANNEL_SLUG_PATTERN.fullmatch(channel_slug):
+        raise ValueError(f"Invalid channel_slug: {channel_slug!r} (must match {_CHANNEL_SLUG_PATTERN.pattern})")
 
 
 # ---------------------------------------------------------------------------
@@ -278,9 +295,22 @@ def discover_remote_dirs(
 
     Runs exactly ONE SSH command: a POSIX ``sh`` snippet that globs each
     candidate shape and prints only the ones that exist as real directories.
-    ``video_id`` is validated via ``nas_archive.validate_video_id`` and every
-    interpolated value is ``shlex.quote``-d before it reaches the remote
-    shell.
+    ``video_id`` is validated via ``nas_archive.validate_video_id`` and
+    ``channel_slug`` via :func:`_validate_channel_slug` before either is
+    interpolated unquoted into the remote command — both patterns forbid
+    shell metacharacters, quotes, and whitespace. ``source_root`` (an
+    already-validated absolute path, but not guaranteed free of spaces or
+    quotes) is ``shlex.quote``-d; the ``*`` glob segment is deliberately left
+    unquoted so the remote shell expands it.
+
+    ssh already runs its trailing argv through the remote user's login
+    shell: passing the command as several argv elements (e.g. ``"sh"``,
+    ``"-c"``, ``snippet``) makes ssh naively space-join them into one
+    string that the remote shell then re-parses from scratch, destroying
+    any quoting the snippet relied on. So — exactly like
+    ``nas_archive.remote_mkdir_command`` appends its command directly after
+    ``user@host`` with no ``sh -c`` wrapper — the fully-built snippet is
+    appended as the single trailing argv element here.
 
     Args:
         source_root: Absolute remote root to search under.
@@ -296,21 +326,27 @@ def discover_remote_dirs(
         ``source_root`` for this video.
 
     Raises:
-        ValueError: ``video_id`` fails ``nas_archive.validate_video_id``, the
+        ValueError: ``video_id`` fails ``nas_archive.validate_video_id``,
+            ``channel_slug`` fails :func:`_validate_channel_slug`, the
             remote discovery command fails, or a discovered path is unsafe
             or escapes ``source_root``.
     """
     nas_archive.validate_video_id(video_id)
+    _validate_channel_slug(channel_slug)
 
+    quoted_root = shlex.quote(source_root)
     candidates = (
-        f"{source_root}/downloads/*/{video_id}",
-        f"{source_root}/{channel_slug}/{video_id}",
-        f"{source_root}/{video_id}",
+        f"{quoted_root}/downloads/*/{video_id}",
+        f"{quoted_root}/{channel_slug}/{video_id}",
+        f"{quoted_root}/{video_id}",
     )
-    snippet = (
-        "for d in " + " ".join(shlex.quote(c) for c in candidates) + '; do [ -d "$d" ] && printf \'%s\\n\' "$d"; done'
-    )
-    command = [*ssh_command(settings), f"{settings.user}@{settings.host}", "sh", "-c", snippet]
+    # Trailing ": " (POSIX no-op, always exits 0) matters: without it, the
+    # `for` loop's exit status is whatever its LAST executed `[ -d ... ]`
+    # test returned, so the whole command would spuriously fail whenever the
+    # last candidate (the legacy top-level shape) happens not to exist even
+    # though an earlier candidate matched and was printed — the common case.
+    remote_command = "for d in " + " ".join(candidates) + '; do [ -d "$d" ] && printf \'%s\\n\' "$d"; done; :'
+    command = [*ssh_command(settings), f"{settings.user}@{settings.host}", remote_command]
 
     result = runner(command)
     if getattr(result, "returncode", 0) != 0:
