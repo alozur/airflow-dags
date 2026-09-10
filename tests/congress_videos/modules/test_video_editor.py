@@ -1281,6 +1281,32 @@ class TestIntroSesionRenderer:
         pixels = list(img.getdata())
         assert any(px[3] > 0 for px in pixels), "All pixels are transparent — nothing was drawn."
 
+    def test_intro_sesion_card_sits_in_the_bottom_half_not_the_middle(self) -> None:
+        """The card is bottom-anchored, like every other bar card in this domain.
+
+        An earlier revision centred it vertically and reinterpreted margin_y as an
+        offset from centre, which drew the label across the middle of the frame and
+        over the speaker. This pins the anchor so that cannot silently return.
+        """
+        from congress_videos.config.video_editor_config import get_domain_config
+        from congress_videos.modules.video_editor import render_pillow_overlay
+
+        # Rendered at real 720p dimensions on purpose: the module-level 320x180 test
+        # canvas is shorter than the card plus its bottom margin, so every anchor
+        # would collapse to y=0 there and prove nothing.
+        w, h = 1280, 720
+        cfg = get_domain_config("congreso")
+        style = cfg["tipos"]["intro_sesion"]
+        img = render_pillow_overlay(_INTRO_SESION_OVERLAY, cfg, w, h)
+
+        opaque_rows = [y for y in range(h) if any(img.getpixel((x, y))[3] > 0 for x in range(0, w, 8))]
+        assert opaque_rows, "Nothing was drawn."
+
+        expected_top = h - style["height"] - style["margin_y"]
+        assert min(opaque_rows) == expected_top
+        assert max(opaque_rows) < h, "The card must not run off the bottom edge."
+        assert min(opaque_rows) > h // 2, "The card must sit in the bottom half of the frame."
+
     def test_intro_sesion_renders_without_descripcion(self) -> None:
         """The renderer must succeed when 'descripcion' is absent."""
         from congress_videos.config.video_editor_config import get_domain_config

@@ -1442,12 +1442,33 @@ with DAG(
                 "chapter_extraction_results",
             )
 
+    def _format_session_date(session_date) -> str:
+        """Render a session date as Spanish ``DD/MM/AAAA``.
+
+        Accepts a ``date``/``datetime`` or any stringifiable value. An ISO
+        ``YYYY-MM-DD`` string is reformatted; anything unparseable is passed through
+        unchanged rather than raising, since the intro card is never allowed to block
+        a publication.
+        """
+        if hasattr(session_date, "strftime"):
+            return session_date.strftime("%d/%m/%Y")
+        text = str(session_date)
+        try:
+            return datetime.strptime(text[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+        except ValueError:
+            return text
+
     def _build_intro_card_text(session_number, session_date) -> tuple[str, str]:
         """Build the Spanish intro-card ``titulo``/``descripcion`` from session metadata.
 
-        Mirrors the D6 session-label precedent in ``_resolve_chapter_speaker`` (L398):
-        prefer ``"Sesión {n}"`` when ``session_number`` is present, else fall back to
-        the session date. ``descripcion`` reflects the session date when present, or
+        The card names the institution, not just an ordinal: a long-form video reaches
+        YouTube viewers with no surrounding context, so ``"Sesión 193"`` alone
+        identifies nothing. ``titulo`` reads
+        ``"Sesión {n} del Congreso de los Diputados"``, degrading to
+        ``"Congreso de los Diputados"`` when no session number is known.
+
+        ``descripcion`` carries the session date in Spanish ``DD/MM/AAAA`` form (issue
+        #558 asked for that format; an earlier revision emitted the raw ISO value), or
         an empty string (the ``intro_sesion`` renderer already tolerates no subtitle).
 
         Args:
@@ -1467,8 +1488,9 @@ with DAG(
                 "missing — cannot build the session intro card text."
             )
 
-        titulo = f"Sesión {session_number}" if session_number is not None else str(session_date)
-        descripcion = str(session_date) if session_date else ""
+        institution = "Congreso de los Diputados"
+        titulo = f"Sesión {session_number} del {institution}" if session_number is not None else institution
+        descripcion = _format_session_date(session_date) if session_date else ""
         return titulo, descripcion
 
     def _apply_intro_overlay(ti):

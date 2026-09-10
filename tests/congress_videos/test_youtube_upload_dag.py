@@ -4950,9 +4950,9 @@ class TestTurnSpeakerFields:
 class TestBuildIntroCardText:
     """_build_intro_card_text(session_number, session_date) — Spanish titulo/descripcion.
 
-    Mirrors the D6 session-label precedent (L398): titulo prefers "Sesión {n}",
-    falling back to the session date; descripcion always reflects the date when
-    present. Both absent raises (nothing to render on the card).
+    The card names the institution, not just an ordinal — a long-form video reaches
+    viewers with no surrounding context. descripcion carries the date as DD/MM/AAAA
+    (issue #558's stated format). Both absent raises (nothing to render on the card).
     """
 
     def test_session_number_and_date_present(self):
@@ -4960,24 +4960,42 @@ class TestBuildIntroCardText:
 
         titulo, descripcion = _build_intro_card_text(42, "2026-09-10")
 
-        assert titulo == "Sesión 42"
-        assert descripcion == "2026-09-10"
+        assert titulo == "Sesión 42 del Congreso de los Diputados"
+        assert descripcion == "10/09/2026"
 
     def test_only_session_number_present(self):
         from congress_videos.youtube_upload_dag import _build_intro_card_text
 
         titulo, descripcion = _build_intro_card_text(7, None)
 
-        assert titulo == "Sesión 7"
+        assert titulo == "Sesión 7 del Congreso de los Diputados"
         assert descripcion == ""
 
     def test_only_session_date_present(self):
+        """No ordinal still identifies the institution, never a bare date as a title."""
         from congress_videos.youtube_upload_dag import _build_intro_card_text
 
         titulo, descripcion = _build_intro_card_text(None, "2026-09-10")
 
-        assert titulo == "2026-09-10"
-        assert descripcion == "2026-09-10"
+        assert titulo == "Congreso de los Diputados"
+        assert descripcion == "10/09/2026"
+
+    def test_date_object_is_formatted_not_stringified(self):
+        from datetime import date
+
+        from congress_videos.youtube_upload_dag import _build_intro_card_text
+
+        _titulo, descripcion = _build_intro_card_text(42, date(2026, 3, 4))
+
+        assert descripcion == "04/03/2026"
+
+    def test_unparseable_date_passes_through_rather_than_raising(self):
+        """The intro card must never block a publication over a odd date value."""
+        from congress_videos.youtube_upload_dag import _build_intro_card_text
+
+        _titulo, descripcion = _build_intro_card_text(42, "sesión extraordinaria")
+
+        assert descripcion == "sesión extraordinaria"
 
     def test_both_absent_raises(self):
         from congress_videos.youtube_upload_dag import _build_intro_card_text
@@ -4991,7 +5009,7 @@ class TestBuildIntroCardText:
 
         titulo, _descripcion = _build_intro_card_text(0, "2026-09-10")
 
-        assert titulo == "Sesión 0"
+        assert titulo == "Sesión 0 del Congreso de los Diputados"
 
 
 def _make_intro_overlay_store(
