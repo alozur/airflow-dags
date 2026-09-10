@@ -36,19 +36,17 @@ Three critical findings emerged during this slice that shaped the refactoring ap
 
 ### 1. Per-Iteration Variable Leak Turns Loop-Body Extraction into Behaviour Change
 
-**Pattern**: A helper extracted from inside a loop may use variables bound conditionally within the loop body, creating a fresh scope that converts silent stale-value reuse into a `NameError`.
+**Pattern**: A loop body that binds a variable conditionally and reads it unconditionally CANNOT be lifted whole. The helper's fresh per-call scope destroys the cross-iteration leak, which is a behaviour change — not a refactor.
 
 **Concrete case**: `get_video_details` (PR1)
-- Base code (lines 513–527) parsed `duration_formatted` from `contentDetails.duration` only inside the loop's `if` block.
-- Variables `hours`, `minutes`, `seconds` were bound conditionally (within `if duration_match:`).
-- The original loop implicitly reused stale values across iterations if parsing failed on the next video.
-- The lifted `_fetch_enrichable_video_details` helper has its own scope: a video with an unparseable duration (e.g., `"P0D"`) would trigger `NameError: name 'hours' is not defined` instead of silently reusing the previous video's values.
-- **Preventive test** (`TestGetVideoDetailsDurationLeak`): pinned the stale-value behavior via characterization tests against untouched pre-lift source, proving that the original code exhibited this leak and that the new scope intentionally tightens the contract.
-- **Decision**: Keep the tight scope and the `NameError` (which is more correct); document as a latent bug (filed issue #597) rather than "fix" it within a behavior-preserving slice.
+- `hours`, `minutes` and `seconds` bind only inside `if duration_match:`; the output dict reads all three unconditionally in `duration_formatted`.
+- The regex requires a literal `PT` prefix, so a `P0D` duration (a live or still-processing broadcast) does not match. Base behaviour: the video silently inherits the *previous iteration's* values, or raises `NameError` if it is the first such video in the call.
+- The exploration proposed lifting the whole for-body. **That would have been a behaviour change**: a fresh function scope per video converts the silent-leak case into the raising case.
+- **Decision**: narrow the lift boundary. `_fetch_enrichable_video_details` covers only the fetch-and-guard block; the duration parse and the dict build stay in the caller. Verified on `main` — `duration_match`, the three bindings and `duration_formatted` are all still inside `get_video_details`.
+- **Behaviour is therefore UNCHANGED by this slice.** `TestGetVideoDetailsDurationLeak` pins both halves of the leak so any future change to it is deliberate and visible.
+- The underlying defect is real and was filed as **#597**, not fixed here.
 
-**Lesson**: Before lifting any loop body into a helper, audit whether a variable bound conditionally inside the loop is read outside that condition. If yes, either:
-- Keep the binding in the caller and pass the value to the helper, or
-- Accept that the helper has a tighter scope and document the behavior change as a separate issue.
+**Lesson**: Before lifting any loop body into a helper, audit whether a variable bound conditionally inside the loop is read outside that condition. If one is, the whole-body lift is off the table for a behaviour-preserving slice: narrow the boundary so the conditional binding and its unconditional read stay together in the caller, pin the existing behaviour with characterization tests, and file the underlying defect separately. Accepting the tighter scope is not an option here — that is shipping a behaviour change under a refactor label.
 
 ### 2. Relocating a Function-Level Import Across a `try` Boundary Silently Reclassifies `ImportError`
 
@@ -80,14 +78,26 @@ Three critical findings emerged during this slice that shaped the refactoring ap
 
 Per the spec's "Deferred functions and files stay untouched" requirement, the following remain open:
 
-1. **`create_app` (x2)** — Both benchmark servers (`server.py`); complexity 11–12 each. Deferred for dedicated refactor.
-2. **`_default_model_loader`** — `vad_helpers.py`; complexity 11. Deferred for dedicated refactor.
-3. **`trim_turn_silence_with_vad`** — `vad_helpers.py`; complexity 12. Deferred for dedicated refactor.
-4. **`_generate_metadata`** — `reap_shorts_uploader_dag.py`; complexity 11. Deferred for dedicated refactor.
-5. **`build_shorts_metadata_context`** — `reap_shorts_uploader_dag.py`; complexity 14. Deferred for dedicated refactor.
-6. **`spanish_months` / `date_pattern` duplication** — Between `extract_agenda_section` and `extract_session_date` in `youtube_channel.py`. Deferred for follow-up dedup (filed issue #598).
+Measured on `main` `347ea4c` with
+`uvx ruff check --select C901 --no-cache --config 'lint.per-file-ignores = {}' --output-format concise .`
+— exactly **6 offenders in 4 files**:
 
-Issue #272 remains **OPEN** with exactly these 6 entries remaining (slice 4's 7 deferred entries reduced by slice 5's 10 completed).
+| Cx | Function | File |
+|---|---|---|
+| 16 | `_generate_metadata` | `congress_videos/reap_shorts_uploader_dag.py` |
+| 14 | `create_app` | `benchmarks/pyannote_diarization/server.py` |
+| 14 | `create_app` | `benchmarks/yamnet_applause/server.py` |
+| 14 | `_default_model_loader` | `benchmarks/yamnet_applause/server.py` |
+| 12 | `trim_turn_silence_with_vad` | `congress_videos/modules/vad_helpers.py` |
+| 11 | `build_shorts_metadata_context` | `congress_videos/reap_shorts_uploader_dag.py` |
+
+Why each was deferred rather than sized into slice 5: the two `create_app` functions need decorator/closure restructuring (a design decision, not a mechanical lift); `_default_model_loader` is liftable but shares an entry with `create_app`, so it moves no counter until that lands; `trim_turn_silence_with_vad` is a whole-body `try/finally`.
+
+`EXPECTED_C901_FILE_COUNT` is **4**, matching the 4 remaining `per-file-ignores` entries carrying `"C901"`.
+
+Issue #272 remains **OPEN** for slice 6.
+
+The `spanish_months` / `date_pattern` duplication (**#598**) is a separate follow-up, **not** part of the C901 backlog — neither extractor is an offender any more.
 
 ## Latent Bugs Filed
 
@@ -95,17 +105,15 @@ Two GitHub issues were filed during this slice to track findings outside the sco
 
 ### Issue #597: Duration parsing variable leak in `get_video_details`
 
-**Summary**: Videos with unparseable `contentDetails.duration` (e.g., `"P0D"`) either:
-- Reuse the previous video's parsed `hours`/`minutes`/`seconds` values (original loop-scope leak), or
-- Raise `NameError` after extraction (new helper scope).
+**Summary**: `hours`, `minutes` and `seconds` bind only inside `if duration_match:`, but `duration_formatted` reads all three unconditionally. A duration that does not match the `PT`-prefixed regex — `P0D`, which the YouTube Data API returns for a live or still-processing broadcast — leaves them unbound.
 
-**Reproduction**: Run a batch where video N has duration `"PT1H2M3S"` followed by video N+1 with `"P0D"`.
-- Original code: video N+1 inherits video N's `duration_formatted`.
-- After slice 5 extraction: video N+1 raises `NameError: name 'hours' is not defined`.
+**Two wrong behaviours, depending on position in the loop**:
+- A previous video in the same call matched → the `P0D` video silently inherits that video's `duration_formatted`. Wrong data, no error, nothing logged. `duration_seconds` correctly reads `0` while `duration_formatted` reads something plausible from an unrelated video, so the row looks fine.
+- It is the first non-matching video → `NameError`, caught by the function-level handler and re-raised as `RuntimeError`; the whole call aborts.
 
-**Root cause**: `contentDetails.duration` in some YouTube Data API responses is a malformed string that does not match the expected `PT\d+H\d+M\d+S` pattern, leaving the regex groups unbound.
+**Unchanged by slice 5.** The lift boundary was deliberately narrowed to stop before the duration parse for exactly this reason, so both behaviours are identical to `main` before the slice. `TestGetVideoDetailsDurationLeak` pins them.
 
-**Decision**: This is a pre-existing latent bug; behavior-preserving refactor means we document it but don't fix it. The new scope makes the bug more visible (raises instead of silently leaks), which is safer.
+**Decision**: pre-existing latent bug, out of scope for a behaviour-preserving refactor. Filed as #597. Fixing it will require updating those characterization tests, which currently pin the buggy behaviour on purpose.
 
 ### Issue #598: `spanish_months` / `date_pattern` duplication
 
