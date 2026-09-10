@@ -146,8 +146,10 @@ download and no Hugging Face token exist on the VPS. `diarize-api` and
 is the third-party image pinned by digest. Everything is CPU-only.
 `ml_smoke.py` runs inside the scheduler and proves each sidecar answers on
 synthetic audio. Airflow's local Whisper path is intentionally absent from the
-frozen image, so DEV transcription goes through `whisper-api` text-only (no
-SRT), a known functional gap versus production's start-time pip install.
+frozen image, so DEV transcription goes through `whisper-api` instead —
+`utils/whisper_helpers.py` requests `output=srt` from that sidecar (a query
+parameter, per ahmetoner/whisper-asr-webservice) and still produces SRT files,
+matching production's start-time pip install behavior.
 The scheduler bind-mounts `YOUTUBE_TOKENS_HOST_DIR` for OAuth tokens (see
 "Configuration sources" above), but no real token is seeded by this
 foundation. This foundation does not prove the full video pipeline works; no

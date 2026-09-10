@@ -248,7 +248,7 @@ class TestFetchOneVideo:
         settings = self._settings_with_legacy(tmp_path)
 
         def fake_runner(command):
-            if "sh" in command and "-c" in command:
+            if "rsync" not in command:  # ssh discovery command (single trailing argv, no "sh -c")
                 assert "--mkpath" not in command
                 return SimpleNamespace(returncode=0, stdout=f"{settings.root}/congreso-es-tv/abc123\n", stderr="")
             assert "--mkpath" not in command
@@ -269,12 +269,13 @@ class TestFetchOneVideo:
         settings = self._settings_with_legacy(tmp_path)
 
         def fake_runner(command):
-            snippet = command[-1] if ("sh" in command and "-c" in command) else ""
+            is_discovery = "rsync" not in command  # ssh discovery command (single trailing argv, no "sh -c")
+            snippet = command[-1] if is_discovery else ""
             if settings.legacy_root in snippet:
                 return SimpleNamespace(
                     returncode=0, stdout=f"{settings.legacy_root}/congreso-es-tv/abc123\n", stderr=""
                 )
-            if "sh" in command and "-c" in command:
+            if is_discovery:
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             # rsync pull / verify dry-run against the legacy root
             assert settings.legacy_root in command[-2] or settings.legacy_root in command[-1]
@@ -290,20 +291,21 @@ class TestFetchOneVideo:
 
     def test_fallback_never_writes_deletes_or_pushes_to_the_legacy_root(self, monkeypatch, tmp_path):
         """Every command issued while pulling from the legacy root is a read
-        (discovery sh -c, or an rsync PULL where the legacy root is the
-        source, never the destination)."""
+        (the ssh discovery command, or an rsync PULL where the legacy root is
+        the source, never the destination)."""
         mod = _fresh()
         settings = self._settings_with_legacy(tmp_path)
         commands = []
 
         def fake_runner(command):
             commands.append(command)
-            snippet = command[-1] if ("sh" in command and "-c" in command) else ""
+            is_discovery = "rsync" not in command  # ssh discovery command (single trailing argv, no "sh -c")
+            snippet = command[-1] if is_discovery else ""
             if settings.legacy_root in snippet:
                 return SimpleNamespace(
                     returncode=0, stdout=f"{settings.legacy_root}/congreso-es-tv/abc123\n", stderr=""
                 )
-            if "sh" in command and "-c" in command:
+            if is_discovery:
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 

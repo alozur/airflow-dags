@@ -272,4 +272,4 @@ Schema dinamico por entorno:
 Fallback de transcripcion (3 niveles):
   1. Subtitulos SRT de YouTube (yt-dlp, mas rapido)
   2. Audio chunks + Whisper local (openai-whisper library, genera SRT)
-  3. Whisper Docker API (texto plano, sin timestamps)
+  3. Whisper Docker API (ahmetoner/whisper-asr-webservice, output=srt via query param, tambien genera SRT)
