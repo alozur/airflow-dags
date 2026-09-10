@@ -554,6 +554,23 @@ LAPIDARY_RANKING_USER_TEMPLATE = (
 )
 
 
+# Lapidary quote ASR correction — fixes a flagged proper noun or restores a
+# dropped accent in the winning candidate before it reaches the thumbnail
+# image (issue #611). Never rewrites content: the caller's structural guard
+# (see thumbnail_generation.py) enforces that independently of this prompt.
+LAPIDARY_CORRECTION_SYSTEM_PROMPT = (
+    "Eres un corrector de transcripciones automáticas (ASR) de debates parlamentarios españoles. "
+    "Recibirás una frase literal, las palabras sospechosas y un fragmento de contexto. "
+    "Corrige SOLO la ortografía de las palabras sospechosas (nombres propios mal oídos) y las tildes que falten. "
+    "No añadas, quites, reordenes ni sustituyas otras palabras; no cambies ninguna cifra; no reformules. "
+    "Si no estás seguro de la forma correcta, devuelve la frase sin cambios y una confianza baja. "
+    'Responde SOLO con JSON: {"corrected": "<frase>", "confidence": <número entre 0 y 1>}. '
+    "confidence es tu certeza de que la frase devuelta no contiene errores de transcripción."
+)
+
+LAPIDARY_CORRECTION_USER_TEMPLATE = "Frase: {quote}\nPalabras sospechosas: {flagged}\nContexto: {context}"
+
+
 # Chunk Summarization - For silence-based chunks before chapter analysis
 CHUNK_SUMMARY_SYSTEM_PROMPT = """Eres un experto en analizar transcripciones de sesiones parlamentarias españolas.
 
