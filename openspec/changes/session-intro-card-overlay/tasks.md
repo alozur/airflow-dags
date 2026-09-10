@@ -58,14 +58,14 @@ Chain strategy: feature-branch-chain
 
 ## PR 2: `resolve_overlay_slot` + default-window constant (base: PR 1 branch, ~120 lines)
 
-- [ ] 2.1 RED: `resolve_overlay_slot(existing=[], start, dur)` returns the window unchanged (no-overlap / single-overlay no-op).
-- [ ] 2.2 RED: full overlap `existing=[(0,10)]` shifts requested window to start at 10, same duration.
-- [ ] 2.3 RED: partial overlap shifts to the earliest free slot at/after the original start, same duration.
-- [ ] 2.4 RED: never shifts backward, never starts before `0.0`.
-- [ ] 2.5 GREEN: implement pure `resolve_overlay_slot(existing: list[tuple[float, float]], requested_start: float, requested_duration: float) -> tuple[float, float]` in `video_editor.py` — half-open `[start, end)`, clamp start to `max(requested_start, 0.0)`, sweep sorted `existing`.
-- [ ] 2.6 GREEN: add named default-window constant (`INTRO_WINDOW_SECONDS = (0.0, 5.0)`) in `video_editor.py`.
-- [ ] 2.7 RED→GREEN: caller with no custom window occupies exactly `[0, 5)`, read from the constant.
-- [ ] 2.8 REFACTOR: docstring on `resolve_overlay_slot` stating the never-backward/never-negative/duration-preserving invariants.
+- [x] 2.1 RED: `resolve_overlay_slot(existing=[], start, dur)` returns the window unchanged (no-overlap / single-overlay no-op).
+- [x] 2.2 RED: full overlap `existing=[(0,10)]` shifts requested window to start at 10, same duration.
+- [x] 2.3 RED: partial overlap shifts to the earliest free slot at/after the original start, same duration.
+- [x] 2.4 RED: never shifts backward, never starts before `0.0`.
+- [x] 2.5 GREEN: implement pure `resolve_overlay_slot(existing: list[tuple[float, float]], requested_start: float, requested_duration: float) -> tuple[float, float]` in `video_editor.py` — half-open `[start, end)`, clamp start to `max(requested_start, 0.0)`, sweep sorted `existing`.
+- [x] 2.6 GREEN: add named default-window constant (`INTRO_WINDOW_SECONDS = (0.0, 5.0)`) in `video_editor.py`.
+- [x] 2.7 RED→GREEN: caller with no custom window occupies exactly `[0, 5)`, read from the constant.
+- [x] 2.8 REFACTOR: docstring on `resolve_overlay_slot` stating the never-backward/never-negative/duration-preserving invariants.
 
 ## PR 3: `max_timeout` kwarg + duration guard (base: PR 2 branch, ~95 lines)
 

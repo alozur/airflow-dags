@@ -8,6 +8,7 @@ Public API::
 
     _escape_drawtext(text)                        — escape ffmpeg drawtext metacharacters
     _parse_time(v)                                — normalise seconds value or SRT string
+    resolve_overlay_slot(existing, start, dur)    → (start, end)
     build_drawtext_filter(overlays, domain_cfg)   → str
     build_ffmpeg_drawtext_cmd(src, out, filter)   → list[str]
     build_ffmpeg_pillow_cmd(src, out, png_slots)  → list[str]
@@ -95,6 +96,59 @@ def _parse_time(v: int | float | str) -> float:
     if isinstance(v, (int, float)):
         return float(v)
     return convert_srt_time_to_seconds(str(v))
+
+
+# ---------------------------------------------------------------------------
+# Pure helper: overlay slot resolution
+# ---------------------------------------------------------------------------
+
+
+#: Default window, in seconds, occupied by the session intro card when the
+#: caller supplies no custom window. Half-open ``[start, end)``.
+INTRO_WINDOW_SECONDS: tuple[float, float] = (0.0, 5.0)
+
+
+def resolve_overlay_slot(
+    existing: list[tuple[float, float]], requested_start: float, requested_duration: float
+) -> tuple[float, float]:
+    """Resolve a desired ``(start, end)`` window against already-placed windows.
+
+    Pure function — never mutates *existing*, performs no I/O. Windows are
+    half-open ``[start, end)``: touching endpoints do not overlap.
+
+    Invariants:
+        - Never shifts backward: the resolved start is always ``>=
+          max(requested_start, 0.0)``.
+        - Never starts before ``0.0``, regardless of *requested_start*.
+        - Always preserves *requested_duration* exactly — only the start
+          (and therefore the end) may move.
+
+    Algorithm: clamp the requested start to ``max(requested_start, 0.0)``,
+    then sweep *existing* in start order, advancing past every interval that
+    intersects the current candidate window until none remain — returning
+    the earliest free slot at or after the clamped start.
+
+    Args:
+        existing: Other ``(start, end)`` windows already placed in the same
+            call. Not mutated.
+        requested_start: Desired start time in seconds. May be negative; is
+            clamped to ``0.0``.
+        requested_duration: Desired window duration in seconds. Preserved
+            exactly in the result.
+
+    Returns:
+        The resolved ``(start, end)`` window: unchanged if free, otherwise
+        the earliest non-overlapping window at or after the clamped start.
+    """
+    start = max(requested_start, 0.0)
+    end = start + requested_duration
+
+    for existing_start, existing_end in sorted(existing):
+        if start < existing_end and existing_start < end:
+            start = existing_end
+            end = start + requested_duration
+
+    return (start, end)
 
 
 # ---------------------------------------------------------------------------

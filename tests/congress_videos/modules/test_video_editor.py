@@ -14,6 +14,8 @@ Test groups:
     TestApplyOverlays         — T-08 apply_overlays (REQ-07)
     TestIntroSesionConfig     — T-14 intro_sesion tipo schema (session-intro-card-overlay PR 1)
     TestIntroSesionRenderer   — T-15 _render_intro_sesion + registration (session-intro-card-overlay PR 1)
+    TestResolveOverlaySlot    — T-16 resolve_overlay_slot pure helper (session-intro-card-overlay PR 2)
+    TestIntroWindowConstant   — T-17 INTRO_WINDOW_SECONDS default window (session-intro-card-overlay PR 2)
 """
 
 from __future__ import annotations
@@ -1315,3 +1317,98 @@ class TestIntroSesionRenderer:
         ffmpeg_cmd = mock_run.call_args[0][0]
         filter_complex = ffmpeg_cmd[ffmpeg_cmd.index("-filter_complex") + 1]
         assert "between(t,0.0,5.0)" in filter_complex
+
+
+# ---------------------------------------------------------------------------
+# T-16: resolve_overlay_slot pure helper (session-intro-card-overlay PR 2)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveOverlaySlot:
+    """resolve_overlay_slot must be a pure, never-backward overlap-resolution helper."""
+
+    def test_no_overlap_returns_window_unchanged(self) -> None:
+        """A desired window that overlaps nothing is returned unchanged."""
+        from congress_videos.modules.video_editor import resolve_overlay_slot
+
+        assert resolve_overlay_slot(existing=[(10.0, 20.0)], requested_start=0.0, requested_duration=5.0) == (
+            0.0,
+            5.0,
+        )
+
+    def test_single_overlay_is_a_no_op(self) -> None:
+        """With no other windows placed yet, the desired window is returned unchanged."""
+        from congress_videos.modules.video_editor import resolve_overlay_slot
+
+        assert resolve_overlay_slot(existing=[], requested_start=0.0, requested_duration=5.0) == (0.0, 5.0)
+
+    def test_full_overlap_shifts_past_the_conflict(self) -> None:
+        """A window fully inside an existing window starts at the existing window's end."""
+        from congress_videos.modules.video_editor import resolve_overlay_slot
+
+        result = resolve_overlay_slot(existing=[(0.0, 10.0)], requested_start=0.0, requested_duration=5.0)
+        assert result == (10.0, 15.0)
+
+    def test_partial_overlap_shifts_to_earliest_free_slot(self) -> None:
+        """A window partially overlapping one existing window shifts to the earliest free slot."""
+        from congress_videos.modules.video_editor import resolve_overlay_slot
+
+        # Requested [3, 8) overlaps existing [0, 5) partially — earliest free slot is [5, 10).
+        result = resolve_overlay_slot(existing=[(0.0, 5.0)], requested_start=3.0, requested_duration=5.0)
+        assert result == (5.0, 10.0)
+
+    def test_never_starts_before_zero(self) -> None:
+        """A negative requested_start is clamped to 0.0, never returned as-is."""
+        from congress_videos.modules.video_editor import resolve_overlay_slot
+
+        result = resolve_overlay_slot(existing=[], requested_start=-3.0, requested_duration=2.0)
+        assert result == (0.0, 2.0)
+
+    def test_never_shifts_backward_past_a_later_free_window(self) -> None:
+        """A conflict that ends after a later free window never causes a backward shift."""
+        from congress_videos.modules.video_editor import resolve_overlay_slot
+
+        # Existing intervals sweep in order; the result must never start before the
+        # (clamped) requested_start even when existing windows are unsorted.
+        result = resolve_overlay_slot(existing=[(6.0, 9.0), (0.0, 2.0)], requested_start=1.0, requested_duration=1.0)
+        # [1, 2) overlaps [0, 2) → shift to [2, 3); [2, 3) does not overlap [6, 9).
+        assert result == (2.0, 3.0)
+
+    def test_preserves_requested_duration_exactly(self) -> None:
+        """The resolved window always keeps the exact requested duration, however it shifts."""
+        from congress_videos.modules.video_editor import resolve_overlay_slot
+
+        start, end = resolve_overlay_slot(existing=[(0.0, 7.5)], requested_start=0.0, requested_duration=3.25)
+        assert end - start == pytest.approx(3.25)
+
+    def test_does_not_mutate_existing_argument(self) -> None:
+        """resolve_overlay_slot must be pure — it never mutates the existing list it receives."""
+        from congress_videos.modules.video_editor import resolve_overlay_slot
+
+        existing = [(0.0, 10.0)]
+        existing_copy = list(existing)
+        resolve_overlay_slot(existing=existing, requested_start=0.0, requested_duration=5.0)
+        assert existing == existing_copy
+
+
+# ---------------------------------------------------------------------------
+# T-17: INTRO_WINDOW_SECONDS default window (session-intro-card-overlay PR 2)
+# ---------------------------------------------------------------------------
+
+
+class TestIntroWindowConstant:
+    """The intro card's default window must be one named, configurable constant."""
+
+    def test_intro_window_seconds_is_zero_to_five(self) -> None:
+        """INTRO_WINDOW_SECONDS must be exactly (0.0, 5.0)."""
+        from congress_videos.modules.video_editor import INTRO_WINDOW_SECONDS
+
+        assert INTRO_WINDOW_SECONDS == (0.0, 5.0)
+
+    def test_default_window_applies_without_override_via_resolve_overlay_slot(self) -> None:
+        """A caller with no other windows placed occupies exactly [0, 5), read from the constant."""
+        from congress_videos.modules.video_editor import INTRO_WINDOW_SECONDS, resolve_overlay_slot
+
+        start, end = INTRO_WINDOW_SECONDS
+        result = resolve_overlay_slot(existing=[], requested_start=start, requested_duration=end - start)
+        assert result == INTRO_WINDOW_SECONDS
