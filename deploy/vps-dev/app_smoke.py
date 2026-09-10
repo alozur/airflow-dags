@@ -20,7 +20,13 @@ def main():
     pg = PostgresConnection()
     expected_role = pg.user
     schema = pg.schema
-    expected_migrations = len(list(DAGS_REPO_PATH.glob("*/sql/migrations/*.sql")))
+    # Every migration file in the repository must be recorded; extra rows are legal and
+    # expected on a database that carries history (a migration renamed after it was
+    # applied, or rows imported from the NAS production database), so the check is a
+    # subset test, never a strict count equality.
+    expected_migrations = {
+        path.relative_to(DAGS_REPO_PATH).as_posix() for path in DAGS_REPO_PATH.glob("*/sql/migrations/*.sql")
+    }
 
     with pg.get_connection() as conn, conn.cursor() as cur:
         cur.execute("SELECT current_user AS role_name")
@@ -33,10 +39,12 @@ def main():
         cur.execute("SELECT has_schema_privilege(%s, %s, 'USAGE') AS has_usage", (current_user, schema))
         assert cur.fetchone()["has_usage"] is True, f"Runtime role lacks USAGE on schema {schema}"
 
-        cur.execute(f"SELECT count(*) AS count FROM {schema}.schema_migrations")
-        applied_migrations = cur.fetchone()["count"]
-        assert applied_migrations == expected_migrations, (
-            f"schema_migrations has {applied_migrations} rows, expected {expected_migrations} files"
+        cur.execute(f"SELECT migration FROM {schema}.schema_migrations")
+        applied_migrations = {row["migration"] for row in cur.fetchall()}
+        missing_migrations = sorted(expected_migrations - applied_migrations)
+        assert not missing_migrations, (
+            f"schema_migrations lacks {len(missing_migrations)} of {len(expected_migrations)} "
+            f"migration files: {missing_migrations[:5]}"
         )
 
         cur.execute("SELECT count(*) AS count FROM pg_tables WHERE schemaname = %s", (schema,))
@@ -49,7 +57,8 @@ def main():
 
     print(
         f"application-db smoke: user={current_user} superuser=false schema_usage=true "
-        f"migrations_applied={applied_migrations}/{expected_migrations} tables={table_count} dml_round_trip=ok"
+        f"migrations_recorded={len(expected_migrations)} "
+        f"extra_rows={len(applied_migrations - expected_migrations)} tables={table_count} dml_round_trip=ok"
     )
 
 
