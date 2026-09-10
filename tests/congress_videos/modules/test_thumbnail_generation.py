@@ -2321,6 +2321,44 @@ class TestLapidaryPrompts:
         assert len(rendered) > 0
 
 
+class TestLapidaryCorrectionPrompts:
+    """LAPIDARY_CORRECTION_SYSTEM_PROMPT / _USER_TEMPLATE (issue #611, Phase 3)."""
+
+    def test_system_prompt_importable_and_non_empty(self):
+        """LAPIDARY_CORRECTION_SYSTEM_PROMPT must exist and be non-empty."""
+        from congress_videos.config.ai_prompts import LAPIDARY_CORRECTION_SYSTEM_PROMPT
+
+        assert isinstance(LAPIDARY_CORRECTION_SYSTEM_PROMPT, str)
+        assert len(LAPIDARY_CORRECTION_SYSTEM_PROMPT) > 0
+
+    def test_system_prompt_names_the_json_keys(self):
+        """The system prompt must instruct the model to return 'corrected' and 'confidence'."""
+        from congress_videos.config.ai_prompts import LAPIDARY_CORRECTION_SYSTEM_PROMPT
+
+        assert "corrected" in LAPIDARY_CORRECTION_SYSTEM_PROMPT
+        assert "confidence" in LAPIDARY_CORRECTION_SYSTEM_PROMPT
+
+    def test_user_template_importable_and_non_empty(self):
+        """LAPIDARY_CORRECTION_USER_TEMPLATE must exist and be non-empty."""
+        from congress_videos.config.ai_prompts import LAPIDARY_CORRECTION_USER_TEMPLATE
+
+        assert isinstance(LAPIDARY_CORRECTION_USER_TEMPLATE, str)
+        assert len(LAPIDARY_CORRECTION_USER_TEMPLATE) > 0
+
+    def test_user_template_renders_quote_flagged_and_context(self):
+        """Formatting the template must substitute quote, flagged and context."""
+        from congress_videos.config.ai_prompts import LAPIDARY_CORRECTION_USER_TEMPLATE
+
+        rendered = LAPIDARY_CORRECTION_USER_TEMPLATE.format(
+            quote="Aan Curdi tenía 3 años",
+            flagged="Aan, Curdi",
+            context="...contexto circundante...",
+        )
+        assert "Aan Curdi tenía 3 años" in rendered
+        assert "Aan, Curdi" in rendered
+        assert "contexto circundante" in rendered
+
+
 # ---------------------------------------------------------------------------
 # T-09: Risky-entity gate (issue #611, Phase 1)
 # ---------------------------------------------------------------------------
@@ -2433,6 +2471,71 @@ class TestPassesCorrectionGuard:
 
         corrected = "Aylan Kurdi tenía 3 años"
         assert _passes_correction_guard(_LAPIDARY_ORIGINAL, corrected, _LAPIDARY_FLAGGED, 10) is False
+
+
+# ---------------------------------------------------------------------------
+# T-11: _request_quote_correction (issue #611, Phase 3)
+# ---------------------------------------------------------------------------
+
+
+class TestRequestQuoteCorrection:
+    """_request_quote_correction() calls the correction LLM and validates its JSON reply."""
+
+    _FRAGMENT = "El diputado dijo: Aan Curdi tenía 3 años, una camisa roja. Todos guardaron silencio."
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            {"content": "banana", "error": None},
+            {"content": "", "error": None},
+            {"content": None, "error": "x"},
+            {"content": '{"corrected": "Aylan Kurdi tenía 3 años"}', "error": None},  # missing confidence
+            {"content": '{"corrected": "Aylan Kurdi tenía 3 años", "confidence": true}', "error": None},  # bool
+            {"content": '{"confidence": 0.9}', "error": None},  # missing corrected
+            {"content": '{"corrected": "  ", "confidence": 0.9}', "error": None},  # blank corrected
+            {"content": '{"corrected": "Aylan Kurdi tenía 3 años", "confidence": 1.5}', "error": None},  # OOB
+        ],
+    )
+    def test_malformed_or_missing_output_returns_none(self, response):
+        """Malformed, empty, or schema-invalid correction output must return None."""
+        from congress_videos.modules.thumbnail_generation import _request_quote_correction
+
+        result = _request_quote_correction(
+            _LAPIDARY_ORIGINAL, _LAPIDARY_FLAGGED, self._FRAGMENT, lambda **_kw: response
+        )
+        assert result is None
+
+    def test_valid_high_confidence_correction_returns_corrected_text(self):
+        """A valid, high-confidence JSON response returns the corrected quote."""
+        from congress_videos.modules.thumbnail_generation import _request_quote_correction
+
+        def fake_fn(**_kw):
+            return {
+                "content": '{"corrected": "Aylan Kurdi tenía 3 años", "confidence": 0.95}',
+                "error": None,
+            }
+
+        result = _request_quote_correction(_LAPIDARY_ORIGINAL, _LAPIDARY_FLAGGED, self._FRAGMENT, fake_fn)
+        assert result == "Aylan Kurdi tenía 3 años"
+
+    def test_uses_llm_cheap_tier_and_sends_flagged_words_and_context(self):
+        """The call must use LLM_CHEAP and the user prompt must carry quote/flagged/context."""
+        from congress_videos.modules.thumbnail_generation import _request_quote_correction
+        from utils.llm_config import LLM_CHEAP
+
+        captured = {}
+
+        def fake_fn(system_prompt, user_prompt, model, **_kw):
+            captured["system_prompt"] = system_prompt
+            captured["user_prompt"] = user_prompt
+            captured["model"] = model
+            return {"content": '{"corrected": "Aylan Kurdi tenía 3 años", "confidence": 0.95}', "error": None}
+
+        _request_quote_correction(_LAPIDARY_ORIGINAL, _LAPIDARY_FLAGGED, self._FRAGMENT, fake_fn)
+
+        assert captured["model"] == LLM_CHEAP
+        assert _LAPIDARY_ORIGINAL in captured["user_prompt"]
+        assert "Aan" in captured["user_prompt"]
 
 
 # ---------------------------------------------------------------------------
@@ -2558,6 +2661,56 @@ class TestExtractLapidaryQuote:
 
         real_fn.assert_called_once()
         assert result == "esto es una prueba seria"
+
+    def test_risky_quote_gets_corrected_when_guard_passes(self):
+        """A flagged quote with a high-confidence, guard-passing correction comes back corrected (issue #611)."""
+        from congress_videos.config.ai_prompts import (
+            LAPIDARY_CORRECTION_SYSTEM_PROMPT,
+            LAPIDARY_RANKING_SYSTEM_PROMPT,
+        )
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        calls = []
+
+        def fake_fn(system_prompt, user_prompt, **_kw):
+            calls.append(system_prompt)
+            if system_prompt == LAPIDARY_RANKING_SYSTEM_PROMPT:
+                return {"content": "1", "error": None}
+            if system_prompt == LAPIDARY_CORRECTION_SYSTEM_PROMPT:
+                return {
+                    "content": '{"corrected": "Aylan Kurdi tenía 3 años", "confidence": 0.95}',
+                    "error": None,
+                }
+            raise AssertionError(f"unexpected system_prompt: {system_prompt!r}")
+
+        fragment = "Aan Curdi tenía 3 años, una camisa roja"
+        result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
+
+        assert result == "Aylan Kurdi tenía 3 años"
+        assert len(calls) == 2, "must call completion_fn exactly twice: ranking then correction"
+
+    def test_risky_quote_falls_back_to_none_on_low_confidence(self):
+        """A flagged quote whose correction confidence is below the threshold returns None (issue #611)."""
+        from congress_videos.config.ai_prompts import (
+            LAPIDARY_CORRECTION_SYSTEM_PROMPT,
+            LAPIDARY_RANKING_SYSTEM_PROMPT,
+        )
+        from congress_videos.modules.thumbnail_generation import extract_lapidary_quote
+
+        def fake_fn(system_prompt, user_prompt, **_kw):
+            if system_prompt == LAPIDARY_RANKING_SYSTEM_PROMPT:
+                return {"content": "1", "error": None}
+            if system_prompt == LAPIDARY_CORRECTION_SYSTEM_PROMPT:
+                return {
+                    "content": '{"corrected": "Aylan Kurdi tenía 3 años", "confidence": 0.4}',
+                    "error": None,
+                }
+            raise AssertionError(f"unexpected system_prompt: {system_prompt!r}")
+
+        fragment = "Aan Curdi tenía 3 años, una camisa roja"
+        result = extract_lapidary_quote(fragment, completion_fn=fake_fn)
+
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
