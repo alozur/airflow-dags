@@ -1,5 +1,6 @@
 """Standalone static contracts; deliberately bypass application pytest fixtures."""
 
+import importlib.util
 import os
 import re
 import shlex
@@ -291,6 +292,7 @@ class DevContract(unittest.TestCase):
         self.assertNotIn("pip install --upgrade", text)
 
 
+@unittest.skipUnless(importlib.util.find_spec("airflow"), "airflow is not installed (controller run)")
 class AppInitProvisioningSelectionTests(unittest.TestCase):
     """Pure-function coverage for app_init._resolve_provisioning — no DB involved."""
 
@@ -363,6 +365,7 @@ class _FakeConn:
         pass
 
 
+@unittest.skipUnless(importlib.util.find_spec("psycopg2"), "psycopg2 is not installed (controller run)")
 class AppInitBootstrapEmptySchemaTests(unittest.TestCase):
     """_bootstrap fails fast for a non-development schema with no restored data — no real DB.
 

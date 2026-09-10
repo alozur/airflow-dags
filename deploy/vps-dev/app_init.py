@@ -19,8 +19,10 @@ import os
 import sys
 from pathlib import Path
 
-import psycopg2
-from psycopg2 import sql
+# psycopg2 is imported lazily inside the functions that talk to the database: the
+# static contract tests (deploy/vps-dev/test_contract.py) import this module from
+# the Ansible controller, which has no database driver, to exercise the pure
+# provisioning selection logic.
 
 DAGS_REPO_PATH = Path(os.getenv("AIRFLOW__CORE__DAGS_FOLDER", "/opt/airflow/dags/repo"))
 SQL_DIR = DAGS_REPO_PATH / "congress_videos/sql"
@@ -80,6 +82,8 @@ END $$;
 
 
 def _superuser_connection():
+    import psycopg2
+
     return psycopg2.connect(
         host=os.environ["POSTGRES_HOST"],
         port=os.environ["POSTGRES_PORT"],
@@ -115,6 +119,8 @@ def _resolve_provisioning():
 
 
 def _set_role_password(cur, role, password):
+    from psycopg2 import sql
+
     # ALTER ROLE ... PASSWORD does not accept bind parameters; sql.Literal quotes
     # the value safely without ever formatting it into a log line.
     cur.execute(sql.SQL("ALTER ROLE {} PASSWORD {}").format(sql.Identifier(role), sql.Literal(password)))
@@ -137,6 +143,8 @@ def _bootstrap(conn, schema, owner_role, grant_script):
     not, that restore never happened and _bootstrap fails fast here (EmptyRestoredSchemaError)
     rather than let migrations run against an empty schema.
     """
+    from psycopg2 import sql
+
     applied = 0
     with conn.cursor() as cur:
         cur.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema)))
