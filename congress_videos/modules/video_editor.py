@@ -8,6 +8,10 @@ Public API::
 
     _escape_drawtext(text)                        — escape ffmpeg drawtext metacharacters
     _parse_time(v)                                — normalise seconds value or SRT string
+    resolve_overlay_slot(existing, start, dur)    → (start, end)
+    INTRO_WINDOW_SECONDS                          — default intro card window, (0.0, 5.0)
+    MAX_OVERLAY_SOURCE_SECONDS                    — hard duration guard, 3600s
+    OVERLAY_MAX_TIMEOUT_SECONDS                   — proportional timeout budget, 5400s
     build_drawtext_filter(overlays, domain_cfg)   → str
     build_ffmpeg_drawtext_cmd(src, out, filter)   → list[str]
     build_ffmpeg_pillow_cmd(src, out, png_slots)  → list[str]
@@ -15,7 +19,7 @@ Public API::
     _resolve_source_path(conf)                    → str
     _default_output_path(source_path)             → str
     validate_editor_input(conf)
-    apply_overlays(source_path, output_path, overlays, domain_cfg) → dict
+    apply_overlays(source_path, output_path, overlays, domain_cfg, *, max_timeout=None) → dict
 """
 
 from __future__ import annotations
@@ -95,6 +99,81 @@ def _parse_time(v: int | float | str) -> float:
     if isinstance(v, (int, float)):
         return float(v)
     return convert_srt_time_to_seconds(str(v))
+
+
+# ---------------------------------------------------------------------------
+# Pure helper: overlay slot resolution
+# ---------------------------------------------------------------------------
+
+
+#: Default window, in seconds, occupied by the session intro card when the
+#: caller supplies no custom window. Half-open ``[start, end)``.
+INTRO_WINDOW_SECONDS: tuple[float, float] = (0.0, 5.0)
+
+
+# ---------------------------------------------------------------------------
+# Duration guard + explicit timeout override for apply_overlays
+# ---------------------------------------------------------------------------
+
+
+#: Hard ceiling on source-media duration for a full re-encode overlay pass.
+#: Beyond this, the ffmpeg timeout headroom shrinks too far to trust
+#: silently — fail loudly instead of risking a mid-flight kill. Derived
+#: from the measured worst observed production video (38.3 min == 2298s);
+#: 3600s is 1.57x that. See
+#: openspec/changes/session-intro-card-overlay/evidence-encode-benchmark.md.
+MAX_OVERLAY_SOURCE_SECONDS: int = 3600
+
+#: Timeout budget (seconds) intended for callers that need a proportional
+#: budget instead of the ``compute_ffmpeg_timeout`` cap — pass this as
+#: ``apply_overlays(..., max_timeout=OVERLAY_MAX_TIMEOUT_SECONDS)``. Sized at
+#: 1.5x MAX_OVERLAY_SOURCE_SECONDS so even a pessimistic 1.0x-realtime encode
+#: of the largest allowed source finishes inside budget (measured throughput
+#: on production media is ~3.5x realtime).
+OVERLAY_MAX_TIMEOUT_SECONDS: int = 5400
+
+
+def resolve_overlay_slot(
+    existing: list[tuple[float, float]], requested_start: float, requested_duration: float
+) -> tuple[float, float]:
+    """Resolve a desired ``(start, end)`` window against already-placed windows.
+
+    Pure function — never mutates *existing*, performs no I/O. Windows are
+    half-open ``[start, end)``: touching endpoints do not overlap.
+
+    Invariants:
+        - Never shifts backward: the resolved start is always ``>=
+          max(requested_start, 0.0)``.
+        - Never starts before ``0.0``, regardless of *requested_start*.
+        - Always preserves *requested_duration* exactly — only the start
+          (and therefore the end) may move.
+
+    Algorithm: clamp the requested start to ``max(requested_start, 0.0)``,
+    then sweep *existing* in start order, advancing past every interval that
+    intersects the current candidate window until none remain — returning
+    the earliest free slot at or after the clamped start.
+
+    Args:
+        existing: Other ``(start, end)`` windows already placed in the same
+            call. Not mutated.
+        requested_start: Desired start time in seconds. May be negative; is
+            clamped to ``0.0``.
+        requested_duration: Desired window duration in seconds. Preserved
+            exactly in the result.
+
+    Returns:
+        The resolved ``(start, end)`` window: unchanged if free, otherwise
+        the earliest non-overlapping window at or after the clamped start.
+    """
+    start = max(requested_start, 0.0)
+    end = start + requested_duration
+
+    for existing_start, existing_end in sorted(existing):
+        if start < existing_end and existing_start < end:
+            start = existing_end
+            end = start + requested_duration
+
+    return (start, end)
 
 
 # ---------------------------------------------------------------------------
@@ -878,6 +957,8 @@ def apply_overlays(
     output_path: str,
     overlays: list[dict],
     domain_cfg: dict,
+    *,
+    max_timeout: int | None = None,
 ) -> dict:
     """Burn overlays into *source_path* and write the result to *output_path*.
 
@@ -887,24 +968,33 @@ def apply_overlays(
 
     Orchestration sequence:
         1. Probe source duration for timeout and clamp warnings.
-        2. Determine renderer from tipo config (``"drawtext"`` or ``"pillow"``).
-        3a. drawtext: build filter string → ffmpeg -vf.
-        3b. pillow: render PNGs to temp files → ffmpeg filter_complex overlay.
-        4. Run ffmpeg; raise ``RuntimeError`` on non-zero exit.
-        5. Clean up temp PNG files (pillow path only).
-        6. Return success dict.
+        2. Guard: reject sources longer than ``MAX_OVERLAY_SOURCE_SECONDS``
+           before any ffmpeg process spawns.
+        3. Determine renderer from tipo config (``"drawtext"`` or ``"pillow"``).
+        4a. drawtext: build filter string → ffmpeg -vf.
+        4b. pillow: render PNGs to temp files → ffmpeg filter_complex overlay.
+        5. Run ffmpeg; raise ``RuntimeError`` on non-zero exit.
+        6. Clean up temp PNG files (pillow path only).
+        7. Return success dict.
 
     Args:
         source_path: Absolute path to the source video.
         output_path: Absolute path where the edited video will be written.
         overlays: List of overlay dicts (tipo, tiempo_inicio, tiempo_fin, titulo, …).
         domain_cfg: Domain config dict (from :func:`get_domain_config`).
+        max_timeout: Keyword-only. When ``None`` (the default), the ffmpeg
+            timeout is derived from ``compute_ffmpeg_timeout(duration)`` —
+            today's behavior, required for backward compatibility with the
+            standalone ``generic_video_editor`` DAG. When given, this exact
+            value is used as the ffmpeg subprocess timeout instead.
 
     Returns:
         ``{"success": True, "output_path": output_path}``
 
     Raises:
-        ValueError: When overlays mix ``"drawtext"`` and ``"pillow"`` renderers.
+        ValueError: When overlays mix ``"drawtext"`` and ``"pillow"`` renderers,
+            or when the probed source duration exceeds
+            ``MAX_OVERLAY_SOURCE_SECONDS``.
         RuntimeError: When ffmpeg exits with a non-zero return code.
     """
     tipos_cfg = domain_cfg["tipos"]
@@ -921,10 +1011,21 @@ def apply_overlays(
     # 1. Probe duration.
     duration = _get_source_duration(source_path)
 
+    # 2. Guard: refuse to spawn ffmpeg on a source too long to trust the
+    #    resulting timeout headroom. Runs before any subprocess is created.
+    if duration is not None and duration > MAX_OVERLAY_SOURCE_SECONDS:
+        raise ValueError(
+            f"Source duration {duration:.1f}s exceeds MAX_OVERLAY_SOURCE_SECONDS "
+            f"({MAX_OVERLAY_SOURCE_SECONDS}s). Refusing to start an overlay encode "
+            "that would very likely exceed its time budget; ffmpeg was not invoked."
+        )
+
     # Warn if any overlay exceeds source duration.
     _warn_overlays_exceeding_duration(overlays, duration, source_path)
 
-    timeout = compute_ffmpeg_timeout(duration if duration is not None else 0)
+    timeout = (
+        max_timeout if max_timeout is not None else compute_ffmpeg_timeout(duration if duration is not None else 0)
+    )
 
     if renderer == "drawtext":
         return _run_drawtext_overlay(source_path, output_path, overlays, domain_cfg, timeout)
