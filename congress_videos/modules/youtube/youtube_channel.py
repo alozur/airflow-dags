@@ -920,6 +920,69 @@ def download_and_read_agenda(parsed_links, target_date: str):
     return {"total_downloaded": len(downloaded_agendas), "videos": downloaded_agendas}
 
 
+def _parse_agenda_dates(date_matches, spanish_months, target_date_obj) -> list[dict]:
+    """Parse each regex date-header match into a dated entry.
+
+    Lifted verbatim out of `extract_session_date` (issue #272): an unknown
+    month or an invalid calendar date (e.g. 31 DE FEBRERO) is skipped, not
+    raised. `original_index` counts only accepted entries, so it stays
+    contiguous even after a skip — it no longer matches the position in
+    `date_matches`. Explicit `DE <year>` beats `target_date_obj.year`.
+    """
+    parsed_dates = []
+    for match in date_matches:
+        day_name = match.group(1).lower()
+        day_num = int(match.group(2))
+        month_name = match.group(3).lower()
+        year = int(match.group(4)) if match.group(4) else target_date_obj.year
+
+        # Convert Spanish date to datetime
+        month_num = spanish_months.get(month_name)
+        if not month_num:
+            logging.warning(f"Unknown month: {month_name}")
+            continue
+
+        try:
+            section_date = datetime(year, month_num, day_num).date()
+            parsed_dates.append(
+                {
+                    "date": section_date,
+                    "day_name": day_name,
+                    "match": match,
+                    "original_index": len(parsed_dates),
+                }
+            )
+        except ValueError as e:
+            logging.warning(f"Invalid date in agenda: {day_num}/{month_num}/{year} - {e}")
+            continue
+
+    return parsed_dates
+
+
+def _locate_target_date_offset(sorted_dates, target_date_obj, target_date) -> tuple[int | None, dict | None, bool]:
+    """Find the target date's position in the chronologically sorted dates.
+
+    Lifted verbatim out of `extract_session_date` (issue #272): `offset 0`
+    for the first date is a legitimate match, indistinguishable from the
+    "not found" default by value alone — `found_target` is the sole
+    disambiguator. A duplicate date keeps the first index (`break`). The
+    comparison is against `target_date_obj.date()`, not the datetime.
+    """
+    date_offset = None
+    target_date_info = None
+    found_target = False
+
+    for i, date_info in enumerate(sorted_dates):
+        if date_info["date"] == target_date_obj.date():
+            date_offset = i  # 0 for first date, 1 for second date, etc.
+            target_date_info = date_info
+            found_target = True
+            logging.info(f"Target date {target_date} found at position {i} (offset = {date_offset})")
+            break
+
+    return date_offset, target_date_info, found_target
+
+
 def extract_session_date(agendas, target_date: str):
     """
     Extract session number and agenda section for the target date.
@@ -1013,32 +1076,7 @@ def extract_session_date(agendas, target_date: str):
             continue
 
         # Step 1: Extract all dates from the agenda and parse them
-        parsed_dates = []
-        for match in date_matches:
-            day_name = match.group(1).lower()
-            day_num = int(match.group(2))
-            month_name = match.group(3).lower()
-            year = int(match.group(4)) if match.group(4) else target_date_obj.year
-
-            # Convert Spanish date to datetime
-            month_num = spanish_months.get(month_name)
-            if not month_num:
-                logging.warning(f"Unknown month: {month_name}")
-                continue
-
-            try:
-                section_date = datetime(year, month_num, day_num).date()
-                parsed_dates.append(
-                    {
-                        "date": section_date,
-                        "day_name": day_name,
-                        "match": match,
-                        "original_index": len(parsed_dates),
-                    }
-                )
-            except ValueError as e:
-                logging.warning(f"Invalid date in agenda: {day_num}/{month_num}/{year} - {e}")
-                continue
+        parsed_dates = _parse_agenda_dates(date_matches, spanish_months, target_date_obj)
 
         if not parsed_dates:
             logging.warning(f"Could not parse any dates in agenda for {video_id}")
@@ -1065,17 +1103,9 @@ def extract_session_date(agendas, target_date: str):
             logging.info(f"  Position {i}: {date_info['day_name'].upper()}, {date_info['date']}")
 
         # Step 3: Find target date position in sorted list
-        date_offset = None
-        target_date_info = None
-        found_target = False
-
-        for i, date_info in enumerate(sorted_dates):
-            if date_info["date"] == target_date_obj.date():
-                date_offset = i  # 0 for first date, 1 for second date, etc.
-                target_date_info = date_info
-                found_target = True
-                logging.info(f"Target date {target_date} found at position {i} (offset = {date_offset})")
-                break
+        date_offset, target_date_info, found_target = _locate_target_date_offset(
+            sorted_dates, target_date_obj, target_date
+        )
 
         # Step 4: Build result
         if not found_target:
