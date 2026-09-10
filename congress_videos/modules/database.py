@@ -20,6 +20,9 @@ SHORTS_SOURCE_VIDEO_COOLDOWN = 5  # other-video upload events before V is eligib
 SHORTS_UPLOAD_HISTORY_LIMIT = 50  # bounded upload-history window
 SHORTS_PENDING_CANDIDATE_LIMIT = 200  # candidate over-fetch before the Python cool-down filter
 SHORTS_TIER1_PER_CHAPTER_LIMIT = 3  # Tier-1 upload slots per source chapter
+THUMBNAIL_TEXT_REGEN_MAX_ATTEMPTS = 2  # spend ceiling (design.md D3), not a loop guard —
+# each attempt spends 1-2 Pikzels images + 1 OpenAI call with no throttle
+# elsewhere in the codebase, unlike #331's free thumbnails.set() retries
 
 
 def filter_shorts_by_source_cooldown(
@@ -1425,6 +1428,151 @@ class CongressionalVideoDB:
             logger.info(
                 "record_title_generation_input_short: short_id=%s (%d rows)",
                 short_id,
+                cur.rowcount,
+            )
+            return cur.rowcount
+
+    # ================ Thumbnail Text Regeneration (issue #545, design.md D1/D3) ================
+    #
+    # speaker_turn_videos ONLY: video_thumbnails is upserted destructively via
+    # ON CONFLICT ... DO UPDATE on (chapter_id, label) by the child DAG's own
+    # persist_results, so a spend counter placed there would be clobbered by
+    # the very operation it exists to bound (design.md D1). video_shorts is
+    # deliberately untouched — this capability is long-form only.
+
+    def claim_thumbnail_text_regeneration(self, output_path: str, *, prior_brief: dict | None) -> dict | None:
+        """Claim-before-act atomic UPDATE (design.md D3): charges the attempt,
+        and — only once attempts reach THUMBNAIL_TEXT_REGEN_MAX_ATTEMPTS —
+        flips thumbnail_regen_exhausted, BEFORE any paid Pikzels/OpenAI call
+        is made. A crash after this call therefore cannot re-spend for free.
+
+        The WHERE clause is the sole atomicity guard: it re-checks
+        NOT thumbnail_regen_exhausted AND attempts < ceiling in the same
+        statement that increments them, so a concurrent/rerun claim past
+        the ceiling affects zero rows rather than racing a read-then-write
+        from Python.
+
+        thumbnail_regen_prior_brief is written with COALESCE, so only the
+        FIRST successful claim's prior_brief is kept — later claims (should
+        the ceiling ever allow one) never overwrite the true original brief.
+
+        Args:
+            output_path: Absolute path to the grouped turn's video.mp4 file.
+            prior_brief: The brief in effect before this regeneration attempt,
+                snapshotted for audit (spec: "Prior brief is snapshotted
+                before triggering"). May be None when no prior brief exists.
+
+        Returns:
+            Dict with thumbnail_regen_attempts/thumbnail_regen_exhausted when
+            the claim succeeded, or None when it did not: the row is already
+            exhausted/at the ceiling, OR — chapter items intentionally carry
+            no speaker_turn_videos row at all (design.md D3 / spec note 8) —
+            no row matched output_path. Both cases mean "publish as-is" and
+            are NOT errors.
+
+        Raises:
+            ValueError: If output_path is falsy.
+        """
+        if not output_path:
+            raise ValueError("claim_thumbnail_text_regeneration: output_path is required")
+
+        stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
+
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                    UPDATE {stv_table} SET
+                        thumbnail_regen_attempts = COALESCE(thumbnail_regen_attempts, 0) + 1,
+                        thumbnail_regen_exhausted = (
+                            COALESCE(thumbnail_regen_attempts, 0) + 1 >= {THUMBNAIL_TEXT_REGEN_MAX_ATTEMPTS}
+                        ),
+                        thumbnail_regen_at = NOW(),
+                        thumbnail_regen_prior_brief = COALESCE(thumbnail_regen_prior_brief, %s::jsonb)
+                    WHERE output_path = %s
+                      AND NOT COALESCE(thumbnail_regen_exhausted, FALSE)
+                      AND COALESCE(thumbnail_regen_attempts, 0) < {THUMBNAIL_TEXT_REGEN_MAX_ATTEMPTS}
+                    RETURNING thumbnail_regen_attempts, thumbnail_regen_exhausted
+                    """,
+                (
+                    json.dumps(prior_brief, ensure_ascii=False) if prior_brief else None,
+                    output_path,
+                ),
+            )
+            result = cur.fetchone()
+            if result:
+                logger.info(
+                    "claim_thumbnail_text_regeneration: output_path=%r claimed attempts=%s exhausted=%s",
+                    output_path,
+                    result.get("thumbnail_regen_attempts"),
+                    result.get("thumbnail_regen_exhausted"),
+                )
+            else:
+                logger.info(
+                    "claim_thumbnail_text_regeneration: output_path=%r not claimed "
+                    "(exhausted, at ceiling, or no speaker_turn_videos row)",
+                    output_path,
+                )
+            return result
+
+    def record_thumbnail_text_regeneration_outcome(
+        self,
+        output_path: str,
+        *,
+        outcome: str,
+        error: str | None = None,
+        regenerated_brief: dict | None = None,
+    ) -> int:
+        """Persist the terminal outcome of a claimed regeneration attempt
+        (design.md D4). outcome is one of: applied, timeout, trigger_failed,
+        child_failed, invalid_result, not_claimed.
+
+        Deliberately does NOT touch thumbnail_regen_prior_brief — that
+        column is write-once via claim_thumbnail_text_regeneration — so
+        both the prior and regenerated briefs stay independently retrievable
+        for audit after a landed regeneration (spec: "Both briefs remain
+        retrievable after a landed regeneration").
+
+        Args:
+            output_path: Absolute path to the grouped turn's video.mp4 file.
+            outcome: Terminal outcome literal for this attempt.
+            error: Failure detail, or None on a landed (applied) outcome.
+            regenerated_brief: The newly generated brief when outcome is
+                "applied", or None for every non-landed outcome.
+
+        Returns:
+            Number of rows updated (cur.rowcount). 0 means no row matched
+            output_path.
+
+        Raises:
+            ValueError: If output_path or outcome is falsy.
+        """
+        if not output_path:
+            raise ValueError("record_thumbnail_text_regeneration_outcome: output_path is required")
+        if not outcome:
+            raise ValueError("record_thumbnail_text_regeneration_outcome: outcome is required")
+
+        stv_table = self.pg_conn.get_qualified_table("speaker_turn_videos")
+
+        with self.pg_conn.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                    UPDATE {stv_table} SET
+                        thumbnail_regen_outcome    = %s,
+                        last_thumbnail_regen_error = %s,
+                        thumbnail_regen_brief       = %s::jsonb
+                    WHERE output_path = %s
+                    """,
+                (
+                    outcome,
+                    error,
+                    json.dumps(regenerated_brief, ensure_ascii=False) if regenerated_brief else None,
+                    output_path,
+                ),
+            )
+            logger.info(
+                "record_thumbnail_text_regeneration_outcome: output_path=%r outcome=%s (%d rows)",
+                output_path,
+                outcome,
                 cur.rowcount,
             )
             return cur.rowcount
