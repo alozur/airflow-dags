@@ -1,4 +1,9 @@
--- Migration 052: seed congress_participants.nickname with curated title names (issue #510).
+-- Migration 053: seed congress_participants.nickname with curated title names (issue #510).
+--
+-- Renumbered from 052, which collided with 052_thumbnail_text_regeneration.sql
+-- (issue #545) — both landed on main within the same hour. The runner keys on
+-- filename, so both had already applied cleanly in production and this rename
+-- costs nothing: the guard below makes a re-run under the new name a no-op.
 --
 -- `nickname` answers one question: how should this person be named in a YouTube
 -- title? A curated value means the audience recognises them and the name earns
