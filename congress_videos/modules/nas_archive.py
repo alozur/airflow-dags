@@ -10,8 +10,9 @@ Archival lifecycle, orchestrated by ``congress_videos/nas_archive_dag.py``:
 1. ``video_paths``            — locate every local directory holding a
                                  video's raw/derived material.
 2. ``remote_mkdir_command``   — ensure the remote parent exists (rsync's
-                                 receiver is an old 3.1.2 build with no
-                                 ``--mkpath`` support server-side).
+                                 receiver is an old 3.1.2 build that rejects
+                                 the ``--mkpath`` option outright, so it is
+                                 never sent).
 3. ``rsync_command``          — push one local path to the NAS mirror.
 4. ``verify_synced``          — dry-run rsync; only a byte-identical mirror
                                  clears the way for local deletion.
@@ -240,9 +241,10 @@ def ssh_command(settings: ArchiveSettings) -> list[str]:
 def remote_mkdir_command(settings: ArchiveSettings, remote_relative_dir: str) -> list[str]:
     """Return the argv that creates the remote parent directory over SSH.
 
-    The NAS runs rsync 3.1.2; ``--mkpath`` (rsync_command below) requires
-    protocol support the receiver may not have, so the remote directory is
-    created explicitly as a defensive, independent step before the transfer.
+    The NAS runs rsync 3.1.2, which rejects the ``--mkpath`` option with a
+    "syntax or usage error" (``rsync_command`` below never sends it), so the
+    remote directory is created explicitly as a defensive, independent step
+    before the transfer.
     """
     remote_path = f"{settings.root}/{remote_relative_dir}"
     return [*ssh_command(settings), f"{settings.user}@{settings.host}", "mkdir", "-p", remote_path]
@@ -259,10 +261,15 @@ def rsync_command(
     ``remote_relative_dir`` is ``local_path``'s position relative to
     ``PROJECT_DATA_DIR`` (e.g. ``"downloads/2026-03-01/abc123"`` or
     ``"congreso-es-tv/abc123"``), so the archive mirrors the project layout.
+
+    ``--mkpath`` is deliberately never passed: the NAS's rsync 3.1.2
+    receiver rejects it outright (``rsync error: syntax or usage error``),
+    so the remote directory is instead created ahead of time via
+    :func:`remote_mkdir_command`.
     """
     local_path = Path(local_path)
     remote = f"{settings.user}@{settings.host}:{settings.root}/{remote_relative_dir}/"
-    command = ["rsync", "-a", "--partial", "--mkpath", "--itemize-changes"]
+    command = ["rsync", "-a", "--partial", "--itemize-changes"]
     if dry_run:
         command.append("--dry-run")
     command += ["-e", shlex.join(ssh_command(settings)), f"{local_path}/", remote]

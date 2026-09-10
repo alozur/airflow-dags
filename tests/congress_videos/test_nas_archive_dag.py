@@ -283,6 +283,34 @@ class TestArchiveOneVideo:
 
         assert video_dir.exists()
 
+    def test_remote_mkdir_runs_before_rsync_and_mkpath_is_never_sent(self, monkeypatch, tmp_path):
+        mod = _fresh()
+        self._make_video(tmp_path)
+        settings = self._settings(tmp_path)
+
+        calls: list[str] = []
+        ok_result = SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        def fake_subprocess_run(command, **kwargs):
+            assert "--mkpath" not in command
+            calls.append("mkdir")
+            return ok_result
+
+        def fake_runner(command):
+            assert "--mkpath" not in command
+            calls.append("rsync")
+            return ok_result
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_subprocess_run)
+        monkeypatch.setattr(mod, "_subprocess_runner", fake_runner)
+
+        mod.archive_one_video(settings, tmp_path, "congreso-es-tv", "abc123")
+
+        # remote mkdir precedes both the real rsync push and the verify dry-run.
+        assert calls[0] == "mkdir"
+        assert "rsync" in calls
+        assert calls.index("mkdir") < calls.index("rsync")
+
     def test_run_archive_videos_aggregates_summary(self, monkeypatch, mock_task_instance):
         mod = _fresh()
         candidates = [
@@ -363,6 +391,31 @@ class TestMirrorSharedDirs:
 
         with pytest.raises(AirflowException, match="remote mkdir failed"):
             mod.mirror_shared_dirs(settings, tmp_path)
+
+    def test_remote_mkdir_runs_before_rsync_and_mkpath_is_never_sent(self, monkeypatch, tmp_path):
+        mod = _fresh()
+        (tmp_path / "thumbnails").mkdir()
+        settings = self._settings(tmp_path)
+
+        calls: list[str] = []
+        ok_result = SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        def fake_subprocess_run(command, **kwargs):
+            assert "--mkpath" not in command
+            calls.append("mkdir")
+            return ok_result
+
+        def fake_runner(command):
+            assert "--mkpath" not in command
+            calls.append("rsync")
+            return ok_result
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_subprocess_run)
+        monkeypatch.setattr(mod, "_subprocess_runner", fake_runner)
+
+        mod.mirror_shared_dirs(settings, tmp_path)
+
+        assert calls == ["mkdir", "rsync"]
 
     def test_rsync_failure_raises(self, monkeypatch, tmp_path):
         mod = _fresh()

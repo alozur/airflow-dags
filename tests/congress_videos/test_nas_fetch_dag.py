@@ -178,6 +178,39 @@ class TestFetchOneVideo:
         marker_path = tmp_path / "congreso-es-tv" / "abc123" / ".nas_archived.json"
         assert not marker_path.exists()
 
+    def test_local_dir_is_created_before_each_pull_and_mkpath_is_never_sent(self, monkeypatch, tmp_path):
+        mod = _fresh()
+        settings = self._settings(tmp_path)
+        self._write_marker(tmp_path)
+
+        calls: list[str] = []
+        created_dirs: list = []
+        original_ensure_local_dir = mod.nas_fetch.ensure_local_dir
+
+        def fake_ensure_local_dir(local_path):
+            calls.append("mkdir")
+            result = original_ensure_local_dir(local_path)
+            created_dirs.append(result)
+            return result
+
+        def fake_runner(command):
+            assert "--mkpath" not in command
+            calls.append("rsync")
+            # The local destination directory must already exist by the time
+            # any rsync (the real pull or its verify dry-run) runs.
+            assert created_dirs[-1].is_dir()
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(mod.nas_fetch, "ensure_local_dir", fake_ensure_local_dir)
+        monkeypatch.setattr(mod, "_subprocess_runner", fake_runner)
+        monkeypatch.setattr(mod.nas_fetch, "refresh_retention", lambda paths, now: paths)
+
+        mod.fetch_one_video(settings, tmp_path, "congreso-es-tv", "abc123")
+
+        # mkdir precedes both rsync calls (the real pull + the verify dry-run)
+        # for each of the two synced directories in the marker.
+        assert calls == ["mkdir", "rsync", "rsync", "mkdir", "rsync", "rsync"]
+
     def test_missing_marker_raises_file_not_found_and_touches_nothing(self, tmp_path):
         mod = _fresh()
         settings = self._settings(tmp_path)

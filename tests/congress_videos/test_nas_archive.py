@@ -172,7 +172,6 @@ class TestRsyncCommand:
             "rsync",
             "-a",
             "--partial",
-            "--mkpath",
             "--itemize-changes",
             "-e",
             shlex.join(ssh_command(settings)),
@@ -185,6 +184,11 @@ class TestRsyncCommand:
         command = rsync_command(settings, local_path, "downloads/2026-03-01/abc123", dry_run=True)
         assert "--dry-run" in command
         assert command.index("--dry-run") < command.index("-e")
+
+    def test_mkpath_is_never_passed(self, settings, tmp_path):
+        local_path = tmp_path / "abc123"
+        command = rsync_command(settings, local_path, "downloads/2026-03-01/abc123")
+        assert "--mkpath" not in command
 
 
 # ---------------------------------------------------------------------------

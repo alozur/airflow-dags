@@ -5,8 +5,10 @@ Covers:
   unsafe 'synced' entries.
 - remove_marker: removes an existing marker, no-op (returns False) when absent.
 - is_archived_elsewhere: thin wrapper over nas_archive.is_archived.
+- ensure_local_dir: creates a missing local destination directory (and its
+  parents), is idempotent when it already exists.
 - fetch_rsync_command: exact argv shape, source/destination swapped vs. the
-  push side's rsync_command.
+  push side's rsync_command, --mkpath never included.
 - verify_fetched: itemized-changes parsing via an injected runner, mirroring
   verify_synced's semantics.
 - refresh_retention: only media files get their mtime bumped to `now`;
@@ -28,6 +30,7 @@ import pytest
 
 from congress_videos.modules.nas_archive import ArchiveSettings, ssh_command, write_marker
 from congress_videos.modules.nas_fetch import (
+    ensure_local_dir,
     fetch_rsync_command,
     is_archived_elsewhere,
     read_marker,
@@ -187,6 +190,32 @@ class TestIsArchivedElsewhere:
 
 
 # ---------------------------------------------------------------------------
+# ensure_local_dir
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureLocalDir:
+    def test_creates_missing_directory_and_parents(self, tmp_path):
+        local_path = tmp_path / "downloads" / "2026-08-20" / "abc123"
+        assert not local_path.exists()
+
+        result = ensure_local_dir(local_path)
+
+        assert local_path.is_dir()
+        assert result == local_path
+
+    def test_is_idempotent_when_directory_already_exists(self, tmp_path):
+        local_path = tmp_path / "abc123"
+        local_path.mkdir()
+        (local_path / "existing.mp4").write_bytes(b"data")
+
+        ensure_local_dir(local_path)
+
+        assert local_path.is_dir()
+        assert (local_path / "existing.mp4").exists()  # untouched
+
+
+# ---------------------------------------------------------------------------
 # fetch_rsync_command
 # ---------------------------------------------------------------------------
 
@@ -200,13 +229,17 @@ class TestFetchRsyncCommand:
             "rsync",
             "-a",
             "--partial",
-            "--mkpath",
             "--itemize-changes",
             "-e",
             shlex.join(ssh_command(settings)),
             "nas-archive@100.64.0.1:/volume1/congress_archive/downloads/2026-08-20/abc123/",
             f"{local_path}/",
         ]
+
+    def test_mkpath_is_never_passed(self, settings, tmp_path):
+        local_path = tmp_path / "abc123"
+        command = fetch_rsync_command(settings, "downloads/2026-08-20/abc123", local_path)
+        assert "--mkpath" not in command
 
     def test_source_and_destination_are_swapped_vs_push(self, settings, tmp_path):
         from congress_videos.modules.nas_archive import rsync_command
