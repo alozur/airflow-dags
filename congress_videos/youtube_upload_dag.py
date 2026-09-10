@@ -1111,6 +1111,132 @@ with DAG(
                 "chapter_extraction_results",
             )
 
+    def _build_intro_card_text(session_number, session_date) -> tuple[str, str]:
+        """Build the Spanish intro-card ``titulo``/``descripcion`` from session metadata.
+
+        Mirrors the D6 session-label precedent in ``_resolve_chapter_speaker`` (L398):
+        prefer ``"Sesión {n}"`` when ``session_number`` is present, else fall back to
+        the session date. ``descripcion`` reflects the session date when present, or
+        an empty string (the ``intro_sesion`` renderer already tolerates no subtitle).
+
+        Args:
+            session_number: The session's ordinal number, or ``None``.
+            session_date: The session's date (any stringifiable value), or ``None``.
+
+        Returns:
+            ``(titulo, descripcion)`` tuple.
+
+        Raises:
+            ValueError: When both ``session_number`` and ``session_date`` are absent —
+                there is nothing to render on the card.
+        """
+        if session_number is None and not session_date:
+            raise ValueError(
+                "_build_intro_card_text: both session_number and session_date are "
+                "missing — cannot build the session intro card text."
+            )
+
+        titulo = f"Sesión {session_number}" if session_number is not None else str(session_date)
+        descripcion = str(session_date) if session_date else ""
+        return titulo, descripcion
+
+    def _apply_intro_overlay(ti):
+        """Burn the 5-second session intro card into the extracted video before upload.
+
+        New task t5b, between t5 (``extract_chapter_videos``) and t6
+        (``prepare_upload_config``). Runs ``apply_overlays()`` in-process — the same
+        in-process precedent as the chapter branch of ``_extract_chapter_videos`` —
+        and overwrites ``output_path`` on the ``chapter_extraction_results`` XCom for
+        the CURRENT RUN ONLY. Records ``original_output_path`` for diagnosis.
+
+        This task imports no database module and issues no ``db.*`` write:
+        ``speaker_turn_videos.output_path`` is never touched (issue #558, D4). The
+        overlaid file is a same-directory ``_edited`` sibling, so the 4 sidecars
+        (``title.txt``, ``description.txt``, ``thumbnail.png``, ``subtitles.srt``)
+        still resolve for ``prepare_orador_upload_config`` unchanged (t6 needs zero
+        code changes — it reads whatever ``output_path`` this task leaves behind).
+
+        Pass-through (mirrors t6's tolerance of upstream extraction failure): a
+        missing/failed/empty ``chapter_extraction_results``, or a missing
+        ``output_path``, logs and leaves the XCom untouched — this is not this
+        task's failure to report.
+
+        Fail-loud (issue #558, D3): every failure CAUSED by this task — a guard trip,
+        a missing font, an ffmpeg failure, a missing overlaid output file, or absent
+        session metadata — raises. Never a silent skip, never publishing the
+        un-overlaid source in place of a failed overlay.
+        """
+        from congress_videos.config.video_editor_config import get_domain_config
+        from congress_videos.modules.video_editor import (
+            INTRO_WINDOW_SECONDS,
+            OVERLAY_MAX_TIMEOUT_SECONDS,
+            _default_output_path,
+            apply_overlays,
+            validate_editor_input,
+        )
+
+        extraction_results = ti.xcom_pull(key="chapter_extraction_results") or {}
+        results = extraction_results.get("results") or []
+        if not results or not results[0].get("success"):
+            logging.info("_apply_intro_overlay: no successful chapter_extraction_results — skipping intro overlay")
+            return None
+
+        source_path = results[0].get("output_path")
+        if not source_path:
+            logging.info("_apply_intro_overlay: output_path missing — skipping intro overlay")
+            return None
+
+        uploadable = ti.xcom_pull(key="uploadable_item") or {}
+        item = uploadable.get("item") or {}
+        titulo, descripcion = _build_intro_card_text(item.get("session_number"), item.get("session_date"))
+
+        start, end = INTRO_WINDOW_SECONDS
+        output_path = _default_output_path(source_path)
+        conf = {
+            "domain": "congreso",
+            "source_path": source_path,
+            "overlays": [
+                {
+                    "tipo": "intro_sesion",
+                    "tiempo_inicio": start,
+                    "tiempo_fin": end,
+                    "titulo": titulo,
+                    "descripcion": descripcion,
+                }
+            ],
+        }
+
+        # D5: validate BEFORE apply_overlays. apply_overlays never calls this
+        # itself, and _load_font silently degrades a missing font into a garbage
+        # default-font card reported as success — validate here to fail loud
+        # instead, before any ffmpeg process spawns.
+        validate_editor_input(conf)
+
+        domain_cfg = get_domain_config("congreso")
+        apply_overlays(
+            source_path,
+            output_path,
+            conf["overlays"],
+            domain_cfg,
+            max_timeout=OVERLAY_MAX_TIMEOUT_SECONDS,
+        )
+
+        if not os.path.exists(output_path):
+            raise RuntimeError(
+                "_apply_intro_overlay: apply_overlays reported success but the "
+                f"overlaid output file is missing: {output_path!r}"
+            )
+
+        results[0]["original_output_path"] = source_path
+        results[0]["output_path"] = output_path
+        ti.xcom_push(key="chapter_extraction_results", value=extraction_results)
+        logging.info(
+            "_apply_intro_overlay: intro card applied; output_path=%r (original=%r)",
+            output_path,
+            source_path,
+        )
+        return extraction_results
+
     def _prepare_upload_config(ti, **context):
         """Build upload config for the selected item (turn or chapter).
 
@@ -1377,6 +1503,14 @@ with DAG(
         python_callable=_extract_chapter_videos,
     )
 
+    # Step 5b (new, issue #558): burn the session intro card into the extracted
+    # video before upload; overwrites output_path on chapter_extraction_results
+    # in-memory only, for this run.
+    t5b = PythonOperator(
+        task_id="apply_intro_overlay",
+        python_callable=_apply_intro_overlay,
+    )
+
     # Step 6: Prepare upload configuration for generic YouTube uploader DAG
     t6 = PythonOperator(
         task_id="prepare_upload_config",
@@ -1580,9 +1714,9 @@ with DAG(
         python_callable=_check_upload_failures,
     )
 
-    # Task dependencies (15 tasks total)
-    # t0 > t1_quota > t1_skip > t1_item > t2 > t3_prepare > t4_generate > t5 > t6 > t6b > t7 >
-    #   [t8_db, t8_turns] > t8_backfill > t9
+    # Task dependencies (16 tasks total)
+    # t0 > t1_quota > t1_skip > t1_item > t2 > t3_prepare > t4_generate > t5 > t5b > t6 > t6b >
+    #   t7 > [t8_db, t8_turns] > t8_backfill > t9
     (
         t0
         >> t1_quota
@@ -1592,6 +1726,7 @@ with DAG(
         >> t3_prepare
         >> t4_generate
         >> t5
+        >> t5b
         >> t6
         >> t6b
         >> t7
