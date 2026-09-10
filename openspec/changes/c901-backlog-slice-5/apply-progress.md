@@ -3,8 +3,11 @@
 Batches: sdd-apply batch 1 of 3 — PR1 through PR4 (PR4 split into 4a/4b per the
 budget contingency), scope `congress_videos/modules/youtube/youtube_channel.py`.
 sdd-apply batch 2 of 3 — PR5 through PR7, scope
-`congress_videos/modules/youtube/download.py` (this batch's addition). PR8-PR9
-and the release PR are NOT started (owned by batch 3).
+`congress_videos/modules/youtube/download.py`. sdd-apply batch 3 of 3 — PR8
+through PR9 (PR9 split into 9a/9b per the budget contingency), scope
+`utils/youtube_downloader.py` (this batch's addition). All ten in-scope
+functions are now lifted; only the release PR (`dev -> main`) remains,
+owned by the orchestrator.
 
 Worktree: `/home/alozur/src/github.com/alozur/airflow-dags-wt-272-s5`
 Base: `origin/main 7e3e689` (== `origin/dev`).
@@ -30,6 +33,12 @@ refactor/272-c901-slice-5                 (docs(sdd) e83a24c, base of the stack)
                   └─ 4083139  refactor(download): lift SRT-chunk lookup ...        [PR6]
                      refactor/272-s5-pr7-analyze-single-chunk
                      └─ cecf397  refactor(download): lift chapter-identification ... [PR7]
+                        refactor/272-s5-pr8-download-youtube-subtitles
+                        └─ cd65030  refactor(youtube-downloader): lift subtitle-file ...  [PR8]
+                           refactor/272-s5-pr9-pytubefix-and-upload
+                           └─ f2e2137  refactor(youtube-downloader): lift stream logging  [PR9a]
+                              refactor/272-s5-pr9b-download-video-for-upload-lift
+                              └─ a03f62b  refactor(youtube-downloader): lift live-status   [PR9b]
 ```
 
 Each branch's parent is the previous branch's tip (stacked-to-main / `dev`, per
@@ -558,7 +567,7 @@ Work Unit Evidence:
 | Runtime harness | N/A — pure LLM-call helper, no I/O boundary change |
 | Rollback boundary | `git revert cecf397`; per design, PR5-7 only revertible together/in order (this commit drops the file's C901 token — reverting it alone would restore a live offender) |
 
-## Cumulative gate at this batch's tip (`cecf397`, branch `refactor/272-s5-pr7-analyze-single-chunk`)
+## Cumulative gate at batch 2's tip (`cecf397`, branch `refactor/272-s5-pr7-analyze-single-chunk`)
 
 ```
 $ uv run pytest -n auto
@@ -581,7 +590,248 @@ $ git diff refactor/272-s5-pr4b-extract-agenda-section-lift..HEAD -- tests/ | rg
 three `download.py` target functions' behavior tests. Every functional
 test-assertion diff across PR5-7 is additions-only.)
 
-## Complexity ladder (cumulative, batch 1 + batch 2)
+## PR8 — `download_youtube_subtitles` (`utils/youtube_downloader.py:883-933`)
+
+- Branch: `refactor/272-s5-pr8-download-youtube-subtitles` (parent: PR7 tip)
+- Commit: `cd65030`
+- Files: `utils/youtube_downloader.py`, `tests/utils/test_youtube_downloader.py`
+- Changed lines: `2 files changed, 195 insertions(+), 51 deletions(-)` (246 total, budget 400)
+- Test-diff additions-only: confirmed empty
+
+Baseline confirmed: `download_youtube_subtitles` measured **11**, matching design.
+
+RED-first tests (7 tests, class `TestDownloadSubtitleFiles`) confirmed RED
+before the lift (`ImportError`):
+```
+$ uv run pytest tests/utils/test_youtube_downloader.py::TestDownloadSubtitleFiles -o addopts= -q
+7 failed — all ImportError: cannot import name '_download_subtitle_files'
+```
+
+Gate outputs (after the lift):
+```
+$ uv run pytest tests/utils/test_youtube_downloader.py -o addopts=
+64 passed in 1.52s
+
+$ uvx ruff check --isolated --select C901 --config 'lint.mccabe.max-complexity=1' <file>
+C901 `_download_subtitle_files` is too complex (5 > 1)      # predicted 5
+C901 `download_youtube_subtitles` is too complex (7 > 1)    # predicted 7
+
+$ uv run ruff check .
+All checks passed!
+
+$ uv run ruff format --check .
+333 files already formatted   (one reformat pass applied and re-verified clean —
+  the def signature line wrapped differently once the block moved to
+  module scope; AST-equality re-run below is unaffected)
+```
+
+AST-equality proof (`ast_check_s5_pr8.py`):
+```
+OK _download_subtitle_files (normalized: appended return)
+OK download_youtube_subtitles (try-body region before lifted block)
+OK download_youtube_subtitles (try-body region after lifted block)
+OK download_youtube_subtitles (call-site replacement) (declared call-site statement)
+OK download_youtube_subtitles (except handler, outer try) (verbatim)
+OK _download_subtitle_files (landmine: is_auto single BoolOp, never split)
+```
+
+Landmine guard verified: `is_auto = "auto" in srt_file.name.lower() or lang
+== "auto"` moved as one `BoolOp(Or)` expression — mechanically asserted, not
+split into two statements. The 948-973 merge block was never touched, unmoved.
+
+Work Unit Evidence:
+| Evidence | Value |
+|---|---|
+| Focused test | `uv run pytest tests/utils/test_youtube_downloader.py -o addopts=` → 64 passed |
+| Runtime harness | N/A — pure subtitle-download helper, no scheduling/DAG surface touched |
+| Rollback boundary | `git revert cd65030`; per design, only together with/after PR9 (token drop) |
+
+## PR9 — `download_with_pytubefix` + `download_youtube_video_for_upload` — split into 9a + 9b (budget contingency triggered)
+
+- Branch 9a: `refactor/272-s5-pr9-pytubefix-and-upload` (parent: PR8 tip), commit `f2e2137`
+- Branch 9b: `refactor/272-s5-pr9b-download-video-for-upload-lift` (parent: 9a tip), commit `a03f62b`
+
+**Budget check (task 9.10) fired**: combined `_log_available_streams` +
+`_select_video_stream` + `_check_live_status_guard` + `_try_pytubefix_download`
+diff measured `git diff --shortstat` (against PR8 base) = `2 files changed,
+401 insertions(+), 51 deletions(-)` = **452 changed lines**, over the 400
+budget. Applied the pre-approved contingency exactly as designed:
+- **9a** = `download_with_pytubefix` lift only (tasks 9.2-9.4), no token drop.
+- **9b** = `download_youtube_video_for_upload` lift (tasks 9.5-9.7) + prune +
+  counter 5→4 (task 9.9).
+
+### PR9a — `download_with_pytubefix` (`utils/youtube_downloader.py:140-146, 154-172`)
+
+- Files: `utils/youtube_downloader.py`, `tests/utils/test_youtube_downloader.py`
+- Changed lines: `2 files changed, 240 insertions(+), 26 deletions(-)` (266 total, own budget)
+- Test-diff additions-only: confirmed empty
+
+Baseline confirmed: `download_with_pytubefix` measured **11**, matching design.
+
+RED-first tests (8 tests, classes `TestLogAvailableStreams` +
+`TestSelectVideoStream`) confirmed RED before the lift (`ImportError`).
+
+Gate outputs (after the lift):
+```
+$ uv run pytest tests/utils/test_youtube_downloader.py -o addopts=
+72 passed in 2.84s
+
+$ uvx ruff check --isolated --select C901 --config 'lint.mccabe.max-complexity=1' <file>
+C901 `_log_available_streams` is too complex (2 > 1)       # predicted 2
+C901 `_select_video_stream` is too complex (3 > 1)         # predicted 3
+C901 `download_with_pytubefix` is too complex (8 > 1)      # predicted 8
+
+$ uv run ruff check .
+All checks passed!
+
+$ uv run ruff format --check .
+333 files already formatted
+```
+
+AST-equality proof (`ast_check_s5_pr9a.py`):
+```
+OK _log_available_streams (verbatim, no normalization)
+OK _select_video_stream (normalized: appended return)
+OK download_with_pytubefix (region before lifted blocks)
+OK download_with_pytubefix (call-site 1 replacement) (declared call-site statement)
+OK download_with_pytubefix (call-site 2 replacement) (declared call-site statement)
+OK download_with_pytubefix (region 174-275, after both lifted blocks) (verbatim)
+OK download_with_pytubefix (except handler) (verbatim)
+```
+
+Landmine guard verified mechanically: the region-after-both-lifted-blocks
+check asserts the outer's statement list from base line 174 onward
+(the ffmpeg `subprocess.run` merge, both divergent cleanup paths, and the
+mid-function `return` at base 238) is byte-identical to base — confirming
+this region was never touched, exactly as the design's highest-priority
+de-risking decision required.
+
+Work Unit Evidence:
+| Evidence | Value |
+|---|---|
+| Focused test | `uv run pytest tests/utils/test_youtube_downloader.py -o addopts=` → 72 passed |
+| Runtime harness | N/A — pure logging/stream-selection helpers, `subprocess.run` boundary untouched |
+| Rollback boundary | `git revert f2e2137`; per design, PR8-9 only revertible together/in order |
+
+### PR9b — `download_youtube_video_for_upload` (`utils/youtube_downloader.py:329-341, 348-359`) + prune + counter 5→4
+
+- Files: `utils/youtube_downloader.py`, `pyproject.toml`,
+  `tests/utils/test_youtube_downloader.py`, `tests/test_ruff_config.py`
+- Changed lines: `4 files changed, 163 insertions(+), 27 deletions(-)` (190 total, own budget)
+- Test-diff additions-only: confirmed empty for `tests/utils/test_youtube_downloader.py`.
+  `tests/test_ruff_config.py` shows one deletion
+  (`EXPECTED_C901_FILE_COUNT = 5` → `= 4`), which is the spec-mandated
+  lockstep counter decrement (Requirement: "Per-file-ignores entries drop
+  their C901 token in lockstep with the counter"), not a behavior-test edit
+  for any of the ten target functions.
+
+Baseline confirmed: `download_youtube_video_for_upload` measured **11**, matching design.
+
+RED-first tests (9 tests, classes `TestCheckLiveStatusGuard` +
+`TestTryPytubefixDownload`) confirmed RED before the lift (`ImportError`).
+
+Gate outputs (after the lift):
+```
+$ uv run pytest tests/utils/test_youtube_downloader.py -o addopts=
+81 passed in 2.19s
+
+$ uvx ruff check --isolated --select C901 --config 'lint.mccabe.max-complexity=1' <file>
+C901 `_check_live_status_guard` is too complex (3 > 1)          # predicted 3
+C901 `_try_pytubefix_download` is too complex (4 > 1)           # predicted 4
+C901 `download_youtube_video_for_upload` is too complex (8 > 1) # predicted 8
+
+$ uv run ruff check .
+All checks passed!
+
+$ uv run ruff format --check .
+333 files already formatted   (one reformat pass applied and re-verified clean)
+```
+
+AST-equality proof (`ast_check_s5_pr9b.py`):
+```
+OK _check_live_status_guard (normalized (g): appended terminal return None)
+OK _try_pytubefix_download (normalized (g): appended terminal return None)
+OK download_youtube_video_for_upload (region before guard block) (verbatim)
+OK download_youtube_video_for_upload (call-site 1 assign) (declared call-site statement)
+OK download_youtube_video_for_upload (call-site 1 sentinel re-check, forward form (e'))
+OK download_youtube_video_for_upload (region between the two lifted blocks) (verbatim)
+OK download_youtube_video_for_upload (call-site 2 assign) (declared call-site statement)
+OK download_youtube_video_for_upload (call-site 2 sentinel re-check, forward form (e'))
+OK download_youtube_video_for_upload (region after both lifted blocks, incl. outer try/except) (verbatim)
+OK download_youtube_video_for_upload (outer try handler order: DownloadError before Exception)
+OK download_youtube_video_for_upload (outer try body unchanged — nothing extracted from inside it)
+```
+
+Landmine guards verified: the outer `Try` at base 405 keeps handler order
+`[yt_dlp.utils.DownloadError, Exception]` with its body mechanically
+confirmed unchanged — nothing was extracted from inside it; the `!r`
+quoting in `f"live_status {status!r} not ready — skipped download"` is
+pinned exactly by `test_not_ready_status_returns_skip_dict_with_exact_repr_quoting`.
+
+Hidden-regression check (task 9.9, all three `utils/youtube_downloader.py`
+functions, PR8-9 all applied in this worktree):
+```
+$ uvx ruff check --select C901 --no-cache --config 'lint.per-file-ignores = {}' --output-format concise utils/youtube_downloader.py
+All checks passed!
+```
+Zero offenders confirmed → safe to drop the `"C901"` token. Same commit:
+`pyproject.toml` line 162 `["C901", "F841"]` → `["F841"]`;
+`EXPECTED_C901_FILE_COUNT` `5` → `4` in `tests/test_ruff_config.py`.
+```
+$ uv run pytest tests/test_ruff_config.py -o addopts=
+14 passed in 0.12s
+```
+
+Work Unit Evidence:
+| Evidence | Value |
+|---|---|
+| Focused test | `uv run pytest tests/utils/test_youtube_downloader.py -o addopts=` → 81 passed |
+| Runtime harness | N/A — pure guard/dispatch helpers; ffmpeg subprocess boundary untouched |
+| Rollback boundary | `git revert a03f62b`; per design, PR8-9 only revertible together/in order (this commit drops the file's C901 token — reverting it alone would restore a live offender) |
+
+## Cumulative gate at batch 3's tip / final tip (`a03f62b`, branch `refactor/272-s5-pr9b-download-video-for-upload-lift`)
+
+```
+$ uv run pytest -n auto
+5370 passed, 34 skipped in 99.31s        (base 5346 + 24 new tests; zero regressions)
+
+$ uv run ruff check .
+All checks passed!
+
+$ uv run ruff format --check .
+333 files already formatted
+
+$ uvx ruff check --select C901 --no-cache --config 'lint.per-file-ignores = {}' --output-format concise utils/youtube_downloader.py
+All checks passed!
+
+$ git diff refactor/272-s5-pr7-analyze-single-chunk..HEAD -- tests/ | rg '^-[^-]'
+-    EXPECTED_C901_FILE_COUNT = 5
+```
+(That single line is the spec-mandated counter decrement in
+`tests/test_ruff_config.py`, documented above — not an edit to any of the
+three `utils/youtube_downloader.py` target functions' behavior tests. Every
+functional test-assertion diff across PR8-9 is additions-only.)
+
+### Final whole-repo C901 measurement (all ten slice-5 targets lifted)
+
+```
+$ uvx ruff check --select C901 --no-cache --config 'lint.per-file-ignores = {}' --output-format concise .
+benchmarks/pyannote_diarization/server.py:149:5: C901 `create_app` is too complex (14 > 10)
+benchmarks/yamnet_applause/server.py:53:5: C901 `_default_model_loader` is too complex (14 > 10)
+benchmarks/yamnet_applause/server.py:191:5: C901 `create_app` is too complex (14 > 10)
+congress_videos/modules/vad_helpers.py:838:5: C901 `trim_turn_silence_with_vad` is too complex (12 > 10)
+congress_videos/reap_shorts_uploader_dag.py:79:5: C901 `build_shorts_metadata_context` is too complex (11 > 10)
+congress_videos/reap_shorts_uploader_dag.py:428:9: C901 `_generate_metadata` is too complex (16 > 10)
+Found 6 errors.
+```
+**Exactly 6 offenders in 4 files** — matches the design's expected slice-6
+backlog exactly (`create_app` x2, `_default_model_loader`,
+`trim_turn_silence_with_vad`, `_generate_metadata`,
+`build_shorts_metadata_context`). No drift. These are untouched by this
+slice, per the design's "Deferred functions and files stay untouched"
+requirement.
+
+## Complexity ladder (cumulative, batch 1 + batch 2 + batch 3, all ten slice-5 targets)
 
 | Function | Base Cx | Predicted | Measured | Status |
 |---|---|---|---|---|
@@ -604,23 +854,37 @@ test-assertion diff across PR5-7 is additions-only.)
 | `_collect_chunk_chapters` (new) | — | 4 | **4** | ✅ |
 | `_analyze_single_chunk` | 15 | 8 | **8** | ✅ |
 | `_identify_chapters_for_chunk` (new) | — | 8 | **8** | ✅ |
+| `download_youtube_subtitles` | 11 | 7 | **7** | ✅ |
+| `_download_subtitle_files` (new) | — | 5 | **5** | ✅ |
+| `download_with_pytubefix` | 11 | 8 | **8** | ✅ |
+| `_log_available_streams` (new) | — | 2 | **2** | ✅ |
+| `_select_video_stream` (new) | — | 3 | **3** | ✅ |
+| `download_youtube_video_for_upload` | 11 | 8 | **8** | ✅ |
+| `_check_live_status_guard` (new) | — | 3 | **3** | ✅ |
+| `_try_pytubefix_download` (new) | — | 4 | **4** | ✅ |
 
-## C901 counter ladder (cumulative, batch 1 + batch 2)
+Every predicted complexity in the design matched its measured value exactly
+across all ten targets and fourteen new helpers, zero exceptions.
+
+## C901 counter ladder (cumulative, batch 1 + batch 2 + batch 3, final)
 
 `youtube_channel.py` entry: `["B007","C901","F841","SIM102"]` →
 `["B007","F841","SIM102"]` (token dropped in commit `e3d33a4`, PR4b).
 `download.py` entry: `["B905","C901","SIM103","SIM108"]` →
 `["B905","SIM103","SIM108"]` (token dropped in commit `cecf397`, PR7).
-`EXPECTED_C901_FILE_COUNT`: `7` → `6` (PR4b) → `5` (PR7).
+`utils/youtube_downloader.py` entry: `["C901","F841"]` → `["F841"]` (token
+dropped in commit `a03f62b`, PR9b).
+`EXPECTED_C901_FILE_COUNT`: `7` → `6` (PR4b) → `5` (PR7) → `4` (PR9b, final).
+Ladder followed exactly, never skipping or reordering.
 
 ## Tasks completed (tasks.md)
 
 PR1 (1.1-1.7), PR2 (2.1-2.6), PR3 (3.1-3.7), PR4 (4.1-4.10), PR5 (5.1-5.7),
-PR6 (6.1-6.7), PR7 (7.1-7.7) — all 51 tasks marked `[x]` in
-`openspec/changes/c901-backlog-slice-5/tasks.md`. PR8 onward (tasks 8.1
-through 11.8) remain `[ ]` — out of this batch's scope, owned by the next
-sdd-apply batch (batch 3, PR8-PR9 + release PR) per the orchestrator's
-explicit "stop after PR7" scope.
+PR6 (6.1-6.7), PR7 (7.1-7.7), PR8 (8.1-8.6), PR9 (9.1-9.12) — all 69 tasks
+marked `[x]` in `openspec/changes/c901-backlog-slice-5/tasks.md`. Phase 10
+(release PR, `dev -> main`) and Phase 11 (final verification) remain `[ ]`
+— out of this batch's scope, owned by the orchestrator per the explicit
+"batch 3 of 3, PR8+PR9 only" scope.
 
 ## Deviations from design (full list)
 
@@ -639,12 +903,24 @@ explicit "stop after PR7" scope.
    the three achievable quirks in `TestMarkOverlappingChapters` cover the
    rest of task 5.3. Not a boundary, signature, or lift-correctness
    deviation — a documented gap in test-writability only. (batch 2, PR5)
+3. **PR9 budget contingency triggered** — the combined `download_with_pytubefix`
+   + `download_youtube_video_for_upload` diff measured 452 changed lines
+   (over the 400 budget). Split into PR9a (pytubefix lift, no token drop)
+   and PR9b (upload lift + prune + counter 5→4), exactly per the
+   pre-approved contingency in task 9.10. Not a boundary, signature, or
+   lift-correctness deviation — the designed fallback path. (batch 3, PR9)
 
 No other deviations. Every lift boundary, helper name, signature,
 normalization, and landmine guard matched the design exactly across all
-seven PRs shipped so far.
+nine PRs shipped (PR1-PR9, with PR4 and PR9 each split into two sub-PRs
+per their respective budget contingencies).
 
 ## Blockers
 
-None. Ready for the next sdd-apply batch (PR8-PR9 + release PR) or for
-sdd-verify to run independently against this batch's scope (PR1-PR7).
+None. All ten slice-5 targets are lifted and verified. Final whole-repo
+C901 measurement confirms exactly 6 offenders in 4 files remain — the
+expected, untouched slice-6 backlog (`create_app` x2, `_default_model_loader`,
+`trim_turn_silence_with_vad`, `_generate_metadata`,
+`build_shorts_metadata_context`). Ready for the release PR (`dev -> main`)
+and for `sdd-verify` to run independently against this slice's full scope
+(PR1-PR9).
