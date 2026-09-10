@@ -1280,6 +1280,78 @@ def _find_srt_chunk(srt_chunk_index: dict, chunk_number) -> str:
     return _chunk_text(srt_chunk)
 
 
+def _identify_chapters_for_chunk(
+    chunk_number: int,
+    summary_chunk: dict,
+    srt_content: str,
+    chunk_duration: float,
+    system_prompt: str,
+    user_prompt_template: str,
+) -> list[dict]:
+    """Lifted verbatim out of `_analyze_single_chunk` (issue #272): builds
+    `summary_text`, defines the `_identify_window` closure over it, and
+    dispatches to map-reduce for oversized SRT content or a single direct
+    call otherwise. `_identify_window` and its sole call site move together
+    as one atomic unit — `summary_text` stays entirely inside this helper's
+    own scope, with no cross-boundary capture. `completion["error"]` truthy
+    propagates a `RuntimeError` out of this helper uncaught; the caller's
+    `try`/`except` owns the fallback.
+    """
+    # Prepare chunk summary text for AI
+    summary_text = (
+        f"Chunk {chunk_number} ({summary_chunk['start_time']} - {summary_chunk['end_time']}) - "
+        f"Duration: {chunk_duration:.1f} minutes\n\n"
+    )
+
+    if summary_chunk.get("speakers"):
+        summary_text += "Speakers:\n"
+        for speaker in summary_chunk["speakers"]:
+            summary_text += f"  - {speaker.get('name', 'Unknown')} ({speaker.get('role', '')})\n"
+        summary_text += "\n"
+
+    if summary_chunk.get("topics"):
+        summary_text += f"Topics: {', '.join(summary_chunk['topics'])}\n\n"
+
+    if summary_chunk.get("summary"):
+        summary_text += f"Summary: {summary_chunk['summary']}\n"
+
+    # #2/#3: per-window LLM call routed through the idempotent
+    # cache. Defined as a closure so the >threshold path (#8)
+    # can reuse it as the injected map-reduce identify function.
+    def _identify_window(window_srt_text: str) -> list[dict]:
+        completion = cached_json_completion(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt_template.format(
+                chunk_summary=summary_text,
+                srt_content=window_srt_text,  # Full window — no truncation
+            ),
+            model=LLM_CHEAP,
+        )
+        if completion.get("error"):
+            raise RuntimeError(completion["error"])
+        chapter_data = completion["data"] or {}
+        return chapter_data.get("interesting_chapters", [])
+
+    # #1/#8: oversized SRT → map-reduce over overlapping windows
+    # so the LLM never decides blind on a truncated view. Below
+    # the threshold this is a single full-SRT call (identical to
+    # the original path).
+    if len(srt_content) > LARGE_SRT_THRESHOLD:
+        logging.info(
+            f"  🧩 Chunk {chunk_number}: SRT content is {len(srt_content):,} chars "
+            f"(>{LARGE_SRT_THRESHOLD:,} threshold). Using map-reduce windowing."
+        )
+        from congress_videos.modules.youtube.map_reduce_chapters import (
+            map_reduce_identify_chapters,
+        )
+
+        interesting_chapters = map_reduce_identify_chapters(srt_content, identify_fn=_identify_window)
+    else:
+        interesting_chapters = _identify_window(srt_content)
+
+    return interesting_chapters
+
+
 def _analyze_single_chunk(
     chunk_number: int,
     summary_chunk: dict,
@@ -1306,57 +1378,14 @@ def _analyze_single_chunk(
     logging.info(f"  🔍 Chunk {chunk_number} is {chunk_duration:.1f} minutes (>45 min). Using AI to analyze content...")
 
     try:
-        # Prepare chunk summary text for AI
-        summary_text = (
-            f"Chunk {chunk_number} ({summary_chunk['start_time']} - {summary_chunk['end_time']}) - "
-            f"Duration: {chunk_duration:.1f} minutes\n\n"
+        interesting_chapters = _identify_chapters_for_chunk(
+            chunk_number,
+            summary_chunk,
+            srt_content,
+            chunk_duration,
+            CHAPTER_IDENTIFICATION_SYSTEM_PROMPT,
+            CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE,
         )
-
-        if summary_chunk.get("speakers"):
-            summary_text += "Speakers:\n"
-            for speaker in summary_chunk["speakers"]:
-                summary_text += f"  - {speaker.get('name', 'Unknown')} ({speaker.get('role', '')})\n"
-            summary_text += "\n"
-
-        if summary_chunk.get("topics"):
-            summary_text += f"Topics: {', '.join(summary_chunk['topics'])}\n\n"
-
-        if summary_chunk.get("summary"):
-            summary_text += f"Summary: {summary_chunk['summary']}\n"
-
-        # #2/#3: per-window LLM call routed through the idempotent
-        # cache. Defined as a closure so the >threshold path (#8)
-        # can reuse it as the injected map-reduce identify function.
-        def _identify_window(window_srt_text: str) -> list[dict]:
-            completion = cached_json_completion(
-                system_prompt=CHAPTER_IDENTIFICATION_SYSTEM_PROMPT,
-                user_prompt=CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE.format(
-                    chunk_summary=summary_text,
-                    srt_content=window_srt_text,  # Full window — no truncation
-                ),
-                model=LLM_CHEAP,
-            )
-            if completion.get("error"):
-                raise RuntimeError(completion["error"])
-            chapter_data = completion["data"] or {}
-            return chapter_data.get("interesting_chapters", [])
-
-        # #1/#8: oversized SRT → map-reduce over overlapping windows
-        # so the LLM never decides blind on a truncated view. Below
-        # the threshold this is a single full-SRT call (identical to
-        # the original path).
-        if len(srt_content) > LARGE_SRT_THRESHOLD:
-            logging.info(
-                f"  🧩 Chunk {chunk_number}: SRT content is {len(srt_content):,} chars "
-                f"(>{LARGE_SRT_THRESHOLD:,} threshold). Using map-reduce windowing."
-            )
-            from congress_videos.modules.youtube.map_reduce_chapters import (
-                map_reduce_identify_chapters,
-            )
-
-            interesting_chapters = map_reduce_identify_chapters(srt_content, identify_fn=_identify_window)
-        else:
-            interesting_chapters = _identify_window(srt_content)
 
         # --- #4: Deterministic fallback for empty LLM result --------
         if not interesting_chapters:

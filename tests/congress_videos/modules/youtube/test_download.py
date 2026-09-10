@@ -989,6 +989,128 @@ class TestAnalyzeSingleChunk:
         assert entry["total_interesting_chapters"] == 1
 
 
+class TestIdentifyChaptersForChunk:
+    """Lifted verbatim out of `_analyze_single_chunk` (issue #272):
+    `_identify_window` and its sole call site into
+    `map_reduce_identify_chapters` move together as one atomic unit, and
+    `summary_text` stays entirely inside the helper's own scope."""
+
+    def _summary_chunk(self, **overrides):
+        base = {
+            "start_time": "00:00:00",
+            "end_time": "01:00:00",
+            "duration_minutes": 130,
+            "speakers": [{"name": "Diputado López", "role": "Diputado"}],
+            "topics": ["a", "b"],
+            "summary": "Debate sobre presupuestos",
+        }
+        base.update(overrides)
+        return base
+
+    def _prompts(self):
+        from congress_videos.config.ai_prompts import (
+            CHAPTER_IDENTIFICATION_SYSTEM_PROMPT,
+            CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE,
+        )
+
+        return CHAPTER_IDENTIFICATION_SYSTEM_PROMPT, CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE
+
+    def test_completion_error_raises_runtime_error_propagating_out(self, mocker):
+        """completion["error"] truthy -> RuntimeError propagates out of the
+        helper; the outer `_analyze_single_chunk` handler owns the fallback."""
+        mocker.patch(
+            "congress_videos.modules.youtube.download.cached_json_completion",
+            return_value={"data": None, "raw_content": "", "error": "boom"},
+        )
+
+        from congress_videos.modules.youtube.download import _identify_chapters_for_chunk
+
+        system_prompt, user_prompt_template = self._prompts()
+
+        with pytest.raises(RuntimeError, match="boom"):
+            _identify_chapters_for_chunk(
+                1, self._summary_chunk(), "some srt content", 130, system_prompt, user_prompt_template
+            )
+
+    def test_completion_data_none_returns_empty_list(self, mocker):
+        mocker.patch(
+            "congress_videos.modules.youtube.download.cached_json_completion",
+            return_value={"data": None, "raw_content": "{}", "error": None},
+        )
+
+        from congress_videos.modules.youtube.download import _identify_chapters_for_chunk
+
+        system_prompt, user_prompt_template = self._prompts()
+
+        result = _identify_chapters_for_chunk(
+            1, self._summary_chunk(), "some srt content", 130, system_prompt, user_prompt_template
+        )
+
+        assert result == []
+
+    def test_under_threshold_makes_exactly_one_call_with_full_srt_content(self, mocker):
+        completion_mock = _patch_completion(mocker, '{"interesting_chapters": []}')
+
+        from congress_videos.modules.youtube.download import _identify_chapters_for_chunk
+        from utils.llm_config import LLM_CHEAP
+
+        system_prompt, user_prompt_template = self._prompts()
+
+        _identify_chapters_for_chunk(
+            1, self._summary_chunk(), "some srt content", 130, system_prompt, user_prompt_template
+        )
+
+        completion_mock.assert_called_once()
+        assert completion_mock.call_args.kwargs["model"] == LLM_CHEAP
+        assert "some srt content" in completion_mock.call_args.kwargs["user_prompt"]
+
+    def test_oversized_srt_closure_captures_summary_text(self, mocker):
+        """Closure-capture proof: `identify_fn` is invoked with a synthetic
+        window and the resulting `user_prompt` still contains the same
+        `summary_text` built inside the helper's own scope."""
+        captured = {}
+
+        def _fake_map_reduce(srt_content, identify_fn):
+            captured["identify_fn"] = identify_fn
+            return identify_fn("synthetic window content")
+
+        mocker.patch(
+            "congress_videos.modules.youtube.map_reduce_chapters.map_reduce_identify_chapters",
+            side_effect=_fake_map_reduce,
+        )
+        completion_mock = _patch_completion(mocker, '{"interesting_chapters": []}')
+
+        from congress_videos.modules.youtube.download import _identify_chapters_for_chunk
+
+        system_prompt, user_prompt_template = self._prompts()
+        big_content = "x" * 200_000  # >LARGE_SRT_THRESHOLD
+
+        _identify_chapters_for_chunk(7, self._summary_chunk(), big_content, 130, system_prompt, user_prompt_template)
+
+        assert "identify_fn" in captured
+        user_prompt = completion_mock.call_args.kwargs["user_prompt"]
+        assert "synthetic window content" in user_prompt
+        assert "Chunk 7 (00:00:00 - 01:00:00)" in user_prompt
+        assert "Diputado López" in user_prompt
+        assert "Topics: a, b" in user_prompt
+        assert "Summary: Debate sobre presupuestos" in user_prompt
+
+    def test_optional_sections_absent_when_keys_missing_or_empty(self, mocker):
+        completion_mock = _patch_completion(mocker, '{"interesting_chapters": []}')
+
+        from congress_videos.modules.youtube.download import _identify_chapters_for_chunk
+
+        system_prompt, user_prompt_template = self._prompts()
+        bare_chunk = self._summary_chunk(speakers=[], topics=[], summary="")
+
+        _identify_chapters_for_chunk(1, bare_chunk, "some srt content", 130, system_prompt, user_prompt_template)
+
+        user_prompt = completion_mock.call_args.kwargs["user_prompt"]
+        assert "Speakers:" not in user_prompt
+        assert "Topics:" not in user_prompt
+        assert "Summary:" not in user_prompt
+
+
 # ---------------------------------------------------------------------------
 # identify_interesting_chapters
 # ---------------------------------------------------------------------------
