@@ -15,7 +15,14 @@ Fetch-back lifecycle:
 1. ``read_marker``       — read and validate the ``.nas_archived.json``
                             marker written by ``nas_archive.write_marker``,
                             recovering exactly which project-relative
-                            directories were pushed for this video.
+                            directories were pushed for this video. When no
+                            marker exists, ``discover_fetch_source`` /
+                            ``discover_remote_dirs`` fall back to a single
+                            SSH discovery command against
+                            ``ArchiveSettings.root`` and, when configured,
+                            ``ArchiveSettings.legacy_root`` (a read-only
+                            pre-migration production tree) — see
+                            ``congress_videos.nas_fetch_dag.fetch_one_video``.
 2. ``ensure_local_dir``  — create the local destination directory (a pruned
                             ``downloads/{date}/{video_id}`` tree may no
                             longer exist) before the pull runs.
@@ -68,23 +75,27 @@ _MEDIA_SUFFIXES = (".mp4", ".mkv", ".webm")
 # ---------------------------------------------------------------------------
 
 
-def _validate_safe_relative_dir(relative_dir: object, channel_slug: str) -> None:
+def _validate_safe_relative_dir(relative_dir: object, channel_slug: str, video_id: str) -> None:
     """Raise ``ValueError`` unless ``relative_dir`` is a safe project-relative posix path.
 
     Safe means: a non-empty string, not absolute, containing no ``..``
-    component, and rooted at either ``downloads/`` or ``{channel_slug}/`` —
-    the only two prefixes ``nas_archive.write_marker`` ever records in
-    ``synced`` (see ``nas_archive.video_paths``).
+    component, and either rooted at ``downloads/`` or ``{channel_slug}/``, or
+    an exact match for ``video_id`` (the legacy top-level scheme — see
+    ``nas_archive.video_paths``) — the only three shapes
+    ``nas_archive.write_marker`` ever records in ``synced``, and the only
+    three shapes ``discover_remote_dirs`` below ever discovers.
     """
     if not isinstance(relative_dir, str) or not relative_dir:
         raise ValueError(f"Unsafe entry in NAS archive marker 'synced' list: {relative_dir!r}")
     posix_path = PurePosixPath(relative_dir)
     if posix_path.is_absolute() or ".." in posix_path.parts:
         raise ValueError(f"Unsafe path in NAS archive marker 'synced' list: {relative_dir!r}")
+    if relative_dir == video_id:
+        return
     if not (relative_dir.startswith("downloads/") or relative_dir.startswith(f"{channel_slug}/")):
         raise ValueError(
             f"Unexpected root in NAS archive marker 'synced' entry: {relative_dir!r} "
-            f"(must start with 'downloads/' or {channel_slug!r}/)"
+            f"(must start with 'downloads/' or {channel_slug!r}/, or equal video_id {video_id!r})"
         )
 
 
@@ -104,7 +115,9 @@ def read_marker(project_dir: Path | str, channel_slug: str, video_id: str) -> di
         FileNotFoundError: If no marker exists for this video.
         ValueError: If the marker is not valid JSON, or its ``synced`` field
             is missing, empty, not a list, or contains an unsafe path (see
-            :func:`_validate_safe_relative_dir`).
+            :func:`_validate_safe_relative_dir` — a bare ``video_id`` entry,
+            from the legacy top-level scheme, is accepted alongside
+            ``downloads/...`` and ``{channel_slug}/...``).
     """
     marker_path = Path(project_dir) / channel_slug / video_id / _MARKER_NAME
     if not marker_path.is_file():
@@ -122,7 +135,7 @@ def read_marker(project_dir: Path | str, channel_slug: str, video_id: str) -> di
         raise ValueError(f"NAS archive marker at {marker_path} has no non-empty 'synced' list")
 
     for relative_dir in synced:
-        _validate_safe_relative_dir(relative_dir, channel_slug)
+        _validate_safe_relative_dir(relative_dir, channel_slug, video_id)
 
     return payload
 
@@ -186,6 +199,7 @@ def ensure_local_dir(local_path: Path | str) -> Path:
 
 def fetch_rsync_command(
     settings: ArchiveSettings,
+    source_root: str,
     remote_relative_dir: str,
     local_path: Path | str,
     dry_run: bool = False,
@@ -193,8 +207,14 @@ def fetch_rsync_command(
     """Return the argv that pulls one archived directory back from the NAS.
 
     The inverse of ``nas_archive.rsync_command``: source and destination are
-    swapped, so ``{user}@{host}:{root}/{remote_relative_dir}/`` is pulled
-    into ``{local_path}/``.
+    swapped, so ``{user}@{host}:{source_root}/{remote_relative_dir}/`` is
+    pulled into ``{local_path}/``.
+
+    ``source_root`` is an explicit parameter (rather than always reading
+    ``settings.root``) because a video with no local archive marker may be
+    pulled from ``settings.legacy_root`` instead — see
+    :func:`discover_fetch_source`. Marker-mode callers simply pass
+    ``settings.root``.
 
     ``--mkpath`` is deliberately never passed. rsync forwards it to the
     remote side of the transfer for negotiation regardless of which side is
@@ -203,7 +223,7 @@ def fetch_rsync_command(
     created ahead of time via :func:`ensure_local_dir`.
     """
     local_path = Path(local_path)
-    remote = f"{settings.user}@{settings.host}:{settings.root}/{remote_relative_dir}/"
+    remote = f"{settings.user}@{settings.host}:{source_root}/{remote_relative_dir}/"
     command = ["rsync", "-a", "--partial", "--itemize-changes"]
     if dry_run:
         command.append("--dry-run")
@@ -213,6 +233,7 @@ def fetch_rsync_command(
 
 def verify_fetched(
     settings: ArchiveSettings,
+    source_root: str,
     remote_relative_dir: str,
     local_path: Path | str,
     runner,
@@ -224,13 +245,122 @@ def verify_fetched(
     means nothing is left to fetch.
 
     Args:
+        source_root: Same meaning as in :func:`fetch_rsync_command`.
         runner: Injectable ``subprocess.run``-shaped callable — takes the
             argv list and returns an object exposing ``.stdout``.
     """
-    command = fetch_rsync_command(settings, remote_relative_dir, local_path, dry_run=True)
+    command = fetch_rsync_command(settings, source_root, remote_relative_dir, local_path, dry_run=True)
     result = runner(command)
     stdout = getattr(result, "stdout", "") or ""
     return all(line[:1] not in ("<", ">", "c") for line in stdout.splitlines())
+
+
+# ---------------------------------------------------------------------------
+# Marker-less fallback: remote discovery
+# ---------------------------------------------------------------------------
+
+
+def discover_remote_dirs(
+    settings: ArchiveSettings,
+    source_root: str,
+    channel_slug: str,
+    video_id: str,
+    runner,
+) -> list[str]:
+    """Discover which of a video's three possible directory shapes exist under ``source_root``.
+
+    Used only when no local ``.nas_archived.json`` marker exists for
+    ``video_id`` — the caller doesn't know in advance which of
+    ``downloads/{date}/{video_id}``, ``{channel_slug}/{video_id}``, or the
+    legacy top-level ``{video_id}`` actually exist under ``source_root`` (the
+    NAS archive root or the read-only legacy production root — see
+    :func:`discover_fetch_source`).
+
+    Runs exactly ONE SSH command: a POSIX ``sh`` snippet that globs each
+    candidate shape and prints only the ones that exist as real directories.
+    ``video_id`` is validated via ``nas_archive.validate_video_id`` and every
+    interpolated value is ``shlex.quote``-d before it reaches the remote
+    shell.
+
+    Args:
+        source_root: Absolute remote root to search under.
+        runner: Injectable ``subprocess.run``-shaped callable — takes the
+            argv list and returns an object exposing ``.stdout`` and
+            ``.returncode``.
+
+    Returns:
+        Every discovered directory, as a project-relative posix path (e.g.
+        ``"downloads/2026-03-01/abc123"``, ``"congreso-es-tv/abc123"``, or
+        ``"abc123"``), safety-validated the same way as marker-mode
+        ``synced`` entries. Empty list when nothing exists under
+        ``source_root`` for this video.
+
+    Raises:
+        ValueError: ``video_id`` fails ``nas_archive.validate_video_id``, the
+            remote discovery command fails, or a discovered path is unsafe
+            or escapes ``source_root``.
+    """
+    nas_archive.validate_video_id(video_id)
+
+    candidates = (
+        f"{source_root}/downloads/*/{video_id}",
+        f"{source_root}/{channel_slug}/{video_id}",
+        f"{source_root}/{video_id}",
+    )
+    snippet = (
+        "for d in " + " ".join(shlex.quote(c) for c in candidates) + '; do [ -d "$d" ] && printf \'%s\\n\' "$d"; done'
+    )
+    command = [*ssh_command(settings), f"{settings.user}@{settings.host}", "sh", "-c", snippet]
+
+    result = runner(command)
+    if getattr(result, "returncode", 0) != 0:
+        raise ValueError(
+            f"nas_fetch: remote discovery failed under {source_root!r} for video_id={video_id!r}: "
+            f"{getattr(result, 'stderr', '')!r}"
+        )
+
+    prefix = f"{source_root}/"
+    relative_dirs: list[str] = []
+    for raw_line in (getattr(result, "stdout", "") or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if not line.startswith(prefix):
+            raise ValueError(f"nas_fetch: discovered path outside source_root {source_root!r}: {line!r}")
+        relative_dir = line[len(prefix) :]
+        _validate_safe_relative_dir(relative_dir, channel_slug, video_id)
+        relative_dirs.append(relative_dir)
+    return relative_dirs
+
+
+def discover_fetch_source(
+    settings: ArchiveSettings,
+    channel_slug: str,
+    video_id: str,
+    runner,
+) -> tuple[str, list[str]]:
+    """Return ``(source_root, relative_dirs)`` for a video with no local marker.
+
+    Tries ``settings.root`` (the NAS archive root) first, then
+    ``settings.legacy_root`` (the read-only pre-migration production tree)
+    when configured — the first root that yields at least one directory
+    wins. Never touches ``settings.legacy_root`` for anything but reading:
+    the legacy root is pull-only, never written, deleted, or rsync-pushed to.
+
+    Raises:
+        FileNotFoundError: Neither root has any directory for this video.
+        ValueError: See :func:`discover_remote_dirs`.
+    """
+    for source_root in (settings.root, settings.legacy_root):
+        if not source_root:
+            continue
+        relative_dirs = discover_remote_dirs(settings, source_root, channel_slug, video_id, runner)
+        if relative_dirs:
+            return source_root, relative_dirs
+    raise FileNotFoundError(
+        f"nas_fetch: no remote directories found for video_id={video_id!r} channel_slug={channel_slug!r} "
+        "under the archive root or legacy root"
+    )
 
 
 # ---------------------------------------------------------------------------

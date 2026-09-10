@@ -168,7 +168,10 @@ class TestSelectArchiveCandidates:
 
         assert candidates == []
 
-    def test_skips_videos_younger_than_min_age(self, monkeypatch, tmp_path):
+    def test_young_video_is_synced_but_not_marked_for_prune(self, monkeypatch, tmp_path):
+        """Early sync, late prune: a video too young to prune is still a sync
+        candidate (rsync is incremental — re-syncing an unchanged video is
+        cheap), just with prune=False."""
         import time
 
         mod = _fresh()
@@ -186,9 +189,49 @@ class TestSelectArchiveCandidates:
             self._settings(tmp_path, min_age_days=14), tmp_path, "congreso-es-tv"
         )
 
-        assert candidates == []
+        assert candidates == [{"channel_slug": "congreso-es-tv", "video_id": "abc123", "prune": False}]
 
-    def test_accepts_old_enough_video_and_stops_at_batch_cap(self, monkeypatch, tmp_path):
+    def test_old_enough_video_is_synced_and_marked_for_prune(self, monkeypatch, tmp_path):
+        import time
+
+        mod = _fresh()
+        monkeypatch.setattr(mod, "_query_complete_video_ids", lambda limit: ["abc123"])
+        monkeypatch.setattr(mod.nas_archive, "is_archived", lambda channel_dir: False)
+        monkeypatch.setattr(
+            mod.nas_archive, "video_paths", lambda project_dir, channel, video_id: [tmp_path / video_id]
+        )
+        old_mtime = time.time() - (30 * 86400)
+        monkeypatch.setattr(mod, "_newest_mtime", lambda paths: old_mtime)
+
+        candidates = mod.select_archive_candidates(
+            self._settings(tmp_path, min_age_days=14), tmp_path, "congreso-es-tv"
+        )
+
+        assert candidates == [{"channel_slug": "congreso-es-tv", "video_id": "abc123", "prune": True}]
+
+    def test_sync_cap_limits_the_number_of_candidates(self, monkeypatch, tmp_path):
+        import time
+
+        mod = _fresh()
+        monkeypatch.setattr(mod, "NAS_ARCHIVE_SYNC_BATCH", 1)
+        monkeypatch.setattr(mod, "_query_complete_video_ids", lambda limit: ["abc123", "def456"])
+        monkeypatch.setattr(mod.nas_archive, "is_archived", lambda channel_dir: False)
+        monkeypatch.setattr(
+            mod.nas_archive, "video_paths", lambda project_dir, channel, video_id: [tmp_path / video_id]
+        )
+        old_mtime = time.time() - (30 * 86400)
+        monkeypatch.setattr(mod, "_newest_mtime", lambda paths: old_mtime)
+
+        candidates = mod.select_archive_candidates(
+            self._settings(tmp_path, min_age_days=14), tmp_path, "congreso-es-tv"
+        )
+
+        assert candidates == [{"channel_slug": "congreso-es-tv", "video_id": "abc123", "prune": True}]
+
+    def test_prune_cap_is_independent_of_the_sync_cap(self, monkeypatch, tmp_path):
+        """Both videos are old enough to prune, but NAS_ARCHIVE_BATCH=1 caps
+        prunes at one per run — the second stays synced (prune=False) rather
+        than being dropped from the candidate list entirely."""
         import time
 
         mod = _fresh()
@@ -205,7 +248,10 @@ class TestSelectArchiveCandidates:
             self._settings(tmp_path, min_age_days=14), tmp_path, "congreso-es-tv"
         )
 
-        assert candidates == [{"channel_slug": "congreso-es-tv", "video_id": "abc123"}]
+        assert candidates == [
+            {"channel_slug": "congreso-es-tv", "video_id": "abc123", "prune": True},
+            {"channel_slug": "congreso-es-tv", "video_id": "def456", "prune": False},
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -311,28 +357,71 @@ class TestArchiveOneVideo:
         assert "rsync" in calls
         assert calls.index("mkdir") < calls.index("rsync")
 
+    def test_synced_not_pruned_when_prune_is_false(self, monkeypatch, tmp_path):
+        """A video that isn't old enough (or lost the prune-cap race) is
+        rsynced and verified like any other, but nothing local is deleted
+        and no marker is written."""
+        mod = _fresh()
+        video_dir = self._make_video(tmp_path)
+        settings = self._settings(tmp_path)
+
+        ok_result = SimpleNamespace(returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(mod.subprocess, "run", MagicMock(return_value=ok_result))
+        monkeypatch.setattr(mod, "_subprocess_runner", lambda command: ok_result)
+
+        result = mod.archive_one_video(settings, tmp_path, "congreso-es-tv", "abc123", prune=False)
+
+        assert result == {
+            "video_id": "abc123",
+            "synced": ["downloads/2026-03-01/abc123"],
+            "removed": [],
+            "bytes_freed": 0,
+            "pruned": False,
+        }
+        assert video_dir.exists()  # nothing was deleted
+        assert (video_dir / "video.mp4").exists()
+        marker_path = tmp_path / "congreso-es-tv" / "abc123" / ".nas_archived.json"
+        assert not marker_path.exists()
+
+    def test_verification_mismatch_aborts_even_when_prune_is_false(self, monkeypatch, tmp_path):
+        mod = _fresh()
+        video_dir = self._make_video(tmp_path)
+        settings = self._settings(tmp_path)
+
+        ok_result = SimpleNamespace(returncode=0, stdout="", stderr="")
+        mismatch_result = SimpleNamespace(returncode=0, stdout=">f+++++++++ video.mp4\n", stderr="")
+        monkeypatch.setattr(mod.subprocess, "run", MagicMock(return_value=ok_result))
+        monkeypatch.setattr(mod, "_subprocess_runner", lambda command: mismatch_result)
+
+        with pytest.raises(AirflowException, match="verification failed"):
+            mod.archive_one_video(settings, tmp_path, "congreso-es-tv", "abc123", prune=False)
+
+        assert video_dir.exists()
+        assert (video_dir / "video.mp4").exists()
+
     def test_run_archive_videos_aggregates_summary(self, monkeypatch, mock_task_instance):
         mod = _fresh()
         candidates = [
-            {"channel_slug": "congreso-es-tv", "video_id": "abc123"},
-            {"channel_slug": "congreso-es-tv", "video_id": "def456"},
+            {"channel_slug": "congreso-es-tv", "video_id": "abc123", "prune": True},
+            {"channel_slug": "congreso-es-tv", "video_id": "def456", "prune": False},
         ]
         mock_task_instance.xcom_store["candidates"] = candidates
         monkeypatch.setattr(mod, "ArchiveSettings", MagicMock())
         monkeypatch.setattr(
             mod,
             "archive_one_video",
-            lambda settings, project_dir, channel_slug, video_id: {
+            lambda settings, project_dir, channel_slug, video_id, prune: {
                 "video_id": video_id,
                 "synced": [],
                 "removed": [],
                 "bytes_freed": 100,
+                "pruned": prune,
             },
         )
 
         summary = mod._run_archive_videos(ti=mock_task_instance)
 
-        assert summary == {"archived": 2, "bytes_freed": 200}
+        assert summary == {"synced": 2, "pruned": 1, "bytes_freed": 200}
 
 
 # ---------------------------------------------------------------------------

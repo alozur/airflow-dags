@@ -8,7 +8,9 @@ directly unit-testable without Docker or a real NAS.
 Archival lifecycle, orchestrated by ``congress_videos/nas_archive_dag.py``:
 
 1. ``video_paths``            — locate every local directory holding a
-                                 video's raw/derived material.
+                                 video's raw/derived material, including the
+                                 still-live legacy top-level
+                                 ``{video_id}/...`` scheme.
 2. ``remote_mkdir_command``   — ensure the remote parent exists (rsync's
                                  receiver is an old 3.1.2 build that rejects
                                  the ``--mkpath`` option outright, so it is
@@ -34,6 +36,7 @@ Archival lifecycle, orchestrated by ``congress_videos/nas_archive_dag.py``:
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import shutil
 from dataclasses import dataclass
@@ -69,6 +72,13 @@ class ArchiveSettings:
         min_age_days: Minimum local age (days) before a video is eligible.
         ssh_dir:      Directory holding ``id_ed25519`` and ``known_hosts``
                        (bind-mounted read-only from ``NAS_SYNC_HOST_DIR``).
+        legacy_root:  Optional remote absolute directory holding the
+                       read-only pre-migration production tree (a different
+                       layout, same host/user/ssh_dir). Empty string means
+                       no legacy source is configured. Only consulted by
+                       ``nas_fetch`` as a fallback source when a video has no
+                       local archive marker — never written to. See
+                       ``nas_fetch.discover_fetch_source``.
     """
 
     host: str
@@ -77,6 +87,7 @@ class ArchiveSettings:
     root: str
     min_age_days: int
     ssh_dir: Path
+    legacy_root: str = ""
 
     @property
     def enabled(self) -> bool:
@@ -95,6 +106,8 @@ class ArchiveSettings:
             raise ValueError(f"NAS_ARCHIVE_ROOT must be an absolute path when archiving is enabled, got {self.root!r}")
         if not self.user:
             raise ValueError("NAS_ARCHIVE_USER must be set when archiving is enabled")
+        if self.legacy_root and not self.legacy_root.startswith("/"):
+            raise ValueError(f"NAS_FETCH_LEGACY_ROOT must be an absolute path when set, got {self.legacy_root!r}")
         missing = [name for name in _REQUIRED_SSH_FILES if not (self.ssh_dir / name).is_file()]
         if missing:
             raise ValueError(f"NAS_ARCHIVE_SSH_DIR={self.ssh_dir} is missing required file(s): {', '.join(missing)}")
@@ -118,6 +131,7 @@ class ArchiveSettings:
         host = source.get("NAS_ARCHIVE_HOST", "").strip()
         user = source.get("NAS_ARCHIVE_USER", "").strip()
         root = source.get("NAS_ARCHIVE_ROOT", "").strip()
+        legacy_root = source.get("NAS_FETCH_LEGACY_ROOT", "").strip()
         port = _parse_int("NAS_ARCHIVE_PORT", source.get("NAS_ARCHIVE_PORT", _DEFAULT_PORT))
         min_age_days = _parse_int(
             "NAS_ARCHIVE_MIN_AGE_DAYS", source.get("NAS_ARCHIVE_MIN_AGE_DAYS", _DEFAULT_MIN_AGE_DAYS)
@@ -126,7 +140,15 @@ class ArchiveSettings:
             raise ValueError(f"NAS_ARCHIVE_MIN_AGE_DAYS must be >= 0, got {min_age_days}")
         ssh_dir = Path(source.get("NAS_ARCHIVE_SSH_DIR", _DEFAULT_SSH_DIR))
 
-        settings = cls(host=host, port=port, user=user, root=root, min_age_days=min_age_days, ssh_dir=ssh_dir)
+        settings = cls(
+            host=host,
+            port=port,
+            user=user,
+            root=root,
+            min_age_days=min_age_days,
+            ssh_dir=ssh_dir,
+            legacy_root=legacy_root,
+        )
         settings.validate()
         return settings
 
@@ -135,13 +157,32 @@ class ArchiveSettings:
 # Local path discovery
 # ---------------------------------------------------------------------------
 
+# YouTube video ids are short alphanumeric(+_-) tokens. Enforced before
+# video_id is ever used to build a filesystem path or a remote shell
+# command — see video_paths() below and nas_fetch.discover_remote_dirs,
+# which reuses this exact check for the same reason.
+_VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{6,20}$")
+
+
+def validate_video_id(video_id: str) -> None:
+    """Raise ``ValueError`` unless ``video_id`` looks like a YouTube video id.
+
+    A defensive boundary check, not a YouTube-specific parser: it exists so
+    a malformed or adversarial ``video_id`` (e.g. from DAG conf) can never
+    reach a filesystem path or an interpolated shell command.
+    """
+    if not isinstance(video_id, str) or not _VIDEO_ID_PATTERN.fullmatch(video_id):
+        raise ValueError(f"Invalid video_id: {video_id!r} (must match {_VIDEO_ID_PATTERN.pattern})")
+
 
 def video_paths(project_dir: Path | str, channel_slug: str, video_id: str) -> list[Path]:
     """Return every local directory holding a video's raw/derived material.
 
     Mirrors the date-less lookup used by ``speaker_turn_videos_dag`` and
-    ``trim_proposals_dag`` for the raw download, plus the canonical
-    per-channel artifact subtree.
+    ``trim_proposals_dag`` for the raw download, the canonical per-channel
+    artifact subtree, and the still-live legacy top-level scheme written by
+    ``video_splitter.py``/``reap_clip_preparer_dag.py``
+    (``{video_id}/{chapter_id}/chapter_video.mp4`` etc.).
 
     Args:
         project_dir:  ``PROJECT_DATA_DIR`` (or an override for tests).
@@ -150,12 +191,22 @@ def video_paths(project_dir: Path | str, channel_slug: str, video_id: str) -> li
 
     Returns:
         Every existing local directory for the video: zero or more
-        ``downloads/{date}/{video_id}`` directories, plus
-        ``{channel_slug}/{video_id}`` when it exists.
+        ``downloads/{date}/{video_id}`` directories, ``{channel_slug}/{video_id}``
+        when it exists, and ``{video_id}`` (the legacy top-level tree) when
+        it exists.
 
     Raises:
+        ValueError: ``video_id`` fails :func:`validate_video_id`, or equals
+            a reserved top-level name (``"downloads"``, ``channel_slug``, or
+            any :data:`_PROTECTED_TOP_LEVEL_NAMES` entry) — such a video_id
+            would otherwise make the legacy top-level lookup below resolve
+            to a shared/protected directory instead of a real video.
         FileNotFoundError: If no local path exists for the video.
     """
+    validate_video_id(video_id)
+    if video_id == channel_slug or video_id == "downloads" or video_id in _PROTECTED_TOP_LEVEL_NAMES:
+        raise ValueError(f"Refusing to treat reserved name as video_id: {video_id!r}")
+
     project_dir = Path(project_dir)
     paths: list[Path] = []
 
@@ -169,6 +220,10 @@ def video_paths(project_dir: Path | str, channel_slug: str, video_id: str) -> li
     channel_dir = project_dir / channel_slug / video_id
     if channel_dir.is_dir():
         paths.append(channel_dir)
+
+    legacy_top_level_dir = project_dir / video_id
+    if legacy_top_level_dir.is_dir():
+        paths.append(legacy_top_level_dir)
 
     if not paths:
         raise FileNotFoundError(

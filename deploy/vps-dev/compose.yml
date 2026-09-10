@@ -132,6 +132,10 @@ services:
       NAS_ARCHIVE_ROOT: ${NAS_ARCHIVE_ROOT:-}
       NAS_ARCHIVE_MIN_AGE_DAYS: ${NAS_ARCHIVE_MIN_AGE_DAYS:-14}
       NAS_ARCHIVE_SSH_DIR: /opt/airflow/nas_sync
+      # nas_fetch DAG (congress_videos/nas_fetch_dag.py) fallback source: a
+      # read-only pre-migration production tree, only consulted when a video
+      # has no local .nas_archived.json marker. Empty disables the fallback.
+      NAS_FETCH_LEGACY_ROOT: ${NAS_FETCH_LEGACY_ROOT:-}
     volumes:
       - logs:/opt/airflow/logs
       - data:/opt/airflow/data

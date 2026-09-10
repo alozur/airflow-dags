@@ -31,9 +31,21 @@ to resolve which channel a ``video_chapters`` row belongs to. Revisit
 Pipeline::
 
     check_enabled     (ShortCircuitOperator: NAS_ARCHIVE_HOST + ssh key files present)
-      → select_candidates  (eligibility SQL + local age gate + marker skip)
-          → archive_videos (remote mkdir → rsync → verify → prune_local → write_marker)
+      → select_candidates  (eligibility SQL + marker skip + early-sync/late-prune split)
+          → archive_videos (remote mkdir → rsync → verify → [age-gated] prune_local + write_marker)
               → mirror_shared (remote mkdir → rsync each MIRROR_ONLY_DIRS entry — never pruned)
+
+Sync and prune are on two different cadences (early sync, late prune): every
+DB-complete, unmarked video with local paths is synced (rsync push + verify)
+on EVERY run regardless of age — rsync is incremental, so re-syncing an
+unchanged video is cheap — up to ``NAS_ARCHIVE_SYNC_BATCH`` videos per run.
+Pruning (local deletion + marker write) only happens for the subset whose
+local material is already at least ``NAS_ARCHIVE_MIN_AGE_DAYS`` old, capped
+separately at ``NAS_ARCHIVE_BATCH`` prunes per run (pruning is the
+destructive, rate-limited half of this pipeline; syncing is not). A video
+that clears the sync cap before the prune cap is reached stays synced but
+unpruned this run — it remains eligible next run, and the re-sync is close
+to a no-op since the NAS copy is already current.
 
 One failed video aborts the run: the failing video has no partial local
 deletion (sync+verify happens for every local path before any pruning), and
@@ -72,12 +84,18 @@ logger = logging.getLogger(__name__)
 
 DAG_ID = "nas_archive"
 
-# Not part of the infra env contract (deploy/vps-dev/release.env) — an
-# operational knob read directly by this DAG.
+# Not part of the infra env contract (deploy/vps-dev/release.env) — operational
+# knobs read directly by this DAG.
+# Cap on PRUNEs (local deletion + marker write) per run — the destructive,
+# rate-limited half of the pipeline.
 NAS_ARCHIVE_BATCH = int(os.getenv("NAS_ARCHIVE_BATCH", "2"))
+# Cap on SYNCs (rsync push + verify, no deletion) per run — larger than
+# NAS_ARCHIVE_BATCH since syncing is cheap and non-destructive (rsync is
+# incremental, so a video that was already synced re-syncs as a near no-op).
+NAS_ARCHIVE_SYNC_BATCH = int(os.getenv("NAS_ARCHIVE_SYNC_BATCH", "20"))
 
-# Fetch more DB candidates than the batch needs: the local age gate and the
-# already-archived marker check happen in Python, after the SQL filter.
+# Fetch more DB candidates than the sync batch needs: the local age gate and
+# the already-archived marker check happen in Python, after the SQL filter.
 _CANDIDATE_POOL_MULTIPLIER = 5
 
 _SSH_TIMEOUT_SECS = 30
@@ -160,17 +178,23 @@ def _newest_mtime(paths: list[Path]) -> float | None:
 
 
 def select_archive_candidates(settings: ArchiveSettings, project_dir: Path, channel_slug: str) -> list[dict]:
-    """Return up to ``NAS_ARCHIVE_BATCH`` videos ready to archive.
+    """Return up to ``NAS_ARCHIVE_SYNC_BATCH`` videos to sync this run.
 
     Applies, in order: the DB completeness query, the already-archived
-    marker skip, local-path existence, and the local age gate
-    (``settings.min_age_days``).
+    marker skip (marker == pruned, so a marked video has nothing local left
+    to sync), and local-path existence. Every remaining video is a sync
+    candidate regardless of age; each candidate additionally carries
+    ``"prune": bool`` — ``True`` only when its local material is at least
+    ``settings.min_age_days`` old AND the ``NAS_ARCHIVE_BATCH`` prune cap for
+    this run has not yet been reached (see the module docstring for the
+    early-sync/late-prune rationale).
     """
     min_age = timedelta(days=settings.min_age_days)
-    pool_video_ids = _query_complete_video_ids(NAS_ARCHIVE_BATCH * _CANDIDATE_POOL_MULTIPLIER)
+    pool_video_ids = _query_complete_video_ids(NAS_ARCHIVE_SYNC_BATCH * _CANDIDATE_POOL_MULTIPLIER)
     logger.info("nas_archive: %d complete video_id candidate(s) from DB", len(pool_video_ids))
 
     candidates: list[dict] = []
+    prune_count = 0
     for video_id in pool_video_ids:
         channel_dir = project_dir / channel_slug / video_id
         if nas_archive.is_archived(channel_dir):
@@ -189,22 +213,34 @@ def select_archive_candidates(settings: ArchiveSettings, project_dir: Path, chan
             continue
 
         age = datetime.now(UTC) - datetime.fromtimestamp(newest_mtime, tz=UTC)
-        if age < min_age:
+        old_enough = age >= min_age
+        prune = old_enough and prune_count < NAS_ARCHIVE_BATCH
+        if not old_enough:
             logger.debug(
-                "nas_archive: video_id=%s is only %s old (< %s) — not yet eligible",
+                "nas_archive: video_id=%s is only %s old (< %s) — synced, not yet eligible for prune",
                 video_id,
                 age,
                 min_age,
             )
-            continue
+        elif not prune:
+            logger.debug(
+                "nas_archive: video_id=%s is old enough to prune but the prune cap (%d) was already reached "
+                "this run — synced only",
+                video_id,
+                NAS_ARCHIVE_BATCH,
+            )
 
-        candidates.append({"channel_slug": channel_slug, "video_id": video_id})
-        if len(candidates) >= NAS_ARCHIVE_BATCH:
+        candidates.append({"channel_slug": channel_slug, "video_id": video_id, "prune": prune})
+        if prune:
+            prune_count += 1
+        if len(candidates) >= NAS_ARCHIVE_SYNC_BATCH:
             break
 
     logger.info(
-        "nas_archive: %d candidate(s) selected for archival (batch cap=%d)",
+        "nas_archive: %d candidate(s) selected for sync (sync cap=%d), %d marked for prune (prune cap=%d)",
         len(candidates),
+        NAS_ARCHIVE_SYNC_BATCH,
+        prune_count,
         NAS_ARCHIVE_BATCH,
     )
     return candidates
@@ -273,19 +309,28 @@ def _bytes_to_be_freed(paths: list[Path], project_dir: Path) -> int:
     return total
 
 
-def archive_one_video(settings: ArchiveSettings, project_dir: Path, channel_slug: str, video_id: str) -> dict:
-    """Sync, verify, and prune every local path for one video.
+def archive_one_video(
+    settings: ArchiveSettings, project_dir: Path, channel_slug: str, video_id: str, prune: bool = True
+) -> dict:
+    """Sync (and verify) every local path for one video; prune only when ``prune`` is ``True``.
 
     Every local path is rsynced AND verified before any local deletion
     happens, so a failure partway through (mkdir, rsync, or verification)
-    leaves this video's local files completely untouched.
+    leaves this video's local files completely untouched — the
+    abort-before-delete invariant holds regardless of ``prune``, since
+    verification always runs before the ``prune`` branch is even reached.
+
+    When ``prune`` is ``False`` (the video isn't old enough yet, or this
+    run's prune cap was already reached — see ``select_archive_candidates``),
+    the video is synced but nothing local is deleted and no marker is
+    written: it stays eligible for a future run's prune pass, and the next
+    sync is close to a no-op since the NAS copy is already current.
 
     Raises:
         AirflowException: On any remote-mkdir failure, rsync failure, or
             post-sync verification mismatch.
     """
     paths = nas_archive.video_paths(project_dir, channel_slug, video_id)
-    bytes_to_free = _bytes_to_be_freed(paths, project_dir)
 
     synced_dirs: list[str] = []
     for local_path in paths:
@@ -315,6 +360,15 @@ def archive_one_video(settings: ArchiveSettings, project_dir: Path, channel_slug
             )
         synced_dirs.append(remote_relative_dir)
 
+    if not prune:
+        logger.info(
+            "nas_archive: video_id=%s synced — %d path(s) synced (not yet eligible for prune)",
+            video_id,
+            len(synced_dirs),
+        )
+        return {"video_id": video_id, "synced": synced_dirs, "removed": [], "bytes_freed": 0, "pruned": False}
+
+    bytes_to_free = _bytes_to_be_freed(paths, project_dir)
     removed = nas_archive.prune_local(paths, project_dir)
 
     channel_dir = project_dir / channel_slug / video_id
@@ -329,13 +383,19 @@ def archive_one_video(settings: ArchiveSettings, project_dir: Path, channel_slug
         },
     )
     logger.info(
-        "nas_archive: video_id=%s archived — %d path(s) synced, %d local item(s) removed, ~%.1f MB freed",
+        "nas_archive: video_id=%s synced+pruned — %d path(s) synced, %d local item(s) removed, ~%.1f MB freed",
         video_id,
         len(synced_dirs),
         len(removed),
         bytes_to_free / (1024 * 1024),
     )
-    return {"video_id": video_id, "synced": synced_dirs, "removed": removed, "bytes_freed": bytes_to_free}
+    return {
+        "video_id": video_id,
+        "synced": synced_dirs,
+        "removed": removed,
+        "bytes_freed": bytes_to_free,
+        "pruned": True,
+    }
 
 
 def _run_archive_videos(**context) -> dict:
@@ -343,10 +403,14 @@ def _run_archive_videos(**context) -> dict:
     candidates = context["ti"].xcom_pull(key="candidates", task_ids="select_candidates") or []
     project_dir = Path(PROJECT_DATA_DIR)
 
-    summary = {"archived": 0, "bytes_freed": 0}
+    summary = {"synced": 0, "pruned": 0, "bytes_freed": 0}
     for candidate in candidates:
-        result = archive_one_video(settings, project_dir, candidate["channel_slug"], candidate["video_id"])
-        summary["archived"] += 1
+        result = archive_one_video(
+            settings, project_dir, candidate["channel_slug"], candidate["video_id"], candidate["prune"]
+        )
+        summary["synced"] += 1
+        if result["pruned"]:
+            summary["pruned"] += 1
         summary["bytes_freed"] += result["bytes_freed"]
 
     logger.info("nas_archive: run complete — %s", summary)

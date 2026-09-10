@@ -31,7 +31,7 @@ Compose is rendered from three `--env-file` sources supplied by Ansible:
   `UI_UPSTREAM`, `EGRESS_SUBNET`, `EGRESS_INTERNAL`, `YOUTUBE_TOKENS_HOST_DIR`,
   `NAS_SYNC_HOST_DIR`, `NAS_ARCHIVE_HOST`, `NAS_ARCHIVE_PORT`,
   `NAS_ARCHIVE_USER`, `NAS_ARCHIVE_ROOT`, `NAS_ARCHIVE_MIN_AGE_DAYS`,
-  `POSTGRES_SCHEMA`, `POSTGRES_RUNTIME_ROLE`).
+  `NAS_FETCH_LEGACY_ROOT`, `POSTGRES_SCHEMA`, `POSTGRES_RUNTIME_ROLE`).
 
 `POSTGRES_SCHEMA` and `POSTGRES_RUNTIME_ROLE` select the business schema per
 VPS project: `development`/`airflow_dev` (the default when unset, matching
@@ -63,13 +63,20 @@ default (`:?Required`), like `YOUTUBE_TOKENS_HOST_DIR`, so a missing directory
 fails loudly. `NAS_ARCHIVE_HOST` defaults to an empty string, which disables
 `congress_videos/nas_archive_dag.py` entirely (its `check_enabled` task
 short-circuits) — a stack without a configured NAS archive target behaves
-exactly as before this contract existed. When enabled, that DAG offloads
-local raw/derived material for fully-completed videos (uploaded, verified,
-and at least `NAS_ARCHIVE_MIN_AGE_DAYS` days old — default 14) to
-`NAS_ARCHIVE_HOST:NAS_ARCHIVE_ROOT` over rsync-over-SSH, then prunes it from
-local disk; `PROJECT_DATA_DIR/thumbnails/` is mirrored to the same target on
-every enabled run but is never pruned locally, since its files are keyed by
-the uploaded YouTube video id and can't be attributed to one source video.
+exactly as before this contract existed. When enabled, that DAG syncs local
+raw/derived material for fully-completed videos (uploaded and verified) to
+`NAS_ARCHIVE_HOST:NAS_ARCHIVE_ROOT` over rsync-over-SSH on every run,
+regardless of age (rsync is incremental, so re-syncing an unchanged video is
+cheap) — early sync, late prune: local deletion only happens once a video's
+material is at least `NAS_ARCHIVE_MIN_AGE_DAYS` days old (default 14).
+`NAS_ARCHIVE_SYNC_BATCH` (default 20, an operational knob read directly by
+the DAG, not part of this env-file contract) caps syncs per run;
+`NAS_ARCHIVE_BATCH` (default 2, same operational-knob status) separately
+caps prunes per run — a video that syncs but doesn't clear the prune cap
+stays eligible next run. `PROJECT_DATA_DIR/thumbnails/` is mirrored to the
+same target on every enabled run but is never pruned locally, since its
+files are keyed by the uploaded YouTube video id and can't be attributed to
+one source video.
 
 `congress_videos/nas_fetch_dag.py` (`nas_fetch`) is the inverse, on-demand
 recovery DAG: it pulls one or more already-archived videos' material back
@@ -86,15 +93,37 @@ airflow dags trigger nas_fetch --conf '{"video_id": "abc123", "channel_slug": "c
 
 `channel_slug` defaults to `DEFAULT_CHANNEL` when omitted. Each requested
 video is handled independently: a failure fetching or verifying one video
-aborts only that one (its `.nas_archived.json` marker is left in place) and
-is recorded in the run summary; the rest still proceed. The NAS copy is never
-modified or deleted by this DAG. After a successful fetch, every restored
-media file's mtime is reset to the fetch time — `rsync -a` preserves the
-NAS's original timestamps, so without this the video would still look old to
-`nas_archive`'s local age gate — giving the video a fresh full
-`NAS_ARCHIVE_MIN_AGE_DAYS` window before `nas_archive` can pick it up again.
-Re-archiving afterwards is cheap: the NAS copy is unchanged, so the eventual
-re-push is close to a no-op sync.
+aborts only that one (its `.nas_archived.json` marker, if any, is left in
+place) and is recorded in the run summary; the rest still proceed. The NAS
+copy is never modified or deleted by this DAG. After a successful fetch,
+every restored media file's mtime is reset to the fetch time — `rsync -a`
+preserves the NAS's original timestamps, so without this the video would
+still look old to `nas_archive`'s local age gate — giving the video a fresh
+full `NAS_ARCHIVE_MIN_AGE_DAYS` window before `nas_archive` can pick it up
+again. Re-archiving afterwards is cheap: the NAS copy is unchanged, so the
+eventual re-push is close to a no-op sync.
+
+When a video has no local `.nas_archived.json` marker (e.g. one of the ~70
+pre-migration videos that only ever lived on the NAS and were never archived
+from this VPS), `nas_fetch` falls back to a single SSH discovery command
+against `NAS_ARCHIVE_ROOT`, then — only if `NAS_FETCH_LEGACY_ROOT` is set —
+against that legacy root, a **read-only** pre-migration production tree at a
+different path with the same three possible directory shapes
+(`downloads/{date}/{video_id}`, `{channel_slug}/{video_id}`, or the legacy
+top-level `{video_id}`). The first root with at least one matching directory
+wins. `NAS_FETCH_LEGACY_ROOT` defaults to empty, which disables the fallback
+to that second root (discovery against `NAS_ARCHIVE_ROOT` alone still
+happens). This mode never writes, deletes, or rsync-pushes anything to
+either root — pull only — and there is no marker to remove afterwards. The
+run summary records which source each video came from: `"marker"`,
+`"archive-root"`, or `"legacy-root"`.
+
+A video pulled from the legacy root becomes a VPS-managed video from then on:
+it has no marker, its media mtimes are refreshed, and the next `nas_archive`
+run syncs it into `NAS_ARCHIVE_ROOT` (and prunes it locally once it ages past
+the retention window). The legacy copy is never touched, so the video exists
+under both roots until the legacy tree is merged or retired. This is the
+intended hand-over, not a leak.
 
 `utils/git_sync_dag.py` is excluded from DAG loading on this image: the
 Dockerfile appends `git_sync_dag` to `.airflowignore` before the tree is made

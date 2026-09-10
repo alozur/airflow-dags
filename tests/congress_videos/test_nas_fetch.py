@@ -11,6 +11,9 @@ Covers:
   push side's rsync_command, --mkpath never included.
 - verify_fetched: itemized-changes parsing via an injected runner, mirroring
   verify_synced's semantics.
+- discover_remote_dirs / discover_fetch_source: marker-less fallback — one
+  SSH discovery command per source root, stdout parsing/validation, root
+  precedence (archive root before legacy root), legacy root pull-only.
 - refresh_retention: only media files get their mtime bumped to `now`;
   non-media sidecars are left untouched; files outside `paths` are untouched.
 
@@ -25,11 +28,14 @@ import shlex
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
 from congress_videos.modules.nas_archive import ArchiveSettings, ssh_command, write_marker
 from congress_videos.modules.nas_fetch import (
+    discover_fetch_source,
+    discover_remote_dirs,
     ensure_local_dir,
     fetch_rsync_command,
     is_archived_elsewhere,
@@ -152,6 +158,28 @@ class TestReadMarker:
         # Must not raise.
         read_marker(tmp_path, "congreso-es-tv", "abc123")
 
+    def test_bare_video_id_entry_is_safe(self, tmp_path):
+        """The legacy top-level scheme records a bare {video_id} entry in
+        'synced' (see nas_archive.video_paths) — read_marker must accept an
+        exact match for the requested video_id alongside the two prefixes."""
+        channel_dir = tmp_path / "congreso-es-tv" / "abc123"
+        payload = _valid_payload()
+        payload["synced"] = ["downloads/2026-08-20/abc123", "abc123"]
+        write_marker(channel_dir, payload)
+
+        payload_read = read_marker(tmp_path, "congreso-es-tv", "abc123")
+
+        assert payload_read["synced"] == ["downloads/2026-08-20/abc123", "abc123"]
+
+    def test_bare_entry_not_matching_the_requested_video_id_is_unsafe(self, tmp_path):
+        channel_dir = tmp_path / "congreso-es-tv" / "abc123"
+        payload = _valid_payload()
+        payload["synced"] = ["other-video-id"]
+        write_marker(channel_dir, payload)
+
+        with pytest.raises(ValueError):
+            read_marker(tmp_path, "congreso-es-tv", "abc123")
+
 
 # ---------------------------------------------------------------------------
 # remove_marker
@@ -223,7 +251,7 @@ class TestEnsureLocalDir:
 class TestFetchRsyncCommand:
     def test_exact_argv_without_dry_run(self, settings, tmp_path):
         local_path = tmp_path / "abc123"
-        command = fetch_rsync_command(settings, "downloads/2026-08-20/abc123", local_path)
+        command = fetch_rsync_command(settings, settings.root, "downloads/2026-08-20/abc123", local_path)
 
         assert command == [
             "rsync",
@@ -238,7 +266,7 @@ class TestFetchRsyncCommand:
 
     def test_mkpath_is_never_passed(self, settings, tmp_path):
         local_path = tmp_path / "abc123"
-        command = fetch_rsync_command(settings, "downloads/2026-08-20/abc123", local_path)
+        command = fetch_rsync_command(settings, settings.root, "downloads/2026-08-20/abc123", local_path)
         assert "--mkpath" not in command
 
     def test_source_and_destination_are_swapped_vs_push(self, settings, tmp_path):
@@ -246,7 +274,7 @@ class TestFetchRsyncCommand:
 
         local_path = tmp_path / "abc123"
         push_command = rsync_command(settings, local_path, "downloads/2026-08-20/abc123")
-        pull_command = fetch_rsync_command(settings, "downloads/2026-08-20/abc123", local_path)
+        pull_command = fetch_rsync_command(settings, settings.root, "downloads/2026-08-20/abc123", local_path)
 
         # Push: local source, remote destination. Pull: remote source, local destination.
         assert push_command[-2] == f"{local_path}/"
@@ -256,9 +284,17 @@ class TestFetchRsyncCommand:
 
     def test_dry_run_inserts_flag_before_the_ssh_option(self, settings, tmp_path):
         local_path = tmp_path / "abc123"
-        command = fetch_rsync_command(settings, "downloads/2026-08-20/abc123", local_path, dry_run=True)
+        command = fetch_rsync_command(settings, settings.root, "downloads/2026-08-20/abc123", local_path, dry_run=True)
         assert "--dry-run" in command
         assert command.index("--dry-run") < command.index("-e")
+
+    def test_uses_the_given_source_root_instead_of_settings_root(self, settings, tmp_path):
+        local_path = tmp_path / "abc123"
+        legacy_root = "/volume1/docker/airflow/congress_videos"
+
+        command = fetch_rsync_command(settings, legacy_root, "abc123", local_path)
+
+        assert command[-2] == f"nas-archive@100.64.0.1:{legacy_root}/abc123/"
 
 
 # ---------------------------------------------------------------------------
@@ -269,17 +305,17 @@ class TestFetchRsyncCommand:
 class TestVerifyFetched:
     def test_empty_itemized_output_means_fetched(self, settings, tmp_path):
         runner = lambda command: SimpleNamespace(stdout="", returncode=0)  # noqa: E731
-        assert verify_fetched(settings, "abc123", tmp_path, runner) is True
+        assert verify_fetched(settings, settings.root, "abc123", tmp_path, runner) is True
 
     def test_receive_line_means_not_fully_fetched(self, settings, tmp_path):
         stdout = ">f+++++++++ video.mp4\n"
         runner = lambda command: SimpleNamespace(stdout=stdout, returncode=0)  # noqa: E731
-        assert verify_fetched(settings, "abc123", tmp_path, runner) is False
+        assert verify_fetched(settings, settings.root, "abc123", tmp_path, runner) is False
 
     def test_create_line_means_not_fully_fetched(self, settings, tmp_path):
         stdout = "cd+++++++++ oradores/\n"
         runner = lambda command: SimpleNamespace(stdout=stdout, returncode=0)  # noqa: E731
-        assert verify_fetched(settings, "abc123", tmp_path, runner) is False
+        assert verify_fetched(settings, settings.root, "abc123", tmp_path, runner) is False
 
     def test_runner_receives_the_dry_run_command(self, settings, tmp_path):
         captured = {}
@@ -288,8 +324,152 @@ class TestVerifyFetched:
             captured["command"] = command
             return SimpleNamespace(stdout="", returncode=0)
 
-        verify_fetched(settings, "abc123", tmp_path, runner)
+        verify_fetched(settings, settings.root, "abc123", tmp_path, runner)
         assert "--dry-run" in captured["command"]
+
+
+# ---------------------------------------------------------------------------
+# discover_remote_dirs / discover_fetch_source
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoverRemoteDirs:
+    def test_parses_discovered_directories_and_validates_them(self, settings):
+        source_root = settings.root
+        stdout = (
+            f"{source_root}/downloads/2026-08-20/abc123\n{source_root}/congreso-es-tv/abc123\n{source_root}/abc123\n"
+        )
+        runner = lambda command: SimpleNamespace(stdout=stdout, returncode=0)  # noqa: E731
+
+        result = discover_remote_dirs(settings, source_root, "congreso-es-tv", "abc123", runner)
+
+        assert result == ["downloads/2026-08-20/abc123", "congreso-es-tv/abc123", "abc123"]
+
+    def test_empty_stdout_means_nothing_found(self, settings):
+        runner = lambda command: SimpleNamespace(stdout="", returncode=0)  # noqa: E731
+        assert discover_remote_dirs(settings, settings.root, "congreso-es-tv", "abc123", runner) == []
+
+    def test_runs_exactly_one_ssh_command(self, settings):
+        calls = []
+
+        def runner(command):
+            calls.append(command)
+            return SimpleNamespace(stdout="", returncode=0)
+
+        discover_remote_dirs(settings, settings.root, "congreso-es-tv", "abc123", runner)
+
+        assert len(calls) == 1
+
+    def test_command_shape_is_ssh_sh_c_snippet(self, settings):
+        captured = {}
+
+        def runner(command):
+            captured["command"] = command
+            return SimpleNamespace(stdout="", returncode=0)
+
+        discover_remote_dirs(settings, settings.root, "congreso-es-tv", "abc123", runner)
+
+        command = captured["command"]
+        base_ssh = ssh_command(settings)
+        assert command[: len(base_ssh)] == base_ssh
+        assert command[len(base_ssh)] == "nas-archive@100.64.0.1"
+        assert command[len(base_ssh) + 1] == "sh"
+        assert command[len(base_ssh) + 2] == "-c"
+        snippet = command[len(base_ssh) + 3]
+        assert settings.root in snippet
+        assert "congreso-es-tv/abc123" in snippet
+        assert "downloads/*/abc123" in snippet
+
+    def test_video_id_is_validated_before_building_the_command(self, settings):
+        runner = MagicMock(side_effect=AssertionError("must not be called"))
+        with pytest.raises(ValueError, match="Invalid video_id"):
+            discover_remote_dirs(settings, settings.root, "congreso-es-tv", "ab", runner)
+        runner.assert_not_called()
+
+    def test_nonzero_returncode_raises(self, settings):
+        runner = lambda command: SimpleNamespace(stdout="", returncode=1, stderr="permission denied")  # noqa: E731
+        with pytest.raises(ValueError, match="remote discovery failed"):
+            discover_remote_dirs(settings, settings.root, "congreso-es-tv", "abc123", runner)
+
+    def test_discovered_path_outside_source_root_raises(self, settings):
+        stdout = "/some/other/root/abc123\n"
+        runner = lambda command: SimpleNamespace(stdout=stdout, returncode=0)  # noqa: E731
+        with pytest.raises(ValueError, match="outside source_root"):
+            discover_remote_dirs(settings, settings.root, "congreso-es-tv", "abc123", runner)
+
+
+class TestDiscoverFetchSource:
+    def _settings_with_legacy(self, tmp_path) -> ArchiveSettings:
+        ssh_dir = _make_ssh_dir(tmp_path)
+        return ArchiveSettings.from_env(
+            {
+                "NAS_ARCHIVE_HOST": "100.64.0.1",
+                "NAS_ARCHIVE_USER": "nas-archive",
+                "NAS_ARCHIVE_ROOT": "/volume1/congress_archive",
+                "NAS_FETCH_LEGACY_ROOT": "/volume1/docker/airflow/congress_videos",
+                "NAS_ARCHIVE_SSH_DIR": str(ssh_dir),
+            }
+        )
+
+    def test_archive_root_wins_when_it_has_a_match(self, tmp_path):
+        settings = self._settings_with_legacy(tmp_path)
+        calls = []
+
+        def runner(command):
+            calls.append(command)
+            return SimpleNamespace(stdout=f"{settings.root}/abc123\n", returncode=0)
+
+        source_root, relative_dirs = discover_fetch_source(settings, "congreso-es-tv", "abc123", runner)
+
+        assert source_root == settings.root
+        assert relative_dirs == ["abc123"]
+        assert len(calls) == 1  # legacy root never consulted once archive root matched
+
+    def test_falls_back_to_legacy_root_when_archive_root_has_nothing(self, tmp_path):
+        settings = self._settings_with_legacy(tmp_path)
+
+        def runner(command):
+            snippet = command[-1]
+            if settings.legacy_root in snippet:
+                return SimpleNamespace(stdout=f"{settings.legacy_root}/congreso-es-tv/abc123\n", returncode=0)
+            return SimpleNamespace(stdout="", returncode=0)
+
+        source_root, relative_dirs = discover_fetch_source(settings, "congreso-es-tv", "abc123", runner)
+
+        assert source_root == settings.legacy_root
+        assert relative_dirs == ["congreso-es-tv/abc123"]
+
+    def test_raises_when_legacy_root_is_unset_and_archive_root_has_nothing(self, settings):
+        runner = lambda command: SimpleNamespace(stdout="", returncode=0)  # noqa: E731
+        with pytest.raises(FileNotFoundError):
+            discover_fetch_source(settings, "congreso-es-tv", "abc123", runner)
+
+    def test_raises_when_neither_root_has_anything(self, tmp_path):
+        settings = self._settings_with_legacy(tmp_path)
+        runner = lambda command: SimpleNamespace(stdout="", returncode=0)  # noqa: E731
+
+        with pytest.raises(FileNotFoundError):
+            discover_fetch_source(settings, "congreso-es-tv", "abc123", runner)
+
+    def test_never_writes_to_the_legacy_root_only_reads(self, tmp_path):
+        """discover_fetch_source only ever calls the injected runner — a pure
+        read via SSH `sh -c` glob/test, never rsync, mkdir, or any other
+        mutating command against either root."""
+        settings = self._settings_with_legacy(tmp_path)
+        commands = []
+
+        def runner(command):
+            commands.append(command)
+            if settings.legacy_root in command[-1]:
+                return SimpleNamespace(stdout=f"{settings.legacy_root}/abc123\n", returncode=0)
+            return SimpleNamespace(stdout="", returncode=0)
+
+        discover_fetch_source(settings, "congreso-es-tv", "abc123", runner)
+
+        for command in commands:
+            assert command[-3:-1] == ["sh", "-c"]
+            assert "rsync" not in command
+            assert "mkdir" not in command
 
 
 # ---------------------------------------------------------------------------
