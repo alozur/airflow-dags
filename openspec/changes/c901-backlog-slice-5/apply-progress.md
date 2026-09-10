@@ -1,8 +1,10 @@
 # Apply Progress: C901 Backlog Slice 5 (issue #272)
 
-Batch: sdd-apply batch 1 of 3 — PR1 through PR4 (PR4 split into 4a/4b per the
-budget contingency). Scope owned by this batch: `congress_videos/modules/youtube/youtube_channel.py`
-only. PR5-PR9 and the release PR are NOT started (owned by later batches).
+Batches: sdd-apply batch 1 of 3 — PR1 through PR4 (PR4 split into 4a/4b per the
+budget contingency), scope `congress_videos/modules/youtube/youtube_channel.py`.
+sdd-apply batch 2 of 3 — PR5 through PR7, scope
+`congress_videos/modules/youtube/download.py` (this batch's addition). PR8-PR9
+and the release PR are NOT started (owned by batch 3).
 
 Worktree: `/home/alozur/src/github.com/alozur/airflow-dags-wt-272-s5`
 Base: `origin/main 7e3e689` (== `origin/dev`).
@@ -22,6 +24,12 @@ refactor/272-c901-slice-5                 (docs(sdd) e83a24c, base of the stack)
          └─ 80ee6a7  test(youtube-channel): add characterization tests ...       [PR4a]
             refactor/272-s5-pr4b-extract-agenda-section-lift
             └─ e3d33a4  refactor(youtube-channel): lift agenda lookup ...        [PR4b]
+               refactor/272-s5-pr5-dedup-overlapping-chapters
+               └─ 22385e1  refactor(download): lift chapter-boundary accessors ... [PR5]
+                  refactor/272-s5-pr6-identify-interesting-chapters
+                  └─ 4083139  refactor(download): lift SRT-chunk lookup ...        [PR6]
+                     refactor/272-s5-pr7-analyze-single-chunk
+                     └─ cecf397  refactor(download): lift chapter-identification ... [PR7]
 ```
 
 Each branch's parent is the previous branch's tip (stacked-to-main / `dev`, per
@@ -302,7 +310,7 @@ Work Unit Evidence (4b):
 | Runtime harness | N/A — pure text-scan helpers, no scheduling/DAG surface touched |
 | Rollback boundary | `git revert e3d33a4`; per design, PR1-4 only revertible together/in order (this commit drops the file's C901 token — reverting it alone would restore a live offender) |
 
-## Cumulative gate at this batch's tip (`e3d33a4`, branch `refactor/272-s5-pr4b-extract-agenda-section-lift`)
+## Cumulative gate at batch 1's tip (`e3d33a4`, branch `refactor/272-s5-pr4b-extract-agenda-section-lift`)
 
 ```
 $ uv run pytest -n auto
@@ -323,9 +331,257 @@ $ git diff origin/main..HEAD -- tests/ | rg '^-[^-]'
 (That single line is the spec-mandated counter decrement in
 `tests/test_ruff_config.py`, documented above — not an edit to any of the
 ten target functions' behavior tests. Every functional test-assertion diff
-across the batch is additions-only.)
+across batch 1 is additions-only.)
 
-## Complexity ladder (this batch)
+## PR5 — `_dedup_overlapping_chapters` (`download.py:1079-1145`)
+
+- Branch: `refactor/272-s5-pr5-dedup-overlapping-chapters` (parent: PR4b tip)
+- Commit: `22385e1`
+- Files: `congress_videos/modules/youtube/download.py`,
+  `tests/congress_videos/modules/youtube/test_download.py`
+- Changed lines: `2 files changed, 141 insertions(+), 40 deletions(-)` (181 total, budget 400)
+- Test-diff additions-only: confirmed empty
+
+Baseline confirmed: `_dedup_overlapping_chapters` measured **14**, matching design.
+
+RED-first tests (7 tests, classes `TestChapterStartEndSecs` +
+`TestMarkOverlappingChapters`) confirmed RED before the lift:
+```
+$ uv run pytest tests/congress_videos/modules/youtube/test_download.py::TestChapterStartEndSecs tests/congress_videos/modules/youtube/test_download.py::TestMarkOverlappingChapters -o addopts= -q
+7 failed — all ImportError: cannot import name '_chapter_start_secs' / '_chapter_end_secs' / '_mark_overlapping_chapters'
+```
+
+Gate outputs (after the lift):
+```
+$ uv run pytest tests/congress_videos/modules/youtube/test_download.py -o addopts=
+129 passed in 2.49s
+
+$ uvx ruff check --isolated --select C901 --config 'lint.mccabe.max-complexity=1' <file>
+C901 `_chapter_start_secs` is too complex (2 > 1)             # predicted 2
+C901 `_chapter_end_secs` is too complex (2 > 1)                # predicted 2
+C901 `_mark_overlapping_chapters` is too complex (9 > 1)       # predicted 9
+C901 `_dedup_overlapping_chapters` is too complex (2 > 1)      # predicted 2
+
+$ uv run ruff check .
+All checks passed!
+
+$ uv run ruff format --check .
+333 files already formatted
+```
+
+AST-equality proof (`ast_check_s5_pr5.py`):
+```
+OK _chapter_start_secs (normalized (d): name _start_secs -> _chapter_start_secs)
+OK _chapter_end_secs (normalized (d): name _end_secs -> _chapter_end_secs)
+OK _mark_overlapping_chapters (normalized (d) x2: Name _chapter_start_secs->_start_secs, _chapter_end_secs->_end_secs)
+OK _mark_overlapping_chapters (landmine) (overlap <= 0.0 is Compare(ops=[LtE()]), never rewritten to <)
+OK _dedup_overlapping_chapters (guard clause) (verbatim)
+OK _dedup_overlapping_chapters (sort statement) (normalized (d): Name _chapter_start_secs -> _start_secs)
+OK _dedup_overlapping_chapters (keep init) (verbatim)
+OK _dedup_overlapping_chapters (call-site replacement) (declared call-site statement)
+OK _dedup_overlapping_chapters (return statement) (verbatim)
+```
+
+Landmine guard verified mechanically: `overlap <= 0.0` (base 1110) is
+`Compare(ops=[LtE()])` in the shipped dump — never rewritten to `<`. The
+unsorted 3-chapter quirk test (`test_touching_boundary_uses_lte_not_lt`)
+makes the operator observable at the new `_mark_overlapping_chapters` seam.
+
+**Design deviation found (documented, non-blocking)**: task 5.3 asks for a
+quirk test pinning `min_dur <= 0.0 -> continue` ("degenerate chapter
+skipped, not discarded"). Proved mathematically (and confirmed empirically
+with a 2,000,000-sample randomized search — zero counter-examples) that
+this branch is **unreachable dead code**: `overlap = max(0.0, min(end_a,
+end_b) - max(start_a, start_b))` being `> 0.0` requires, by strict interval
+arithmetic, both `end_a > max(start_a, start_b)` and `end_b > max(start_a,
+start_b)`, which forces `dur_a > 0` and `dur_b > 0` — so by the time the
+`if overlap <= 0.0: break` guard is already passed, `min_dur <= 0.0` can
+never be true, for any real chapter geometry (mocking `_chapter_start_secs`/
+`_chapter_end_secs` does not change this — the proof depends only on the
+four returned values' ordering, not their source). This is a pure-lift
+target; the `continue` statement is preserved byte-for-byte and covered by
+the AST-equality proof, but no reachable-behavior test exists for it. The
+achievable quirks (mutates-in-place/returns-None, the `<=` touching
+boundary, narrower-discarded-and-breaks) are tested instead.
+
+Work Unit Evidence:
+| Evidence | Value |
+|---|---|
+| Focused test | `uv run pytest tests/congress_videos/modules/youtube/test_download.py -o addopts=` → 129 passed |
+| Runtime harness | N/A — pure chapter-list helpers, no scheduling/DAG surface touched |
+| Rollback boundary | `git revert 22385e1`; per design, only together with/after PR7 (token drop) |
+
+## PR6 — `identify_interesting_chapters` (`download.py:1461-1549`)
+
+- Branch: `refactor/272-s5-pr6-identify-interesting-chapters` (parent: PR5 tip)
+- Commit: `4083139`
+- Files: `congress_videos/modules/youtube/download.py`,
+  `tests/congress_videos/modules/youtube/test_download.py`
+- Changed lines: `2 files changed, 256 insertions(+), 79 deletions(-)` (335 total, budget 400)
+- Test-diff additions-only: confirmed empty
+
+Baseline confirmed: `identify_interesting_chapters` measured **12**, matching design.
+
+RED-first tests (12 tests, classes `TestFindSrtChunksForVideo` +
+`TestCollectChunkChapters`) confirmed RED before the lift (`ImportError`).
+
+Gate outputs (after the lift):
+```
+$ uv run pytest tests/congress_videos/modules/youtube/test_download.py -o addopts=
+141 passed in 2.24s
+
+$ uvx ruff check --isolated --select C901 --config 'lint.mccabe.max-complexity=1' <file>
+C901 `_find_srt_chunks_for_video` is too complex (4 > 1)       # predicted 4
+C901 `_collect_chunk_chapters` is too complex (4 > 1)          # predicted 4
+C901 `identify_interesting_chapters` is too complex (6 > 1)    # predicted 6
+
+$ uv run ruff check .
+All checks passed!
+
+$ uv run ruff format --check .
+333 files already formatted   (one reformat pass applied and re-verified clean)
+```
+
+AST-equality proof (`ast_check_s5_pr6.py`):
+```
+OK _find_srt_chunks_for_video (normalized: appended return)
+OK _collect_chunk_chapters (normalized: appended return)
+OK identify_interesting_chapters (region before srt_chunks block) (verbatim)
+OK identify_interesting_chapters (call-site 1 replacement) (declared call-site statement)
+OK identify_interesting_chapters (if not srt_chunks guard) (verbatim)
+OK identify_interesting_chapters (try: logging.info) (verbatim)
+OK identify_interesting_chapters (call-site 2 replacement) (declared call-site statement)
+OK identify_interesting_chapters (try: region after chunks_with_chapters block) (verbatim)
+OK identify_interesting_chapters (except handlers) (verbatim, order+body unchanged)
+```
+
+Landmine guards verified: the intentional `if not srt_content:` falsy check
+(base :1490, matching `_find_srt_chunk`'s `""`-on-no-match contract) moved
+verbatim into `_collect_chunk_chapters`, pinned by
+`test_missing_srt_content_yields_error_entry`; the `<=` optimal-duration
+boundary (`chunk_duration <= max_optimal_duration`) pinned by
+`test_duration_equal_to_max_optimal_is_whole_chunk_optimal`. The whole
+per-chunk loop moved as one contiguous unit — both `continue`s stay
+verbatim — with `_build_srt_chunk_index` pulled inside so no initializer
+relocation was needed.
+
+Work Unit Evidence:
+| Evidence | Value |
+|---|---|
+| Focused test | `uv run pytest tests/congress_videos/modules/youtube/test_download.py -o addopts=` → 141 passed |
+| Runtime harness | N/A — pure SRT-index/chapter-collection helpers |
+| Rollback boundary | `git revert 4083139`; per design, only together with/after PR7 (token drop) |
+
+## PR7 — `_analyze_single_chunk` (`download.py:1291-1340`) + `download.py` C901 prune + counter 6→5
+
+- Branch: `refactor/272-s5-pr7-analyze-single-chunk` (parent: PR6 tip)
+- Commit: `cecf397`
+- Files: `congress_videos/modules/youtube/download.py`, `pyproject.toml`,
+  `tests/congress_videos/modules/youtube/test_download.py`,
+  `tests/test_ruff_config.py`
+- Changed lines: `4 files changed, 203 insertions(+), 52 deletions(-)` (255 total, budget 400)
+- Test-diff additions-only: confirmed empty except the spec-mandated
+  `EXPECTED_C901_FILE_COUNT = 6` → `= 5` lockstep decrement in
+  `tests/test_ruff_config.py` (Requirement: "Per-file-ignores entries drop
+  their C901 token in lockstep with the counter") — not a behavior-test
+  edit for any of the ten target functions.
+
+Baseline confirmed: `_analyze_single_chunk` measured **15**, matching design.
+
+RED-first tests (5 tests, class `TestIdentifyChaptersForChunk`) confirmed
+RED before the lift (`ImportError`), including the mandatory closure-capture
+proof (`test_oversized_srt_closure_captures_summary_text`): fakes
+`map_reduce_identify_chapters` to capture the `identify_fn` kwarg and
+invoke it with a synthetic window, then asserts the resulting `user_prompt`
+still contains the same `summary_text` built inside the helper's own scope
+(`"Chunk 7 (00:00:00 - 01:00:00)"`, the speaker line, `"Topics: a, b"`,
+`"Summary: Debate sobre presupuestos"`).
+
+Gate outputs (after the lift):
+```
+$ uv run pytest tests/congress_videos/modules/youtube/test_download.py -o addopts=
+146 passed in 2.66s
+
+$ uvx ruff check --isolated --select C901 --config 'lint.mccabe.max-complexity=1' <file>
+C901 `_identify_chapters_for_chunk` is too complex (8 > 1)     # predicted 8
+C901 `_analyze_single_chunk` is too complex (8 > 1)            # predicted 8
+
+$ uv run ruff check .
+All checks passed!
+
+$ uv run ruff format --check .
+333 files already formatted   (one reformat pass applied and re-verified clean)
+```
+
+AST-equality proof (`ast_check_s5_pr7.py`):
+```
+OK _analyze_single_chunk (imports + logging.info) (verbatim)
+OK _identify_chapters_for_chunk (normalized (d) x2: system_prompt->CHAPTER_IDENTIFICATION_SYSTEM_PROMPT, user_prompt_template->CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE; appended return)
+OK _identify_chapters_for_chunk (_identify_window intact) (Return + Raise present, moved as one unit)
+OK _identify_chapters_for_chunk (closure keyword) (map_reduce_identify_chapters(identify_fn=Name('_identify_window')))
+OK _analyze_single_chunk (call-site replacement) (declared call-site statement)
+OK _analyze_single_chunk (try: region after chunk-identification block) (verbatim)
+OK _analyze_single_chunk (except handlers) (verbatim, order preserved: json.JSONDecodeError before Exception)
+```
+
+Landmine guards verified: `_identify_window` and its sole call site into
+`map_reduce_identify_chapters` moved as one atomic unit; `summary_text` is
+a plain local of `_identify_chapters_for_chunk` with no cross-boundary
+capture; `interesting_chapters` stays live in the outer scope for the
+`is_single_chapter` comparison at base :1381 (unaffected, outside the
+lifted range); the `from congress_videos.config.ai_prompts import (...)`
+at base 1281-1284 stayed in the caller, before the `try` — not moved into
+the helper, so an `ImportError` there still propagates uncaught rather than
+being silently converted into a whole-chunk fallback; `except
+json.JSONDecodeError` stays ordered before `except Exception`, both
+handlers' bodies unchanged.
+
+Hidden-regression check (task 7.5, all three `download.py` functions,
+PR5-7 all applied in this worktree):
+```
+$ uvx ruff check --select C901 --no-cache --config 'lint.per-file-ignores = {}' --output-format concise congress_videos/modules/youtube/download.py
+All checks passed!
+```
+Zero offenders confirmed → safe to drop the `"C901"` token. Same commit:
+`pyproject.toml` line 126 `["B905","C901","SIM103","SIM108"]` →
+`["B905","SIM103","SIM108"]`; `EXPECTED_C901_FILE_COUNT` `6` → `5` in
+`tests/test_ruff_config.py`.
+```
+$ uv run pytest tests/test_ruff_config.py -o addopts=
+14 passed in 0.11s
+```
+
+Work Unit Evidence:
+| Evidence | Value |
+|---|---|
+| Focused test | `uv run pytest tests/congress_videos/modules/youtube/test_download.py -o addopts=` → 146 passed |
+| Runtime harness | N/A — pure LLM-call helper, no I/O boundary change |
+| Rollback boundary | `git revert cecf397`; per design, PR5-7 only revertible together/in order (this commit drops the file's C901 token — reverting it alone would restore a live offender) |
+
+## Cumulative gate at this batch's tip (`cecf397`, branch `refactor/272-s5-pr7-analyze-single-chunk`)
+
+```
+$ uv run pytest -n auto
+5346 passed, 34 skipped in 69.90s        (base 5322 + 24 new tests; zero regressions)
+
+$ uv run ruff check .
+All checks passed!
+
+$ uv run ruff format --check .
+333 files already formatted
+
+$ uvx ruff check --select C901 --no-cache --config 'lint.per-file-ignores = {}' --output-format concise congress_videos/modules/youtube/download.py
+All checks passed!
+
+$ git diff refactor/272-s5-pr4b-extract-agenda-section-lift..HEAD -- tests/ | rg '^-[^-]'
+-    EXPECTED_C901_FILE_COUNT = 6
+```
+(That single line is the spec-mandated counter decrement in
+`tests/test_ruff_config.py`, documented above — not an edit to any of the
+three `download.py` target functions' behavior tests. Every functional
+test-assertion diff across PR5-7 is additions-only.)
+
+## Complexity ladder (cumulative, batch 1 + batch 2)
 
 | Function | Base Cx | Predicted | Measured | Status |
 |---|---|---|---|---|
@@ -339,19 +595,32 @@ across the batch is additions-only.)
 | `extract_agenda_section` | 17 | 8 | **8** | ✅ |
 | `_find_agenda_for_video` (new) | — | 3 | **3** | ✅ |
 | `_locate_target_section` (new) | — | 8 | **8** | ✅ |
+| `_dedup_overlapping_chapters` | 14 | 2 | **2** | ✅ |
+| `_chapter_start_secs` (new) | — | 2 | **2** | ✅ |
+| `_chapter_end_secs` (new) | — | 2 | **2** | ✅ |
+| `_mark_overlapping_chapters` (new) | — | 9 | **9** | ✅ |
+| `identify_interesting_chapters` | 12 | 6 | **6** | ✅ |
+| `_find_srt_chunks_for_video` (new) | — | 4 | **4** | ✅ |
+| `_collect_chunk_chapters` (new) | — | 4 | **4** | ✅ |
+| `_analyze_single_chunk` | 15 | 8 | **8** | ✅ |
+| `_identify_chapters_for_chunk` (new) | — | 8 | **8** | ✅ |
 
-## C901 counter ladder (this batch)
+## C901 counter ladder (cumulative, batch 1 + batch 2)
 
 `youtube_channel.py` entry: `["B007","C901","F841","SIM102"]` →
 `["B007","F841","SIM102"]` (token dropped in commit `e3d33a4`, PR4b).
-`EXPECTED_C901_FILE_COUNT`: `7` → `6` (same commit).
+`download.py` entry: `["B905","C901","SIM103","SIM108"]` →
+`["B905","SIM103","SIM108"]` (token dropped in commit `cecf397`, PR7).
+`EXPECTED_C901_FILE_COUNT`: `7` → `6` (PR4b) → `5` (PR7).
 
 ## Tasks completed (tasks.md)
 
-PR1 (1.1-1.7), PR2 (2.1-2.6), PR3 (3.1-3.7), PR4 (4.1-4.10) — all 30 tasks
-marked `[x]` in `openspec/changes/c901-backlog-slice-5/tasks.md`. PR5 onward
-(tasks 5.1 through 11.8) remain `[ ]` — out of this batch's scope, owned by
-later sdd-apply batches per the orchestrator's explicit "stop after PR4" scope.
+PR1 (1.1-1.7), PR2 (2.1-2.6), PR3 (3.1-3.7), PR4 (4.1-4.10), PR5 (5.1-5.7),
+PR6 (6.1-6.7), PR7 (7.1-7.7) — all 51 tasks marked `[x]` in
+`openspec/changes/c901-backlog-slice-5/tasks.md`. PR8 onward (tasks 8.1
+through 11.8) remain `[ ]` — out of this batch's scope, owned by the next
+sdd-apply batch (batch 3, PR8-PR9 + release PR) per the orchestrator's
+explicit "stop after PR7" scope.
 
 ## Deviations from design (full list)
 
@@ -359,11 +628,23 @@ later sdd-apply batches per the orchestrator's explicit "stop after PR4" scope.
    measured 50) — corrected in the test to match the actual fixture-derived
    value; the `len()`-based assertion (the design's own stated authoritative
    form) was unaffected. Not a boundary, signature, or behavior deviation.
+   (batch 1)
+2. **`min_dur <= 0.0` quirk in task 5.3 is unreachable dead code** —
+   mathematically proven (and empirically confirmed by a 2M-sample
+   randomized search) that `_mark_overlapping_chapters` can never reach
+   `min_dur <= 0.0` once `overlap > 0.0`, because interval-overlap arithmetic
+   forces both chapter durations strictly positive whenever there is any
+   overlap at all. The `continue` statement is preserved byte-for-byte
+   (verified by the AST-equality proof) but has no reachable-behavior test;
+   the three achievable quirks in `TestMarkOverlappingChapters` cover the
+   rest of task 5.3. Not a boundary, signature, or lift-correctness
+   deviation — a documented gap in test-writability only. (batch 2, PR5)
 
-No other deviations. Every lift boundary, helper name, signature, normalization,
-landmine guard, and the PR4 budget-contingency split matched the design exactly.
+No other deviations. Every lift boundary, helper name, signature,
+normalization, and landmine guard matched the design exactly across all
+seven PRs shipped so far.
 
 ## Blockers
 
-None. Ready for the next sdd-apply batch (PR5-PR9) or for sdd-verify to run
-independently against this batch's scope (PR1-PR4b).
+None. Ready for the next sdd-apply batch (PR8-PR9 + release PR) or for
+sdd-verify to run independently against this batch's scope (PR1-PR7).
