@@ -785,6 +785,201 @@ class TestCheckUploadFailures:
         )
         _check_upload_failures(ti)  # should not raise
 
+    # -----------------------------------------------------------------------
+    # Non-blocking copy-verification findings (issue #604)
+    # -----------------------------------------------------------------------
+
+    def _clean_chapter_and_turn_xcoms(self) -> dict:
+        return {
+            "chapter_upload_updates": {"recorded_failures": 0, "failed_updates": 0},
+            "turn_upload_updates": {
+                "updated_turns": 1,
+                "failed_updates": 0,
+                "details": [{"turn_id": 42, "status": "updated"}],
+            },
+        }
+
+    @pytest.mark.parametrize(
+        ("case_id", "copy_payload"),
+        [
+            (
+                "inconclusive",
+                {
+                    "verdict": "inconclusive",
+                    "findings": [],
+                    "corrected_applied": False,
+                    "persisted": False,
+                    "content_version": "v1",
+                },
+            ),
+            (
+                "description_reject",
+                {
+                    "verdict": "reject",
+                    "findings": [{"field": "description", "category": "unsupported_claim", "severity": "high"}],
+                    "corrected_applied": False,
+                    "persisted": True,
+                    "content_version": "v1",
+                },
+            ),
+            (
+                "discarded_correction",
+                {
+                    "verdict": "correctable",
+                    "findings": [
+                        {
+                            "field": "title",
+                            "category": "unsupported_claim",
+                            "severity": "high",
+                            "detail": "Correction discarded: not derivable from the supplied evidence.",
+                        }
+                    ],
+                    "corrected_applied": False,
+                    "persisted": True,
+                    "content_version": "v1",
+                },
+            ),
+            (
+                "audit_skip",
+                {
+                    "verdict": "pass",
+                    "findings": [],
+                    "corrected_applied": False,
+                    "persisted": False,
+                    "content_version": "v1",
+                },
+            ),
+            (
+                "unlanded_thumbnail_regen",
+                {
+                    "verdict": "reject",
+                    "findings": [{"field": "thumbnail_text", "category": "person_name", "severity": "high"}],
+                    "corrected_applied": False,
+                    "persisted": True,
+                    "content_version": "v1",
+                    "thumbnail_regen_landed": False,
+                },
+            ),
+        ],
+    )
+    def test_each_soft_copy_category_alone_does_not_raise(self, case_id, copy_payload):
+        """3.7 (issue #604): each verifier-produced finding category is
+        non-blocking on its own — no raise, and every finding lands on the
+        dedicated `copy_verification_warnings` XCom."""
+        from congress_videos.youtube_upload_dag import _check_upload_failures, _copy_verification_problems
+
+        xcoms = self._clean_chapter_and_turn_xcoms()
+        xcoms["copy_verification"] = copy_payload
+        ti = _make_ti(xcoms)
+
+        _check_upload_failures(ti)  # should not raise
+
+        expected = _copy_verification_problems(copy_payload)
+        assert expected  # sanity: this category IS a finding
+        assert ti.xcom_store["copy_verification_warnings"] == expected
+
+    def test_soft_copy_findings_are_each_logged_at_warning(self, caplog):
+        """3.8 (issue #604): each non-blocking finding gets its own WARNING log."""
+        from congress_videos.youtube_upload_dag import _check_upload_failures, _copy_verification_problems
+
+        copy_payload = {
+            "verdict": "reject",
+            "findings": [{"field": "description", "category": "unsupported_claim", "severity": "high"}],
+            "corrected_applied": False,
+            "persisted": True,
+            "content_version": "v1",
+        }
+        xcoms = self._clean_chapter_and_turn_xcoms()
+        xcoms["copy_verification"] = copy_payload
+        ti = _make_ti(xcoms)
+        expected = _copy_verification_problems(copy_payload)
+        assert len(expected) == 2  # reject + the same finding also flags as a discarded correction
+
+        with caplog.at_level(logging.WARNING):
+            _check_upload_failures(ti)  # should not raise
+
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warning_records) == 2
+        for finding in expected:
+            assert any(finding in r.message for r in warning_records)
+
+    def test_blocking_and_soft_findings_raise_with_blocking_text_only(self, caplog):
+        """3.9 (issue #604): a blocking finding raises with ONLY the blocking
+        text; the soft finding is still logged and pushed to XCom."""
+        from congress_videos.youtube_upload_dag import _check_upload_failures, _copy_verification_problems
+
+        copy_payload = {
+            "verdict": "correctable",
+            "findings": [
+                {
+                    "field": "title",
+                    "category": "unsupported_claim",
+                    "severity": "high",
+                    "detail": "Correction discarded: not derivable from the supplied evidence.",
+                }
+            ],
+            "corrected_applied": False,
+            "persisted": True,
+            "content_version": "v1",
+        }
+        ti = _make_ti(
+            {
+                "chapter_upload_updates": {
+                    "recorded_failures": 1,
+                    "failed_updates": 0,
+                    "details": [{"chapter_id": 5, "status": "failure_recorded"}],
+                },
+                "turn_upload_updates": {
+                    "updated_turns": 1,
+                    "failed_updates": 0,
+                    "details": [{"turn_id": 42, "status": "updated"}],
+                },
+                "copy_verification": copy_payload,
+            }
+        )
+        expected = _copy_verification_problems(copy_payload)
+
+        with caplog.at_level(logging.WARNING), pytest.raises(Exception) as exc_info:
+            _check_upload_failures(ti)
+
+        message = str(exc_info.value)
+        assert "Chapter upload failures" in message
+        assert "Final-copy verification" not in message
+        assert ti.xcom_store["copy_verification_warnings"] == expected
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any(expected[0] in r.message for r in warning_records)
+
+    def test_missing_copy_verification_xcom_still_raises(self):
+        """3.10 (issue #604): a missing `copy_verification` payload stays
+        blocking even alone, and still pushes an empty warnings list."""
+        from congress_videos.youtube_upload_dag import _check_upload_failures
+
+        ti = _make_ti(self._clean_chapter_and_turn_xcoms())  # copy_verification absent
+
+        with pytest.raises(Exception, match="copy_verification XCom missing after prepare_upload_config succeeded"):
+            _check_upload_failures(ti)
+
+        assert ti.xcom_store["copy_verification_warnings"] == []
+
+    def test_clean_run_pushes_empty_warning_list(self):
+        """3.11 (issue #604): a fully clean run does not raise and pushes an
+        empty `copy_verification_warnings` list."""
+        from congress_videos.youtube_upload_dag import _check_upload_failures
+
+        xcoms = self._clean_chapter_and_turn_xcoms()
+        xcoms["copy_verification"] = {
+            "verdict": "pass",
+            "findings": [],
+            "corrected_applied": False,
+            "persisted": True,
+            "content_version": "v1",
+        }
+        ti = _make_ti(xcoms)
+
+        _check_upload_failures(ti)  # should not raise
+
+        assert ti.xcom_store["copy_verification_warnings"] == []
+
 
 # ---------------------------------------------------------------------------
 # trigger_upload_with_config (t7)
