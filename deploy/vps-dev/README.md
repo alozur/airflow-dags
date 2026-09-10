@@ -28,7 +28,9 @@ Compose is rendered from three `--env-file` sources supplied by Ansible:
 - `runtime.env` — persistent secrets generated once per host (DB passwords,
   Fernet/webserver keys, admin password).
 - `release.env` — non-secret per-release settings (image tags, subnets,
-  `UI_UPSTREAM`, `EGRESS_SUBNET`, `EGRESS_INTERNAL`, `YOUTUBE_TOKENS_HOST_DIR`).
+  `UI_UPSTREAM`, `EGRESS_SUBNET`, `EGRESS_INTERNAL`, `YOUTUBE_TOKENS_HOST_DIR`,
+  `NAS_SYNC_HOST_DIR`, `NAS_ARCHIVE_HOST`, `NAS_ARCHIVE_PORT`,
+  `NAS_ARCHIVE_USER`, `NAS_ARCHIVE_ROOT`, `NAS_ARCHIVE_MIN_AGE_DAYS`).
 - `external.env` — optional external API key secrets (`OPENAI_API_KEY`,
   `YOUTUBE_API_KEY`, `REAP_API_KEY`, `PIKZELS_API_KEY`). Each falls back to
   the literal placeholder `dev-disabled-not-a-credential` when this file (or
@@ -43,6 +45,19 @@ chowns that directory to `50000:0` (the image's `airflow` uid:gid) before
 `compose up`; the compose file requires the variable with no default so a
 missing directory fails loudly rather than being created with the wrong
 owner.
+
+`NAS_SYNC_HOST_DIR` on the host holds `id_ed25519`, `id_ed25519.pub`, and
+`known_hosts` for the `nas_archive` DAG; it is bind-mounted **read-only** into
+the scheduler at `/opt/airflow/nas_sync`. This mount is required with no
+default (`:?Required`), like `YOUTUBE_TOKENS_HOST_DIR`, so a missing directory
+fails loudly. `NAS_ARCHIVE_HOST` defaults to an empty string, which disables
+`congress_videos/nas_archive_dag.py` entirely (its `check_enabled` task
+short-circuits) — a stack without a configured NAS archive target behaves
+exactly as before this contract existed. When enabled, that DAG offloads
+local raw/derived material for fully-completed videos (uploaded, verified,
+and at least `NAS_ARCHIVE_MIN_AGE_DAYS` days old — default 14) to
+`NAS_ARCHIVE_HOST:NAS_ARCHIVE_ROOT` over rsync-over-SSH, then prunes it from
+local disk.
 
 `utils/git_sync_dag.py` is excluded from DAG loading on this image: the
 Dockerfile appends `git_sync_dag` to `.airflowignore` before the tree is made

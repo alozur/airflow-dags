@@ -119,6 +119,27 @@ class DevContract(unittest.TestCase):
         for name in ("webserver", "init", "app-init"):
             self.assertNotIn("youtube_tokens", " ".join(services[name].get("volumes", [])))
 
+    def test_nas_archive_mount_is_read_only_scheduler_only_and_disabled_by_default(self):
+        services = self.compose()["services"]
+        scheduler = services["scheduler"]
+        self.assertIn(
+            "${NAS_SYNC_HOST_DIR:?Required}:/opt/airflow/nas_sync:ro",
+            scheduler["volumes"],
+        )
+        for name, service in services.items():
+            if name == "scheduler":
+                continue
+            self.assertNotIn("nas_sync", " ".join(service.get("volumes", [])))
+
+        env = scheduler["environment"]
+        # Empty NAS_ARCHIVE_HOST is the safe default: nas_archive_dag.py treats it as disabled.
+        self.assertEqual(env["NAS_ARCHIVE_HOST"], "${NAS_ARCHIVE_HOST:-}")
+        self.assertEqual(env["NAS_ARCHIVE_PORT"], "${NAS_ARCHIVE_PORT:-22}")
+        self.assertEqual(env["NAS_ARCHIVE_USER"], "${NAS_ARCHIVE_USER:-}")
+        self.assertEqual(env["NAS_ARCHIVE_ROOT"], "${NAS_ARCHIVE_ROOT:-}")
+        self.assertEqual(env["NAS_ARCHIVE_MIN_AGE_DAYS"], "${NAS_ARCHIVE_MIN_AGE_DAYS:-14}")
+        self.assertEqual(env["NAS_ARCHIVE_SSH_DIR"], "/opt/airflow/nas_sync")
+
     def test_external_api_keys_come_from_environment_with_safe_default(self):
         env = self.compose()["services"]["scheduler"]["environment"]
         for key in ("OPENAI_API_KEY", "YOUTUBE_API_KEY", "REAP_API_KEY", "PIKZELS_API_KEY"):
