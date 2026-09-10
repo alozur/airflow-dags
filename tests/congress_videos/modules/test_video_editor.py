@@ -16,6 +16,8 @@ Test groups:
     TestIntroSesionRenderer   — T-15 _render_intro_sesion + registration (session-intro-card-overlay PR 1)
     TestResolveOverlaySlot    — T-16 resolve_overlay_slot pure helper (session-intro-card-overlay PR 2)
     TestIntroWindowConstant   — T-17 INTRO_WINDOW_SECONDS default window (session-intro-card-overlay PR 2)
+    TestApplyOverlaysMaxTimeout — T-18 max_timeout kwarg (session-intro-card-overlay PR 3)
+    TestOverlayDurationGuard  — T-19 MAX_OVERLAY_SOURCE_SECONDS guard (session-intro-card-overlay PR 3)
 """
 
 from __future__ import annotations
@@ -1412,3 +1414,219 @@ class TestIntroWindowConstant:
         start, end = INTRO_WINDOW_SECONDS
         result = resolve_overlay_slot(existing=[], requested_start=start, requested_duration=end - start)
         assert result == INTRO_WINDOW_SECONDS
+
+
+# ---------------------------------------------------------------------------
+# T-18: TestApplyOverlaysMaxTimeout — max_timeout kwarg (session-intro-card-overlay PR 3)
+# ---------------------------------------------------------------------------
+
+
+class TestApplyOverlaysMaxTimeout:
+    """apply_overlays must accept a keyword-only max_timeout, defaulting to today's behavior."""
+
+    @pytest.fixture()
+    def mock_video_editor_subprocess(self, mocker):
+        """Patch subprocess.run in the video_editor module."""
+        completed = MagicMock(returncode=0, stdout="", stderr="")
+        return mocker.patch(
+            "congress_videos.modules.video_editor.subprocess.run",
+            return_value=completed,
+        )
+
+    @pytest.fixture()
+    def mock_get_source_duration(self, mocker):
+        """Patch _get_source_duration to return a fixed 300.0s duration."""
+        return mocker.patch(
+            "congress_videos.modules.video_editor._get_source_duration",
+            return_value=300.0,
+        )
+
+    def test_max_timeout_none_preserves_compute_ffmpeg_timeout_behavior(
+        self, mock_video_editor_subprocess, mock_get_source_duration, mocker
+    ) -> None:
+        """max_timeout=None (the default) must still derive the timeout from compute_ffmpeg_timeout.
+
+        This pins backward compatibility for the standalone generic_video_editor DAG, which calls
+        apply_overlays without max_timeout.
+        """
+        from congress_videos.modules.video_editor import apply_overlays
+
+        mock_timeout = mocker.patch(
+            "congress_videos.modules.video_editor.compute_ffmpeg_timeout",
+            return_value=2508,
+        )
+
+        apply_overlays(
+            source_path="/data/in.mp4",
+            output_path="/data/out.mp4",
+            overlays=[_VALID_OVERLAY],
+            domain_cfg=_MINIMAL_DOMAIN_CFG,
+            max_timeout=None,
+        )
+
+        mock_timeout.assert_called_once_with(300.0)
+        assert mock_video_editor_subprocess.call_args.kwargs["timeout"] == 2508
+
+    def test_max_timeout_omitted_preserves_compute_ffmpeg_timeout_behavior(
+        self, mock_video_editor_subprocess, mock_get_source_duration, mocker
+    ) -> None:
+        """Not passing max_timeout at all must behave exactly like max_timeout=None."""
+        from congress_videos.modules.video_editor import apply_overlays
+
+        mock_timeout = mocker.patch(
+            "congress_videos.modules.video_editor.compute_ffmpeg_timeout",
+            return_value=2508,
+        )
+
+        apply_overlays(
+            source_path="/data/in.mp4",
+            output_path="/data/out.mp4",
+            overlays=[_VALID_OVERLAY],
+            domain_cfg=_MINIMAL_DOMAIN_CFG,
+        )
+
+        mock_timeout.assert_called_once_with(300.0)
+        assert mock_video_editor_subprocess.call_args.kwargs["timeout"] == 2508
+
+    def test_max_timeout_explicit_overrides_capped_value(
+        self, mock_video_editor_subprocess, mock_get_source_duration, mocker
+    ) -> None:
+        """An explicit max_timeout must be used verbatim instead of compute_ffmpeg_timeout's value."""
+        from congress_videos.modules.video_editor import apply_overlays
+
+        mock_timeout = mocker.patch(
+            "congress_videos.modules.video_editor.compute_ffmpeg_timeout",
+            return_value=3600,
+        )
+
+        apply_overlays(
+            source_path="/data/in.mp4",
+            output_path="/data/out.mp4",
+            overlays=[_VALID_OVERLAY],
+            domain_cfg=_MINIMAL_DOMAIN_CFG,
+            max_timeout=5400,
+        )
+
+        mock_timeout.assert_not_called()
+        assert mock_video_editor_subprocess.call_args.kwargs["timeout"] == 5400
+
+    def test_max_timeout_is_keyword_only(self) -> None:
+        """max_timeout must be keyword-only — passing it positionally must raise TypeError."""
+        from congress_videos.modules.video_editor import apply_overlays
+
+        with pytest.raises(TypeError):
+            apply_overlays(
+                "/data/in.mp4",
+                "/data/out.mp4",
+                [_VALID_OVERLAY],
+                _MINIMAL_DOMAIN_CFG,
+                5400,
+            )
+
+
+# ---------------------------------------------------------------------------
+# T-19: TestOverlayDurationGuard — MAX_OVERLAY_SOURCE_SECONDS guard (session-intro-card-overlay PR 3)
+# ---------------------------------------------------------------------------
+
+
+class TestOverlayDurationGuard:
+    """A source longer than MAX_OVERLAY_SOURCE_SECONDS must fail loudly before ffmpeg spawns."""
+
+    @pytest.fixture()
+    def mock_video_editor_subprocess(self, mocker):
+        """Patch subprocess.run in the video_editor module."""
+        completed = MagicMock(returncode=0, stdout="", stderr="")
+        return mocker.patch(
+            "congress_videos.modules.video_editor.subprocess.run",
+            return_value=completed,
+        )
+
+    def test_source_duration_over_guard_raises_before_ffmpeg_spawns(self, mock_video_editor_subprocess, mocker) -> None:
+        """Duration > MAX_OVERLAY_SOURCE_SECONDS must raise ValueError and never call ffmpeg."""
+        from congress_videos.modules.video_editor import (
+            MAX_OVERLAY_SOURCE_SECONDS,
+            apply_overlays,
+        )
+
+        mocker.patch(
+            "congress_videos.modules.video_editor._get_source_duration",
+            return_value=3601.0,
+        )
+
+        with pytest.raises(ValueError, match="3601"):
+            apply_overlays(
+                source_path="/data/in.mp4",
+                output_path="/data/out.mp4",
+                overlays=[_VALID_OVERLAY],
+                domain_cfg=_MINIMAL_DOMAIN_CFG,
+            )
+
+        mock_video_editor_subprocess.assert_not_called()
+        assert MAX_OVERLAY_SOURCE_SECONDS == 3600
+
+    def test_guard_message_names_duration_limit_and_constant(self, mock_video_editor_subprocess, mocker) -> None:
+        """The guard error must name the observed duration, the limit and the constant name."""
+        from congress_videos.modules.video_editor import apply_overlays
+
+        mocker.patch(
+            "congress_videos.modules.video_editor._get_source_duration",
+            return_value=7200.0,
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            apply_overlays(
+                source_path="/data/in.mp4",
+                output_path="/data/out.mp4",
+                overlays=[_VALID_OVERLAY],
+                domain_cfg=_MINIMAL_DOMAIN_CFG,
+            )
+
+        message = str(exc_info.value)
+        assert "7200" in message
+        assert "3600" in message
+        assert "MAX_OVERLAY_SOURCE_SECONDS" in message
+
+    def test_duration_at_guard_limit_succeeds(self, mock_video_editor_subprocess, mocker) -> None:
+        """A duration exactly at MAX_OVERLAY_SOURCE_SECONDS must NOT trip the guard."""
+        from congress_videos.modules.video_editor import apply_overlays
+
+        mocker.patch(
+            "congress_videos.modules.video_editor._get_source_duration",
+            return_value=3600.0,
+        )
+
+        result = apply_overlays(
+            source_path="/data/in.mp4",
+            output_path="/data/out.mp4",
+            overlays=[_VALID_OVERLAY],
+            domain_cfg=_MINIMAL_DOMAIN_CFG,
+        )
+
+        assert result["success"] is True
+        mock_video_editor_subprocess.assert_called_once()
+
+    def test_duration_under_guard_with_explicit_max_timeout_is_honored(
+        self, mock_video_editor_subprocess, mocker
+    ) -> None:
+        """A duration under the guard with an explicit OVERLAY_MAX_TIMEOUT_SECONDS must be honored."""
+        from congress_videos.modules.video_editor import (
+            OVERLAY_MAX_TIMEOUT_SECONDS,
+            apply_overlays,
+        )
+
+        mocker.patch(
+            "congress_videos.modules.video_editor._get_source_duration",
+            return_value=2298.0,  # 38.3 min, the worst observed production video
+        )
+
+        result = apply_overlays(
+            source_path="/data/in.mp4",
+            output_path="/data/out.mp4",
+            overlays=[_VALID_OVERLAY],
+            domain_cfg=_MINIMAL_DOMAIN_CFG,
+            max_timeout=OVERLAY_MAX_TIMEOUT_SECONDS,
+        )
+
+        assert result["success"] is True
+        assert OVERLAY_MAX_TIMEOUT_SECONDS == 5400
+        assert mock_video_editor_subprocess.call_args.kwargs["timeout"] == 5400

@@ -130,9 +130,70 @@ None.
 - Changed lines (`git diff --stat` on the 2 changed source/test files, authored, additions+deletions): **151 insertions + 0 deletions = 151**, vs. the ~120 estimate in tasks.md — within the 400-line budget, no `size:exception` needed
 - Out of scope (confirmed untouched): `max_timeout` kwarg, duration guard, t5b task, DAG wiring, `youtube_upload_dag.py`, all reap DAGs, `speaker_turn_videos_dag.py`, DB schema
 
-## Remaining Tasks (PR 3, 4 — NOT started, out of scope for this batch)
-- [ ] 3.1–3.7 `max_timeout` kwarg + duration guard
+## Batch 3 — PR 3: `max_timeout` kwarg + duration guard
+
+**Mode**: Strict TDD
+**Base branch**: PR 2 branch `feat/558-slice2-overlap-helper`
+**Working branch**: `feat/558-slice3-timeout-guard`
+
+### Completed Tasks
+
+- [x] 3.1 RED: `apply_overlays(..., max_timeout=None)` preserves today's `compute_ffmpeg_timeout(duration)` behavior (backward compat for `generic_video_editor`)
+- [x] 3.2 RED: `apply_overlays(..., max_timeout=N)` uses `N` instead of the capped `compute_ffmpeg_timeout` value
+- [x] 3.3 GREEN: added keyword-only `max_timeout: int | None = None` to `apply_overlays` in `video_editor.py`
+- [x] 3.4 RED: source duration > `MAX_OVERLAY_SOURCE_SECONDS` raises `ValueError` naming duration, limit and constant, before ffmpeg spawns (subprocess patched, asserted never called)
+- [x] 3.5 GREEN: added `MAX_OVERLAY_SOURCE_SECONDS = 3600` and `OVERLAY_MAX_TIMEOUT_SECONDS = 5400` module constants in `video_editor.py`; guard check runs before ffmpeg invocation
+- [x] 3.6 RED→GREEN: duration at/under the guard succeeds and an explicit `max_timeout=OVERLAY_MAX_TIMEOUT_SECONDS` is honored
+- [x] 3.7 REFACTOR: guard message includes duration, limit and constant name for diagnosability (verified by a dedicated assertion test — no code change needed beyond 3.5's message, which already satisfied this)
+
+### TDD Cycle Evidence
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 3.1–3.3 | `tests/congress_videos/modules/test_video_editor.py::TestApplyOverlaysMaxTimeout` | Unit | ✅ 129/129 (PR 2 baseline) | ✅ Written first — `test_max_timeout_none_preserves_compute_ffmpeg_timeout_behavior` and `test_max_timeout_explicit_overrides_capped_value` failed with `TypeError: apply_overlays() got an unexpected keyword argument 'max_timeout'` | ✅ Passed after adding the keyword-only `max_timeout` param and the `max_timeout if max_timeout is not None else compute_ffmpeg_timeout(...)` branch | ✅ 4 cases: `max_timeout=None` explicit, omitted entirely, explicit override, and keyword-only enforcement (`TypeError` on positional call) | ➖ None needed — branch is already minimal |
+| 3.4–3.5 | `TestOverlayDurationGuard` | Unit | ✅ (same run) | ✅ Written first — `ImportError: cannot import name 'MAX_OVERLAY_SOURCE_SECONDS'`; once patched around, the over-guard test hit a **real ffmpeg subprocess failure** (`RuntimeError`, not `ValueError`) proving the guard did not yet exist and did not stop ffmpeg from spawning | ✅ Passed after adding both constants and the pre-ffmpeg duration check | ✅ 4 cases: duration over the guard raises + subprocess never called, message contains duration/limit/constant name, duration exactly at the guard limit succeeds, duration under the guard with explicit `max_timeout=OVERLAY_MAX_TIMEOUT_SECONDS` honored | ➖ None needed |
+| 3.6 | same class, `test_duration_under_guard_with_explicit_max_timeout_is_honored` | Unit | ✅ | ✅ Written first (same batch as 3.4/3.5 — depends on both `OVERLAY_MAX_TIMEOUT_SECONDS` and the guard existing) | ✅ Passed — asserts `subprocess.run` receives `timeout=5400` via `call_args.kwargs["timeout"]` | ➖ Single scenario per spec | ➖ None needed |
+| 3.7 | `test_guard_message_names_duration_limit_and_constant` | Unit | ✅ | ✅ Written first | ✅ Passed — asserts `"7200"`, `"3600"`, and `"MAX_OVERLAY_SOURCE_SECONDS"` are all present in `str(exc_info.value)` | ➖ Single — one message format | ➖ None needed — the 3.5 implementation's message already satisfied 3.7's requirement, confirmed by this dedicated assertion test rather than a separate code change |
+
+### Test Summary
+- **Total tests written**: 8 (`TestApplyOverlaysMaxTimeout`: 4, `TestOverlayDurationGuard`: 4)
+- **Total tests passing**: 8/8 new, 137/137 in `test_video_editor.py`, 5174/5174 in the full repo suite (same 34 pre-existing skips as PR 1/PR 2)
+- **Layers used**: Unit (8)
+- **Pure functions created**: None new — `apply_overlays` gained a guard branch and a keyword-only override; both are still deterministic given `_get_source_duration`'s mocked/probed return value
+
+### Files Changed
+| File | Action | What Was Done |
+|------|--------|---------------|
+| `congress_videos/modules/video_editor.py` | Modified | Added `MAX_OVERLAY_SOURCE_SECONDS = 3600` and `OVERLAY_MAX_TIMEOUT_SECONDS = 5400` module constants; added keyword-only `max_timeout: int \| None = None` to `apply_overlays`; added the pre-ffmpeg duration guard (`ValueError` naming duration, limit, constant name); updated the module's Public API docstring index and `apply_overlays`' own docstring |
+| `tests/congress_videos/modules/test_video_editor.py` | Modified | Added `TestApplyOverlaysMaxTimeout` (T-18, 4 tests) and `TestOverlayDurationGuard` (T-19, 4 tests); updated module docstring's test-group index |
+| `openspec/changes/session-intro-card-overlay/tasks.md` | Modified | Marked tasks 3.1–3.7 `[x]` |
+
+### Deviations from Design
+None — implementation matches design D1 exactly: guard constant `MAX_OVERLAY_SOURCE_SECONDS = 3600`, override constant `OVERLAY_MAX_TIMEOUT_SECONDS = 5400`, keyword-only `max_timeout` defaulting to `None` (today's `compute_ffmpeg_timeout` behavior), guard raises before any ffmpeg subprocess spawns. `OVERLAY_MAX_TIMEOUT_SECONDS` remains an inert named constant until PR 4 wires `_apply_intro_overlay` to pass it explicitly — expected per the tasks.md work-unit boundary.
+
+### Issues Found
+None.
+
+## Work Unit Evidence (PR 3)
+
+| Evidence | Value |
+|---|---|
+| Focused test command and exact result | `uv run pytest tests/congress_videos/modules/test_video_editor.py -k "timeout or guard"` → **9 passed** (matches the DoD command exactly; the 9th is a PR 2 test, `test_compute_ffmpeg_timeout_called_with_duration`, whose name also matches `timeout` — no regression, still green) |
+| File-scoped regression command and exact result | `uv run pytest tests/congress_videos/modules/test_video_editor.py -q --no-cov` → **137 passed** (129 pre-existing + 8 new, 0 regressions) |
+| Full-suite command and exact result | `uv run pytest` → **5174 passed, 34 skipped**, exit code 0 |
+| Lint / format | `uv run ruff check .` → All checks passed. `uv run ruff format --check .` → flagged 2 files (long test method signatures); `uv run ruff format .` applied the fix, re-run of both commands is clean |
+| Runtime harness command/scenario and exact result | N/A — timeout arithmetic and a pre-flight guard only; ffmpeg subprocess is patched in every test per the tasks.md work-unit table, no DAG/DB/Airflow runtime boundary touched in this slice |
+| Rollback boundary | Revert the `max_timeout` kwarg, the two new constants, the guard branch, and their tests in the 2 files above. `max_timeout=None` keeps `apply_overlays`'s default behavior byte-identical for `generic_video_editor` and every other existing caller; `OVERLAY_MAX_TIMEOUT_SECONDS` is unused/unwired until PR 4 |
+
+## Workload / PR Boundary
+- Mode: chained PR slice (`auto-chain`, `feature-branch-chain`)
+- Current work unit: PR 3 of 4 (`max_timeout` kwarg + duration guard)
+- Boundary: starts from PR 2's branch state (`resolve_overlay_slot` + `INTRO_WINDOW_SECONDS` already in place) and ends with `apply_overlays` accepting an optional `max_timeout` override and refusing oversized sources before ffmpeg spawns — no caller passes `max_timeout` yet
+- Changed lines (`git diff --stat` on the 2 changed source/test files, authored, additions+deletions): **274 insertions + 9 deletions = 283**, vs. the ~95 estimate in tasks.md — within the 400-line budget, no `size:exception` needed (the estimate undercounted the docstring updates and the 4-case triangulation per RED test required by Strict TDD's minimum-2-cases rule)
+- Out of scope (confirmed untouched): t5b task, DAG wiring, `youtube_upload_dag.py`, all reap DAGs, `speaker_turn_videos_dag.py`, DB schema
+
+## Remaining Tasks (PR 4 — NOT started, out of scope for this batch)
 - [ ] 4.1–4.19 t5b task, wiring, DAG task-count fixes
 
 ### Status
-15/41 tasks complete (PR 1 + PR 2 fully done). Ready for verify on PR 2's scope; PR 3 is the next apply batch, based on this branch per `feature-branch-chain`.
+22/41 tasks complete (PR 1 + PR 2 + PR 3 fully done). Ready for verify on PR 3's scope; PR 4 is the next apply batch, based on this branch per `feature-branch-chain`.

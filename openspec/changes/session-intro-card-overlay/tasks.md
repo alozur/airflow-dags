@@ -69,13 +69,13 @@ Chain strategy: feature-branch-chain
 
 ## PR 3: `max_timeout` kwarg + duration guard (base: PR 2 branch, ~95 lines)
 
-- [ ] 3.1 RED: `apply_overlays(..., max_timeout=None)` preserves today's `compute_ffmpeg_timeout(duration)` behavior (backward compat for `generic_video_editor`).
-- [ ] 3.2 RED: `apply_overlays(..., max_timeout=N)` uses `N` instead of the capped `compute_ffmpeg_timeout` value.
-- [ ] 3.3 GREEN: add keyword-only `max_timeout: int | None = None` to `apply_overlays` in `video_editor.py`.
-- [ ] 3.4 RED: source duration > `MAX_OVERLAY_SOURCE_SECONDS` raises `ValueError` naming duration, limit and constant, before ffmpeg spawns (subprocess patched, asserted never called).
-- [ ] 3.5 GREEN: add `MAX_OVERLAY_SOURCE_SECONDS = 3600` and `OVERLAY_MAX_TIMEOUT_SECONDS = 5400` in `video_editor.py`; guard check runs before ffmpeg invocation.
-- [ ] 3.6 RED→GREEN: duration at/under the guard succeeds and the intro call site's explicit `max_timeout=OVERLAY_MAX_TIMEOUT_SECONDS` is honored.
-- [ ] 3.7 REFACTOR: guard message includes duration, limit and constant name for diagnosability.
+- [x] 3.1 RED: `apply_overlays(..., max_timeout=None)` preserves today's `compute_ffmpeg_timeout(duration)` behavior (backward compat for `generic_video_editor`).
+- [x] 3.2 RED: `apply_overlays(..., max_timeout=N)` uses `N` instead of the capped `compute_ffmpeg_timeout` value.
+- [x] 3.3 GREEN: add keyword-only `max_timeout: int | None = None` to `apply_overlays` in `video_editor.py`.
+- [x] 3.4 RED: source duration > `MAX_OVERLAY_SOURCE_SECONDS` raises `ValueError` naming duration, limit and constant, before ffmpeg spawns (subprocess patched, asserted never called).
+- [x] 3.5 GREEN: add `MAX_OVERLAY_SOURCE_SECONDS = 3600` and `OVERLAY_MAX_TIMEOUT_SECONDS = 5400` in `video_editor.py`; guard check runs before ffmpeg invocation.
+- [x] 3.6 RED→GREEN: duration at/under the guard succeeds and the intro call site's explicit `max_timeout=OVERLAY_MAX_TIMEOUT_SECONDS` is honored.
+- [x] 3.7 REFACTOR: guard message includes duration, limit and constant name for diagnosability.
 
 ## PR 4: t5b task, wiring, DAG task-count fixes (base: PR 3 branch, ~200 lines)
 
