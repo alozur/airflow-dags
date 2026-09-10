@@ -942,6 +942,187 @@ class TestGetVideoDetailsFreshnessGuard:
 
 
 # --------------------------------------------------------------------------- #
+# _fetch_enrichable_video_details — RED-first quirk tests for the helper
+# lifted verbatim out of get_video_details (issue #272)
+# --------------------------------------------------------------------------- #
+
+
+class TestFetchEnrichableVideoDetails:
+    def _fake_youtube(self, items: list[dict]) -> MagicMock:
+        fake = MagicMock()
+        fake.videos.return_value.list.return_value.execute.return_value = {"items": items}
+        return fake
+
+    def test_empty_items_returns_none(self):
+        from congress_videos.modules.youtube.youtube_channel import _fetch_enrichable_video_details
+
+        youtube = self._fake_youtube([])
+
+        assert _fetch_enrichable_video_details(youtube, "v1", 12) is None
+
+    def test_missing_live_streaming_details_returns_none_not_keyerror(self):
+        """liveStreamingDetails absent from the item -> None via `.get(..., {})`,
+        never a KeyError."""
+        from congress_videos.modules.youtube.youtube_channel import _fetch_enrichable_video_details
+
+        youtube = self._fake_youtube([{"contentDetails": {"duration": "PT1H"}, "snippet": {"title": "T"}}])
+
+        assert _fetch_enrichable_video_details(youtube, "v1", 12) is None
+
+    def test_ended_11h59m_ago_with_12h_margin_returns_none(self):
+        from datetime import datetime, timedelta, timezone
+
+        from congress_videos.modules.youtube.youtube_channel import _fetch_enrichable_video_details
+
+        ended = (datetime.now(timezone.utc) - timedelta(hours=11, minutes=59)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        youtube = self._fake_youtube(
+            [
+                {
+                    "contentDetails": {"duration": "PT1H"},
+                    "liveStreamingDetails": {"actualEndTime": ended},
+                    "snippet": {"title": "T"},
+                }
+            ]
+        )
+
+        assert _fetch_enrichable_video_details(youtube, "v1", 12) is None
+
+    def test_ended_12h01m_ago_with_12h_margin_returns_tuple(self):
+        from datetime import datetime, timedelta, timezone
+
+        from congress_videos.modules.youtube.youtube_channel import _fetch_enrichable_video_details
+
+        ended = (datetime.now(timezone.utc) - timedelta(hours=12, minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        video_item = {
+            "contentDetails": {"duration": "PT1H"},
+            "liveStreamingDetails": {"actualEndTime": ended},
+            "snippet": {"title": "T"},
+        }
+        youtube = self._fake_youtube([video_item])
+
+        result = _fetch_enrichable_video_details(youtube, "v1", 12)
+
+        assert result is not None
+        video_details, live_details = result
+        assert video_details is video_item
+        assert live_details is video_item["liveStreamingDetails"]
+
+    def test_z_suffix_parsed_via_utc_offset(self):
+        """actualEndTime carries a bare 'Z' suffix; `fromisoformat` only accepts
+        '+00:00', so this pins the `.replace("Z", "+00:00")` call — dropping it
+        would raise ValueError instead of returning."""
+        from datetime import datetime, timedelta, timezone
+
+        from congress_videos.modules.youtube.youtube_channel import _fetch_enrichable_video_details
+
+        ended = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert ended.endswith("Z")
+        youtube = self._fake_youtube(
+            [
+                {
+                    "contentDetails": {"duration": "PT1H"},
+                    "liveStreamingDetails": {"actualEndTime": ended},
+                    "snippet": {"title": "T"},
+                }
+            ]
+        )
+
+        assert _fetch_enrichable_video_details(youtube, "v1", 0) is not None
+
+    def test_raising_execute_propagates(self):
+        """The helper does not swallow exceptions — get_video_details aborts the
+        whole batch on a single API failure (fail-open-loop, not fail-closed)."""
+        from congress_videos.modules.youtube.youtube_channel import _fetch_enrichable_video_details
+
+        youtube = MagicMock()
+        youtube.videos.return_value.list.return_value.execute.side_effect = RuntimeError("api boom")
+
+        with pytest.raises(RuntimeError, match="api boom"):
+            _fetch_enrichable_video_details(youtube, "v1", 12)
+
+
+# --------------------------------------------------------------------------- #
+# get_video_details — duration cross-iteration leak (characterization, not
+# RED — green against untouched pre-lift source). Pins the narrowed
+# _fetch_enrichable_video_details lift boundary (481-505): the duration
+# parse (513-527) stays in the caller because `hours`/`minutes`/`seconds`
+# are bound only inside `if duration_match:` but read unconditionally
+# below, so a fresh-scope helper would convert this leak into a NameError.
+# --------------------------------------------------------------------------- #
+
+
+class TestGetVideoDetailsDurationLeak:
+    def _fake_two_video_service(self, durations: dict) -> MagicMock:
+        """durations: {video_id: duration_iso}. actualEndTime fixed far in the
+        past for every id so the freshness guard never filters a candidate."""
+        far_past = "2020-01-01T00:00:00Z"
+
+        fake_service = MagicMock()
+
+        def _list(part, id):  # noqa: A002 - mirror the API kwarg name
+            m = MagicMock()
+            m.execute.return_value = {
+                "items": [
+                    {
+                        "contentDetails": {"duration": durations[id]},
+                        "liveStreamingDetails": {"actualEndTime": far_past},
+                        "snippet": {"title": f"Video {id}"},
+                    }
+                ]
+            }
+            return m
+
+        fake_service.videos.return_value.list.side_effect = _list
+        return fake_service
+
+    def _video(self, video_id: str) -> dict:
+        return {
+            "video_id": video_id,
+            "title": f"T-{video_id}",
+            "description": "",
+            "published_at": "2020-01-01T00:00:00Z",
+            "thumbnail_url": "https://example.com/t.jpg",
+            "channel_title": "Test",
+        }
+
+    def test_non_pt_duration_after_a_pt_duration_leaks_previous_values(self, monkeypatch, mocker):
+        """PT1H2M3S then P0D in one call: the second entry's duration_seconds
+        is 0 (correctly, from the else branch) but duration_formatted still
+        reads the first video's stale hours/minutes/seconds — "1:02:03"."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake-key")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=self._fake_two_video_service({"v1": "PT1H2M3S", "v2": "P0D"}),
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import get_video_details
+
+        plenary_videos = {"videos": [self._video("v1"), self._video("v2")]}
+
+        result = get_video_details(plenary_videos)
+
+        assert result["videos"][1]["duration_seconds"] == 0
+        assert result["videos"][1]["duration_formatted"] == "1:02:03"
+
+    def test_lone_non_pt_duration_raises_runtime_error_mentioning_hours(self, monkeypatch, mocker):
+        """A non-PT duration as the FIRST video: hours/minutes/seconds were
+        never bound this call, so building duration_formatted raises
+        NameError, caught by the generic handler as a RuntimeError."""
+        monkeypatch.setenv("YOUTUBE_API_KEY", "fake-key")
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.build",
+            return_value=self._fake_two_video_service({"v1": "P0D"}),
+        )
+
+        from congress_videos.modules.youtube.youtube_channel import get_video_details
+
+        plenary_videos = {"videos": [self._video("v1")]}
+
+        with pytest.raises(RuntimeError, match="hours"):
+            get_video_details(plenary_videos)
+
+
+# --------------------------------------------------------------------------- #
 # filter_unprocessed_videos — idempotency pre-download filter
 # --------------------------------------------------------------------------- #
 
@@ -1503,6 +1684,133 @@ class TestFilterFinishedStreams:
         service.videos.return_value.list.assert_called_once_with(
             part="snippet,contentDetails,liveStreamingDetails", id="A,B"
         )
+
+
+# --------------------------------------------------------------------------- #
+# _evaluate_finished_stream_candidate — RED-first quirk tests for the helper
+# lifted verbatim out of filter_finished_streams (issue #272)
+# --------------------------------------------------------------------------- #
+
+
+class TestEvaluateFinishedStreamCandidate:
+    def _video(self, video_id: str = "A") -> dict:
+        return {"video_id": video_id, "title": f"T-{video_id}"}
+
+    def test_falsy_video_id_returns_none(self, mocker):
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        probe = mocker.patch("congress_videos.modules.youtube.youtube_channel.probe_live_status")
+
+        result = _evaluate_finished_stream_candidate({"video_id": None, "title": "T"}, None, {}, 10, None)
+
+        assert result is None
+        assert probe.call_count == 0
+
+    def test_by_id_miss_returns_none(self):
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        result = _evaluate_finished_stream_candidate(self._video("A"), "A", {}, 10, None)
+
+        assert result is None
+
+    @pytest.mark.parametrize("broadcast", ["live", "upcoming"])
+    def test_live_or_upcoming_broadcast_returns_none(self, broadcast):
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        by_id = {"A": _item(broadcast=broadcast)}
+
+        result = _evaluate_finished_stream_candidate(self._video("A"), "A", by_id, 10, None)
+
+        assert result is None
+
+    def test_none_broadcast_passes_the_data_api_prefilter(self, mocker):
+        """`liveBroadcastContent == "none"` does not itself drop the
+        candidate — only "live"/"upcoming" do."""
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            return_value="was_live",
+        )
+        by_id = {"A": _item(broadcast="none", actual_end=_iso_minutes_ago(600))}
+        video = self._video("A")
+
+        result = _evaluate_finished_stream_candidate(video, "A", by_id, 10, None)
+
+        assert result is video
+
+    def test_concurrent_viewers_zero_returns_none(self):
+        """`is not None`, not truthiness: `concurrentViewers=0` is still
+        "present" and drops the candidate."""
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        by_id = {"A": _item(concurrent=0, actual_end=_iso_minutes_ago(600))}
+
+        result = _evaluate_finished_stream_candidate(self._video("A"), "A", by_id, 10, None)
+
+        assert result is None
+
+    def test_missing_actual_end_time_returns_none(self):
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        by_id = {"A": _item(actual_end=None)}
+
+        result = _evaluate_finished_stream_candidate(self._video("A"), "A", by_id, 10, None)
+
+        assert result is None
+
+    def test_elapsed_under_floor_returns_none_without_probing(self, mocker):
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        probe = mocker.patch("congress_videos.modules.youtube.youtube_channel.probe_live_status")
+        by_id = {"A": _item(actual_end=_iso_minutes_ago(3))}
+
+        result = _evaluate_finished_stream_candidate(self._video("A"), "A", by_id, 10, None)
+
+        assert result is None
+        assert probe.call_count == 0
+
+    def test_probe_was_live_returns_the_same_video_object(self, mocker):
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            return_value="was_live",
+        )
+        by_id = {"A": _item(actual_end=_iso_minutes_ago(600))}
+        video = self._video("A")
+
+        result = _evaluate_finished_stream_candidate(video, "A", by_id, 10, None)
+
+        assert result is video
+
+    @pytest.mark.parametrize("status", ["post_live", None])
+    def test_probe_not_ready_returns_none(self, mocker, status):
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            return_value=status,
+        )
+        by_id = {"A": _item(actual_end=_iso_minutes_ago(600))}
+
+        result = _evaluate_finished_stream_candidate(self._video("A"), "A", by_id, 10, None)
+
+        assert result is None
+
+    def test_raising_probe_propagates(self, mocker):
+        """The caller's try/except owns fail-closed — the helper itself does
+        not swallow exceptions."""
+        from congress_videos.modules.youtube.youtube_channel import _evaluate_finished_stream_candidate
+
+        mocker.patch(
+            "congress_videos.modules.youtube.youtube_channel.probe_live_status",
+            side_effect=RuntimeError("probe boom"),
+        )
+        by_id = {"A": _item(actual_end=_iso_minutes_ago(600))}
+
+        with pytest.raises(RuntimeError, match="probe boom"):
+            _evaluate_finished_stream_candidate(self._video("A"), "A", by_id, 10, None)
 
 
 # --------------------------------------------------------------------------- #

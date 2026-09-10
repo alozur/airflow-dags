@@ -123,8 +123,8 @@ indent-style = "space"
 "congress_videos/modules/video_analytics.py" = ["SIM110"]
 "congress_videos/modules/video_editor.py" = ["N803", "N806", "SIM105"]
 "congress_videos/modules/video_splitter.py" = ["SIM102"]
-"congress_videos/modules/youtube/download.py" = ["B905", "C901", "SIM103", "SIM108"]
-"congress_videos/modules/youtube/youtube_channel.py" = ["B007", "C901", "F841", "SIM102"]
+"congress_videos/modules/youtube/download.py" = ["B905", "SIM103", "SIM108"]
+"congress_videos/modules/youtube/youtube_channel.py" = ["B007", "F841", "SIM102"]
 "congress_videos/reap_api.py" = ["N818"]
 "congress_videos/reap_shorts_uploader_dag.py" = ["B905", "C901"]
 "congress_videos/speaker_turn_prepare_dag.py" = ["UP022"]
@@ -159,7 +159,7 @@ indent-style = "space"
 "tests/utils/test_whisper_helpers_extended.py" = ["F841"]
 "tests/utils/test_youtube_downloader.py" = ["F841"]
 "utils/time_utils.py" = ["B904"]
-"utils/youtube_downloader.py" = ["C901", "F841"]
+"utils/youtube_downloader.py" = ["F841"]
 "utils/youtube_helpers.py" = ["F841"]
 # --- end ruff baseline ---
 

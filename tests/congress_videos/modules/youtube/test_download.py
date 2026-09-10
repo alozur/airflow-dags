@@ -989,9 +989,281 @@ class TestAnalyzeSingleChunk:
         assert entry["total_interesting_chapters"] == 1
 
 
+class TestIdentifyChaptersForChunk:
+    """Lifted verbatim out of `_analyze_single_chunk` (issue #272):
+    `_identify_window` and its sole call site into
+    `map_reduce_identify_chapters` move together as one atomic unit, and
+    `summary_text` stays entirely inside the helper's own scope."""
+
+    def _summary_chunk(self, **overrides):
+        base = {
+            "start_time": "00:00:00",
+            "end_time": "01:00:00",
+            "duration_minutes": 130,
+            "speakers": [{"name": "Diputado López", "role": "Diputado"}],
+            "topics": ["a", "b"],
+            "summary": "Debate sobre presupuestos",
+        }
+        base.update(overrides)
+        return base
+
+    def _prompts(self):
+        from congress_videos.config.ai_prompts import (
+            CHAPTER_IDENTIFICATION_SYSTEM_PROMPT,
+            CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE,
+        )
+
+        return CHAPTER_IDENTIFICATION_SYSTEM_PROMPT, CHAPTER_IDENTIFICATION_USER_PROMPT_TEMPLATE
+
+    def test_completion_error_raises_runtime_error_propagating_out(self, mocker):
+        """completion["error"] truthy -> RuntimeError propagates out of the
+        helper; the outer `_analyze_single_chunk` handler owns the fallback."""
+        mocker.patch(
+            "congress_videos.modules.youtube.download.cached_json_completion",
+            return_value={"data": None, "raw_content": "", "error": "boom"},
+        )
+
+        from congress_videos.modules.youtube.download import _identify_chapters_for_chunk
+
+        system_prompt, user_prompt_template = self._prompts()
+
+        with pytest.raises(RuntimeError, match="boom"):
+            _identify_chapters_for_chunk(
+                1, self._summary_chunk(), "some srt content", 130, system_prompt, user_prompt_template
+            )
+
+    def test_completion_data_none_returns_empty_list(self, mocker):
+        mocker.patch(
+            "congress_videos.modules.youtube.download.cached_json_completion",
+            return_value={"data": None, "raw_content": "{}", "error": None},
+        )
+
+        from congress_videos.modules.youtube.download import _identify_chapters_for_chunk
+
+        system_prompt, user_prompt_template = self._prompts()
+
+        result = _identify_chapters_for_chunk(
+            1, self._summary_chunk(), "some srt content", 130, system_prompt, user_prompt_template
+        )
+
+        assert result == []
+
+    def test_under_threshold_makes_exactly_one_call_with_full_srt_content(self, mocker):
+        completion_mock = _patch_completion(mocker, '{"interesting_chapters": []}')
+
+        from congress_videos.modules.youtube.download import _identify_chapters_for_chunk
+        from utils.llm_config import LLM_CHEAP
+
+        system_prompt, user_prompt_template = self._prompts()
+
+        _identify_chapters_for_chunk(
+            1, self._summary_chunk(), "some srt content", 130, system_prompt, user_prompt_template
+        )
+
+        completion_mock.assert_called_once()
+        assert completion_mock.call_args.kwargs["model"] == LLM_CHEAP
+        assert "some srt content" in completion_mock.call_args.kwargs["user_prompt"]
+
+    def test_oversized_srt_closure_captures_summary_text(self, mocker):
+        """Closure-capture proof: `identify_fn` is invoked with a synthetic
+        window and the resulting `user_prompt` still contains the same
+        `summary_text` built inside the helper's own scope."""
+        captured = {}
+
+        def _fake_map_reduce(srt_content, identify_fn):
+            captured["identify_fn"] = identify_fn
+            return identify_fn("synthetic window content")
+
+        mocker.patch(
+            "congress_videos.modules.youtube.map_reduce_chapters.map_reduce_identify_chapters",
+            side_effect=_fake_map_reduce,
+        )
+        completion_mock = _patch_completion(mocker, '{"interesting_chapters": []}')
+
+        from congress_videos.modules.youtube.download import _identify_chapters_for_chunk
+
+        system_prompt, user_prompt_template = self._prompts()
+        big_content = "x" * 200_000  # >LARGE_SRT_THRESHOLD
+
+        _identify_chapters_for_chunk(7, self._summary_chunk(), big_content, 130, system_prompt, user_prompt_template)
+
+        assert "identify_fn" in captured
+        user_prompt = completion_mock.call_args.kwargs["user_prompt"]
+        assert "synthetic window content" in user_prompt
+        assert "Chunk 7 (00:00:00 - 01:00:00)" in user_prompt
+        assert "Diputado López" in user_prompt
+        assert "Topics: a, b" in user_prompt
+        assert "Summary: Debate sobre presupuestos" in user_prompt
+
+    def test_optional_sections_absent_when_keys_missing_or_empty(self, mocker):
+        completion_mock = _patch_completion(mocker, '{"interesting_chapters": []}')
+
+        from congress_videos.modules.youtube.download import _identify_chapters_for_chunk
+
+        system_prompt, user_prompt_template = self._prompts()
+        bare_chunk = self._summary_chunk(speakers=[], topics=[], summary="")
+
+        _identify_chapters_for_chunk(1, bare_chunk, "some srt content", 130, system_prompt, user_prompt_template)
+
+        user_prompt = completion_mock.call_args.kwargs["user_prompt"]
+        assert "Speakers:" not in user_prompt
+        assert "Topics:" not in user_prompt
+        assert "Summary:" not in user_prompt
+
+
 # ---------------------------------------------------------------------------
 # identify_interesting_chapters
 # ---------------------------------------------------------------------------
+
+
+class TestFindSrtChunksForVideo:
+    """Lifted verbatim out of `identify_interesting_chapters` (issue #272)."""
+
+    def test_none_chunked_srt_data_returns_empty_list(self):
+        from congress_videos.modules.youtube.download import _find_srt_chunks_for_video
+
+        assert _find_srt_chunks_for_video(None, "v1") == []
+
+    def test_empty_dict_returns_empty_list(self):
+        from congress_videos.modules.youtube.download import _find_srt_chunks_for_video
+
+        assert _find_srt_chunks_for_video({}, "v1") == []
+
+    def test_missing_videos_key_returns_empty_list(self):
+        from congress_videos.modules.youtube.download import _find_srt_chunks_for_video
+
+        assert _find_srt_chunks_for_video({"other": []}, "v1") == []
+
+    def test_first_matching_video_wins(self):
+        from congress_videos.modules.youtube.download import _find_srt_chunks_for_video
+
+        chunked = {
+            "videos": [
+                {"video_id": "v1", "chunks": [{"chunk_number": 1}]},
+                {"video_id": "v1", "chunks": [{"chunk_number": 2}]},
+            ]
+        }
+
+        result = _find_srt_chunks_for_video(chunked, "v1")
+
+        assert result == [{"chunk_number": 1}]
+
+    def test_matched_video_without_chunks_returns_empty_list(self):
+        from congress_videos.modules.youtube.download import _find_srt_chunks_for_video
+
+        chunked = {"videos": [{"video_id": "v1"}]}
+
+        assert _find_srt_chunks_for_video(chunked, "v1") == []
+
+    def test_items_lacking_video_id_do_not_raise(self):
+        from congress_videos.modules.youtube.download import _find_srt_chunks_for_video
+
+        chunked = {
+            "videos": [
+                {"chunks": [{"chunk_number": 1}]},
+                {"video_id": "v1", "chunks": [{"chunk_number": 9}]},
+            ]
+        }
+
+        result = _find_srt_chunks_for_video(chunked, "v1")
+
+        assert result == [{"chunk_number": 9}]
+
+
+class TestCollectChunkChapters:
+    """Lifted verbatim out of `identify_interesting_chapters` (issue #272)."""
+
+    def _summary_chunk(self, number=1, duration_minutes=30, summary="Debate"):
+        return {
+            "chunk_number": number,
+            "start_time": "00:00:00",
+            "end_time": "00:30:00",
+            "duration_minutes": duration_minutes,
+            "speakers": [{"name": "Diputado López"}],
+            "topics": ["Presupuestos"],
+            "summary": summary,
+        }
+
+    def test_missing_srt_content_yields_error_entry(self):
+        """Intentional falsy check at base :1490 — `_find_srt_chunk` returning
+        `""` (not `None`) reads as no-content. Do NOT "fix" to `is None`."""
+        from congress_videos.modules.youtube.download import _collect_chunk_chapters
+
+        result = _collect_chunk_chapters([self._summary_chunk(1)], [], 15, 120)
+
+        assert result == [{"chunk_number": 1, "error": "No SRT content available"}]
+
+    def test_duration_equal_to_max_optimal_is_whole_chunk_optimal(self):
+        """`<=`, not `<`: chunk_duration == max_optimal_duration takes the
+        whole-chunk path with reason == "optimal duration"."""
+        from congress_videos.modules.youtube.download import _collect_chunk_chapters
+
+        summarized = [self._summary_chunk(1, duration_minutes=120)]
+        srt_chunks = [{"chunk_number": 1, "content": "some srt text"}]
+
+        result = _collect_chunk_chapters(summarized, srt_chunks, 15, 120)
+
+        assert result[0]["skipped_ai_analysis"] is True
+        assert result[0]["interesting_chapters"][0]["reason"] == "optimal duration"
+
+    def test_duration_below_min_is_whole_chunk_too_short(self):
+        from congress_videos.modules.youtube.download import _collect_chunk_chapters
+
+        summarized = [self._summary_chunk(1, duration_minutes=5)]
+        srt_chunks = [{"chunk_number": 1, "content": "some srt text"}]
+
+        result = _collect_chunk_chapters(summarized, srt_chunks, 15, 120)
+
+        assert result[0]["interesting_chapters"][0]["reason"] == "too short"
+
+    def test_duration_above_max_delegates_to_analyze_single_chunk(self, mocker):
+        """Above max_optimal_duration -> delegates to `_analyze_single_chunk`
+        with positional args in the base order."""
+        from congress_videos.modules.youtube.download import _collect_chunk_chapters
+
+        spy = mocker.patch(
+            "congress_videos.modules.youtube.download._analyze_single_chunk",
+            return_value={"chunk_number": 1, "fallback": True},
+        )
+        summarized = [self._summary_chunk(1, duration_minutes=130)]
+        srt_chunks = [{"chunk_number": 1, "content": "some srt text"}]
+
+        result = _collect_chunk_chapters(summarized, srt_chunks, 15, 120)
+
+        assert result == [{"chunk_number": 1, "fallback": True}]
+        spy.assert_called_once_with(1, summarized[0], "some srt text", 130, 15, 120)
+
+    def test_title_truncated_at_100_chars(self):
+        from congress_videos.modules.youtube.download import _collect_chunk_chapters
+
+        long_summary = "x" * 150
+        summarized = [self._summary_chunk(1, duration_minutes=30, summary=long_summary)]
+        srt_chunks = [{"chunk_number": 1, "content": "some srt text"}]
+
+        result = _collect_chunk_chapters(summarized, srt_chunks, 15, 120)
+
+        title = result[0]["interesting_chapters"][0]["title"]
+        assert len(title) == 100
+
+    def test_missing_duration_minutes_defaults_to_zero_too_short(self):
+        from congress_videos.modules.youtube.download import _collect_chunk_chapters
+
+        summarized = [
+            {
+                "chunk_number": 1,
+                "start_time": "00:00:00",
+                "end_time": "00:30:00",
+                "speakers": [],
+                "topics": [],
+                "summary": "x",
+            }
+        ]
+        srt_chunks = [{"chunk_number": 1, "content": "some srt text"}]
+
+        result = _collect_chunk_chapters(summarized, srt_chunks, 15, 120)
+
+        assert result[0]["interesting_chapters"][0]["reason"] == "too short"
+        assert result[0]["duration_minutes"] == 0
 
 
 class TestIdentifyInterestingChapters:
@@ -1834,6 +2106,88 @@ class TestDynamicDateInScoringPrompt:
 # ---------------------------------------------------------------------------
 # T2.2 — _dedup_overlapping_chapters (#6)
 # ---------------------------------------------------------------------------
+
+
+class TestChapterStartEndSecs:
+    """Lifted verbatim out of `_dedup_overlapping_chapters` (issue #272):
+    ``_chapter_start_secs`` / ``_chapter_end_secs`` never raise, defaulting to
+    ``0.0`` for a missing key or an unparseable value."""
+
+    def test_start_secs_missing_key_defaults_to_zero(self):
+        from congress_videos.modules.youtube.download import _chapter_start_secs
+
+        assert _chapter_start_secs({}) == 0.0
+
+    def test_start_secs_unparseable_value_swallows_value_error(self):
+        from congress_videos.modules.youtube.download import _chapter_start_secs
+
+        assert _chapter_start_secs({"start_time": "abc"}) == 0.0
+
+    def test_end_secs_missing_key_defaults_to_zero(self):
+        from congress_videos.modules.youtube.download import _chapter_end_secs
+
+        assert _chapter_end_secs({}) == 0.0
+
+    def test_end_secs_unparseable_value_swallows_value_error(self):
+        from congress_videos.modules.youtube.download import _chapter_end_secs
+
+        assert _chapter_end_secs({"end_time": "abc"}) == 0.0
+
+
+class TestMarkOverlappingChapters:
+    """Lifted verbatim out of `_dedup_overlapping_chapters` (issue #272):
+    ``_mark_overlapping_chapters`` mutates ``keep`` in place and returns
+    ``None``. Pins the ``overlap <= 0.0`` boundary (touching-but-not-overlapping
+    chapters both survive) — the design's landmine at `download.py:1110`."""
+
+    def _ch(self, start: str, end: str, title: str = "Chapter") -> dict:
+        return {"title": title, "start_time": start, "end_time": end}
+
+    def test_returns_none_and_mutates_keep_in_place(self):
+        from congress_videos.modules.youtube.download import _mark_overlapping_chapters
+
+        chapters = [self._ch("00:00:00", "00:01:00", "A"), self._ch("00:02:00", "00:04:00", "B")]
+        keep = [True, True]
+        result = _mark_overlapping_chapters(chapters, keep)
+
+        assert result is None
+        assert keep == [True, True]
+
+    def test_touching_boundary_uses_lte_not_lt(self):
+        """The `<=` boundary (not `<`): b touches a with overlap == 0.0 and
+        `break`s the row before c is ever compared, so all three survive.
+        With `<` instead of `<=`, c would be discarded — this is the only
+        input class where the two operators differ."""
+        from congress_videos.modules.youtube.download import _mark_overlapping_chapters
+
+        # Deliberately unsorted: a, b touch at 00:10:00; c sits inside a's
+        # would-be gap but is never reached because the i=0 row breaks at j=1.
+        a = self._ch("00:00:00", "00:10:00", "A")
+        b = self._ch("00:10:00", "00:20:00", "B")
+        c = self._ch("00:05:00", "00:07:00", "C")
+        chapters = [a, b, c]
+        keep = [True, True, True]
+
+        _mark_overlapping_chapters(chapters, keep)
+
+        assert keep == [True, True, True]
+
+    def test_narrower_chapter_i_is_discarded_and_row_breaks(self):
+        """When the narrower chapter is i (not j), keep[i] = False and the
+        inner loop breaks — i is not compared against any further j."""
+        from congress_videos.modules.youtube.download import _mark_overlapping_chapters
+
+        # i=0 "Narrow" (60s) fully inside j=1 "Wide" (600s) → i is narrower,
+        # discarded, and the row breaks (so j=2 is never compared against i).
+        narrow = self._ch("00:01:00", "00:02:00", "Narrow")
+        wide = self._ch("00:00:00", "00:10:00", "Wide")
+        other = self._ch("00:20:00", "00:21:00", "Other")
+        chapters = [narrow, wide, other]
+        keep = [True, True, True]
+
+        _mark_overlapping_chapters(chapters, keep)
+
+        assert keep == [False, True, True]
 
 
 class TestDedupOverlappingChapters:
