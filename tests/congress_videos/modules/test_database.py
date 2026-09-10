@@ -841,55 +841,22 @@ class TestSelectUnpreparedTurnsChapterFirstSubstantive:
     """Spec: 'Chapter First-Substantive-Turn Signal' — an additive BOOL_OR
     window column that must be computed over ALL chapter turns (prepared,
     procedural, or unprepared), not just the rows surviving the WHERE/dedup
-    filters (design.md D1)."""
+    filters (design.md D1/D2). One SQL-shape scenario per design.md's
+    Testing Strategy table, asserted as one test."""
 
-    def test_query_contains_is_chapter_first_substantive_alias(self, db):
-        """SQL must expose the is_chapter_first_substantive column alias."""
+    def test_query_shape_matches_design_d1_d2(self, db):
         instance, mock_cursor = db
         mock_cursor.fetchall.return_value = []
 
         instance.select_unprepared_turns(limit=2)
 
         sql = mock_cursor.execute.call_args[0][0]
-        assert "is_chapter_first_substantive" in sql, (
-            f"select_unprepared_turns must expose is_chapter_first_substantive; got: {sql}"
-        )
-
-    def test_query_uses_bool_or_over_output_path(self, db):
-        """The signal must be a BOOL_OR window aggregate partitioned by
-        stv.output_path, matching group_start_seconds/group_end_seconds."""
-        instance, mock_cursor = db
-        mock_cursor.fetchall.return_value = []
-
-        instance.select_unprepared_turns(limit=2)
-
-        sql = mock_cursor.execute.call_args[0][0]
-        assert "BOOL_OR" in sql, f"select_unprepared_turns must use BOOL_OR; got: {sql}"
-        assert "PARTITION BY stv.output_path" in sql
-
-    def test_query_uses_not_exists_correlated_over_raw_speaker_turns(self, db):
-        """D1: the predicate must be a NOT EXISTS subquery over the raw
-        speaker_turns table (st2), correlated on chapter_id, so an earlier
-        prepared/procedural turn still counts."""
-        instance, mock_cursor = db
-        mock_cursor.fetchall.return_value = []
-
-        instance.select_unprepared_turns(limit=2)
-
-        sql = mock_cursor.execute.call_args[0][0]
-        assert "NOT EXISTS" in sql, f"select_unprepared_turns must use NOT EXISTS; got: {sql}"
-        assert "st2.chapter_id = st.chapter_id" in sql
-
-    def test_query_uses_substantive_turn_min_secs_threshold(self, db):
-        """D2: the 30.0s threshold must appear in the SQL text as the
-        SUBSTANTIVE_TURN_MIN_SECS constant, f-string-interpolated."""
-        instance, mock_cursor = db
-        mock_cursor.fetchall.return_value = []
-
-        instance.select_unprepared_turns(limit=2)
-
-        sql = mock_cursor.execute.call_args[0][0]
-        assert ">= 30.0" in sql, f"select_unprepared_turns must use the 30.0s substantive threshold; got: {sql}"
+        assert "is_chapter_first_substantive" in sql, f"missing column alias; got: {sql}"
+        assert "BOOL_OR" in sql, f"must use BOOL_OR; got: {sql}"
+        assert "PARTITION BY stv.output_path" in sql, f"must partition by output_path; got: {sql}"
+        assert "NOT EXISTS" in sql, f"must use NOT EXISTS; got: {sql}"
+        assert "st2.chapter_id = st.chapter_id" in sql, f"must correlate st2 on chapter_id; got: {sql}"
+        assert ">= 30.0" in sql, f"must use the 30.0s substantive threshold; got: {sql}"
 
 
 # --------------------------------------------------------------------------- #

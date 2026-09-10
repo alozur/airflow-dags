@@ -236,19 +236,12 @@ def _seed_turn(
             "INSERT INTO video_chapters (chapter_id, video_id) VALUES (%s, %s) ON CONFLICT (chapter_id) DO NOTHING",
             (chapter_id, video_id),
         )
-        if end_seconds is None:
-            cur.execute(
-                "INSERT INTO speaker_turns (turn_id, chapter_id, speaker_label, start_seconds, is_procedural) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (turn_id, chapter_id, speaker_label, start_seconds, is_procedural),
-            )
-        else:
-            cur.execute(
-                "INSERT INTO speaker_turns "
-                "(turn_id, chapter_id, speaker_label, start_seconds, end_seconds, is_procedural) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (turn_id, chapter_id, speaker_label, start_seconds, end_seconds, is_procedural),
-            )
+        cur.execute(
+            "INSERT INTO speaker_turns "
+            "(turn_id, chapter_id, speaker_label, start_seconds, end_seconds, is_procedural) "
+            "VALUES (%s, %s, %s, %s, COALESCE(%s, 600), %s)",
+            (turn_id, chapter_id, speaker_label, start_seconds, end_seconds, is_procedural),
+        )
         cur.execute(
             "INSERT INTO speaker_turn_videos (turn_id, output_path) VALUES (%s, %s)",
             (turn_id, output_path),

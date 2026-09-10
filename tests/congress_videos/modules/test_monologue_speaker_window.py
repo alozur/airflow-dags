@@ -196,40 +196,24 @@ def test_monologue_window_start_mid_chapter_non_regression_is_byte_identical():
     assert result == max(0.0, anchor - MONOLOGUE_WINDOW_SECS)
 
 
-def test_monologue_window_start_missing_chapter_start_falls_back_to_legacy():
-    turn = {"turn_id": 1, "is_chapter_first_substantive": True}
-    anchor = 500.0
-
-    result = monologue_window_start(turn, anchor)
-
-    assert result == max(0.0, anchor - MONOLOGUE_WINDOW_SECS)
-
-
-def test_monologue_window_start_unparseable_chapter_start_falls_back_to_legacy():
-    """Spec scenario: 'Unparseable or missing chapter start falls back to
-    the standard window'."""
-    turn = _chapter_first_turn(start_time="not-a-timestamp")
-    anchor = 500.0
-
-    result = monologue_window_start(turn, anchor)
-
-    assert result == max(0.0, anchor - MONOLOGUE_WINDOW_SECS)
-
-
-def test_monologue_window_start_chapter_start_at_or_after_anchor_falls_back_to_legacy():
-    turn = _chapter_first_turn(start_time="00:10:00,000", end_time="00:10:05,000")
-    anchor = 600.0  # equals the parsed chapter_start_seconds -> gap is not > 0
-
-    result = monologue_window_start(turn, anchor)
-
-    assert result == max(0.0, anchor - MONOLOGUE_WINDOW_SECS)
-
-
-def test_monologue_window_start_gap_above_cap_keeps_standard_window():
-    """Spec scenario: 'Gap above the cap keeps the standard window'."""
-    turn = _chapter_first_turn(start_time="00:00:00,000", end_time="00:00:01,000")
-    anchor = MONOLOGUE_INTRO_MAX_GAP_SECS + 50.0
-
+@pytest.mark.parametrize(
+    ("turn", "anchor"),
+    [
+        ({"turn_id": 1, "is_chapter_first_substantive": True}, 500.0),
+        (_chapter_first_turn(start_time="not-a-timestamp"), 500.0),
+        (_chapter_first_turn(start_time="00:10:00,000", end_time="00:10:05,000"), 600.0),
+        (
+            _chapter_first_turn(start_time="00:00:00,000", end_time="00:00:01,000"),
+            MONOLOGUE_INTRO_MAX_GAP_SECS + 50.0,
+        ),
+    ],
+    ids=["missing-chapter-start", "unparseable-chapter-start", "chapter-start-at-or-after-anchor", "gap-above-cap"],
+)
+def test_monologue_window_start_fallback_cases_use_the_legacy_value(turn, anchor):
+    """Spec scenarios: 'Unparseable or missing chapter start falls back to
+    the standard window' and 'Gap above the cap keeps the standard
+    window'. anchor=600.0 for the third case equals the parsed
+    chapter_start_seconds, so the gap is not > 0."""
     result = monologue_window_start(turn, anchor)
 
     assert result == max(0.0, anchor - MONOLOGUE_WINDOW_SECS)
@@ -250,44 +234,24 @@ def test_monologue_window_start_extended_window_still_clamps_at_zero():
 # ---------------------------------------------------------------------------
 
 
-def test_select_preceding_window_explicit_start_includes_boundary_block():
+@pytest.mark.parametrize(
+    ("block_start", "block_end", "expect_included"),
+    [
+        (100.0, 105.0, True),  # exactly at window_start -> included
+        (99.999, 100.0, False),  # just before window_start -> excluded
+        (500.0, 505.0, False),  # exactly at anchor -> excluded
+        (499.0, 510.0, True),  # overlapping the anchor -> included by start time
+    ],
+    ids=["at-window-start", "just-before-window-start", "at-anchor", "overlapping-anchor"],
+)
+def test_select_preceding_window_explicit_start_boundaries(block_start, block_end, expect_included):
     anchor = 500.0
     window_start = 100.0
-    block = _block(window_start, window_start + 5)
+    block = _block(block_start, block_end)
 
     result = select_preceding_window([block], anchor, window_start=window_start)
 
-    assert result == [block]
-
-
-def test_select_preceding_window_explicit_start_excludes_block_just_before():
-    anchor = 500.0
-    window_start = 100.0
-    block = _block(window_start - 0.001, window_start)
-
-    result = select_preceding_window([block], anchor, window_start=window_start)
-
-    assert result == []
-
-
-def test_select_preceding_window_explicit_start_excludes_block_at_anchor():
-    anchor = 500.0
-    window_start = 100.0
-    block = _block(anchor, anchor + 5)
-
-    result = select_preceding_window([block], anchor, window_start=window_start)
-
-    assert result == []
-
-
-def test_select_preceding_window_explicit_start_includes_block_overlapping_anchor():
-    anchor = 500.0
-    window_start = 100.0
-    block = _block(anchor - 1, anchor + 10)
-
-    result = select_preceding_window([block], anchor, window_start=window_start)
-
-    assert result == [block]
+    assert result == ([block] if expect_included else [])
 
 
 # ---------------------------------------------------------------------------
