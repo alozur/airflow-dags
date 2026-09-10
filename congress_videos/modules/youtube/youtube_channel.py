@@ -1151,6 +1151,79 @@ def extract_session_date(agendas, target_date: str):
     return {"total_processed": len(session_results), "videos": session_results}
 
 
+def _find_agenda_for_video(agendas, video_id) -> dict | None:
+    """Find the agenda entry matching `video_id`.
+
+    Lifted verbatim out of `extract_agenda_section` (issue #272): first
+    match wins when `video_id` is duplicated (`break`); `None` when
+    absent. An agenda item without a `video_id` key raises `KeyError`
+    (pre-existing direct subscript, not `.get()`).
+    """
+    agenda_item = None
+    for agenda in agendas["videos"]:
+        if agenda["video_id"] == video_id:
+            agenda_item = agenda
+            break
+
+    return agenda_item
+
+
+def _locate_target_section(agenda_text, date_matches, target_date_dt, spanish_months) -> str | None:
+    """Extract the agenda text between the target date header and the next
+    date header (or end of document).
+
+    Lifted verbatim out of `extract_agenda_section` (issue #272): `None`
+    when no header matches `target_date_dt`. The next-header boundary is
+    the smallest `.start()` greater than the matched header's `.start()`
+    — scanned across all of `date_matches`, not "the next item in list
+    order" (the two coincide only when `date_matches` is produced by
+    `re.finditer` over this same `agenda_text`, which a standalone caller
+    need not guarantee). The result is `.strip()`ped, which can yield `""`
+    for a zero-width or whitespace-only slice — the caller's
+    `if target_section:` then treats that as not-found.
+    """
+    target_section = None
+
+    for i, match in enumerate(date_matches):
+        day_name = match.group(1).lower()
+        day_num = int(match.group(2))
+        month_name = match.group(3).lower()
+        year = int(match.group(4)) if match.group(4) else target_date_dt.year
+
+        # Convert Spanish date to datetime
+        month_num = spanish_months.get(month_name)
+        if not month_num:
+            continue
+
+        try:
+            section_date = datetime(year, month_num, day_num).date()
+
+            # Check if this section matches our target date
+            if section_date == target_date_dt:
+                # Extract text from this date header to the next date header (or end)
+                start_pos = match.start()
+
+                # Find next match after this one
+                next_match = None
+                for other_match in date_matches:
+                    if other_match.start() > start_pos:
+                        if next_match is None or other_match.start() < next_match.start():
+                            next_match = other_match
+
+                end_pos = next_match.start() if next_match else len(agenda_text)
+                target_section = agenda_text[start_pos:end_pos].strip()
+
+                logging.info(f"Extracted agenda section for {day_name.upper()}, {day_num} de {month_name}")
+                logging.info(f"  Section: {len(target_section)} chars (lines {start_pos} to {end_pos})")
+                break
+
+        except ValueError as e:
+            logging.warning(f"Invalid date: {day_num}/{month_num}/{year} - {e}")
+            continue
+
+    return target_section
+
+
 def extract_agenda_section(agendas, session_date_info):
     """
     Extract the specific agenda section for the target date.
@@ -1202,11 +1275,7 @@ def extract_agenda_section(agendas, session_date_info):
         target_date = session_info["target_date"]
 
         # Find corresponding agenda
-        agenda_item = None
-        for agenda in agendas["videos"]:
-            if agenda["video_id"] == video_id:
-                agenda_item = agenda
-                break
+        agenda_item = _find_agenda_for_video(agendas, video_id)
 
         if not agenda_item:
             logging.warning(f"No agenda found for video_id {video_id}")
@@ -1253,45 +1322,8 @@ def extract_agenda_section(agendas, session_date_info):
             continue
 
         # Find the match that corresponds to our target date
-        target_section = None
         target_date_dt = datetime.strptime(target_date, "%Y-%m-%d").date()
-
-        for i, match in enumerate(date_matches):
-            day_name = match.group(1).lower()
-            day_num = int(match.group(2))
-            month_name = match.group(3).lower()
-            year = int(match.group(4)) if match.group(4) else target_date_dt.year
-
-            # Convert Spanish date to datetime
-            month_num = spanish_months.get(month_name)
-            if not month_num:
-                continue
-
-            try:
-                section_date = datetime(year, month_num, day_num).date()
-
-                # Check if this section matches our target date
-                if section_date == target_date_dt:
-                    # Extract text from this date header to the next date header (or end)
-                    start_pos = match.start()
-
-                    # Find next match after this one
-                    next_match = None
-                    for other_match in date_matches:
-                        if other_match.start() > start_pos:
-                            if next_match is None or other_match.start() < next_match.start():
-                                next_match = other_match
-
-                    end_pos = next_match.start() if next_match else len(agenda_text)
-                    target_section = agenda_text[start_pos:end_pos].strip()
-
-                    logging.info(f"Extracted agenda section for {day_name.upper()}, {day_num} de {month_name}")
-                    logging.info(f"  Section: {len(target_section)} chars (lines {start_pos} to {end_pos})")
-                    break
-
-            except ValueError as e:
-                logging.warning(f"Invalid date: {day_num}/{month_num}/{year} - {e}")
-                continue
+        target_section = _locate_target_section(agenda_text, date_matches, target_date_dt, spanish_months)
 
         if target_section:
             extracted_sections.append(

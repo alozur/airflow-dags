@@ -795,3 +795,125 @@ class TestExtractAgendaSection:
 
         with pytest.raises(ValueError):
             extract_agenda_section(AGENDAS, session_date_info)
+
+
+# ---------------------------------------------------------------------------
+# _find_agenda_for_video / _locate_target_section — RED-first quirk tests
+# for the helpers lifted verbatim out of extract_agenda_section (issue #272)
+# ---------------------------------------------------------------------------
+
+
+class TestFindAgendaForVideo:
+    def test_first_match_wins_on_duplicated_video_id(self):
+        from congress_videos.modules.youtube.youtube_channel import _find_agenda_for_video
+
+        agendas = {"videos": [{"video_id": "v1", "tag": "first"}, {"video_id": "v1", "tag": "second"}]}
+
+        result = _find_agenda_for_video(agendas, "v1")
+
+        assert result["tag"] == "first"
+
+    def test_none_when_absent(self):
+        from congress_videos.modules.youtube.youtube_channel import _find_agenda_for_video
+
+        agendas = {"videos": [{"video_id": "v1"}]}
+
+        assert _find_agenda_for_video(agendas, "v2") is None
+
+    def test_agenda_item_without_video_id_key_raises_keyerror(self):
+        """Pre-existing behavior: direct subscript at :1146, not .get()."""
+        from congress_videos.modules.youtube.youtube_channel import _find_agenda_for_video
+
+        agendas = {"videos": [{"no_video_id": "oops"}]}
+
+        with pytest.raises(KeyError):
+            _find_agenda_for_video(agendas, "v1")
+
+
+class TestLocateTargetSection:
+    def test_none_when_no_header_matches_target(self):
+        import re
+        from datetime import date
+
+        from congress_videos.modules.youtube.youtube_channel import _locate_target_section
+
+        text = "LUNES, 5 DE ENERO\nx\n"
+        matches = list(re.finditer(_DATE_PATTERN, text))
+
+        result = _locate_target_section(text, matches, date(2025, 6, 1), _SPANISH_MONTHS)
+
+        assert result is None
+
+    def test_boundary_is_smallest_start_greater_than_this_matchs_not_list_order(self):
+        """next_match must be the header with the smallest start greater
+        than the current match's start — NOT "the next item in
+        date_matches list order". A standalone helper accepts a
+        caller-supplied date_matches list that need not be in physical
+        order, so this only becomes observable at the new seam."""
+        import re
+        from datetime import date
+
+        from congress_videos.modules.youtube.youtube_channel import _locate_target_section
+
+        text = "LUNES, 5 DE ENERO\nfirst-body\nMARTES, 6 DE ENERO\nsecond-body\nMIERCOLES, 7 DE ENERO\nthird-body\n"
+        matches = list(re.finditer(_DATE_PATTERN, text))
+        reversed_matches = list(reversed(matches))
+
+        result = _locate_target_section(text, reversed_matches, date(2025, 1, 5), _SPANISH_MONTHS)
+
+        assert result == "LUNES, 5 DE ENERO\nfirst-body"
+
+    def test_target_last_runs_to_eof(self):
+        import re
+        from datetime import date
+
+        from congress_videos.modules.youtube.youtube_channel import _locate_target_section
+
+        text = "LUNES, 5 DE ENERO\nfirst\nMARTES, 6 DE ENERO\nlast-body\n"
+        matches = list(re.finditer(_DATE_PATTERN, text))
+
+        result = _locate_target_section(text, matches, date(2025, 1, 6), _SPANISH_MONTHS)
+
+        assert result == "MARTES, 6 DE ENERO\nlast-body"
+
+    def test_result_is_stripped(self):
+        import re
+        from datetime import date
+
+        from congress_videos.modules.youtube.youtube_channel import _locate_target_section
+
+        text = "LUNES, 5 DE ENERO\n   padded body   \n"
+        matches = list(re.finditer(_DATE_PATTERN, text))
+
+        result = _locate_target_section(text, matches, date(2025, 1, 5), _SPANISH_MONTHS)
+
+        assert result == result.strip()
+
+    def test_unknown_month_and_invalid_date_skip_without_aborting(self):
+        import re
+        from datetime import date
+
+        from congress_videos.modules.youtube.youtube_channel import _locate_target_section
+
+        text = "LUNES, 31 DE FEBRERO\nx\nMARTES, 5 DE FOOBAR\ny\nJUEVES, 22 DE MAYO\nreal-body\n"
+        matches = list(re.finditer(_DATE_PATTERN, text))
+
+        result = _locate_target_section(text, matches, date(2025, 5, 22), _SPANISH_MONTHS)
+
+        assert result == "JUEVES, 22 DE MAYO\nreal-body"
+
+    def test_returns_empty_string_when_slice_is_whitespace_only(self):
+        """A caller-supplied date_matches/agenda_text pair that don't
+        correspond can produce a whitespace-only slice — `.strip()` turns
+        that into "", which the caller's `if target_section:` then treats
+        as not-found."""
+        import re
+        from datetime import date
+
+        from congress_videos.modules.youtube.youtube_channel import _locate_target_section
+
+        matches = list(re.finditer(_DATE_PATTERN, "LUNES, 5 DE ENERO\nbody\n"))
+
+        result = _locate_target_section("          ", matches, date(2025, 1, 5), _SPANISH_MONTHS)
+
+        assert result == ""
