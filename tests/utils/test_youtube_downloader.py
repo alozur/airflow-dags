@@ -836,6 +836,140 @@ class TestDownloadYoutubeSubtitles:
 
 
 # ---------------------------------------------------------------------------
+# _download_subtitle_files (lifted out of download_youtube_subtitles, #272 slice 5 PR8)
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadSubtitleFiles:
+    def _fake_ydl_factory(self, on_download):
+        """Return a `yt_dlp.YoutubeDL(opts)` factory whose `.download()` calls `on_download()`."""
+
+        def factory(opts):
+            m = MagicMock()
+            m.__enter__ = MagicMock(return_value=m)
+            m.__exit__ = MagicMock(return_value=False)
+            m.download.side_effect = on_download
+            return m
+
+        return factory
+
+    def test_exception_for_one_language_continues_to_next(self, tmp_path, mocker):
+        """A per-language exception is swallowed; the next language is still attempted."""
+        calls = []
+
+        def on_download(urls):
+            calls.append(urls)
+            if len(calls) == 1:
+                raise RuntimeError("rate limited for this language")
+            # Second (successful) language: create the matching SRT file.
+            srt_dir = tmp_path / "srt_files"
+            srt_dir.mkdir(parents=True, exist_ok=True)
+            (srt_dir / "vid1_en.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n")
+
+        mocker.patch(
+            "utils.youtube_downloader.yt_dlp.YoutubeDL",
+            side_effect=self._fake_ydl_factory(on_download),
+        )
+
+        from utils.youtube_downloader import _download_subtitle_files
+
+        result = _download_subtitle_files("https://youtube.com/watch?v=x", "vid1", str(tmp_path), ["es", "en"])
+
+        assert len(calls) == 2  # both languages attempted, no raise propagated
+        assert len(result) == 1
+        assert result[0]["language"] == "en"
+
+    def test_breaks_after_first_language_with_files(self, tmp_path, mocker):
+        """Once a language yields files, later languages are never attempted."""
+        calls = []
+
+        def on_download(urls):
+            calls.append(urls)
+            srt_dir = tmp_path / "srt_files"
+            srt_dir.mkdir(parents=True, exist_ok=True)
+            (srt_dir / "vid1_es.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nHola\n")
+
+        mocker.patch(
+            "utils.youtube_downloader.yt_dlp.YoutubeDL",
+            side_effect=self._fake_ydl_factory(on_download),
+        )
+
+        from utils.youtube_downloader import _download_subtitle_files
+
+        result = _download_subtitle_files("https://youtube.com/watch?v=x", "vid1", str(tmp_path), ["es", "en", "auto"])
+
+        assert len(calls) == 1  # "en" and "auto" never attempted
+        assert len(result) == 1
+        assert result[0]["language"] == "es"
+
+    @pytest.mark.parametrize(
+        ("file_name", "lang", "expected_is_auto"),
+        [
+            ("vid1_es-AUTO.srt", "es", True),
+            ("vid1_zz.srt", "auto", True),
+            ("vid1_es.srt", "es", False),
+        ],
+    )
+    def test_is_auto_pinned_on_both_halves_of_the_or(self, tmp_path, mocker, file_name, lang, expected_is_auto):
+        """`is_auto` fires on either an "auto" filename or lang == "auto" — pinned on both halves."""
+
+        def on_download(urls):
+            srt_dir = tmp_path / "srt_files"
+            srt_dir.mkdir(parents=True, exist_ok=True)
+            (srt_dir / file_name).write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n")
+
+        mocker.patch(
+            "utils.youtube_downloader.yt_dlp.YoutubeDL",
+            side_effect=self._fake_ydl_factory(on_download),
+        )
+
+        from utils.youtube_downloader import _download_subtitle_files
+
+        result = _download_subtitle_files("https://youtube.com/watch?v=x", "vid1", str(tmp_path), [lang])
+
+        assert len(result) == 1
+        assert result[0]["is_auto_generated"] is expected_is_auto
+
+    def test_all_languages_failing_returns_empty_list(self, tmp_path, mocker):
+        """When every language raises, the helper returns `[]` without raising."""
+
+        def on_download(urls):
+            raise RuntimeError("always fails")
+
+        mocker.patch(
+            "utils.youtube_downloader.yt_dlp.YoutubeDL",
+            side_effect=self._fake_ydl_factory(on_download),
+        )
+
+        from utils.youtube_downloader import _download_subtitle_files
+
+        result = _download_subtitle_files("https://youtube.com/watch?v=x", "vid1", str(tmp_path), ["es", "en"])
+
+        assert result == []
+
+    def test_one_entry_per_file_sharing_the_same_language(self, tmp_path, mocker):
+        """Multiple matching files for one language each get their own entry, same language."""
+
+        def on_download(urls):
+            srt_dir = tmp_path / "srt_files"
+            srt_dir.mkdir(parents=True, exist_ok=True)
+            (srt_dir / "vid1_es_a.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nA\n")
+            (srt_dir / "vid1_es_b.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nB\n")
+
+        mocker.patch(
+            "utils.youtube_downloader.yt_dlp.YoutubeDL",
+            side_effect=self._fake_ydl_factory(on_download),
+        )
+
+        from utils.youtube_downloader import _download_subtitle_files
+
+        result = _download_subtitle_files("https://youtube.com/watch?v=x", "vid1", str(tmp_path), ["es"])
+
+        assert len(result) == 2
+        assert {entry["language"] for entry in result} == {"es"}
+
+
+# ---------------------------------------------------------------------------
 # probe_live_status (finished-stream guard shared helper)
 # ---------------------------------------------------------------------------
 

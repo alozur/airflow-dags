@@ -827,6 +827,66 @@ def merge_video_audio_moviepy(
     return result
 
 
+def _download_subtitle_files(youtube_url: str, video_id: str, output_dir: str, languages: list[str]) -> list[dict]:
+    """Attempt to download subtitles for each language, stopping at the first success.
+
+    Lifted verbatim out of download_youtube_subtitles (issue #272).
+    """
+    downloaded_files = []
+
+    for lang in languages:
+        try:
+            logger.info(f"Attempting to download subtitles for language: {lang}")
+
+            # Create srt_files directory
+            srt_dir = Path(output_dir) / "srt_files"
+            srt_dir.mkdir(parents=True, exist_ok=True)
+
+            ydl_opts = {
+                "skip_download": True,  # Don't download the video
+                "writesubtitles": True,  # Download subtitles
+                "writeautomaticsub": True,  # Include auto-generated subtitles
+                "subtitleslangs": [lang],  # Language to download
+                "subtitlesformat": "srt",  # SRT format
+                "outtmpl": str(srt_dir / f"{video_id}_%(lang)s"),
+                "quiet": False,
+                "no_warnings": False,
+            }
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([youtube_url])
+
+            # Check if file was downloaded
+            possible_files = list(srt_dir.glob(f"{video_id}*.srt"))
+
+            if possible_files:
+                for srt_file in possible_files:
+                    file_size_mb = srt_file.stat().st_size / (1024 * 1024)
+
+                    # Determine if it's auto-generated
+                    is_auto = "auto" in srt_file.name.lower() or lang == "auto"
+
+                    downloaded_files.append(
+                        {
+                            "language": lang,
+                            "file_path": str(srt_file),
+                            "file_size_mb": round(file_size_mb, 2),
+                            "is_auto_generated": is_auto,
+                        }
+                    )
+
+                    logger.info(f"✅ Downloaded {lang} subtitles: {srt_file.name} ({file_size_mb:.2f} MB)")
+
+                # If we found subtitles, we can stop trying other languages
+                break
+
+        except Exception as e:
+            logger.debug(f"Could not download {lang} subtitles: {e}")
+            continue
+
+    return downloaded_files
+
+
 def download_youtube_subtitles(youtube_url: str, output_dir: str, languages: list[str] = None) -> dict:
     """
     Download SRT subtitles directly from YouTube if available.
@@ -880,57 +940,7 @@ def download_youtube_subtitles(youtube_url: str, output_dir: str, languages: lis
             )
 
         # Try to download subtitles in order of preference
-        downloaded_files = []
-
-        for lang in languages:
-            try:
-                logger.info(f"Attempting to download subtitles for language: {lang}")
-
-                # Create srt_files directory
-                srt_dir = Path(output_dir) / "srt_files"
-                srt_dir.mkdir(parents=True, exist_ok=True)
-
-                ydl_opts = {
-                    "skip_download": True,  # Don't download the video
-                    "writesubtitles": True,  # Download subtitles
-                    "writeautomaticsub": True,  # Include auto-generated subtitles
-                    "subtitleslangs": [lang],  # Language to download
-                    "subtitlesformat": "srt",  # SRT format
-                    "outtmpl": str(srt_dir / f"{video_id}_%(lang)s"),
-                    "quiet": False,
-                    "no_warnings": False,
-                }
-
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([youtube_url])
-
-                # Check if file was downloaded
-                possible_files = list(srt_dir.glob(f"{video_id}*.srt"))
-
-                if possible_files:
-                    for srt_file in possible_files:
-                        file_size_mb = srt_file.stat().st_size / (1024 * 1024)
-
-                        # Determine if it's auto-generated
-                        is_auto = "auto" in srt_file.name.lower() or lang == "auto"
-
-                        downloaded_files.append(
-                            {
-                                "language": lang,
-                                "file_path": str(srt_file),
-                                "file_size_mb": round(file_size_mb, 2),
-                                "is_auto_generated": is_auto,
-                            }
-                        )
-
-                        logger.info(f"✅ Downloaded {lang} subtitles: {srt_file.name} ({file_size_mb:.2f} MB)")
-
-                    # If we found subtitles, we can stop trying other languages
-                    break
-
-            except Exception as e:
-                logger.debug(f"Could not download {lang} subtitles: {e}")
-                continue
+        downloaded_files = _download_subtitle_files(youtube_url, video_id, output_dir, languages)
 
         if not downloaded_files:
             result["error"] = "Failed to download subtitles in any language"
