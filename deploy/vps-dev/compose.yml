@@ -20,9 +20,9 @@ x-airflow: &airflow
     POSTGRES_HOST: application
     POSTGRES_PORT: "5432"
     POSTGRES_DB: application_dev
-    POSTGRES_USER: airflow_dev
+    POSTGRES_USER: ${POSTGRES_RUNTIME_ROLE:-airflow_dev}
     POSTGRES_PASSWORD: ${APPLICATION_RUNTIME_PASSWORD:?Required}
-    POSTGRES_SCHEMA: development
+    POSTGRES_SCHEMA: ${POSTGRES_SCHEMA:-development}
     # External API keys: rendered by Ansible from an optional secrets env file
     # (external.env). A stack without that file behaves exactly as today.
     OPENAI_API_KEY: ${OPENAI_API_KEY:-dev-disabled-not-a-credential}

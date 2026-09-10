@@ -5,9 +5,11 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -167,8 +169,12 @@ class DevContract(unittest.TestCase):
             self.assertEqual(env["AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION"], "true")
             self.assertEqual(env["AIRFLOW__CORE__LOAD_EXAMPLES"], "false")
             self.assertEqual(env["POSTGRES_HOST"], "application")
-            self.assertEqual(env["POSTGRES_USER"], "airflow_dev")
-            self.assertEqual(env["POSTGRES_SCHEMA"], "development")
+            # Business schema and runtime role are parameterized per VPS project
+            # (issue #203 follow-up): POSTGRES_RUNTIME_ROLE/POSTGRES_SCHEMA are
+            # rendered into release.env by the infra side, defaulting to the DEV
+            # pair (airflow_dev/development) when unset.
+            self.assertEqual(env["POSTGRES_USER"], "${POSTGRES_RUNTIME_ROLE:-airflow_dev}")
+            self.assertEqual(env["POSTGRES_SCHEMA"], "${POSTGRES_SCHEMA:-development}")
             for key in (
                 "GITHUB_TOKEN",
                 "_PIP_ADDITIONAL_REQUIREMENTS",
@@ -210,8 +216,15 @@ class DevContract(unittest.TestCase):
         self.assertLessEqual(
             read, provided, f"app_init.py reads variables app-init never sets: {sorted(read - provided)}"
         )
-        # A fresh database needs the base schema files before migration 004 can run.
-        for base in ("congressional_videos_schema.sql", "youtube_chapters_schema.sql", "grant_permissions.sql"):
+        # A fresh DEV database needs the base schema files before migration 004 can run;
+        # PROD gets grant_permissions_production.sql instead (never the base schema files —
+        # see app_init._bootstrap).
+        for base in (
+            "congressional_videos_schema.sql",
+            "youtube_chapters_schema.sql",
+            "grant_permissions.sql",
+            "grant_permissions_production.sql",
+        ):
             self.assertIn(base, script)
             self.assertTrue((HERE.parent.parent / "congress_videos/sql" / base).exists(), base)
 
@@ -276,6 +289,112 @@ class DevContract(unittest.TestCase):
         self.assertIn("--require-hashes", text)
         self.assertNotIn("COPY . ", text)
         self.assertNotIn("pip install --upgrade", text)
+
+
+class AppInitProvisioningSelectionTests(unittest.TestCase):
+    """Pure-function coverage for app_init._resolve_provisioning — no DB involved."""
+
+    @classmethod
+    def setUpClass(cls):
+        if str(HERE) not in sys.path:
+            sys.path.insert(0, str(HERE))
+        import app_init  # local import: only meaningful once HERE is on sys.path
+
+        cls.app_init = app_init
+
+    def test_development_pair_selects_dev_grant_script_and_owner(self):
+        with mock.patch.dict(os.environ, {"POSTGRES_SCHEMA": "development", "POSTGRES_USER": "airflow_dev"}):
+            schema, owner_role, grant_script = self.app_init._resolve_provisioning()
+        self.assertEqual(schema, "development")
+        self.assertEqual(owner_role, "airflow_dev")
+        self.assertEqual(grant_script.name, "grant_permissions.sql")
+
+    def test_production_pair_selects_production_grant_script_and_owner(self):
+        with mock.patch.dict(os.environ, {"POSTGRES_SCHEMA": "production", "POSTGRES_USER": "airflow_prod"}):
+            schema, owner_role, grant_script = self.app_init._resolve_provisioning()
+        self.assertEqual(schema, "production")
+        self.assertEqual(owner_role, "airflow_prod")
+        self.assertEqual(grant_script.name, "grant_permissions_production.sql")
+
+    def test_mismatched_schema_and_role_fails_fast(self):
+        env = {"POSTGRES_SCHEMA": "production", "POSTGRES_USER": "airflow_dev"}
+        with mock.patch.dict(os.environ, env), self.assertRaises(ValueError):
+            self.app_init._resolve_provisioning()
+
+    def test_unknown_schema_fails_fast(self):
+        env = {"POSTGRES_SCHEMA": "staging", "POSTGRES_USER": "airflow_dev"}
+        with mock.patch.dict(os.environ, env), self.assertRaises(ValueError):
+            self.app_init._resolve_provisioning()
+
+    def test_unknown_role_for_known_schema_fails_fast(self):
+        env = {"POSTGRES_SCHEMA": "development", "POSTGRES_USER": "airflow_prod"}
+        with mock.patch.dict(os.environ, env), self.assertRaises(ValueError):
+            self.app_init._resolve_provisioning()
+
+
+class _FakeCursor:
+    """Minimal cursor double: .execute() is a no-op, .fetchone() reports the
+    sentinel-table check's answer — enough to drive _table_exists without a DB."""
+
+    def __init__(self, sentinel_present: bool):
+        self._sentinel_present = sentinel_present
+
+    def execute(self, *args, **kwargs):
+        pass
+
+    def fetchone(self):
+        return (self._sentinel_present,)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+class _FakeConn:
+    def __init__(self, sentinel_present: bool):
+        self._cursor = _FakeCursor(sentinel_present)
+
+    def cursor(self):
+        return self._cursor
+
+    def commit(self):
+        pass
+
+
+class AppInitBootstrapEmptySchemaTests(unittest.TestCase):
+    """_bootstrap fails fast for a non-development schema with no restored data — no real DB.
+
+    The sentinel-table check (_table_exists) is mocked via _FakeConn/_FakeCursor; grants,
+    password statements, and schema creation all go through the same no-op fake cursor, so
+    nothing here ever reaches a real Postgres connection."""
+
+    @classmethod
+    def setUpClass(cls):
+        if str(HERE) not in sys.path:
+            sys.path.insert(0, str(HERE))
+        import app_init  # local import: only meaningful once HERE is on sys.path
+
+        cls.app_init = app_init
+
+    def test_production_with_no_restored_data_fails_fast_before_migrations(self):
+        grant_script = HERE.parent.parent / "congress_videos" / "sql" / "grant_permissions_production.sql"
+        conn = _FakeConn(sentinel_present=False)
+        env = {"POSTGRES_PASSWORD": "test-runtime-pw", "MIGRATION_POSTGRES_PASSWORD": "test-migration-pw"}
+        with mock.patch.dict(os.environ, env), self.assertRaises(self.app_init.EmptyRestoredSchemaError) as ctx:
+            self.app_init._bootstrap(conn, "production", "airflow_prod", grant_script)
+        message = str(ctx.exception)
+        self.assertIn("production", message)
+        self.assertIn("import-db", message)
+
+    def test_production_with_restored_data_does_not_raise(self):
+        grant_script = HERE.parent.parent / "congress_videos" / "sql" / "grant_permissions_production.sql"
+        conn = _FakeConn(sentinel_present=True)
+        env = {"POSTGRES_PASSWORD": "test-runtime-pw", "MIGRATION_POSTGRES_PASSWORD": "test-migration-pw"}
+        with mock.patch.dict(os.environ, env):
+            applied = self.app_init._bootstrap(conn, "production", "airflow_prod", grant_script)
+        self.assertEqual(applied, 0)  # BASE_SCHEMA_FILES never runs for a non-development schema
 
 
 if __name__ == "__main__":
