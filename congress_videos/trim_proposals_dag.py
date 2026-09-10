@@ -35,7 +35,9 @@ from datetime import UTC, datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-from congress_videos.config.paths import DOWNLOADS_DIR
+from congress_videos.config.paths import PROJECT_DATA_DIR
+from congress_videos.config.youtube_channels import DEFAULT_CHANNEL
+from congress_videos.modules import nas_fetch
 from congress_videos.modules.sidecar_api_error import SidecarApiError
 from congress_videos.modules.trim_proposals import (
     _upsert_proposals,
@@ -45,34 +47,16 @@ from congress_videos.modules.trim_proposals_api import (
     api_yamnet_fn,
     check_yamnet_api_health,
 )
-from congress_videos.modules.vad_helpers import extract_audio_wav
+from congress_videos.modules.vad_helpers import (
+    _find_source_video_any_date,
+    extract_audio_wav,
+)
 from utils.postgres_helpers import PostgresConnection
 
 logger = logging.getLogger(__name__)
 
 DAG_ID = "trim_proposals"
 DEFAULT_LIMIT = 10
-
-_MEDIA_SUFFIXES = (".mp4", ".mkv", ".webm")
-
-
-def _find_source_video_any_date(video_id: str) -> str | None:
-    """Locate the source media for a video without knowing its session date.
-
-    ``speaker_turns`` carries no recording date, so scan every date folder
-    under ``DOWNLOADS_DIR`` for ``downloads/{date}/{video_id}/`` and return the
-    first real media file (mirrors ``reap_clip_preparer``'s date-less lookup).
-    """
-    if not os.path.isdir(DOWNLOADS_DIR):
-        return None
-    for date_folder in sorted(os.listdir(DOWNLOADS_DIR)):
-        video_dir = os.path.join(DOWNLOADS_DIR, date_folder, str(video_id))
-        if not os.path.isdir(video_dir):
-            continue
-        for filename in sorted(os.listdir(video_dir)):
-            if filename.endswith(_MEDIA_SUFFIXES) and "chapter_video" not in filename:
-                return os.path.join(video_dir, filename)
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +161,15 @@ def run_turn_proposals(
 
     video_path = _find_source_video_any_date(video_id)
     if not video_path:
+        if nas_fetch.is_archived_elsewhere(PROJECT_DATA_DIR, DEFAULT_CHANNEL, str(video_id)):
+            logger.warning(
+                "turn %s: source video_id=%s archived to the NAS; trigger the nas_fetch DAG "
+                "with video_id=%s before reprocessing",
+                turn_id,
+                video_id,
+                video_id,
+            )
+            return {"status": "skipped_archived", "turn_id": turn_id, "proposals": 0}
         logger.warning(
             "turn %s: no source video for video_id=%s — skipping",
             turn_id,

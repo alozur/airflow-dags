@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
@@ -61,13 +60,16 @@ from congress_videos.config.constants import (
 from congress_videos.config.constants import (
     SPEAKER_TURN_VIDEOS_DAG_ID,
 )
-from congress_videos.config.paths import DOWNLOADS_DIR, get_orador_video_dir
+from congress_videos.config.paths import PROJECT_DATA_DIR, get_orador_video_dir
+from congress_videos.config.youtube_channels import DEFAULT_CHANNEL
+from congress_videos.modules import nas_fetch
 from congress_videos.modules.materialization import (
     MONOLOGUE,
     classify_turn_type,
     plan_turn_materialization,
 )
 from congress_videos.modules.materialization_executor import execute_plan
+from congress_videos.modules.vad_helpers import _find_source_video_any_date
 from congress_videos.srt_helpers import _window_srt_text, score_turn_interest
 from utils.codec_detection import get_cached_codec
 from utils.postgres_helpers import PostgresConnection
@@ -75,27 +77,6 @@ from utils.postgres_helpers import PostgresConnection
 logger = logging.getLogger(__name__)
 
 DAG_ID = SPEAKER_TURN_VIDEOS_DAG_ID
-
-_MEDIA_SUFFIXES = (".mp4", ".mkv", ".webm")
-
-
-def _find_source_video_any_date(video_id: str) -> str | None:
-    """Locate the source media for a video without knowing its session date.
-
-    ``speaker_turns`` carries no recording date, so scan every date folder
-    under ``DOWNLOADS_DIR`` for ``downloads/{date}/{video_id}/`` and return the
-    first real media file (mirrors ``reap_clip_preparer``'s date-less lookup).
-    """
-    if not os.path.isdir(DOWNLOADS_DIR):
-        return None
-    for date_folder in sorted(os.listdir(DOWNLOADS_DIR)):
-        video_dir = os.path.join(DOWNLOADS_DIR, date_folder, str(video_id))
-        if not os.path.isdir(video_dir):
-            continue
-        for filename in sorted(os.listdir(video_dir)):
-            if filename.endswith(_MEDIA_SUFFIXES) and "chapter_video" not in filename:
-                return os.path.join(video_dir, filename)
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -286,10 +267,14 @@ def _materialize_task(**context) -> dict:
     on disk — otherwise a permanently pending turn would block
     ``_select_automatic_chapter``'s ``MIN(turn_id)`` forever.
 
-    Returns a summary dict ``{materialized: int, skipped: int, dropped_procedural: int}``.
+    Returns a summary dict
+    ``{materialized: int, skipped: int, skipped_archived: int, dropped_procedural: int}``.
+    ``skipped_archived`` counts plans skipped specifically because their source
+    video was offloaded to the NAS by ``nas_archive`` (see ``skipped`` for the
+    "no source video anywhere" case).
     """
     turns = context["ti"].xcom_pull(key="turns", task_ids="select_turns") or []
-    summary = {"materialized": 0, "skipped": 0, "dropped_procedural": 0}
+    summary = {"materialized": 0, "skipped": 0, "skipped_archived": 0, "dropped_procedural": 0}
 
     if not turns:
         logger.info("speaker_turn_videos: no turns to materialize")
@@ -325,6 +310,16 @@ def _materialize_task(**context) -> dict:
 
             source_path = _find_source_video_any_date(video_id)
             if not source_path:
+                if nas_fetch.is_archived_elsewhere(PROJECT_DATA_DIR, DEFAULT_CHANNEL, video_id):
+                    logger.warning(
+                        "speaker_turn_videos: source video_id=%s archived to the NAS; trigger the "
+                        "nas_fetch DAG with video_id=%s before reprocessing plan turn_ids=%s",
+                        video_id,
+                        video_id,
+                        plan.turn_ids,
+                    )
+                    summary["skipped_archived"] += len(plan.turn_ids)
+                    continue
                 logger.warning(
                     "speaker_turn_videos: no source video for video_id=%s — skipping plan turn_ids=%s",
                     video_id,

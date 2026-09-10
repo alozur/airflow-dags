@@ -61,6 +61,31 @@ local disk; `PROJECT_DATA_DIR/thumbnails/` is mirrored to the same target on
 every enabled run but is never pruned locally, since its files are keyed by
 the uploaded YouTube video id and can't be attributed to one source video.
 
+`congress_videos/nas_fetch_dag.py` (`nas_fetch`) is the inverse, on-demand
+recovery DAG: it pulls one or more already-archived videos' material back
+from the NAS onto local disk so a downstream DAG (`speaker_turns`,
+`trim_proposals`, `speaker_turn_videos`, ...) can reprocess them. It reuses
+the exact same `NAS_ARCHIVE_*` settings and SSH key mount as `nas_archive` —
+no additional configuration. Trigger it with:
+
+```bash
+airflow dags trigger nas_fetch --conf '{"video_id": "abc123"}'
+airflow dags trigger nas_fetch --conf '{"video_ids": ["abc123", "def456"]}'
+airflow dags trigger nas_fetch --conf '{"video_id": "abc123", "channel_slug": "congreso-es-tv"}'
+```
+
+`channel_slug` defaults to `DEFAULT_CHANNEL` when omitted. Each requested
+video is handled independently: a failure fetching or verifying one video
+aborts only that one (its `.nas_archived.json` marker is left in place) and
+is recorded in the run summary; the rest still proceed. The NAS copy is never
+modified or deleted by this DAG. After a successful fetch, every restored
+media file's mtime is reset to the fetch time — `rsync -a` preserves the
+NAS's original timestamps, so without this the video would still look old to
+`nas_archive`'s local age gate — giving the video a fresh full
+`NAS_ARCHIVE_MIN_AGE_DAYS` window before `nas_archive` can pick it up again.
+Re-archiving afterwards is cheap: the NAS copy is unchanged, so the eventual
+re-push is close to a no-op sync.
+
 `utils/git_sync_dag.py` is excluded from DAG loading on this image: the
 Dockerfile appends `git_sync_dag` to `.airflowignore` before the tree is made
 read-only, since the VPS scheduler must never pull from GitHub or hold a

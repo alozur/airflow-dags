@@ -49,7 +49,9 @@ from congress_videos.config.constants import (
     VAD_SAMPLE_RATE,
     VAD_TURN_TRIM_EPSILON_SECS,
 )
-from congress_videos.config.paths import get_download_video_path
+from congress_videos.config.paths import DOWNLOADS_DIR, PROJECT_DATA_DIR, get_download_video_path
+from congress_videos.config.youtube_channels import DEFAULT_CHANNEL
+from congress_videos.modules import nas_fetch
 from congress_videos.modules.video_editor import _get_source_duration
 from congress_videos.modules.video_splitter import compute_ffmpeg_timeout
 from utils.time_utils import format_timestamp, parse_timestamp
@@ -73,6 +75,28 @@ def _find_source_video(target_date: str, video_id: str) -> str | None:
     for filename in sorted(os.listdir(video_dir)):
         if filename.endswith(_MEDIA_SUFFIXES) and "chapter_video" not in filename:
             return os.path.join(video_dir, filename)
+    return None
+
+
+def _find_source_video_any_date(video_id: str) -> str | None:
+    """Locate the source media for a video without knowing its session date.
+
+    ``speaker_turns`` carries no recording date, so scan every date folder
+    under ``DOWNLOADS_DIR`` for ``downloads/{date}/{video_id}/`` and return the
+    first real media file (mirrors ``reap_clip_preparer``'s date-less lookup).
+
+    Shared by ``trim_proposals_dag`` and ``speaker_turn_videos_dag`` (moved
+    here from being duplicated identically in both — issue: NAS archive).
+    """
+    if not os.path.isdir(DOWNLOADS_DIR):
+        return None
+    for date_folder in sorted(os.listdir(DOWNLOADS_DIR)):
+        video_dir = os.path.join(DOWNLOADS_DIR, date_folder, str(video_id))
+        if not os.path.isdir(video_dir):
+            continue
+        for filename in sorted(os.listdir(video_dir)):
+            if filename.endswith(_MEDIA_SUFFIXES) and "chapter_video" not in filename:
+                return os.path.join(video_dir, filename)
     return None
 
 
@@ -811,12 +835,23 @@ def trim_chapter_silence_with_vad(
 
         source_video = _find_source_video(target_date, str(video_id))
         if not source_video:
-            log.warning(
-                "vad.trim.video_not_found video_id=%s target_date=%s chapters=%s",
-                video_id,
-                target_date,
-                len(chapters),
-            )
+            if nas_fetch.is_archived_elsewhere(PROJECT_DATA_DIR, DEFAULT_CHANNEL, str(video_id)):
+                log.warning(
+                    "vad.trim.video_archived video_id=%s target_date=%s chapters=%s — "
+                    "source archived to the NAS; trigger the nas_fetch DAG with video_id=%s "
+                    "before reprocessing",
+                    video_id,
+                    target_date,
+                    len(chapters),
+                    video_id,
+                )
+            else:
+                log.warning(
+                    "vad.trim.video_not_found video_id=%s target_date=%s chapters=%s",
+                    video_id,
+                    target_date,
+                    len(chapters),
+                )
             continue  # best-effort: keep all chapters of this video unchanged
 
         for chapter in chapters:
@@ -1258,13 +1293,24 @@ def split_long_chapters_with_vad(
 
         source_video = _find_source_video(target_date, str(video_id))
         if not source_video:
-            log.warning(
-                "chapter_split.video_not_found video_id=%s target_date=%s chapters=%s — "
-                "splitting arithmetically, never left over-threshold",
-                video_id,
-                target_date,
-                len(chapters),
-            )
+            if nas_fetch.is_archived_elsewhere(PROJECT_DATA_DIR, DEFAULT_CHANNEL, str(video_id)):
+                log.warning(
+                    "chapter_split.video_archived video_id=%s target_date=%s chapters=%s — "
+                    "source archived to the NAS (trigger the nas_fetch DAG with video_id=%s "
+                    "before reprocessing); splitting arithmetically, never left over-threshold",
+                    video_id,
+                    target_date,
+                    len(chapters),
+                    video_id,
+                )
+            else:
+                log.warning(
+                    "chapter_split.video_not_found video_id=%s target_date=%s chapters=%s — "
+                    "splitting arithmetically, never left over-threshold",
+                    video_id,
+                    target_date,
+                    len(chapters),
+                )
 
         rebuilt: list[dict] = []
         for chapter in chapters:

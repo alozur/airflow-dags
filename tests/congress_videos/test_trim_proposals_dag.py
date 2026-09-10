@@ -52,6 +52,7 @@ class TestRunTurnProposals:
     def test_missing_source_video_skips(self, monkeypatch):
         mod = _fresh()
         monkeypatch.setattr(mod, "_find_source_video_any_date", lambda *a, **k: None)
+        monkeypatch.setattr(mod.nas_fetch, "is_archived_elsewhere", lambda *a, **k: False)
         generate = MagicMock()
         monkeypatch.setattr(mod, "generate_trim_proposals", generate)
         cursor = MagicMock()
@@ -60,6 +61,21 @@ class TestRunTurnProposals:
 
         assert result["status"] == "skipped_no_video"
         generate.assert_not_called()
+
+    def test_missing_source_video_archived_on_nas_skips_with_distinct_status(self, monkeypatch):
+        mod = _fresh()
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda *a, **k: None)
+        is_archived = MagicMock(return_value=True)
+        monkeypatch.setattr(mod.nas_fetch, "is_archived_elsewhere", is_archived)
+        generate = MagicMock()
+        monkeypatch.setattr(mod, "generate_trim_proposals", generate)
+        cursor = MagicMock()
+
+        result = mod.run_turn_proposals(self._turn(), cursor)
+
+        assert result["status"] == "skipped_archived"
+        generate.assert_not_called()
+        is_archived.assert_called_once_with(mod.PROJECT_DATA_DIR, mod.DEFAULT_CHANNEL, "abc123")
 
     def test_happy_path_generates_and_upserts(self, monkeypatch):
         from congress_videos.modules.trim_proposals import TrimProposal
