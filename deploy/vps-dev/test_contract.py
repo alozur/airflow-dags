@@ -408,5 +408,16 @@ class AppInitBootstrapEmptySchemaTests(unittest.TestCase):
         self.assertEqual(applied, 0)  # BASE_SCHEMA_FILES never runs for a non-development schema
 
 
+class VerifyGateContractTests(unittest.TestCase):
+    """verify.py keeps DEV strict by default and only relaxes on an explicit false."""
+
+    def test_verify_reads_the_business_paused_gate_with_a_strict_default(self):
+        text = (HERE / "verify.py").read_text()
+        self.assertIn('EXPECT_BUSINESS_PAUSED_ENV = "DEPLOY_EXPECT_BUSINESS_PAUSED"', text)
+        self.assertIn('os.environ.get(EXPECT_BUSINESS_PAUSED_ENV, "true")', text)
+        self.assertIn("if expect_business_paused():", text)
+        self.assertIn('"An active business DAG is unpaused"', text)
+
+
 if __name__ == "__main__":
     unittest.main()

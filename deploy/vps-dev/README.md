@@ -144,6 +144,13 @@ full application test. Run it with a Python environment containing PyYAML.
 `verify.py` imports real DAGs **only inside the isolated deployed runtime**.
 Do not execute that verifier directly on a workstation with production access.
 
+`verify.py` also asserts that every DAG outside `ALWAYS_ON_DAGS` stays paused
+and that the scheduler never started a run on its own. The infrastructure passes
+`DEPLOY_EXPECT_BUSINESS_PAUSED` into that check from its inventory: `true` (the
+default, mandatory on DEV) keeps those assertions; `false`, set on a project only
+after its production cutover, keeps DAG parsing and the egress check but lets
+business DAGs run unpaused. Any other value fails the verification.
+
 The Dockerfile uses the source revision's frozen `uv.lock`, but OS packages
 are not snapshotted. Preserve the built image and recorded image ID for exact
 reuse.
