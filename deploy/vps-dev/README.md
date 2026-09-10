@@ -31,7 +31,8 @@ Compose is rendered from three `--env-file` sources supplied by Ansible:
   `UI_UPSTREAM`, `EGRESS_SUBNET`, `EGRESS_INTERNAL`, `YOUTUBE_TOKENS_HOST_DIR`,
   `NAS_SYNC_HOST_DIR`, `NAS_ARCHIVE_HOST`, `NAS_ARCHIVE_PORT`,
   `NAS_ARCHIVE_USER`, `NAS_ARCHIVE_ROOT`, `NAS_ARCHIVE_MIN_AGE_DAYS`,
-  `NAS_FETCH_LEGACY_ROOT`, `POSTGRES_SCHEMA`, `POSTGRES_RUNTIME_ROLE`).
+  `NAS_FETCH_LEGACY_ROOT`, `YOUTUBE_DOWNLOAD_PROXY`, `POSTGRES_SCHEMA`,
+  `POSTGRES_RUNTIME_ROLE`).
 
 `POSTGRES_SCHEMA` and `POSTGRES_RUNTIME_ROLE` select the business schema per
 VPS project: `development`/`airflow_dev` (the default when unset, matching
@@ -124,6 +125,14 @@ run syncs it into `NAS_ARCHIVE_ROOT` (and prunes it locally once it ages past
 the retention window). The legacy copy is never touched, so the video exists
 under both roots until the legacy tree is merged or retired. This is the
 intended hand-over, not a leak.
+
+`YOUTUBE_DOWNLOAD_PROXY` (`release.env`) points `utils/youtube_downloader.py`
+at an HTTP proxy for every yt-dlp/pytubefix media download — the path
+YouTube bot-blocks by VPS IP. Empty (the default) means direct downloads,
+unchanged from before this variable existed. Scope is downloads only: the
+YouTube Data API and OAuth clients (`utils/youtube_helpers.py`,
+`congress_videos/modules/youtube/youtube_channel.py`) never read it and
+always talk to YouTube directly.
 
 `utils/git_sync_dag.py` is excluded from DAG loading on this image: the
 Dockerfile appends `git_sync_dag` to `.airflowignore` before the tree is made

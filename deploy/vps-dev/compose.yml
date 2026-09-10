@@ -136,6 +136,10 @@ services:
       # read-only pre-migration production tree, only consulted when a video
       # has no local .nas_archived.json marker. Empty disables the fallback.
       NAS_FETCH_LEGACY_ROOT: ${NAS_FETCH_LEGACY_ROOT:-}
+      # utils/youtube_downloader.py: HTTP proxy carrying only yt-dlp/pytubefix
+      # media downloads (never the YouTube Data API or OAuth clients). Empty
+      # disables it, so a stack without a configured proxy downloads direct.
+      YOUTUBE_DOWNLOAD_PROXY: ${YOUTUBE_DOWNLOAD_PROXY:-}
     volumes:
       - logs:/opt/airflow/logs
       - data:/opt/airflow/data
