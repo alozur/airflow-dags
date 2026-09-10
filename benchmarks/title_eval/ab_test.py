@@ -26,7 +26,9 @@ import json
 import math
 import os
 import pathlib
+import re
 import sys
+import unicodedata
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
@@ -54,10 +56,21 @@ JUDGE_MODEL = "gpt-5.5"
 # how you find out that a rule which won last quarter no longer does.
 VARIANTS: dict[str, str] = {
     "baseline": "",
-    "no_notoriety": "",  # handled by strip_rules, not by appending
+    "no_notoriety": "",  # handled by STRIP_FOR, not by appending
+    "curated_names": "",  # handled by relabel_speakers, not by appending
 }
 
 STRIP_FOR = {"no_notoriety": THUMBNAIL_TITLE_NOTORIETY_RULES}
+
+# `curated_names` moves the notoriety decision out of the prompt and into the
+# data: congress_participants.nickname holds how a person should be named in a
+# title, and an empty value means the audience would not recognise them. A
+# speaker with no curated name is not named at all — the prompt's existing
+# nameless branch takes over and the party is offered as context instead.
+#
+# Tested here before it is wired into the upload DAG, because a labelling
+# strategy that loses the A/B should never reach production code.
+RELABEL_VARIANTS = {"curated_names"}
 
 JUDGE_SYSTEM = """Eres un evaluador de titulares de YouTube para un canal que publica \
 vídeos del Congreso de los Diputados de España.
@@ -87,7 +100,110 @@ def system_prompt_for(variant: str) -> str:
     return prompt + VARIANTS.get(variant, "")
 
 
-def build_messages(item: dict, variant: str) -> list[dict]:
+ROLE_LABEL = re.compile(
+    r"\b(ministr[oa]|president[ea]|vicepresident[ea]|portavoz|secretari[oa]\s+de\s+estado)\b",
+    re.IGNORECASE,
+)
+
+COURTESY = re.compile(r"^\s*(el\s+se\u00f1or|la\s+se\u00f1ora|se\u00f1or|se\u00f1ora|don|do\u00f1a)\s+", re.IGNORECASE)
+
+
+def fold_name(text: str) -> str:
+    """Lowercase, strip accents and drop the parliamentary courtesy prefix.
+
+    Chapter key_speakers arrive in chamber register ("Se\u00f1ora Belarra"); the
+    registry stores "Belarra Urteaga, Ione". Folding both to bare surname
+    tokens is what lets one match the other.
+    """
+    without_title = COURTESY.sub("", text or "")
+    decomposed = unicodedata.normalize("NFD", without_title.lower())
+    return "".join(c for c in decomposed if unicodedata.category(c) != "Mn").strip()
+
+
+def build_nickname_index(participants: list[dict], seed: dict[str, str]) -> dict[str, dict]:
+    """Map every folded name form of a participant to their title label.
+
+    `seed` supplies curated nicknames for slugs whose column is not yet
+    populated in this environment, so the strategy can be measured before the
+    migration runs anywhere.
+    """
+    index: dict[str, dict] = {}
+    for person in participants:
+        slug = person.get("slug") or ""
+        entry = {
+            "nickname": person.get("nickname") or seed.get(slug) or "",
+            "party": person.get("party") or "",
+        }
+        display = person.get("display_name") or ""
+        surnames = display.split(",")[0] if "," in display else display
+        forms = {fold_name(display), fold_name(surnames), fold_name(person.get("normalized_name") or "")}
+        # Each individual surname token too: "Se\u00f1ora Belarra" carries only one.
+        forms |= {fold_name(tok) for tok in surnames.split() if len(tok) > 3}
+        for form in forms:
+            if form:
+                index.setdefault(form, entry)
+    return index
+
+
+PARTY_HINT = (
+    "El ponente pertenece a {parties}. No es una figura que el gran público "
+    "reconozca por su nombre, así que NO lo nombres: refiérete a él por su cargo, "
+    "su papel o su grupo político."
+)
+
+
+def relabel_speakers(speakers: list[str], nicknames: dict[str, str]) -> tuple[list[str], list[str]]:
+    """Split speakers into curated names to use and parties to fall back on.
+
+    `nicknames` maps a folded speaker name to its curated title name; a speaker
+    absent from it has no curated name and must not be named.
+    """
+    named: list[str] = []
+    parties: list[str] = []
+    for speaker in speakers:
+        entry = resolve_speaker(speaker, nicknames)
+        if entry and entry.get("nickname"):
+            named.append(entry["nickname"])
+        elif ROLE_LABEL.search(speaker):
+            # Already an office rather than a person — "Ministro del Interior"
+            # is exactly the generic label an uncurated speaker should get, so
+            # it passes through instead of being discarded.
+            named.append(speaker)
+        elif entry and entry.get("party"):
+            parties.append(entry["party"])
+    return named, sorted(set(parties))
+
+
+def resolve_speaker(speaker: str, nicknames: dict[str, dict]) -> dict | None:
+    """Find a speaker in the index, exactly or by surname prefix.
+
+    Chapter key_speakers carry a partial surname ("Se\u00f1ora \u00c1lvarez de Toledo")
+    while the registry holds the full one ("\u00c1lvarez de Toledo Peralta-Ramos"),
+    so an exact match misses precisely the people most worth naming. The
+    prefix fallback is length-guarded to keep short tokens from colliding.
+    """
+    folded = fold_name(speaker)
+    if not folded:
+        return None
+    exact = nicknames.get(folded)
+    if exact:
+        return exact
+    if len(folded) < 5:
+        return None
+    matches = [(k, v) for k, v in nicknames.items() if k.startswith(folded) or folded.startswith(k)]
+    if not matches:
+        return None
+    # The most specific key wins: "alvarez de toledo" must beat the bare
+    # "alvarez" indexed for a different deputy entirely. Only keys of that same
+    # best length can make it ambiguous, and ambiguity is not a match — naming
+    # either of two deputies who share a surname would be a guess.
+    best = max(len(k) for k, _ in matches)
+    finalists = [v for k, v in matches if len(k) == best]
+    unique = {(f["nickname"], f["party"]) for f in finalists}
+    return finalists[0] if len(unique) == 1 else None
+
+
+def build_messages(item: dict, variant: str, nicknames: dict | None = None) -> list[dict]:
     """Assemble the exact prompt `generate_title` builds, under this variant."""
     inputs = item["inputs"]
     best = inputs.get("best") or {}
@@ -98,10 +214,16 @@ def build_messages(item: dict, variant: str) -> list[dict]:
     )
 
     speakers = [s for s in (inputs.get("key_speakers") or []) if s]
+    parties: list[str] = []
+    if variant in RELABEL_VARIANTS:
+        speakers, parties = relabel_speakers(speakers, nicknames or {})
+
     if speakers:
         user += "\n\n" + THUMBNAIL_TITLE_SPEAKERS_INSTRUCTION.format(speaker_list="\n".join(f"- {s}" for s in speakers))
     else:
         user += "\n\n" + THUMBNAIL_TITLE_NAMELESS_INSTRUCTION
+        if parties:
+            user += "\n" + PARTY_HINT.format(parties=", ".join(parties))
 
     return [
         {"role": "system", "content": system_prompt_for(variant)},
@@ -109,10 +231,10 @@ def build_messages(item: dict, variant: str) -> list[dict]:
     ]
 
 
-def generate(client, item: dict, variant: str) -> str | None:
+def generate(client, item: dict, variant: str, nicknames: dict | None = None) -> str | None:
     response = client.chat.completions.create(
         model=GENERATOR_MODEL,
-        messages=build_messages(item, variant),
+        messages=build_messages(item, variant, nicknames),
         response_format={"type": "json_object"},
     )
     return json.loads(response.choices[0].message.content).get("title")
@@ -167,12 +289,31 @@ def report(results: list[dict]) -> None:
         print("\nREJECT — the baseline wins by more than chance explains")
 
 
+def load_nicknames(args: argparse.Namespace) -> dict[str, dict] | None:
+    """Build the name index for a relabelling variant; {} for the others.
+
+    None signals a usage error the caller should exit on.
+    """
+    if args.variant not in RELABEL_VARIANTS:
+        return {}
+    if not args.participants:
+        print("--participants is required for a relabelling variant", file=sys.stderr)
+        return None
+    seed = json.loads(args.seed.read_text(encoding="utf-8")) if args.seed else {}
+    index = build_nickname_index(json.loads(args.participants.read_text(encoding="utf-8")), seed)
+    curated = sum(1 for v in index.values() if v["nickname"])
+    print(f"  ({len(index)} name forms indexed; {curated} carry a curated title name)")
+    return index
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--variant", default="no_notoriety", choices=sorted(VARIANTS))
     parser.add_argument("--limit", type=int, default=0, help="0 = every replayable item")
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--out", type=pathlib.Path)
+    parser.add_argument("--participants", type=pathlib.Path, help="participant registry, for relabelling variants")
+    parser.add_argument("--seed", type=pathlib.Path, help="slug -> curated nickname, for envs where 052 has not run")
     args = parser.parse_args()
 
     if not os.getenv("OPENAI_API_KEY"):
@@ -184,6 +325,10 @@ def main() -> int:
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     rubric = RUBRIC.read_text(encoding="utf-8")
 
+    nicknames = load_nicknames(args)
+    if nicknames is None:
+        return 1
+
     items = [json.loads(line) for line in REPLAY.read_text(encoding="utf-8").splitlines() if line.strip()]
     if args.limit:
         items = items[: args.limit]
@@ -192,8 +337,8 @@ def main() -> int:
     print(f"variant: {args.variant}")
 
     def run_one(item: dict) -> dict | None:
-        base = generate(client, item, "baseline")
-        cand = generate(client, item, args.variant)
+        base = generate(client, item, "baseline", nicknames)
+        cand = generate(client, item, args.variant, nicknames)
         if not base or not cand:
             return None
         # Both orders: a judge that flips when the options swap has a position
