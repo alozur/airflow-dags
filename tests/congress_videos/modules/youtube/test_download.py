@@ -994,6 +994,156 @@ class TestAnalyzeSingleChunk:
 # ---------------------------------------------------------------------------
 
 
+class TestFindSrtChunksForVideo:
+    """Lifted verbatim out of `identify_interesting_chapters` (issue #272)."""
+
+    def test_none_chunked_srt_data_returns_empty_list(self):
+        from congress_videos.modules.youtube.download import _find_srt_chunks_for_video
+
+        assert _find_srt_chunks_for_video(None, "v1") == []
+
+    def test_empty_dict_returns_empty_list(self):
+        from congress_videos.modules.youtube.download import _find_srt_chunks_for_video
+
+        assert _find_srt_chunks_for_video({}, "v1") == []
+
+    def test_missing_videos_key_returns_empty_list(self):
+        from congress_videos.modules.youtube.download import _find_srt_chunks_for_video
+
+        assert _find_srt_chunks_for_video({"other": []}, "v1") == []
+
+    def test_first_matching_video_wins(self):
+        from congress_videos.modules.youtube.download import _find_srt_chunks_for_video
+
+        chunked = {
+            "videos": [
+                {"video_id": "v1", "chunks": [{"chunk_number": 1}]},
+                {"video_id": "v1", "chunks": [{"chunk_number": 2}]},
+            ]
+        }
+
+        result = _find_srt_chunks_for_video(chunked, "v1")
+
+        assert result == [{"chunk_number": 1}]
+
+    def test_matched_video_without_chunks_returns_empty_list(self):
+        from congress_videos.modules.youtube.download import _find_srt_chunks_for_video
+
+        chunked = {"videos": [{"video_id": "v1"}]}
+
+        assert _find_srt_chunks_for_video(chunked, "v1") == []
+
+    def test_items_lacking_video_id_do_not_raise(self):
+        from congress_videos.modules.youtube.download import _find_srt_chunks_for_video
+
+        chunked = {
+            "videos": [
+                {"chunks": [{"chunk_number": 1}]},
+                {"video_id": "v1", "chunks": [{"chunk_number": 9}]},
+            ]
+        }
+
+        result = _find_srt_chunks_for_video(chunked, "v1")
+
+        assert result == [{"chunk_number": 9}]
+
+
+class TestCollectChunkChapters:
+    """Lifted verbatim out of `identify_interesting_chapters` (issue #272)."""
+
+    def _summary_chunk(self, number=1, duration_minutes=30, summary="Debate"):
+        return {
+            "chunk_number": number,
+            "start_time": "00:00:00",
+            "end_time": "00:30:00",
+            "duration_minutes": duration_minutes,
+            "speakers": [{"name": "Diputado López"}],
+            "topics": ["Presupuestos"],
+            "summary": summary,
+        }
+
+    def test_missing_srt_content_yields_error_entry(self):
+        """Intentional falsy check at base :1490 — `_find_srt_chunk` returning
+        `""` (not `None`) reads as no-content. Do NOT "fix" to `is None`."""
+        from congress_videos.modules.youtube.download import _collect_chunk_chapters
+
+        result = _collect_chunk_chapters([self._summary_chunk(1)], [], 15, 120)
+
+        assert result == [{"chunk_number": 1, "error": "No SRT content available"}]
+
+    def test_duration_equal_to_max_optimal_is_whole_chunk_optimal(self):
+        """`<=`, not `<`: chunk_duration == max_optimal_duration takes the
+        whole-chunk path with reason == "optimal duration"."""
+        from congress_videos.modules.youtube.download import _collect_chunk_chapters
+
+        summarized = [self._summary_chunk(1, duration_minutes=120)]
+        srt_chunks = [{"chunk_number": 1, "content": "some srt text"}]
+
+        result = _collect_chunk_chapters(summarized, srt_chunks, 15, 120)
+
+        assert result[0]["skipped_ai_analysis"] is True
+        assert result[0]["interesting_chapters"][0]["reason"] == "optimal duration"
+
+    def test_duration_below_min_is_whole_chunk_too_short(self):
+        from congress_videos.modules.youtube.download import _collect_chunk_chapters
+
+        summarized = [self._summary_chunk(1, duration_minutes=5)]
+        srt_chunks = [{"chunk_number": 1, "content": "some srt text"}]
+
+        result = _collect_chunk_chapters(summarized, srt_chunks, 15, 120)
+
+        assert result[0]["interesting_chapters"][0]["reason"] == "too short"
+
+    def test_duration_above_max_delegates_to_analyze_single_chunk(self, mocker):
+        """Above max_optimal_duration -> delegates to `_analyze_single_chunk`
+        with positional args in the base order."""
+        from congress_videos.modules.youtube.download import _collect_chunk_chapters
+
+        spy = mocker.patch(
+            "congress_videos.modules.youtube.download._analyze_single_chunk",
+            return_value={"chunk_number": 1, "fallback": True},
+        )
+        summarized = [self._summary_chunk(1, duration_minutes=130)]
+        srt_chunks = [{"chunk_number": 1, "content": "some srt text"}]
+
+        result = _collect_chunk_chapters(summarized, srt_chunks, 15, 120)
+
+        assert result == [{"chunk_number": 1, "fallback": True}]
+        spy.assert_called_once_with(1, summarized[0], "some srt text", 130, 15, 120)
+
+    def test_title_truncated_at_100_chars(self):
+        from congress_videos.modules.youtube.download import _collect_chunk_chapters
+
+        long_summary = "x" * 150
+        summarized = [self._summary_chunk(1, duration_minutes=30, summary=long_summary)]
+        srt_chunks = [{"chunk_number": 1, "content": "some srt text"}]
+
+        result = _collect_chunk_chapters(summarized, srt_chunks, 15, 120)
+
+        title = result[0]["interesting_chapters"][0]["title"]
+        assert len(title) == 100
+
+    def test_missing_duration_minutes_defaults_to_zero_too_short(self):
+        from congress_videos.modules.youtube.download import _collect_chunk_chapters
+
+        summarized = [
+            {
+                "chunk_number": 1,
+                "start_time": "00:00:00",
+                "end_time": "00:30:00",
+                "speakers": [],
+                "topics": [],
+                "summary": "x",
+            }
+        ]
+        srt_chunks = [{"chunk_number": 1, "content": "some srt text"}]
+
+        result = _collect_chunk_chapters(summarized, srt_chunks, 15, 120)
+
+        assert result[0]["interesting_chapters"][0]["reason"] == "too short"
+        assert result[0]["duration_minutes"] == 0
+
+
 class TestIdentifyInterestingChapters:
     def _make_summarized_chunk(self, number=1, duration_minutes=30):
         return {

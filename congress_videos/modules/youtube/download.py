@@ -1427,6 +1427,108 @@ def _analyze_single_chunk(
         return _build_fallback_chunk_entry(chunk_number, summary_chunk)
 
 
+def _find_srt_chunks_for_video(chunked_srt_data, video_id) -> list[dict]:
+    """Lifted verbatim out of `identify_interesting_chapters` (issue #272):
+    the first video entry in `chunked_srt_data["videos"]` whose `video_id`
+    matches wins; `[]` when `chunked_srt_data` is falsy, has no `videos`
+    key, no video matches, or the matched video has no `chunks`. Items
+    lacking a `video_id` never raise (`.get`).
+    """
+    srt_chunks = []
+    if chunked_srt_data and chunked_srt_data.get("videos"):
+        for srt_video in chunked_srt_data["videos"]:
+            if srt_video.get("video_id") == video_id:
+                srt_chunks = srt_video.get("chunks", [])
+                break
+    return srt_chunks
+
+
+def _collect_chunk_chapters(summarized_chunks, srt_chunks, min_chapter_duration, max_optimal_duration) -> list[dict]:
+    """Lifted verbatim out of `identify_interesting_chapters` (issue #272):
+    builds the per-chunk `chunks_with_chapters` list for one video, indexing
+    `srt_chunks` once (#210) and, per chunk, either returning the whole
+    chunk as a single chapter (duration `<= max_optimal_duration`) or
+    delegating to `_analyze_single_chunk`. `_find_srt_chunk` returning `""`
+    (not `None`) is treated as no-content — an intentional falsy check
+    matching `_find_srt_chunk`'s documented `""`-on-no-match contract.
+    """
+    chunks_with_chapters = []
+    # #210: index once per video instead of a linear scan per chunk.
+    srt_chunk_index = _build_srt_chunk_index(srt_chunks)
+
+    # Analyze each chunk individually
+    for summary_chunk in summarized_chunks:
+        chunk_number = summary_chunk["chunk_number"]
+        chunk_duration = summary_chunk.get("duration_minutes", 0)
+
+        # Find matching SRT content for this chunk
+        # #7: read text via the back-compat shim (path-only XCom).
+        srt_content = _find_srt_chunk(srt_chunk_index, chunk_number)
+
+        if not srt_content:
+            logging.warning(f"No SRT content found for chunk {chunk_number}")
+            chunks_with_chapters.append({"chunk_number": chunk_number, "error": "No SRT content available"})
+            continue
+
+        # DURATION CHECK: Determine if AI analysis is needed
+        # - < 15 min: Too short, return as-is
+        # - 15-45 min: Optimal duration, return as-is
+        # - > 45 min: Too long, use AI to split into 15-45 min sub-chapters
+
+        if chunk_duration <= max_optimal_duration:
+            # Chunk is in optimal range (< 15 min OR 15-45 min)
+            reason = "too short" if chunk_duration < min_chapter_duration else "optimal duration"
+            logging.info(
+                f"  ⚡ Chunk {chunk_number} is {chunk_duration:.1f} minutes ({reason}). "
+                f"Returning whole chunk without AI analysis."
+            )
+
+            # Return the entire chunk as a single "interesting chapter"
+            whole_chunk_chapter = {
+                "title": summary_chunk.get("summary", f"Chunk {chunk_number}")[
+                    :100
+                ],  # Use summary as title (truncated)
+                "description": summary_chunk.get("summary", "Chunk returned as-is"),
+                "start_time": summary_chunk["start_time"],
+                "end_time": summary_chunk["end_time"],
+                "duration_minutes": chunk_duration,
+                "speakers": [s.get("name", "Unknown") for s in summary_chunk.get("speakers", [])],
+                "topics": summary_chunk.get("topics", []),
+                # Whole chunk == whole chapter, so the full chunk timeline applies.
+                "timeline": summary_chunk.get("timeline", []),
+                "skipped_ai_analysis": True,  # Flag to indicate this wasn't analyzed by AI
+                "reason": reason,
+            }
+
+            chunks_with_chapters.append(
+                {
+                    "chunk_number": chunk_number,
+                    "start_time": summary_chunk["start_time"],
+                    "end_time": summary_chunk["end_time"],
+                    "duration_minutes": chunk_duration,
+                    "total_interesting_chapters": 1,
+                    "interesting_chapters": [whole_chunk_chapter],
+                    "skipped_ai_analysis": True,
+                }
+            )
+
+            continue
+
+        # Chunk is > 45 minutes: delegate to the AI-analysis helper (#210).
+        chunks_with_chapters.append(
+            _analyze_single_chunk(
+                chunk_number,
+                summary_chunk,
+                srt_content,
+                chunk_duration,
+                min_chapter_duration,
+                max_optimal_duration,
+            )
+        )
+
+    return chunks_with_chapters
+
+
 def identify_interesting_chapters(
     chunk_summaries, chunked_srt_data, target_date: str, min_chapter_duration: int = 15, max_optimal_duration: int = 120
 ):
@@ -1477,12 +1579,7 @@ def identify_interesting_chapters(
             continue
 
         # Find matching chunked SRT data for this video
-        srt_chunks = []
-        if chunked_srt_data and chunked_srt_data.get("videos"):
-            for srt_video in chunked_srt_data["videos"]:
-                if srt_video.get("video_id") == video_id:
-                    srt_chunks = srt_video.get("chunks", [])
-                    break
+        srt_chunks = _find_srt_chunks_for_video(chunked_srt_data, video_id)
 
         if not srt_chunks:
             logging.warning(f"No SRT chunks found for video {video_id}")
@@ -1493,79 +1590,9 @@ def identify_interesting_chapters(
             logging.info(
                 f"Analyzing {len(summarized_chunks)} chunks for video {video_id} to identify interesting chapters..."
             )
-            chunks_with_chapters = []
-            # #210: index once per video instead of a linear scan per chunk.
-            srt_chunk_index = _build_srt_chunk_index(srt_chunks)
-
-            # Analyze each chunk individually
-            for summary_chunk in summarized_chunks:
-                chunk_number = summary_chunk["chunk_number"]
-                chunk_duration = summary_chunk.get("duration_minutes", 0)
-
-                # Find matching SRT content for this chunk
-                # #7: read text via the back-compat shim (path-only XCom).
-                srt_content = _find_srt_chunk(srt_chunk_index, chunk_number)
-
-                if not srt_content:
-                    logging.warning(f"No SRT content found for chunk {chunk_number}")
-                    chunks_with_chapters.append({"chunk_number": chunk_number, "error": "No SRT content available"})
-                    continue
-
-                # DURATION CHECK: Determine if AI analysis is needed
-                # - < 15 min: Too short, return as-is
-                # - 15-45 min: Optimal duration, return as-is
-                # - > 45 min: Too long, use AI to split into 15-45 min sub-chapters
-
-                if chunk_duration <= max_optimal_duration:
-                    # Chunk is in optimal range (< 15 min OR 15-45 min)
-                    reason = "too short" if chunk_duration < min_chapter_duration else "optimal duration"
-                    logging.info(
-                        f"  ⚡ Chunk {chunk_number} is {chunk_duration:.1f} minutes ({reason}). "
-                        f"Returning whole chunk without AI analysis."
-                    )
-
-                    # Return the entire chunk as a single "interesting chapter"
-                    whole_chunk_chapter = {
-                        "title": summary_chunk.get("summary", f"Chunk {chunk_number}")[
-                            :100
-                        ],  # Use summary as title (truncated)
-                        "description": summary_chunk.get("summary", "Chunk returned as-is"),
-                        "start_time": summary_chunk["start_time"],
-                        "end_time": summary_chunk["end_time"],
-                        "duration_minutes": chunk_duration,
-                        "speakers": [s.get("name", "Unknown") for s in summary_chunk.get("speakers", [])],
-                        "topics": summary_chunk.get("topics", []),
-                        # Whole chunk == whole chapter, so the full chunk timeline applies.
-                        "timeline": summary_chunk.get("timeline", []),
-                        "skipped_ai_analysis": True,  # Flag to indicate this wasn't analyzed by AI
-                        "reason": reason,
-                    }
-
-                    chunks_with_chapters.append(
-                        {
-                            "chunk_number": chunk_number,
-                            "start_time": summary_chunk["start_time"],
-                            "end_time": summary_chunk["end_time"],
-                            "duration_minutes": chunk_duration,
-                            "total_interesting_chapters": 1,
-                            "interesting_chapters": [whole_chunk_chapter],
-                            "skipped_ai_analysis": True,
-                        }
-                    )
-
-                    continue
-
-                # Chunk is > 45 minutes: delegate to the AI-analysis helper (#210).
-                chunks_with_chapters.append(
-                    _analyze_single_chunk(
-                        chunk_number,
-                        summary_chunk,
-                        srt_content,
-                        chunk_duration,
-                        min_chapter_duration,
-                        max_optimal_duration,
-                    )
-                )
+            chunks_with_chapters = _collect_chunk_chapters(
+                summarized_chunks, srt_chunks, min_chapter_duration, max_optimal_duration
+            )
 
             # Count total interesting chapters found
             total_chapters_found = sum(
