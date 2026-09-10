@@ -56,6 +56,7 @@ Each mutation was applied, the affected test was run and observed to FAIL, then 
 | 3.2 | Same fallback-conflation edit as 2.2, applied to the reap module's `_copy_verification_evidence` | `congress_videos/reap_shorts_uploader_dag.py:265` (temporary) | `test_unmapped_slug_keeps_raw_and_nulls_canonical` (reap class) | FAILED — `assert 'RAW Foo' is None` | ✅ Yes |
 | 3.3 | Same roster-collapse as 2.3, against the reap-side fixture | `test_reap_uploader_dag.py` (test-only) | `test_mentioned_entries_split_raw_and_canonical` (reap class) | FAILED — `assert 'RAW Speaker' == 'RAW Mentioned A'` | ✅ Yes |
 | 4.1 | Dropped the `"slug"` key from `long_form["speaker"]` before comparing `_key_shape` | `test_reap_uploader_dag.py` (test-only) | `test_both_helpers_emit_identical_bundle_shape` | FAILED — dict equality mismatch on `speaker` sub-shape | ✅ Yes |
+| 4.2 | Made the `"party"` key conditional on a resolved participant in `congress_videos/youtube_upload_dag.py` (`**({"party": ...} if participant else {})`) — an asymmetry that appears ONLY on the unresolved-speaker path | `congress_videos/youtube_upload_dag.py` (production, reverted before commit) | `test_unresolved_speaker_still_yields_matching_bundle_shape` | FAILED — dict equality mismatch on `speaker` sub-shape, while `test_both_helpers_emit_identical_bundle_shape` still PASSED | ✅ Yes |
 
 Note on 2.2/3.2 interpretation: the task text says "temporarily make the raw name fall back to the canonical value," but the concrete conflation risk the spec scenario guards against in the *unmapped* case (canonical returns `None`) is `short_name` silently inheriting the raw `display_name` — the reverse direction is a no-op under this fixture (`X or None == X`). The mutation applied is the one that is actually falsifiable against this fixture and matches the spec's stated failure mode ("proving neither field falls back to the other"). Both directions of the swap are already covered together by the 2.1/3.1 mutation (full swap under a resolvable canonical value).
 
@@ -84,3 +85,23 @@ Delete the two new test classes (`TestCopyVerificationEvidenceNameSplit` in each
 
 ## Status
 13/13 tasks complete. Ready for verify.
+
+## Post-verify addendum — task 4.2 mutation check (added by the orchestrator)
+
+`sdd-verify` raised one WARNING: task 4.2 had no mutation-check row, so its falsifiability was asserted
+rather than demonstrated. Closed with an **isolating** mutation, chosen so that it can only manifest on the
+unresolved-speaker path:
+
+```python
+# congress_videos/youtube_upload_dag.py — temporary, reverted
+**({"party": participant.get("party")} if participant else {}),
+```
+
+Result:
+
+- `test_both_helpers_emit_identical_bundle_shape` (4.1) → **1 passed**
+- `test_unresolved_speaker_still_yields_matching_bundle_shape` (4.2) → **1 failed**
+
+That asymmetry is exactly what distinguishes the two tests: 4.2 catches a divergence 4.1 cannot see, so it
+earns its place rather than duplicating 4.1. Production file restored and `git status` confirmed clean
+before commit.
