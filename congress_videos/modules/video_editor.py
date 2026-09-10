@@ -567,8 +567,15 @@ def _render_extracto_sesion(overlay: dict, style: dict, W: int, H: int):
 
 
 def _render_intro_sesion(overlay: dict, style: dict, W: int, H: int):
-    """Centered card shown at the start of the video: session identification."""
-    by = (H - style["height"]) // 2 + style["margin_y"]
+    """Bottom-centered card shown at the start of the video: session identification.
+
+    Anchored to the bottom like every other bar card in this domain, so ``margin_y``
+    means the same thing here as it does in ``extracto_sesion`` — distance from the
+    bottom edge. An earlier revision centred this card vertically and reinterpreted
+    ``margin_y`` as an offset from centre, which put the label across the middle of
+    the frame and over the speaker.
+    """
+    by = H - style["height"] - style["margin_y"]
     return _render_horizontal_bar_card(overlay, style, W, H, by)
 
 

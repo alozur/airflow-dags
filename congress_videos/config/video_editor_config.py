@@ -50,7 +50,7 @@ _VIDEO_EDITOR_CONFIG: dict = {
                 "height": 104,
                 "margin_y": 60,
             },
-            # Centered card shown at the start of the video: session identification.
+            # Bottom-centered card shown at the start of the video: session identification.
             # titulo      → e.g. "Sesión 42" (large)
             # descripcion → session date (small, optional)
             "intro_sesion": {
@@ -63,9 +63,9 @@ _VIDEO_EDITOR_CONFIG: dict = {
                 "accent_color": (0, 120, 255, 255),
                 "title_color": (255, 255, 255, 255),
                 "sub_color": (180, 210, 255, 240),
-                "width_pct": 0.70,
-                "height": 140,
-                "margin_y": 0,
+                "width_pct": 0.90,
+                "height": 120,
+                "margin_y": 60,
             },
             # Lower-left card: speaker name + role/party.
             # titulo   → speaker name (large)
