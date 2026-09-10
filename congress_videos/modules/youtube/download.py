@@ -1052,47 +1052,34 @@ def _validate_chapter_ranges(chapters: list[dict], chunk_number: int = 0) -> lis
     return valid
 
 
-def _dedup_overlapping_chapters(chapters: list[dict]) -> list[dict]:
-    """Remove chapters that overlap >50 % of the shorter chapter's duration.
-
-    When two chapters overlap, the *wider* one (longer duration) is kept and the
-    narrower is discarded.  The input list MUST already have been passed through
-    ``_validate_chapter_ranges`` so that every chapter has start < end.
-
-    Algorithm:
-      1. Sort by start_time (float seconds).
-      2. Pairwise compare each consecutive pair using ``parse_timestamp``.
-      3. If ``overlap_secs / min(dur_a, dur_b) > 0.5`` → discard the shorter.
-      4. A chapter already flagged as discarded is skipped in subsequent comparisons.
-
-    Args:
-        chapters: List of chapter dicts with ``start_time``, ``end_time``, and
-            (optionally) ``duration_minutes`` keys.
-
-    Returns:
-        De-duplicated list sorted by start time.
+def _chapter_start_secs(ch: dict) -> float:
+    """Lifted verbatim out of `_dedup_overlapping_chapters` (issue #272): a
+    chapter's start time in float seconds. A missing `start_time` key
+    defaults to `"00:00:00"`; an unparseable value never raises — it
+    returns `0.0`.
     """
-    if len(chapters) <= 1:
-        return list(chapters)
+    try:
+        return parse_timestamp(ch.get("start_time", "00:00:00"))
+    except ValueError:
+        return 0.0
 
-    # Sort by start_time as float seconds for reliable ordering.
-    def _start_secs(ch: dict) -> float:
-        try:
-            return parse_timestamp(ch.get("start_time", "00:00:00"))
-        except ValueError:
-            return 0.0
 
-    def _end_secs(ch: dict) -> float:
-        try:
-            return parse_timestamp(ch.get("end_time", "00:00:00"))
-        except ValueError:
-            return 0.0
+def _chapter_end_secs(ch: dict) -> float:
+    """Lifted verbatim out of `_dedup_overlapping_chapters` (issue #272): a
+    chapter's end time in float seconds. A missing `end_time` key defaults
+    to `"00:00:00"`; an unparseable value never raises — it returns `0.0`.
+    """
+    try:
+        return parse_timestamp(ch.get("end_time", "00:00:00"))
+    except ValueError:
+        return 0.0
 
-    sorted_chapters = sorted(chapters, key=_start_secs)
 
-    # Mark chapters to keep using a boolean mask.
-    keep = [True] * len(sorted_chapters)
-
+def _mark_overlapping_chapters(sorted_chapters: list[dict], keep: list[bool]) -> None:
+    """Lifted verbatim out of `_dedup_overlapping_chapters` (issue #272):
+    mutates `keep` in place, flagging the narrower chapter of any pair that
+    overlaps >50% of the shorter chapter's duration. Returns `None`.
+    """
     for i in range(len(sorted_chapters)):
         if not keep[i]:
             continue
@@ -1100,10 +1087,10 @@ def _dedup_overlapping_chapters(chapters: list[dict]) -> list[dict]:
             if not keep[j]:
                 continue
 
-            start_a = _start_secs(sorted_chapters[i])
-            end_a = _end_secs(sorted_chapters[i])
-            start_b = _start_secs(sorted_chapters[j])
-            end_b = _end_secs(sorted_chapters[j])
+            start_a = _chapter_start_secs(sorted_chapters[i])
+            end_a = _chapter_end_secs(sorted_chapters[i])
+            start_b = _chapter_start_secs(sorted_chapters[j])
+            end_b = _chapter_end_secs(sorted_chapters[j])
 
             # Overlap = intersection of the two intervals.
             overlap = max(0.0, min(end_a, end_b) - max(start_a, start_b))
@@ -1143,6 +1130,38 @@ def _dedup_overlapping_chapters(chapters: list[dict]) -> list[dict]:
                     keep[i] = False
                     # i is now discarded; stop comparing it with further j.
                     break
+
+
+def _dedup_overlapping_chapters(chapters: list[dict]) -> list[dict]:
+    """Remove chapters that overlap >50 % of the shorter chapter's duration.
+
+    When two chapters overlap, the *wider* one (longer duration) is kept and the
+    narrower is discarded.  The input list MUST already have been passed through
+    ``_validate_chapter_ranges`` so that every chapter has start < end.
+
+    Algorithm:
+      1. Sort by start_time (float seconds).
+      2. Pairwise compare each consecutive pair using ``parse_timestamp``.
+      3. If ``overlap_secs / min(dur_a, dur_b) > 0.5`` → discard the shorter.
+      4. A chapter already flagged as discarded is skipped in subsequent comparisons.
+
+    Args:
+        chapters: List of chapter dicts with ``start_time``, ``end_time``, and
+            (optionally) ``duration_minutes`` keys.
+
+    Returns:
+        De-duplicated list sorted by start time.
+    """
+    if len(chapters) <= 1:
+        return list(chapters)
+
+    # Sort by start_time as float seconds for reliable ordering.
+    sorted_chapters = sorted(chapters, key=_chapter_start_secs)
+
+    # Mark chapters to keep using a boolean mask.
+    keep = [True] * len(sorted_chapters)
+
+    _mark_overlapping_chapters(sorted_chapters, keep)
 
     return [ch for ch, ok in zip(sorted_chapters, keep) if ok]
 
