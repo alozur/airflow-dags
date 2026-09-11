@@ -333,7 +333,7 @@ class TestFetchOneVideo:
         rsync_failed = SimpleNamespace(returncode=1, stdout="", stderr="connection refused")
         monkeypatch.setattr(mod, "_subprocess_runner", lambda command: rsync_failed)
 
-        with pytest.raises(AirflowException, match="rsync failed"):
+        with pytest.raises(mod.NasFetchError, match="rsync failed"):
             mod.fetch_one_video(settings, tmp_path, "congreso-es-tv", "abc123")
 
         marker_path = tmp_path / "congreso-es-tv" / "abc123" / ".nas_archived.json"
@@ -356,11 +356,111 @@ class TestFetchOneVideo:
 
         monkeypatch.setattr(mod, "_subprocess_runner", fake_runner)
 
-        with pytest.raises(AirflowException, match="verification failed"):
+        with pytest.raises(mod.NasFetchError, match="verification failed"):
             mod.fetch_one_video(settings, tmp_path, "congreso-es-tv", "abc123")
 
         marker_path = tmp_path / "congreso-es-tv" / "abc123" / ".nas_archived.json"
         assert marker_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# fetch_one_video delegates to ensure_local_video + D6a status mapping
+# ---------------------------------------------------------------------------
+
+
+class TestFetchOneVideoDelegatesAndMapsStatus:
+    """design D1/D6a: fetch_one_video delegates to nas_fetch.ensure_local_video
+    and converts every non-'fetched' status into an exception — an
+    operator-triggered run naming an explicit video_id must never let
+    summary["restored"] contain a video whose material is not local."""
+
+    def _settings(self, tmp_path):
+        from congress_videos.modules.nas_archive import ArchiveSettings
+
+        ssh_dir = tmp_path / "nas_sync"
+        ssh_dir.mkdir()
+        (ssh_dir / "id_ed25519").write_text("key")
+        (ssh_dir / "known_hosts").write_text("hosts")
+        return ArchiveSettings.from_env(
+            {
+                "NAS_ARCHIVE_HOST": "100.64.0.1",
+                "NAS_ARCHIVE_USER": "nas-archive",
+                "NAS_ARCHIVE_ROOT": "/volume1/congress_archive",
+                "NAS_ARCHIVE_SSH_DIR": str(ssh_dir),
+            }
+        )
+
+    def test_delegates_to_ensure_local_video_with_expected_arguments(self, monkeypatch, tmp_path):
+        mod = _fresh()
+        settings = self._settings(tmp_path)
+        captured = {}
+
+        def fake_ensure_local_video(project_dir, channel_slug, video_id, given_settings, *, runner=None, now=None):
+            captured["args"] = (project_dir, channel_slug, video_id, given_settings)
+            captured["runner"] = runner
+            return {
+                "status": "fetched",
+                "video_id": video_id,
+                "channel_slug": channel_slug,
+                "restored": ["congreso-es-tv/abc123"],
+                "source": "marker",
+            }
+
+        monkeypatch.setattr(mod.nas_fetch, "ensure_local_video", fake_ensure_local_video)
+
+        result = mod.fetch_one_video(settings, tmp_path, "congreso-es-tv", "abc123")
+
+        assert captured["args"] == (tmp_path, "congreso-es-tv", "abc123", settings)
+        assert captured["runner"] is mod._subprocess_runner
+        assert result["video_id"] == "abc123"
+        assert result["restored"] == ["congreso-es-tv/abc123"]
+        assert result["source"] == "marker"
+
+    def test_in_progress_status_raises_nas_fetch_error(self, monkeypatch, tmp_path):
+        mod = _fresh()
+        settings = self._settings(tmp_path)
+        monkeypatch.setattr(
+            mod.nas_fetch,
+            "ensure_local_video",
+            lambda *a, **k: {"status": "in_progress", "video_id": "abc123", "channel_slug": "congreso-es-tv"},
+        )
+
+        with pytest.raises(mod.NasFetchError, match="abc123"):
+            mod.fetch_one_video(settings, tmp_path, "congreso-es-tv", "abc123")
+
+    def test_unavailable_disabled_status_raises_nas_fetch_error(self, monkeypatch, tmp_path):
+        mod = _fresh()
+        settings = self._settings(tmp_path)
+        monkeypatch.setattr(
+            mod.nas_fetch,
+            "ensure_local_video",
+            lambda *a, **k: {
+                "status": "unavailable",
+                "reason": "disabled",
+                "video_id": "abc123",
+                "channel_slug": "congreso-es-tv",
+            },
+        )
+
+        with pytest.raises(mod.NasFetchError, match="abc123"):
+            mod.fetch_one_video(settings, tmp_path, "congreso-es-tv", "abc123")
+
+    def test_unavailable_not_on_nas_status_raises_file_not_found_with_todays_message_shape(self, monkeypatch, tmp_path):
+        mod = _fresh()
+        settings = self._settings(tmp_path)
+        monkeypatch.setattr(
+            mod.nas_fetch,
+            "ensure_local_video",
+            lambda *a, **k: {
+                "status": "unavailable",
+                "reason": "not_on_nas",
+                "video_id": "abc123",
+                "channel_slug": "congreso-es-tv",
+            },
+        )
+
+        with pytest.raises(FileNotFoundError, match="no remote directories found"):
+            mod.fetch_one_video(settings, tmp_path, "congreso-es-tv", "abc123")
 
 
 # ---------------------------------------------------------------------------
@@ -562,3 +662,99 @@ class TestRunFetchVideos:
 
         marker_path = tmp_path / channel_slug / "vid002" / ".nas_archived.json"
         assert marker_path.exists(), "vid002's marker must stay in place after an aborted fetch"
+
+    def test_nas_fetch_error_from_a_busy_or_disabled_status_is_isolated_per_video(self, monkeypatch):
+        """design D6a: NasFetchError (in_progress / disabled) must be caught
+        by _run_fetch_videos' per-video isolation, exactly like the other
+        failure types — added to the catch tuple alongside AirflowException."""
+        mod = _fresh()
+        dag_run = MagicMock()
+        dag_run.conf = {"video_ids": ["busy", "good"]}
+        monkeypatch.setattr(mod, "ArchiveSettings", MagicMock())
+
+        def fake_fetch(settings, project_dir, channel_slug, video_id):
+            if video_id == "busy":
+                raise mod.NasFetchError("nas_fetch: another fetch already in progress for video_id='busy'")
+            return {"video_id": video_id, "channel_slug": channel_slug, "restored": ["x"]}
+
+        monkeypatch.setattr(mod, "fetch_one_video", fake_fetch)
+
+        summary = mod._run_fetch_videos(dag_run=dag_run)
+
+        assert summary["restored"][0]["video_id"] == "good"
+        assert summary["failed"][0]["video_id"] == "busy"
+
+
+# ---------------------------------------------------------------------------
+# D6a integration: real fetch_one_video (not faked) through _run_fetch_videos
+# ---------------------------------------------------------------------------
+
+
+class TestRunFetchVideosD6aIntegration:
+    """Pins the exact spec/design D6a observable behaviour end-to-end, through
+    the real fetch_one_video -> ensure_local_video delegation (no fakes on
+    either): a single NAS-absent video_id FAILS the run, and requesting an
+    absent id alongside a restorable one SUCCEEDS with the absent id present
+    only in `failed`, never in `restored`."""
+
+    def _env(self, monkeypatch, tmp_path):
+        ssh_dir = tmp_path / "nas_sync"
+        ssh_dir.mkdir()
+        (ssh_dir / "id_ed25519").write_text("key")
+        (ssh_dir / "known_hosts").write_text("hosts")
+        monkeypatch.setenv("NAS_ARCHIVE_HOST", "100.64.0.1")
+        monkeypatch.setenv("NAS_ARCHIVE_USER", "nas-archive")
+        monkeypatch.setenv("NAS_ARCHIVE_ROOT", "/volume1/congress_archive")
+        monkeypatch.setenv("NAS_ARCHIVE_SSH_DIR", str(ssh_dir))
+
+    def test_single_absent_video_id_fails_the_run(self, monkeypatch, tmp_path):
+        mod = _fresh()
+        self._env(monkeypatch, tmp_path)
+        monkeypatch.setattr(mod, "PROJECT_DATA_DIR", tmp_path)
+
+        empty_result = SimpleNamespace(returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(mod, "_subprocess_runner", lambda command: empty_result)
+
+        dag_run = MagicMock()
+        dag_run.conf = {"video_id": "zzz999"}
+
+        with pytest.raises(AirflowException, match="zzz999"):
+            mod._run_fetch_videos(dag_run=dag_run)
+
+    def test_absent_plus_restorable_succeeds_with_absent_only_in_failed(self, monkeypatch, tmp_path):
+        from congress_videos.modules.nas_archive import write_marker
+
+        mod = _fresh()
+        self._env(monkeypatch, tmp_path)
+        monkeypatch.setattr(mod, "PROJECT_DATA_DIR", tmp_path)
+
+        channel_slug = "congreso-es-tv"
+        write_marker(
+            tmp_path / channel_slug / "restorable1",
+            {
+                "archived_at": "2026-08-01T00:00:00+00:00",
+                "host": "100.64.0.1",
+                "root": "/volume1/congress_archive",
+                "removed": [],
+                "synced": [f"{channel_slug}/restorable1"],
+            },
+        )
+
+        def fake_runner(command):
+            # No live SSH/rsync: every command (the absent id's ssh discovery,
+            # and the restorable id's rsync pull + verify dry-run) reports a
+            # clean no-op result.
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(mod, "_subprocess_runner", fake_runner)
+        monkeypatch.setattr(mod.nas_fetch, "refresh_retention", lambda paths, now: paths)
+
+        dag_run = MagicMock()
+        dag_run.conf = {"video_ids": ["absent999", "restorable1"], "channel_slug": channel_slug}
+
+        summary = mod._run_fetch_videos(dag_run=dag_run)
+
+        restored_ids = {r["video_id"] for r in summary["restored"]}
+        failed_ids = {f["video_id"] for f in summary["failed"]}
+        assert restored_ids == {"restorable1"}
+        assert failed_ids == {"absent999"}
