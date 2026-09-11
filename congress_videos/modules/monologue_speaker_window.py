@@ -37,6 +37,7 @@ from congress_videos.config.paths import get_video_chapter_dir
 from congress_videos.modules.announcement_patterns import has_announcement_phrase
 from congress_videos.modules.speaker_resolution import (
     SPEAKER_RESOLUTION_MIN_CONFIDENCE,
+    _chapter_span,
     _evidence_supported_in_blocks,
 )
 from congress_videos.srt_helpers import _parse_srt_blocks, find_srt_for_chapter
@@ -51,6 +52,12 @@ logger = logging.getLogger(__name__)
 MONOLOGUE_WINDOW_SECS: int = 120
 """Seconds before the turn anchor to include as the preceding announcement
 window. Fixed per design.md — not a parameter."""
+
+MONOLOGUE_INTRO_MAX_GAP_SECS: float = 300.0
+"""Maximum ``anchor - chapter_start`` gap (issue #613 design.md D3) for the
+chapter-first-substantive-turn window extension to apply. A gap beyond this
+is itself long enough to hold an undetected intervention, so the window
+falls back to the legacy formula."""
 
 MONOLOGUE_RESOLUTION_METHOD: str = "monologue_window_v1"
 """Value written to the audit JSON's ``method`` key and to
@@ -71,20 +78,58 @@ def turn_anchor_seconds(turn: dict) -> float:
     return float(turn["start_seconds"])
 
 
+def monologue_window_start(turn: dict, anchor_seconds: float) -> float:
+    """Compute the effective ``window_start`` for *turn* (issue #613 D3).
+
+    Extends the legacy ``max(0, anchor_seconds - MONOLOGUE_WINDOW_SECS)``
+    lower bound back to ``max(0, min(anchor_seconds, chapter_start) -
+    MONOLOGUE_WINDOW_SECS)`` when ALL of the following hold:
+
+    - ``turn["is_chapter_first_substantive"]`` is truthy (the turn is its
+      chapter's first substantive turn);
+    - the chapter span parses via ``speaker_resolution._chapter_span``;
+    - the gap ``anchor_seconds - chapter_start`` is in
+      ``(0, MONOLOGUE_INTRO_MAX_GAP_SECS]``.
+
+    Otherwise returns the legacy value, byte-identical to today's behaviour.
+    Never raises — ``_chapter_span`` already swallows parse errors.
+    """
+    legacy = max(0.0, anchor_seconds - MONOLOGUE_WINDOW_SECS)
+    if not turn.get("is_chapter_first_substantive"):
+        return legacy
+
+    span = _chapter_span(turn)
+    if span is None:
+        return legacy
+
+    chapter_start, _chapter_end = span
+    gap = anchor_seconds - chapter_start
+    if not (0 < gap <= MONOLOGUE_INTRO_MAX_GAP_SECS):
+        return legacy
+
+    return max(0.0, min(anchor_seconds, chapter_start) - MONOLOGUE_WINDOW_SECS)
+
+
 def select_preceding_window(
     blocks: list[dict],
     anchor_seconds: float,
     window_seconds: int = MONOLOGUE_WINDOW_SECS,
+    *,
+    window_start: float | None = None,
 ) -> list[dict]:
     """Select the SRT blocks that make up the preceding announcement window.
 
     A block is selected iff ``window_start <= block["start_secs"] <
-    anchor_seconds``, where ``window_start = max(0, anchor_seconds -
-    window_seconds)``. Selection is by start time only, so a block that
-    overlaps the anchor (starts before it, ends after it) is still included
-    — but nothing starting at or after the anchor is ever included.
+    anchor_seconds``. When *window_start* is ``None`` (the default),
+    ``window_start = max(0, anchor_seconds - window_seconds)`` — the legacy
+    formula, byte-identical. Passing an explicit *window_start* (issue #613)
+    overrides that formula entirely; callers compute it via
+    `monologue_window_start`. Selection is by start time only, so a block
+    that overlaps the anchor (starts before it, ends after it) is still
+    included — but nothing starting at or after the anchor is ever included.
     """
-    window_start = max(0.0, anchor_seconds - window_seconds)
+    if window_start is None:
+        window_start = max(0.0, anchor_seconds - window_seconds)
     return [block for block in blocks if window_start <= block["start_secs"] < anchor_seconds]
 
 
@@ -300,8 +345,17 @@ def _resolve_monologue_inner(
     function propagates any exception uncaught."""
     turn_id = turn.get("turn_id")
     anchor = turn_anchor_seconds(turn)
-    window_start = max(0.0, anchor - MONOLOGUE_WINDOW_SECS)
-    window_blocks = select_preceding_window(_load_turn_blocks(turn), anchor)
+    legacy_window_start = max(0.0, anchor - MONOLOGUE_WINDOW_SECS)
+    window_start = monologue_window_start(turn, anchor)
+    if window_start != legacy_window_start:
+        span = _chapter_span(turn)
+        gap = anchor - span[0] if span is not None else None
+        logger.info(
+            "resolve_monologue_speaker: chapter-first-substantive window extension applied for turn_id=%s (gap=%s)",
+            turn_id,
+            gap,
+        )
+    window_blocks = select_preceding_window(_load_turn_blocks(turn), anchor, window_start=window_start)
     window_text = "\n".join(block["text"] for block in window_blocks) if window_blocks else ""
 
     if not has_announcement_phrase(window_text):

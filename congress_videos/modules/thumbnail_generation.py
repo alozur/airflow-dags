@@ -18,6 +18,8 @@ import base64
 import json
 import logging
 import re
+import unicodedata
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import requests
@@ -28,6 +30,8 @@ from congress_videos.config.ai_prompts import (
     ART_DIRECTION_SIBLING_INSTRUCTION,
     ART_DIRECTION_SYSTEM_PROMPT,
     ART_DIRECTION_USER_PROMPT_TEMPLATE,
+    LAPIDARY_CORRECTION_SYSTEM_PROMPT,
+    LAPIDARY_CORRECTION_USER_TEMPLATE,
     LAPIDARY_RANKING_SYSTEM_PROMPT,
     LAPIDARY_RANKING_USER_TEMPLATE,
     SPEAKER_PLACEHOLDERS,
@@ -39,7 +43,7 @@ from congress_videos.config.ai_prompts import (
 )
 from congress_videos.config.constants import CONGRESO_BROWSER_USER_AGENT
 from congress_videos.modules.politician_display_names import canonical_display_name
-from utils.ai_helpers import generate_json_completion
+from utils.ai_helpers import generate_json_completion, parse_json_response
 from utils.llm_config import LLM_CHEAP, LLM_DEFAULT
 from utils.postgres_helpers import PostgresConnection
 
@@ -103,8 +107,239 @@ _LAPIDARY_STOP_WORDS = frozenset(
     ["de", "que", "y", "o", "pero", "si", "en", "con", "por", "a", "el", "la", "los", "las", "un", "una"]
 )
 
+# Common capitalized Spanish institution/role words that must not trip the
+# risky-entity gate on their own (issue #611: ASR quote correction).
+_RISKY_EXEMPT_WORDS = frozenset(
+    [
+        "gobierno",
+        "congreso",
+        "senado",
+        "estado",
+        "españa",
+        "europa",
+        "constitución",
+        "presidente",
+        "presidenta",
+        "ministro",
+        "ministra",
+        "señoría",
+        "señorías",
+    ]
+)
+
+# Strips leading/trailing non-word punctuation from a token.
+_EDGE_PUNCT_RE = re.compile(r"^\W+|\W+$")
+
 # Clause boundary splitter for lapidary candidate extraction.
 _LAPIDARY_SPLIT_RE = re.compile(r"[.!?;,]\s+")
+
+
+def _bare(token: str) -> str:
+    """Strip edge (non-word) punctuation from a single whitespace-split token."""
+    return _EDGE_PUNCT_RE.sub("", token)
+
+
+def _risky_token_indices(quote: str) -> frozenset[int]:
+    """Return the 0-based indices of tokens shaped like a risky proper noun or figure.
+
+    Pure heuristic gate that runs before any correction LLM call (issue #611).
+    A token index is flagged when any of these hold (see design.md for the
+    rationale and the pinned positive/negative examples):
+
+    - R1: the bare token contains a digit.
+    - R2: the token is not first (``i >= 1``) and is capitalized and not one
+      of the common institution/role words in ``_RISKY_EXEMPT_WORDS``.
+    - R3: the token is first (``i == 0``), capitalized/non-exempt, and the
+      next token is also R2-flagged — catches a name run opening the clause
+      (e.g. "Aan Curdi ...").
+    """
+    tokens = [_bare(t) for t in quote.split()]
+
+    def is_cap(i: int) -> bool:
+        bare_token = tokens[i]
+        return bare_token[:1].isupper() and bare_token.casefold() not in _RISKY_EXEMPT_WORDS
+
+    flagged = {i for i, t in enumerate(tokens) if any(ch.isdigit() for ch in t)}
+    flagged |= {i for i in range(1, len(tokens)) if is_cap(i)}
+    if len(tokens) >= 2 and is_cap(0) and is_cap(1):
+        flagged.add(0)
+
+    return frozenset(flagged)
+
+
+# Word shape a corrected flagged token's bare form must match: letters only,
+# optionally hyphen/apostrophe-joined (e.g. "Al-Ándalus", "O'Brien"); no digits.
+_TOKEN_SHAPE_RE = re.compile(r"^[^\W\d_]+(?:[-'][^\W\d_]+)*$")
+
+# Minimum SequenceMatcher ratio (on folded bare tokens) for a flagged-token
+# replacement to be considered plausible rather than a rewrite (issue #611).
+_MIN_TOKEN_SIMILARITY = 0.5
+
+
+def _strip_accents(value: str) -> str:
+    """Return `value` with combining diacritical marks (NFD ``Mn`` class) removed."""
+    return "".join(ch for ch in unicodedata.normalize("NFD", value) if unicodedata.category(ch) != "Mn")
+
+
+def _fold(value: str) -> str:
+    """Casefold plus accent-strip, for similarity comparisons only."""
+    return _strip_accents(value).casefold()
+
+
+def _count_combining_marks(value: str) -> int:
+    """Count NFD combining diacritical marks in `value`."""
+    return sum(1 for ch in unicodedata.normalize("NFD", value) if unicodedata.category(ch) == "Mn")
+
+
+def _token_edges(token: str) -> tuple[str, str]:
+    """Return `(leading_punct, trailing_punct)` for `token`."""
+    lead_match = re.match(r"^\W+", token)
+    lead = lead_match.group() if lead_match else ""
+    trail_match = re.search(r"\W+$", token)
+    trail = trail_match.group() if trail_match else ""
+    return lead, trail
+
+
+def _is_plausible_flagged_replacement(original: str, corrected: str) -> bool:
+    """Rule 3 of the structural guard: a plausible proper-noun fix on a flagged token."""
+    if any(ch.isdigit() for ch in original) or any(ch.isdigit() for ch in corrected):
+        return False
+    if _token_edges(original) != _token_edges(corrected):
+        return False
+
+    bare_original, bare_corrected = _bare(original), _bare(corrected)
+    if not _TOKEN_SHAPE_RE.fullmatch(bare_corrected):
+        return False
+    if bare_original[:1].isupper() != bare_corrected[:1].isupper():
+        return False
+
+    ratio = SequenceMatcher(None, _fold(bare_original), _fold(bare_corrected)).ratio()
+    return ratio >= _MIN_TOKEN_SIMILARITY
+
+
+def _is_allowed_token_change(original: str, corrected: str, is_flagged: bool) -> bool:
+    """Return True when a single ``(original, corrected)`` token pair passes the guard.
+
+    A pair is accepted when it is identical, when it is a diacritic-only
+    restoration on *any* token (marks added or swapped, never removed), or —
+    only when the token index was flagged as risky — a plausible proper-noun
+    replacement (see `_is_plausible_flagged_replacement`).
+    """
+    if original == corrected:
+        return True
+
+    if _strip_accents(original) == _strip_accents(corrected) and _count_combining_marks(
+        corrected
+    ) >= _count_combining_marks(original):
+        return True
+
+    return is_flagged and _is_plausible_flagged_replacement(original, corrected)
+
+
+def _passes_correction_guard(original: str, corrected: str, flagged: frozenset[int], max_chars: int) -> bool:
+    """Structural guard for an LLM correction candidate (issue #611, design.md).
+
+    Rejects unless `corrected` fits `max_chars`, both texts have the same
+    token count, and every token pair — matched by position — passes
+    `_is_allowed_token_change`, with rule 3 available only at a flagged index.
+    """
+    if len(corrected) > max_chars:
+        return False
+
+    original_tokens = original.split()
+    corrected_tokens = corrected.split()
+    if len(original_tokens) != len(corrected_tokens):
+        return False
+
+    return all(
+        _is_allowed_token_change(o, c, i in flagged)
+        for i, (o, c) in enumerate(zip(original_tokens, corrected_tokens, strict=True))
+    )
+
+
+# Minimum confidence the correction LLM must report for its output to be used.
+_LAPIDARY_CORRECTION_MIN_CONFIDENCE = 0.8
+
+# Characters of srt_fragment kept on each side of the quote as correction context.
+_LAPIDARY_CONTEXT_RADIUS = 800
+
+
+def _context_window(srt_fragment: str, quote: str, radius: int) -> str:
+    """Return up to `radius` characters of srt_fragment on each side of `quote`.
+
+    Falls back to the full srt_fragment when the verbatim quote cannot be
+    located inside it (should not happen in practice, since the quote was
+    extracted from this same fragment).
+    """
+    idx = srt_fragment.find(quote)
+    if idx == -1:
+        return srt_fragment
+    start = max(0, idx - radius)
+    end = min(len(srt_fragment), idx + len(quote) + radius)
+    return srt_fragment[start:end]
+
+
+def _valid_correction_text(data: dict, raw_content: str) -> str | None:
+    """Validate a parsed correction payload and return the usable text, or None.
+
+    Every failure path is logged at WARNING so a fail-soft `None` is still
+    diagnosable, per the module's existing convention for AI call fallbacks.
+    """
+    corrected = data.get("corrected")
+    if not isinstance(corrected, str) or not corrected.strip():
+        logger.warning("Lapidary correction response missing usable 'corrected' text: %r", raw_content)
+        return None
+
+    confidence = data.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        logger.warning("Lapidary correction response has a non-numeric confidence: %r", raw_content)
+        return None
+    if not (0 <= confidence <= 1):
+        logger.warning("Lapidary correction response confidence out of [0, 1] range: %r", raw_content)
+        return None
+    if confidence < _LAPIDARY_CORRECTION_MIN_CONFIDENCE:
+        return None
+
+    return corrected
+
+
+def _request_quote_correction(
+    quote: str,
+    flagged: frozenset[int],
+    srt_fragment: str,
+    completion_fn,
+) -> str | None:
+    """Ask the correction LLM to fix the flagged tokens in `quote`, fail-soft.
+
+    Sends the quote, the flagged token text, and a bounded context window
+    around it in `srt_fragment` to `completion_fn` at `LLM_CHEAP`. Returns the
+    corrected text only when the reply parses as a JSON object with a
+    non-blank `corrected` string and a `confidence` >= `_LAPIDARY_CORRECTION_MIN_CONFIDENCE`.
+    Any other outcome (call error, malformed JSON, missing keys, low
+    confidence) returns None and never raises.
+    """
+    tokens = quote.split()
+    flagged_words = ", ".join(tokens[i] for i in sorted(flagged) if i < len(tokens))
+    context = _context_window(srt_fragment, quote, _LAPIDARY_CONTEXT_RADIUS)
+    user_prompt = LAPIDARY_CORRECTION_USER_TEMPLATE.format(quote=quote, flagged=flagged_words, context=context)
+
+    response = completion_fn(
+        system_prompt=LAPIDARY_CORRECTION_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        model=LLM_CHEAP,
+    )
+
+    content: str = (response or {}).get("content") or ""
+    if not content.strip():
+        return None
+
+    parsed = parse_json_response(content)
+    data = parsed.get("data")
+    if not isinstance(data, dict):
+        logger.warning("Lapidary correction response was not a JSON object: %r", content)
+        return None
+
+    return _valid_correction_text(data, content)
 
 
 def _extract_candidate_clauses(srt_fragment: str, max_chars: int, min_words: int, max_words: int) -> list[str]:
@@ -190,12 +425,18 @@ def extract_lapidary_quote(
     max_words: int = 8,
     completion_fn=None,
 ) -> str | None:
-    """Extract the most impactful verbatim quote from an SRT fragment.
+    """Extract the most impactful quote from an SRT fragment, ASR-corrected when needed.
 
     Splits the fragment on clause boundaries, filters by word count and length,
     removes stop-word-leading candidates, deduplicates, then asks an LLM to rank
-    the survivors.  Returns the verbatim candidate string at the selected index,
-    or ``None`` when no candidates survive or the LLM declines.
+    the survivors. The ranked winner is checked by a pure risky-entity gate
+    (``_risky_token_indices``, issue #611): a quote with no risky token is
+    returned verbatim, exactly as before this capability existed. A flagged
+    quote is sent to one bounded correction LLM call (``_request_quote_correction``)
+    and the reply must then pass a structural guard (``_passes_correction_guard``)
+    before it is returned; any failure at either step returns ``None`` so the
+    caller falls back to its existing invented-text path — never the
+    uncorrected risky quote.
 
     Args:
         srt_fragment: Raw SRT text for a chapter time window.
@@ -207,7 +448,7 @@ def extract_lapidary_quote(
             the real ``generate_chat_completion`` when ``None``.
 
     Returns:
-        Verbatim candidate string, or ``None``.
+        Verbatim or corrected candidate string, or ``None``.
     """
     if completion_fn is None:
         from utils.ai_helpers import generate_chat_completion as _real_fn
@@ -226,7 +467,19 @@ def extract_lapidary_quote(
     if idx is None:
         return None
 
-    return candidates[idx]
+    quote = candidates[idx]
+    flagged = _risky_token_indices(quote)
+    if not flagged:
+        return quote
+
+    corrected = _request_quote_correction(quote, flagged, srt_fragment, completion_fn)
+    if corrected is None:
+        return None
+
+    if not _passes_correction_guard(quote, corrected, flagged, max_chars):
+        return None
+
+    return corrected
 
 
 def _real_speakers(key_speakers: list | None) -> list[str]:
