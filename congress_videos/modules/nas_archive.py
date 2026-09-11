@@ -331,6 +331,30 @@ def rsync_command(
     return command
 
 
+def rsync_itemized_clean(result) -> bool:
+    """Return ``True`` only when an rsync dry-run's result reports nothing to do.
+
+    Shared by ``verify_synced`` (push direction, below) and
+    ``nas_fetch.verify_fetched`` (pull direction): both dry-run probes are
+    "clean" only when the rsync process exited zero AND its itemized-changes
+    ``stdout`` has no line starting with ``<`` (would send), ``>`` (would
+    receive), or ``c`` (would create/change).
+
+    The ``returncode`` check fails closed regardless of ``stdout``: an errored
+    dry run (remote dir absent, tailnet down) returns empty stdout, and
+    ``all()`` over zero lines is vacuously ``True`` — without this guard an
+    rsync/ssh *error* would be reported as "clean" (see design D4).
+
+    Args:
+        result: Whatever ``runner(command)`` returned — an object exposing
+            ``.stdout`` and ``.returncode`` (e.g. ``subprocess.CompletedProcess``).
+    """
+    if getattr(result, "returncode", 0) != 0:
+        return False
+    stdout = getattr(result, "stdout", "") or ""
+    return all(line[:1] not in ("<", ">", "c") for line in stdout.splitlines())
+
+
 def verify_synced(
     settings: ArchiveSettings,
     local_path: Path | str,
@@ -339,18 +363,17 @@ def verify_synced(
 ) -> bool:
     """Return ``True`` only when the NAS mirror is byte-identical to ``local_path``.
 
-    Runs the dry-run rsync (``-n``) and inspects the itemized-changes output:
-    any line beginning with ``<`` (would send), ``>`` (would receive), or
-    ``c`` (would create/change locally) means the mirror is not yet complete.
+    Runs the dry-run rsync (``-n``) and delegates the itemized-changes/
+    returncode interpretation to :func:`rsync_itemized_clean`.
 
     Args:
         runner: Injectable ``subprocess.run``-shaped callable — takes the
-            argv list and returns an object exposing ``.stdout``.
+            argv list and returns an object exposing ``.stdout`` and
+            ``.returncode``.
     """
     command = rsync_command(settings, local_path, remote_relative_dir, dry_run=True)
     result = runner(command)
-    stdout = getattr(result, "stdout", "") or ""
-    return all(line[:1] not in ("<", ">", "c") for line in stdout.splitlines())
+    return rsync_itemized_clean(result)
 
 
 # ---------------------------------------------------------------------------

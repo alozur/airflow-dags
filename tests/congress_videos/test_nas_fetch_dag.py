@@ -397,6 +397,80 @@ class TestRunFetchVideos:
         assert len(summary["failed"]) == 1
         assert summary["failed"][0]["video_id"] == "bad"
 
+    def test_single_requested_video_failing_raises_and_reports_it(self, monkeypatch):
+        """spec nas-fetch-outcome: 'Single requested video fails' — the task
+        MUST fail and the failure MUST report the video_id and the underlying
+        error (design D6: >=1 requested, every item failed -> raise)."""
+        mod = _fresh()
+        dag_run = MagicMock()
+        dag_run.conf = {"video_id": "abc123"}
+        monkeypatch.setattr(mod, "ArchiveSettings", MagicMock())
+
+        def fake_fetch(settings, project_dir, channel_slug, video_id):
+            raise AirflowException("nas_fetch: rsync failed (exit=23)")
+
+        monkeypatch.setattr(mod, "fetch_one_video", fake_fetch)
+
+        with pytest.raises(AirflowException, match="abc123") as excinfo:
+            mod._run_fetch_videos(dag_run=dag_run)
+        assert "rsync failed" in str(excinfo.value)
+
+    def test_all_videos_in_batch_failing_raises_and_lists_every_id(self, monkeypatch):
+        """spec nas-fetch-outcome: 'All videos in a batch fail' — the task
+        MUST fail and the failure MUST list every failed video_id with its
+        error."""
+        mod = _fresh()
+        dag_run = MagicMock()
+        dag_run.conf = {"video_ids": ["abc123", "def456"]}
+        monkeypatch.setattr(mod, "ArchiveSettings", MagicMock())
+
+        def fake_fetch(settings, project_dir, channel_slug, video_id):
+            raise AirflowException(f"nas_fetch: rsync failed for {video_id}")
+
+        monkeypatch.setattr(mod, "fetch_one_video", fake_fetch)
+
+        with pytest.raises(AirflowException) as excinfo:
+            mod._run_fetch_videos(dag_run=dag_run)
+        message = str(excinfo.value)
+        assert "abc123" in message
+        assert "def456" in message
+
+    def test_mixed_batch_surfaces_failure_without_discarding_success(self, monkeypatch):
+        """spec nas-fetch-outcome: 'Mixed batch with one failure' — a partial
+        failure must not raise (the successful restore is not reverted or
+        discarded), matching test_one_failure_does_not_block_the_other_video
+        but pinned explicitly against the D6 all-failed rule."""
+        mod = _fresh()
+        dag_run = MagicMock()
+        dag_run.conf = {"video_ids": ["abc123", "def456"]}
+        monkeypatch.setattr(mod, "ArchiveSettings", MagicMock())
+
+        def fake_fetch(settings, project_dir, channel_slug, video_id):
+            if video_id == "def456":
+                raise AirflowException("nas_fetch: rsync failed")
+            return {"video_id": video_id, "channel_slug": channel_slug, "restored": ["x"], "media_refreshed": 1}
+
+        monkeypatch.setattr(mod, "fetch_one_video", fake_fetch)
+
+        summary = mod._run_fetch_videos(dag_run=dag_run)
+
+        assert summary["restored"][0]["video_id"] == "abc123"
+        assert summary["failed"][0]["video_id"] == "def456"
+
+    def test_empty_conf_is_distinct_failure_from_all_failed_fetch(self, monkeypatch):
+        """spec nas-fetch-outcome: empty/missing conf raises before any fetch
+        is attempted — a distinct, expected failure mode from the all-failed
+        fetch case, so it must not be confused with 'every video failed'."""
+        mod = _fresh()
+        dag_run = MagicMock()
+        dag_run.conf = {}
+        fetch_calls = []
+        monkeypatch.setattr(mod, "fetch_one_video", lambda *a, **k: fetch_calls.append(a))
+
+        with pytest.raises(AirflowException, match="conf must include"):
+            mod._run_fetch_videos(dag_run=dag_run)
+        assert fetch_calls == []
+
     def test_uses_default_channel_when_conf_omits_it(self, monkeypatch):
         mod = _fresh()
         dag_run = MagicMock()

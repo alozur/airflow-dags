@@ -328,6 +328,13 @@ class TestVerifyFetched:
         verify_fetched(settings, settings.root, "abc123", tmp_path, runner)
         assert "--dry-run" in captured["command"]
 
+    def test_nonzero_returncode_means_not_fetched_even_with_empty_stdout(self, settings, tmp_path):
+        """D4 hardening: a dry-run rsync that ERRORS (remote dir absent, tailnet
+        down) returns empty stdout, so all() over zero lines is vacuously True
+        without the returncode guard — reporting a failed probe as "fetched"."""
+        runner = lambda command: SimpleNamespace(stdout="", returncode=23)  # noqa: E731
+        assert verify_fetched(settings, settings.root, "abc123", tmp_path, runner) is False
+
 
 # ---------------------------------------------------------------------------
 # discover_remote_dirs / discover_fetch_source
