@@ -58,7 +58,13 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from congress_videos.modules import nas_archive
-from congress_videos.modules.nas_archive import ArchiveSettings, ssh_command
+from congress_videos.modules.nas_archive import ArchiveSettings, rsync_itemized_clean, ssh_command
+
+# rsync/ssh subprocess timeout (seconds). Raw downloads are multi-GB, so this
+# is a generous ceiling matching nas_archive's own transfer timeout. This
+# module is the single source of truth (design D7); congress_videos.nas_fetch_dag
+# imports this constant rather than redefining it.
+RSYNC_TIMEOUT_SECS = 3600
 
 # Marker filename must match congress_videos.modules.nas_archive._MARKER_NAME
 # exactly. Duplicated here (rather than importing a private name across a
@@ -257,19 +263,19 @@ def verify_fetched(
 ) -> bool:
     """Return ``True`` only when ``local_path`` is byte-identical to the NAS mirror.
 
-    Mirrors ``nas_archive.verify_synced``'s semantics: a dry-run pull whose
-    itemized-changes output has no line starting with ``<``, ``>``, or ``c``
-    means nothing is left to fetch.
+    Mirrors ``nas_archive.verify_synced``'s semantics: the dry-run pull's
+    itemized-changes/returncode interpretation is shared via
+    :func:`nas_archive.rsync_itemized_clean`.
 
     Args:
         source_root: Same meaning as in :func:`fetch_rsync_command`.
         runner: Injectable ``subprocess.run``-shaped callable — takes the
-            argv list and returns an object exposing ``.stdout``.
+            argv list and returns an object exposing ``.stdout`` and
+            ``.returncode``.
     """
     command = fetch_rsync_command(settings, source_root, remote_relative_dir, local_path, dry_run=True)
     result = runner(command)
-    stdout = getattr(result, "stdout", "") or ""
-    return all(line[:1] not in ("<", ">", "c") for line in stdout.splitlines())
+    return rsync_itemized_clean(result)
 
 
 # ---------------------------------------------------------------------------

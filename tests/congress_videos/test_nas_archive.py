@@ -272,6 +272,13 @@ class TestVerifySynced:
         verify_synced(settings, tmp_path, "abc123", runner)
         assert "--dry-run" in captured["command"]
 
+    def test_nonzero_returncode_means_not_synced_even_with_empty_stdout(self, settings, tmp_path):
+        """D4 hardening: a dry-run rsync that ERRORS (remote dir absent, tailnet
+        down) returns empty stdout, so all() over zero lines is vacuously True
+        without the returncode guard — reporting a failed probe as "verified"."""
+        runner = lambda command: SimpleNamespace(stdout="", returncode=23)  # noqa: E731
+        assert verify_synced(settings, tmp_path, "abc123", runner) is False
+
 
 # ---------------------------------------------------------------------------
 # video_paths
