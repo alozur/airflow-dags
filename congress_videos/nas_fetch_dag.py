@@ -72,6 +72,7 @@ from congress_videos.config.paths import PROJECT_DATA_DIR
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL
 from congress_videos.modules import nas_fetch
 from congress_videos.modules.nas_archive import ArchiveSettings
+from congress_videos.modules.nas_fetch import RSYNC_TIMEOUT_SECS
 from utils.env_loader import load_env_if_local
 
 load_env_if_local()
@@ -81,7 +82,9 @@ logger = logging.getLogger(__name__)
 DAG_ID = "nas_fetch"
 
 _SSH_TIMEOUT_SECS = 30
-_RSYNC_TIMEOUT_SECS = 3600  # raw downloads are multi-GB; generous ceiling, matches nas_archive
+# congress_videos.modules.nas_fetch.RSYNC_TIMEOUT_SECS is the single source of
+# truth (design D7); this local alias keeps the existing call sites unchanged.
+_RSYNC_TIMEOUT_SECS = RSYNC_TIMEOUT_SECS
 _ITEMIZE_LOG_LINE_CAP = 50
 
 
@@ -271,6 +274,15 @@ def _run_fetch_videos(**context) -> dict:
         len(summary["restored"]),
         len(summary["failed"]),
     )
+
+    # design D6: >=1 video requested, every one failed -> the task MUST fail
+    # loudly rather than return a summary that looks like success. A partial
+    # failure (some restored) stays a success; its failures remain visible in
+    # summary["failed"] without reverting the successful restores.
+    if summary["failed"] and not summary["restored"]:
+        failures = "; ".join(f"video_id={f['video_id']}: {f['error']}" for f in summary["failed"])
+        raise AirflowException(f"nas_fetch: all {len(summary['failed'])} requested video(s) failed — {failures}")
+
     return summary
 
 
