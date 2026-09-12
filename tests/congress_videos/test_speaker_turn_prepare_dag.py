@@ -12,7 +12,7 @@ import subprocess
 from contextlib import ExitStack
 from pathlib import Path
 from subprocess import PIPE
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -38,6 +38,14 @@ def _make_ti(xcom_store: dict | None = None):
     ti.xcom_push.side_effect = _push
     ti.xcom_pull.side_effect = _pull
     return ti
+
+
+@pytest.fixture(autouse=True)
+def _stub_nas_fetch(mocker):
+    """Every existing test uses a placeholder output_path never created on
+    disk; stub the NAS auto-fetch hook (design D1) to a no-op so those tests
+    are unaffected. Tests exercising the hook itself override this patch."""
+    return mocker.patch("congress_videos.speaker_turn_prepare_dag.nas_fetch.ensure_local_video")
 
 
 def _make_turn(turn_id: int = 1, output_path: str = "/data/video.mp4") -> dict:
@@ -2436,3 +2444,68 @@ class TestPrepareTurnArtifacts:
         assert result is None
         mock_db.mark_turn_prepared.assert_called_once_with(7)
         assert call_order == ["decode_check", "mark_turn_prepared"]
+
+    def test_missing_source_calls_nas_fetch_before_decode_check(self, mocker):
+        """design D1: a missing local source triggers ensure_local_video for
+        the turn's video_id before the decode check, then preparation proceeds."""
+        from congress_videos.speaker_turn_prepare_dag import (
+            DEFAULT_CHANNEL,
+            PROJECT_DATA_DIR,
+            _prepare_turn_artifacts,
+        )
+
+        fetch = mocker.patch("congress_videos.speaker_turn_prepare_dag.nas_fetch.ensure_local_video")
+        turn = _make_turn(9, "/data/v9.mp4")
+        mock_db = MagicMock()
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag._run_ffmpeg_decode_check", return_value=0),
+        ):
+            result = _prepare_turn_artifacts(mock_db, turn, 9, "/data/v9.mp4")
+
+        fetch.assert_called_once_with(PROJECT_DATA_DIR, DEFAULT_CHANNEL, "vidXYZ", ANY)
+        assert result is None
+        mock_db.mark_turn_prepared.assert_called_once_with(9)
+
+    def test_source_present_locally_skips_nas_fetch(self, mocker):
+        """design D1: no unnecessary fetch when the source is already local."""
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turn_artifacts
+
+        fetch = mocker.patch("congress_videos.speaker_turn_prepare_dag.nas_fetch.ensure_local_video")
+        mocker.patch("congress_videos.speaker_turn_prepare_dag.os.path.exists", return_value=True)
+        turn = _make_turn(1, "/data/v1.mp4")
+        mock_db = MagicMock()
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+            patch("congress_videos.speaker_turn_prepare_dag._run_ffmpeg_decode_check", return_value=0),
+        ):
+            _prepare_turn_artifacts(mock_db, turn, 1, "/data/v1.mp4")
+
+        fetch.assert_not_called()
+
+    @pytest.mark.parametrize("error_kind", ["malformed_id", "fetch_failure"])
+    def test_nas_fetch_failure_preserves_swallow_contract_without_raising(self, mocker, error_kind):
+        """design D6a / threat matrix: a fetch failure (malformed video_id or
+        rsync/verify error) falls into this function's own exception handler
+        — prepared_at stays unset for a retry, and nothing propagates, exactly
+        like any other internal failure today."""
+        from congress_videos.modules import nas_fetch
+        from congress_videos.speaker_turn_prepare_dag import _prepare_turn_artifacts
+
+        error = ValueError("bad id") if error_kind == "malformed_id" else nas_fetch.NasFetchError("rsync failed")
+        mocker.patch("congress_videos.speaker_turn_prepare_dag.nas_fetch.ensure_local_video", side_effect=error)
+        turn = _make_turn(3, "/data/v3.mp4")
+        mock_db = MagicMock()
+
+        with (
+            patch("congress_videos.speaker_turn_prepare_dag.trim_turn_silence_with_vad", return_value=(0.0, 0.0)),
+            patch("congress_videos.speaker_turn_prepare_dag._write_turn_sidecars"),
+        ):
+            result = _prepare_turn_artifacts(mock_db, turn, 3, "/data/v3.mp4")
+
+        assert result is None
+        mock_db.mark_turn_prepared.assert_not_called()

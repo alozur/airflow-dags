@@ -14,6 +14,21 @@ from airflow.utils.types import DagRunType
 # routing, and a 204 endpoint answers without a body.
 EGRESS_PROBE_URL = "https://www.google.com/generate_204"
 EGRESS_PROBE_TIMEOUT_SECONDS = 5
+# Maintenance DAGs that are meant to run on their own schedule before the cutover:
+# they may be unpaused and may own scheduled runs. Every business DAG must stay paused.
+ALWAYS_ON_DAGS = frozenset({"nas_archive"})
+# Set to "false" by the infrastructure inventory once a project has been cut over
+# to production: business DAGs then run unpaused on purpose and only DAG parsing
+# and egress stay asserted. DEV keeps the default "true" indefinitely.
+EXPECT_BUSINESS_PAUSED_ENV = "DEPLOY_EXPECT_BUSINESS_PAUSED"
+
+
+def expect_business_paused() -> bool:
+    """Read the paused-business gate from the environment; only true/false are accepted."""
+    raw = os.environ.get(EXPECT_BUSINESS_PAUSED_ENV, "true").strip().lower()
+    if raw not in {"true", "false"}:
+        raise SystemExit(f"{EXPECT_BUSINESS_PAUSED_ENV} must be 'true' or 'false', got {raw!r}")
+    return raw == "true"
 
 
 def check_scheduler_egress() -> None:
@@ -57,13 +72,25 @@ def main():
     with create_session() as session:
         models = session.query(DagModel).filter(DagModel.is_active.is_(True)).all()
         assert models, "Scheduler has not registered DAGs yet"
-        assert all(model.is_paused for model in models), "An active DAG is unpaused"
-        # Operators may trigger paused DAGs by hand on DEV; only the scheduler
-        # must never have started anything on its own.
-        unattended = session.query(DagRun).filter(DagRun.run_type != DagRunType.MANUAL).count()
-        assert unattended == 0, "Unexpected scheduled or backfill DAG runs"
+        business = [model for model in models if model.dag_id not in ALWAYS_ON_DAGS]
+        unattended = (
+            session.query(DagRun)
+            .filter(DagRun.run_type != DagRunType.MANUAL, DagRun.dag_id.notin_(ALWAYS_ON_DAGS))
+            .count()
+        )
         manual = session.query(DagRun).filter(DagRun.run_type == DagRunType.MANUAL).count()
-    print(f"Airflow 2.11.1: parsed, paused, zero unattended DAG runs, manual_runs={manual}")
+        if expect_business_paused():
+            assert all(model.is_paused for model in business), "An active business DAG is unpaused"
+            # Operators may trigger paused DAGs by hand on DEV; only the scheduler
+            # must never have started anything on its own.
+            assert unattended == 0, "Unexpected scheduled or backfill DAG runs"
+            print(f"Airflow 2.11.1: parsed, business DAGs paused, zero unattended business runs, manual_runs={manual}")
+        else:
+            active = sum(1 for model in business if not model.is_paused)
+            print(
+                "Airflow 2.11.1: parsed; production mode, business DAGs may be active "
+                f"(unpaused={active} scheduled_runs={unattended} manual_runs={manual})"
+            )
 
 
 if __name__ == "__main__":

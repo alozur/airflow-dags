@@ -28,7 +28,20 @@ Compose is rendered from three `--env-file` sources supplied by Ansible:
 - `runtime.env` — persistent secrets generated once per host (DB passwords,
   Fernet/webserver keys, admin password).
 - `release.env` — non-secret per-release settings (image tags, subnets,
-  `UI_UPSTREAM`, `EGRESS_SUBNET`, `EGRESS_INTERNAL`, `YOUTUBE_TOKENS_HOST_DIR`).
+  `UI_UPSTREAM`, `EGRESS_SUBNET`, `EGRESS_INTERNAL`, `YOUTUBE_TOKENS_HOST_DIR`,
+  `NAS_SYNC_HOST_DIR`, `NAS_ARCHIVE_HOST`, `NAS_ARCHIVE_PORT`,
+  `NAS_ARCHIVE_USER`, `NAS_ARCHIVE_ROOT`, `NAS_ARCHIVE_MIN_AGE_DAYS`,
+  `NAS_FETCH_LEGACY_ROOT`, `NAS_RECLAIM_GRACE_HOURS`, `YOUTUBE_DOWNLOAD_PROXY`,
+  `POSTGRES_SCHEMA`, `POSTGRES_RUNTIME_ROLE`).
+
+`POSTGRES_SCHEMA` and `POSTGRES_RUNTIME_ROLE` select the business schema per
+VPS project: `development`/`airflow_dev` (the default when unset, matching
+today's behavior) or `production`/`airflow_prod`, mirroring the NAS's own
+schema/role split. `POSTGRES_SCHEMA` is interpolated verbatim into every
+service's `POSTGRES_SCHEMA` variable; `POSTGRES_RUNTIME_ROLE` is interpolated
+into `POSTGRES_USER` (scheduler, webserver, app-init). `app_init.py` validates
+the pair against `utils/migrations_dag.py`'s `SCHEMA_OWNER_ROLES` and fails
+fast on any other combination before opening a database connection.
 - `external.env` — optional external API key secrets (`OPENAI_API_KEY`,
   `YOUTUBE_API_KEY`, `REAP_API_KEY`, `PIKZELS_API_KEY`). Each falls back to
   the literal placeholder `dev-disabled-not-a-credential` when this file (or
@@ -44,6 +57,91 @@ chowns that directory to `50000:0` (the image's `airflow` uid:gid) before
 missing directory fails loudly rather than being created with the wrong
 owner.
 
+`NAS_SYNC_HOST_DIR` on the host holds `id_ed25519`, `id_ed25519.pub`, and
+`known_hosts` for the `nas_archive` DAG; it is bind-mounted **read-only** into
+the scheduler at `/opt/airflow/nas_sync`. This mount is required with no
+default (`:?Required`), like `YOUTUBE_TOKENS_HOST_DIR`, so a missing directory
+fails loudly. `NAS_ARCHIVE_HOST` defaults to an empty string, which disables
+`congress_videos/nas_archive_dag.py` entirely (its `check_enabled` task
+short-circuits) — a stack without a configured NAS archive target behaves
+exactly as before this contract existed. When enabled, that DAG syncs local
+raw/derived material for fully-completed videos (uploaded and verified) to
+`NAS_ARCHIVE_HOST:NAS_ARCHIVE_ROOT` over rsync-over-SSH on every run,
+regardless of age (rsync is incremental, so re-syncing an unchanged video is
+cheap) — early sync, late prune: local deletion only happens once a video's
+material is at least `NAS_ARCHIVE_MIN_AGE_DAYS` days old (default 14).
+`NAS_ARCHIVE_SYNC_BATCH` (default 20, an operational knob read directly by
+the DAG, not part of this env-file contract) caps syncs per run;
+`NAS_ARCHIVE_BATCH` (default 2, same operational-knob status) separately
+caps prunes per run — a video that syncs but doesn't clear the prune cap
+stays eligible next run. `PROJECT_DATA_DIR/thumbnails/` is mirrored to the
+same target on every enabled run but is never pruned locally, since its
+files are keyed by the uploaded YouTube video id and can't be attributed to
+one source video.
+
+`congress_videos/nas_fetch_dag.py` (`nas_fetch`) is the inverse, on-demand
+recovery DAG: it pulls one or more already-archived videos' material back
+from the NAS onto local disk so a downstream DAG (`speaker_turns`,
+`trim_proposals`, `speaker_turn_videos`, ...) can reprocess them. It reuses
+the exact same `NAS_ARCHIVE_*` settings and SSH key mount as `nas_archive` —
+no additional configuration. Trigger it with:
+
+```bash
+airflow dags trigger nas_fetch --conf '{"video_id": "abc123"}'
+airflow dags trigger nas_fetch --conf '{"video_ids": ["abc123", "def456"]}'
+airflow dags trigger nas_fetch --conf '{"video_id": "abc123", "channel_slug": "congreso-es-tv"}'
+```
+
+`channel_slug` defaults to `DEFAULT_CHANNEL` when omitted. Each requested
+video is handled independently: a failure fetching or verifying one video
+aborts only that one (its `.nas_archived.json` marker, if any, is left in
+place) and is recorded in the run summary; the rest still proceed. The NAS
+copy is never modified or deleted by this DAG. After a successful fetch,
+every restored media file's mtime is reset to the fetch time — `rsync -a`
+preserves the NAS's original timestamps, so without this the video would
+still look old to `nas_archive`'s local age gate — giving the video a fresh
+full `NAS_ARCHIVE_MIN_AGE_DAYS` window before `nas_archive` can pick it up
+again. Re-archiving afterwards is cheap: the NAS copy is unchanged, so the
+eventual re-push is close to a no-op sync.
+
+When a video has no local `.nas_archived.json` marker (e.g. one of the ~70
+pre-migration videos that only ever lived on the NAS and were never archived
+from this VPS), `nas_fetch` falls back to a single SSH discovery command
+against `NAS_ARCHIVE_ROOT`, then — only if `NAS_FETCH_LEGACY_ROOT` is set —
+against that legacy root, a **read-only** pre-migration production tree at a
+different path with the same three possible directory shapes
+(`downloads/{date}/{video_id}`, `{channel_slug}/{video_id}`, or the legacy
+top-level `{video_id}`). The first root with at least one matching directory
+wins. `NAS_FETCH_LEGACY_ROOT` defaults to empty, which disables the fallback
+to that second root (discovery against `NAS_ARCHIVE_ROOT` alone still
+happens). This mode never writes, deletes, or rsync-pushes anything to
+either root — pull only — and there is no marker to remove afterwards. The
+run summary records which source each video came from: `"marker"`,
+`"archive-root"`, or `"legacy-root"`.
+
+A video pulled from the legacy root becomes a VPS-managed video from then on:
+it has no marker, its media mtimes are refreshed, and the next `nas_archive`
+run syncs it into `NAS_ARCHIVE_ROOT` (and prunes it locally once it ages past
+the retention window). The legacy copy is never touched, so the video exists
+under both roots until the legacy tree is merged or retired. This is the
+intended hand-over, not a leak.
+
+`NAS_RECLAIM_GRACE_HOURS` (`release.env`, default 12) configures
+`ArchiveSettings.reclaim_grace_hours` — the minimum local age, in hours, of a
+video's newest fetched/refreshed media mtime before the `nas_reclaim` DAG may
+delete it, even once its NAS copy is verified and the DB-completeness query
+reports nothing pending for it. This is a separate, tighter window than
+`NAS_ARCHIVE_MIN_AGE_DAYS`: `nas_reclaim` re-prunes ephemeral local material
+every 4 hours, so its grace window is measured in hours, not days.
+
+`YOUTUBE_DOWNLOAD_PROXY` (`release.env`) points `utils/youtube_downloader.py`
+at an HTTP proxy for every yt-dlp/pytubefix media download — the path
+YouTube bot-blocks by VPS IP. Empty (the default) means direct downloads,
+unchanged from before this variable existed. Scope is downloads only: the
+YouTube Data API and OAuth clients (`utils/youtube_helpers.py`,
+`congress_videos/modules/youtube/youtube_channel.py`) never read it and
+always talk to YouTube directly.
+
 `utils/git_sync_dag.py` is excluded from DAG loading on this image: the
 Dockerfile appends `git_sync_dag` to `.airflowignore` before the tree is made
 read-only, since the VPS scheduler must never pull from GitHub or hold a
@@ -53,6 +151,13 @@ read-only, since the VPS scheduler must never pull from GitHub or hold a
 full application test. Run it with a Python environment containing PyYAML.
 `verify.py` imports real DAGs **only inside the isolated deployed runtime**.
 Do not execute that verifier directly on a workstation with production access.
+
+`verify.py` also asserts that every DAG outside `ALWAYS_ON_DAGS` stays paused
+and that the scheduler never started a run on its own. The infrastructure passes
+`DEPLOY_EXPECT_BUSINESS_PAUSED` into that check from its inventory: `true` (the
+default, mandatory on DEV) keeps those assertions; `false`, set on a project only
+after its production cutover, keeps DAG parsing and the egress check but lets
+business DAGs run unpaused. Any other value fails the verification.
 
 The Dockerfile uses the source revision's frozen `uv.lock`, but OS packages
 are not snapshotted. Preserve the built image and recorded image ID for exact
@@ -65,8 +170,10 @@ download and no Hugging Face token exist on the VPS. `diarize-api` and
 is the third-party image pinned by digest. Everything is CPU-only.
 `ml_smoke.py` runs inside the scheduler and proves each sidecar answers on
 synthetic audio. Airflow's local Whisper path is intentionally absent from the
-frozen image, so DEV transcription goes through `whisper-api` text-only (no
-SRT), a known functional gap versus production's start-time pip install.
+frozen image, so DEV transcription goes through `whisper-api` instead —
+`utils/whisper_helpers.py` requests `output=srt` from that sidecar (a query
+parameter, per ahmetoner/whisper-asr-webservice) and still produces SRT files,
+matching production's start-time pip install behavior.
 The scheduler bind-mounts `YOUTUBE_TOKENS_HOST_DIR` for OAuth tokens (see
 "Configuration sources" above), but no real token is seeded by this
 foundation. This foundation does not prove the full video pipeline works; no
@@ -75,17 +182,25 @@ runtime claim follows from the passing static contracts.
 ## Application database
 
 `application` is a second, fully isolated `postgres:16-alpine` instance
-(same pinned digest as `metadata`) holding the business schema — it starts
-**empty**; no data is copied from anywhere. The one-shot `app-init` service
-provisions it once per release: as the bootstrap superuser (`airflow`, the
-same legacy role name `congress_videos/sql/grant_permissions.sql` expects on
-the NAS) it creates the `development` schema and applies that idempotent
-grant script, then sets the `airflow_dev` (runtime, DML-only) and
-`airflow_migrations` (DDL) role passwords. It then calls the same migration
+(same pinned digest as `metadata`) holding the business schema. On DEV it
+starts **empty**; no data is copied from anywhere. The one-shot `app-init`
+service provisions it once per release: as the bootstrap superuser
+(`airflow`, the same legacy role name `congress_videos/sql/grant_permissions*.sql`
+expects on the NAS) it creates the target schema (`POSTGRES_SCHEMA` —
+`development` or `production`, see "Configuration sources" above) and applies
+the grant script matching it (`grant_permissions.sql` /
+`grant_permissions_production.sql`), then sets the runtime (DML-only,
+`airflow_dev` or `airflow_prod`) and `airflow_migrations` (DDL) role
+passwords. On DEV it also creates the base tables from
+`congressional_videos_schema.sql` / `youtube_chapters_schema.sql` on a fresh
+database; PROD skips that step entirely and relies on its pg_restore'd tables
+instead — those two files hardcode the `development` schema internally, so
+they are never applicable to `production`. It then calls the same migration
 functions `utils/migrations_dag.py`'s `run_migrations` DAG uses — directly,
 never through a DAG run, so `verify.py`'s zero-DAG-run assertion still holds.
-`scheduler` and `webserver` only ever hold the `airflow_dev` runtime
-credential; the bootstrap superuser and migration passwords never reach
-their environment. `app_smoke.py` runs inside the scheduler afterward and
-proves the DAG code can authenticate as `airflow_dev`, see the migrated
-schema, and perform a DML round-trip (rolled back on purpose).
+`scheduler` and `webserver` only ever hold the runtime credential
+(`POSTGRES_USER`/`POSTGRES_PASSWORD`); the bootstrap superuser and migration
+passwords never reach their environment. `app_smoke.py` runs inside the
+scheduler afterward and proves the DAG code can authenticate as that runtime
+role, see the migrated schema, and perform a DML round-trip (rolled back on
+purpose).

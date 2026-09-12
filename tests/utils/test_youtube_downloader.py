@@ -738,6 +738,34 @@ class TestTryPytubefixDownload:
 
         assert result is None
 
+    def test_proxy_configured_skips_pytubefix_entirely(self, monkeypatch, mocker):
+        """With YOUTUBE_DOWNLOAD_PROXY set, download_with_pytubefix (and thus
+        pytubefix's YouTube) is never called — pytubefix fails deterministically
+        behind a proxy, so we go straight to yt-dlp instead of a doomed attempt."""
+        monkeypatch.setenv("YOUTUBE_DOWNLOAD_PROXY", "http://proxy.test:8888")
+        mock_pytubefix = mocker.patch("utils.youtube_downloader.download_with_pytubefix")
+
+        from utils.youtube_downloader import _try_pytubefix_download
+
+        result = _try_pytubefix_download("https://youtube.com/watch?v=x", "/tmp/out", 720, True)
+
+        assert result is None
+        mock_pytubefix.assert_not_called()
+
+    def test_no_proxy_still_tries_pytubefix(self, monkeypatch, mocker):
+        """Without YOUTUBE_DOWNLOAD_PROXY, behaviour is unchanged: pytubefix is tried."""
+        monkeypatch.delenv("YOUTUBE_DOWNLOAD_PROXY", raising=False)
+        expected_result = {"success": True, "file_path": "/tmp/v.mp4", "resolution": "720p"}
+        mock_pytubefix = mocker.patch("utils.youtube_downloader.download_with_pytubefix", return_value=expected_result)
+        mocker.patch("utils.youtube_downloader._warn_if_not_h264")
+
+        from utils.youtube_downloader import _try_pytubefix_download
+
+        result = _try_pytubefix_download("https://youtube.com/watch?v=x", "/tmp/out", 720, True)
+
+        assert result is expected_result
+        mock_pytubefix.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # download_audio_only
@@ -874,6 +902,70 @@ class TestDownloadAudioOnly:
         download_audio_only("https://youtube.com/watch?v=x", str(tmp_path), audio_format="mp3")
 
         assert "postprocessors" in captured_opts
+
+    def test_cookies_file_added_to_opts_when_exists(self, tmp_path, mocker):
+        """cookiefile is set in ydl_opts when the cookies file exists on disk,
+        same handling as the video download path (download_youtube_video_for_upload)."""
+        cookies_file = tmp_path / "cookies.txt"
+        cookies_file.write_text("cookies content")
+
+        fake_file = tmp_path / "vid123_Test Video_audio.webm"
+        fake_file.write_bytes(b"\x00" * 512)
+
+        fake_info = _make_ydl_info()
+        captured_opts: dict = {}
+
+        fake_ydl = MagicMock()
+        fake_ydl.__enter__ = MagicMock(return_value=fake_ydl)
+        fake_ydl.__exit__ = MagicMock(return_value=False)
+        fake_ydl.extract_info.return_value = fake_info
+        fake_ydl.prepare_filename.return_value = str(fake_file)
+
+        def capture_ydl(opts):
+            captured_opts.update(opts)
+            return fake_ydl
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", side_effect=capture_ydl)
+
+        from utils.youtube_downloader import download_audio_only
+
+        download_audio_only(
+            "https://youtube.com/watch?v=x",
+            str(tmp_path),
+            cookies_file=str(cookies_file),
+        )
+
+        assert captured_opts.get("cookiefile") == str(cookies_file)
+
+    def test_no_cookiefile_key_when_cookies_file_missing(self, tmp_path, mocker):
+        """No cookiefile key is set when the cookies file does not exist on disk."""
+        fake_file = tmp_path / "vid123_Test Video_audio.webm"
+        fake_file.write_bytes(b"\x00" * 512)
+
+        fake_info = _make_ydl_info()
+        captured_opts: dict = {}
+
+        fake_ydl = MagicMock()
+        fake_ydl.__enter__ = MagicMock(return_value=fake_ydl)
+        fake_ydl.__exit__ = MagicMock(return_value=False)
+        fake_ydl.extract_info.return_value = fake_info
+        fake_ydl.prepare_filename.return_value = str(fake_file)
+
+        def capture_ydl(opts):
+            captured_opts.update(opts)
+            return fake_ydl
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", side_effect=capture_ydl)
+
+        from utils.youtube_downloader import download_audio_only
+
+        download_audio_only(
+            "https://youtube.com/watch?v=x",
+            str(tmp_path),
+            cookies_file=str(tmp_path / "does_not_exist.txt"),
+        )
+
+        assert "cookiefile" not in captured_opts
 
 
 # ---------------------------------------------------------------------------
@@ -1601,3 +1693,332 @@ class TestWarnIfNotH264WiredIntoYtdlpSuccessPath:
         assert result["success"] is True
         mock_warn.assert_called_once_with("/tmp/pytubefix_video.mp4", context="https://youtube.com/watch?v=x")
         mock_ydl_class.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# YOUTUBE_DOWNLOAD_PROXY (download-only proxy env var, homeserver-vps-dev-foundation)
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadProxyHelpers:
+    def test_download_proxy_empty_when_unset(self, monkeypatch):
+        monkeypatch.delenv("YOUTUBE_DOWNLOAD_PROXY", raising=False)
+
+        from utils.youtube_downloader import _download_proxy
+
+        assert _download_proxy() == ""
+
+    def test_download_proxy_reads_and_strips_env(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_DOWNLOAD_PROXY", "  http://proxy.test:8888  ")
+
+        from utils.youtube_downloader import _download_proxy
+
+        assert _download_proxy() == "http://proxy.test:8888"
+
+    def test_apply_download_proxy_sets_key_when_configured(self, monkeypatch):
+        monkeypatch.setenv("YOUTUBE_DOWNLOAD_PROXY", "http://proxy.test:8888")
+
+        from utils.youtube_downloader import _apply_download_proxy
+
+        opts: dict = {}
+        _apply_download_proxy(opts)
+
+        assert opts["proxy"] == "http://proxy.test:8888"
+
+    def test_apply_download_proxy_no_op_when_unset(self, monkeypatch):
+        monkeypatch.delenv("YOUTUBE_DOWNLOAD_PROXY", raising=False)
+
+        from utils.youtube_downloader import _apply_download_proxy
+
+        opts: dict = {}
+        _apply_download_proxy(opts)
+
+        assert "proxy" not in opts
+
+
+class TestDownloadProxyWiredIntoDownloadFunctions:
+    def test_probe_live_status_applies_proxy_when_configured(self, monkeypatch, mocker):
+        monkeypatch.setenv("YOUTUBE_DOWNLOAD_PROXY", "http://proxy.test:8888")
+        captured_opts: dict = {}
+
+        def capture_ydl(opts):
+            captured_opts.update(opts)
+            fake_ydl = MagicMock()
+            fake_ydl.__enter__ = MagicMock(return_value=fake_ydl)
+            fake_ydl.__exit__ = MagicMock(return_value=False)
+            fake_ydl.extract_info.return_value = {"live_status": "was_live"}
+            return fake_ydl
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", side_effect=capture_ydl)
+
+        from utils.youtube_downloader import probe_live_status
+
+        probe_live_status("https://youtube.com/watch?v=x")
+
+        assert captured_opts["proxy"] == "http://proxy.test:8888"
+
+    def test_probe_live_status_no_proxy_key_when_unset(self, monkeypatch, mocker):
+        monkeypatch.delenv("YOUTUBE_DOWNLOAD_PROXY", raising=False)
+        captured_opts: dict = {}
+
+        def capture_ydl(opts):
+            captured_opts.update(opts)
+            fake_ydl = MagicMock()
+            fake_ydl.__enter__ = MagicMock(return_value=fake_ydl)
+            fake_ydl.__exit__ = MagicMock(return_value=False)
+            fake_ydl.extract_info.return_value = {"live_status": "was_live"}
+            return fake_ydl
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", side_effect=capture_ydl)
+
+        from utils.youtube_downloader import probe_live_status
+
+        probe_live_status("https://youtube.com/watch?v=x")
+
+        assert "proxy" not in captured_opts
+
+    def test_download_audio_only_applies_proxy_when_configured(self, tmp_path, monkeypatch, mocker):
+        monkeypatch.setenv("YOUTUBE_DOWNLOAD_PROXY", "http://proxy.test:8888")
+        captured_opts: dict = {}
+
+        fake_file = tmp_path / "vid123_Test Video_audio.webm"
+        fake_file.write_bytes(b"\x00" * 256)
+        fake_info = _make_ydl_info()
+
+        fake_ydl = MagicMock()
+        fake_ydl.__enter__ = MagicMock(return_value=fake_ydl)
+        fake_ydl.__exit__ = MagicMock(return_value=False)
+        fake_ydl.extract_info.return_value = fake_info
+        fake_ydl.prepare_filename.return_value = str(fake_file)
+
+        def capture_ydl(opts):
+            captured_opts.update(opts)
+            return fake_ydl
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", side_effect=capture_ydl)
+
+        from utils.youtube_downloader import download_audio_only
+
+        download_audio_only("https://youtube.com/watch?v=x", str(tmp_path))
+
+        assert captured_opts["proxy"] == "http://proxy.test:8888"
+
+    def test_download_audio_only_no_proxy_key_when_unset(self, tmp_path, monkeypatch, mocker):
+        monkeypatch.delenv("YOUTUBE_DOWNLOAD_PROXY", raising=False)
+        captured_opts: dict = {}
+
+        fake_file = tmp_path / "vid123_Test Video_audio.webm"
+        fake_file.write_bytes(b"\x00" * 256)
+        fake_info = _make_ydl_info()
+
+        fake_ydl = MagicMock()
+        fake_ydl.__enter__ = MagicMock(return_value=fake_ydl)
+        fake_ydl.__exit__ = MagicMock(return_value=False)
+        fake_ydl.extract_info.return_value = fake_info
+        fake_ydl.prepare_filename.return_value = str(fake_file)
+
+        def capture_ydl(opts):
+            captured_opts.update(opts)
+            return fake_ydl
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", side_effect=capture_ydl)
+
+        from utils.youtube_downloader import download_audio_only
+
+        download_audio_only("https://youtube.com/watch?v=x", str(tmp_path))
+
+        assert "proxy" not in captured_opts
+
+    def test_download_audio_in_chunks_applies_proxy_to_every_ydl_opts(self, tmp_path, monkeypatch, mocker):
+        """Proxy is applied to both the info-probe opts and each per-chunk opts."""
+        monkeypatch.setenv("YOUTUBE_DOWNLOAD_PROXY", "http://proxy.test:8888")
+        # conftest.py's global yt_dlp stub predates download_ranges support: its
+        # "utils" SimpleNamespace lacks download_range_func. create=True adds it
+        # for this test only, matching a real-ish return value.
+        mocker.patch("yt_dlp.utils.download_range_func", create=True, return_value="RANGE")
+        captured_opts_list: list[dict] = []
+        chunk_dir = tmp_path / "audio_chunks"
+        call_count = [0]
+
+        def fake_ydl_factory(opts):
+            captured_opts_list.append(dict(opts))
+            m = MagicMock()
+            m.__enter__ = MagicMock(return_value=m)
+            m.__exit__ = MagicMock(return_value=False)
+
+            if call_count[0] == 0:
+                m.extract_info.return_value = _make_ydl_info(video_id="vidproxy", duration=600)
+            else:
+                chunk_index = call_count[0] - 1
+                chunk_dir.mkdir(parents=True, exist_ok=True)
+                chunk_path = chunk_dir / f"vidproxy_chunk_{chunk_index:03d}.webm"
+                chunk_path.write_bytes(b"\x00" * 128)
+
+            call_count[0] += 1
+            return m
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", side_effect=fake_ydl_factory)
+
+        from utils.youtube_downloader import download_audio_in_chunks
+
+        download_audio_in_chunks("https://youtube.com/watch?v=x", str(tmp_path), chunk_duration_minutes=10)
+
+        assert len(captured_opts_list) >= 2
+        assert all(opts.get("proxy") == "http://proxy.test:8888" for opts in captured_opts_list)
+
+    def test_download_audio_in_chunks_no_proxy_key_when_unset(self, tmp_path, monkeypatch, mocker):
+        monkeypatch.delenv("YOUTUBE_DOWNLOAD_PROXY", raising=False)
+        mocker.patch("yt_dlp.utils.download_range_func", create=True, return_value="RANGE")
+        captured_opts_list: list[dict] = []
+        chunk_dir = tmp_path / "audio_chunks"
+        call_count = [0]
+
+        def fake_ydl_factory(opts):
+            captured_opts_list.append(dict(opts))
+            m = MagicMock()
+            m.__enter__ = MagicMock(return_value=m)
+            m.__exit__ = MagicMock(return_value=False)
+
+            if call_count[0] == 0:
+                m.extract_info.return_value = _make_ydl_info(video_id="vidnoproxy", duration=600)
+            else:
+                chunk_index = call_count[0] - 1
+                chunk_dir.mkdir(parents=True, exist_ok=True)
+                chunk_path = chunk_dir / f"vidnoproxy_chunk_{chunk_index:03d}.webm"
+                chunk_path.write_bytes(b"\x00" * 128)
+
+            call_count[0] += 1
+            return m
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", side_effect=fake_ydl_factory)
+
+        from utils.youtube_downloader import download_audio_in_chunks
+
+        download_audio_in_chunks("https://youtube.com/watch?v=x", str(tmp_path), chunk_duration_minutes=10)
+
+        assert len(captured_opts_list) >= 2
+        assert all("proxy" not in opts for opts in captured_opts_list)
+
+    def test_download_youtube_subtitles_applies_proxy_to_every_ydl_opts(self, tmp_path, monkeypatch, mocker):
+        """Proxy is applied to both the info-probe opts and the per-language opts."""
+        monkeypatch.setenv("YOUTUBE_DOWNLOAD_PROXY", "http://proxy.test:8888")
+        captured_opts_list: list[dict] = []
+
+        info = _make_ydl_info(video_id="vidsub", subtitles={"es": [{"ext": "srt"}]})
+        call_count = [0]
+
+        def fake_ydl_factory(opts):
+            captured_opts_list.append(dict(opts))
+            m = MagicMock()
+            m.__enter__ = MagicMock(return_value=m)
+            m.__exit__ = MagicMock(return_value=False)
+
+            if call_count[0] == 0:
+                m.extract_info.return_value = info
+            else:
+                srt_dir = tmp_path / "srt_files"
+                srt_dir.mkdir(parents=True, exist_ok=True)
+                srt_file = srt_dir / "vidsub_es.srt"
+                srt_file.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n")
+
+            call_count[0] += 1
+            return m
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", side_effect=fake_ydl_factory)
+
+        from utils.youtube_downloader import download_youtube_subtitles
+
+        download_youtube_subtitles("https://youtube.com/watch?v=x", str(tmp_path), languages=["es"])
+
+        assert len(captured_opts_list) >= 2
+        assert all(opts.get("proxy") == "http://proxy.test:8888" for opts in captured_opts_list)
+
+    def test_download_youtube_subtitles_no_proxy_key_when_unset(self, tmp_path, monkeypatch, mocker):
+        monkeypatch.delenv("YOUTUBE_DOWNLOAD_PROXY", raising=False)
+        captured_opts_list: list[dict] = []
+
+        info = _make_ydl_info(video_id="vidsub2", subtitles={"es": [{"ext": "srt"}]})
+        call_count = [0]
+
+        def fake_ydl_factory(opts):
+            captured_opts_list.append(dict(opts))
+            m = MagicMock()
+            m.__enter__ = MagicMock(return_value=m)
+            m.__exit__ = MagicMock(return_value=False)
+
+            if call_count[0] == 0:
+                m.extract_info.return_value = info
+            else:
+                srt_dir = tmp_path / "srt_files"
+                srt_dir.mkdir(parents=True, exist_ok=True)
+                srt_file = srt_dir / "vidsub2_es.srt"
+                srt_file.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n")
+
+            call_count[0] += 1
+            return m
+
+        mocker.patch("utils.youtube_downloader.yt_dlp.YoutubeDL", side_effect=fake_ydl_factory)
+
+        from utils.youtube_downloader import download_youtube_subtitles
+
+        download_youtube_subtitles("https://youtube.com/watch?v=x", str(tmp_path), languages=["es"])
+
+        assert len(captured_opts_list) >= 2
+        assert all("proxy" not in opts for opts in captured_opts_list)
+
+    def _fake_pytubefix_youtube(self, mocker, video_id: str):
+        """Build a fake pytubefix module whose YouTube() short-circuits to
+        'no suitable stream found' (no ffmpeg/subprocess involvement) so the
+        test only needs to observe the YouTube(...) constructor call args."""
+        mock_yt_instance = MagicMock()
+        mock_yt_instance.video_id = video_id
+        mock_yt_instance.title = "Test"
+        mock_yt_instance.streams.all.return_value = []
+        mock_filter_chain = MagicMock()
+        mock_filter_chain.filter.return_value = mock_filter_chain
+        mock_filter_chain.order_by.return_value = mock_filter_chain
+        mock_filter_chain.desc.return_value = mock_filter_chain
+        mock_filter_chain.first.return_value = None
+        mock_yt_instance.streams.filter.return_value = mock_filter_chain
+
+        fake_pytubefix = types.ModuleType("pytubefix")
+        mock_youtube_cls = MagicMock(return_value=mock_yt_instance)
+        fake_pytubefix.YouTube = mock_youtube_cls
+        fake_cli = types.ModuleType("pytubefix.cli")
+        fake_cli.on_progress = MagicMock()
+
+        mocker.patch.dict(sys.modules, {"pytubefix": fake_pytubefix, "pytubefix.cli": fake_cli})
+        return mock_youtube_cls
+
+    def test_pytubefix_passes_proxies_kwarg_when_configured(self, tmp_path, monkeypatch, mocker):
+        monkeypatch.setenv("YOUTUBE_DOWNLOAD_PROXY", "http://proxy.test:8888")
+        import importlib
+
+        mock_youtube_cls = self._fake_pytubefix_youtube(mocker, "vidproxy2")
+
+        from utils import youtube_downloader
+
+        importlib.reload(youtube_downloader)
+
+        youtube_downloader.download_with_pytubefix("https://youtube.com/watch?v=x", str(tmp_path))
+
+        _, kwargs = mock_youtube_cls.call_args
+        assert kwargs["proxies"] == {
+            "http": "http://proxy.test:8888",
+            "https": "http://proxy.test:8888",
+        }
+
+    def test_pytubefix_proxies_kwarg_none_when_unset(self, tmp_path, monkeypatch, mocker):
+        monkeypatch.delenv("YOUTUBE_DOWNLOAD_PROXY", raising=False)
+        import importlib
+
+        mock_youtube_cls = self._fake_pytubefix_youtube(mocker, "vidproxy3")
+
+        from utils import youtube_downloader
+
+        importlib.reload(youtube_downloader)
+
+        youtube_downloader.download_with_pytubefix("https://youtube.com/watch?v=x", str(tmp_path))
+
+        _, kwargs = mock_youtube_cls.call_args
+        assert kwargs["proxies"] is None

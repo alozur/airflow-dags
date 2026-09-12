@@ -2,8 +2,9 @@
 Whisper API helper functions for audio transcription.
 
 This module provides utilities to transcribe audio files using:
-1. Whisper API running in Docker container (for text-only transcription)
-2. OpenAI Whisper library (for SRT generation with timestamps)
+1. OpenAI Whisper library (local, generates SRT with timestamps)
+2. Whisper API running as a Docker sidecar (fallback; also generates SRT via
+   the ahmetoner/whisper-asr-webservice ``output=srt`` query parameter)
 """
 
 import logging
@@ -78,6 +79,36 @@ def create_srt_from_segments(segments: list) -> str:
         srt_content.append("")  # Empty line between entries
 
     return "\n".join(srt_content)
+
+
+def extract_text_from_srt(srt_content: str) -> str:
+    """
+    Derive plain transcription text from SRT-formatted content.
+
+    Joins each cue's text lines (ignoring the index and timestamp lines) with
+    a single space, mirroring the flat ``text`` field the local Whisper
+    library returns alongside its segments.
+
+    Args:
+        srt_content: SRT formatted subtitle content (may be empty)
+
+    Returns:
+        Plain text with no timestamps or cue numbers. Empty string for empty
+        or whitespace-only input.
+    """
+    if not srt_content or not srt_content.strip():
+        return ""
+
+    cue_texts = []
+    for block in srt_content.strip().split("\n\n"):
+        lines = block.strip().split("\n")
+        if len(lines) < 3:
+            continue
+        cue_text = " ".join(lines[2:]).strip()
+        if cue_text:
+            cue_texts.append(cue_text)
+
+    return " ".join(cue_texts)
 
 
 def save_srt_file(srt_content: str, audio_file_path: str) -> str:
@@ -208,7 +239,9 @@ def transcribe_audio_file(
     Transcribe a single audio file.
 
     Uses local OpenAI Whisper library by default (generates SRT files).
-    Falls back to Docker API if local whisper is unavailable (text only, no SRT).
+    Falls back to the Whisper Docker API sidecar if local whisper is
+    unavailable — that sidecar also generates SRT when ``save_srt`` is True,
+    via its ``output=srt`` query parameter.
 
     SRT files are saved to: .../downloads/{date}/{video_id}/srt_files/
 
@@ -218,12 +251,15 @@ def transcribe_audio_file(
         timeout: Request timeout in seconds for API calls (default: 3600 = 1 hour)
         use_local_whisper: Use local Whisper library (default: True)
         model_size: Whisper model size for local transcription (default: "tiny")
+        save_srt: Generate and save an SRT file (default: True). Honored by
+            both the local Whisper path and the Docker API fallback.
 
     Returns:
         Dict with transcription results:
         - success: Boolean indicating if transcription succeeded
         - text: Transcribed text (if successful)
-        - srt_path: Path to SRT file in video's srt_files folder (if using local whisper)
+        - srt_path: Path to SRT file in video's srt_files folder (None if
+          save_srt is False, or no speech was found)
         - file_path: Original audio file path
         - error: Error message (if failed)
         - duration: Time taken for transcription
@@ -243,7 +279,7 @@ def transcribe_audio_file(
         # If local whisper failed, log and fall back to API
         logging.warning("Local Whisper failed, falling back to Docker API")
 
-    # Fall back to Docker API (text only, no SRT)
+    # Fall back to the Whisper Docker API sidecar (ahmetoner/whisper-asr-webservice).
     if not os.path.exists(audio_file_path):
         logging.error(f"Audio file not found: {audio_file_path}")
         return {"success": False, "file_path": audio_file_path, "error": "Audio file not found"}
@@ -251,31 +287,57 @@ def transcribe_audio_file(
     logging.info(f"Transcribing with Docker API: {audio_file_path}")
     start_time = time.time()
 
+    # The ASR webservice expects task/language/output as URL query params
+    # (FastAPI Query), with the audio itself as the multipart body.
+    output_format = "srt" if save_srt else "txt"
+
     try:
         # Open audio file in binary mode
         with open(audio_file_path, "rb") as audio_file:
             # Prepare multipart form data
             files = {"audio_file": (os.path.basename(audio_file_path), audio_file, "audio/webm")}
-            data = {"task": "transcribe", "language": language, "output": "txt"}
+            params = {"task": "transcribe", "language": language, "output": output_format}
 
             # Send POST request to Whisper API
-            response = requests.post(f"{WHISPER_API_URL}/asr", files=files, data=data, timeout=timeout)
+            response = requests.post(f"{WHISPER_API_URL}/asr", files=files, params=params, timeout=timeout)
 
             # Check response status
             response.raise_for_status()
 
-            # API returns plain text
-            transcription_text = response.text
-
             duration = time.time() - start_time
+            body = response.text or ""
 
-            logging.info(f"Transcription completed in {duration:.2f}s (Docker API fallback - no SRT)")
-            logging.warning("Docker API used - no SRT file generated (only text)")
+            if output_format == "srt":
+                # A non-empty body without any cue separator is not SRT —
+                # the sidecar would have returned an error status for a real
+                # failure, so this indicates an unexpected response shape.
+                if body.strip() and "-->" not in body:
+                    raise ValueError("Whisper API returned non-SRT content for output=srt")
+
+                srt_path = save_srt_file(body, audio_file_path)
+                transcription_text = extract_text_from_srt(body)
+
+                logging.info(f"Transcription completed in {duration:.2f}s (Docker API, SRT)")
+
+                return {
+                    "success": True,
+                    "file_path": audio_file_path,
+                    "text": transcription_text,
+                    "srt_path": srt_path,
+                    "duration": duration,
+                    "language": language,
+                }
+
+            # Text-only request: the API returns plain text.
+            transcription_text = body.strip()
+
+            logging.info(f"Transcription completed in {duration:.2f}s (Docker API, text-only)")
 
             return {
                 "success": True,
                 "file_path": audio_file_path,
                 "text": transcription_text,
+                "srt_path": None,
                 "duration": duration,
                 "language": language,
             }

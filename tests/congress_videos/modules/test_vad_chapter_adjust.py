@@ -209,6 +209,34 @@ class TestTrimChapterSilenceWithVad:
         assert chapters[0]["end_time"] == "00:25:00,000"
         assert chapters[1]["start_time"] == "00:30:00,000"
 
+    def test_video_archived_to_nas_leaves_all_chapters_unchanged(self, mocker, caplog):
+        """No local media, but a NAS archive marker exists → same best-effort
+        passthrough as the plain not-found case, with a different log message
+        pointing at nas_fetch."""
+        mocker.patch(
+            "congress_videos.modules.vad_helpers._find_source_video",
+            return_value=None,
+        )
+        is_archived = mocker.patch(
+            "congress_videos.modules.vad_helpers.nas_fetch.is_archived_elsewhere",
+            return_value=True,
+        )
+        detect = mocker.patch("congress_videos.modules.vad_helpers.detect_speech_bounds")
+        scored = _scored(
+            [
+                {"start_time": "00:10:00,000", "end_time": "00:25:00,000"},
+            ]
+        )
+
+        with caplog.at_level("WARNING"):
+            result = trim_chapter_silence_with_vad(scored, target_date="2025-10-08")
+
+        detect.assert_not_called()
+        is_archived.assert_called_once()
+        chapters = result["videos"][0]["scored_chapters"]
+        assert chapters[0]["start_time"] == "00:10:00,000"
+        assert any("nas_fetch" in record.message for record in caplog.records)
+
     def test_extract_audio_failure_best_effort_no_raise(self, mocker):
         """extract_audio_wav raising → chapter unchanged, task does not fail."""
         mocker.patch(

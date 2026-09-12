@@ -1,13 +1,16 @@
 """Standalone static contracts; deliberately bypass application pytest fixtures."""
 
+import importlib.util
 import os
 import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -119,6 +122,37 @@ class DevContract(unittest.TestCase):
         for name in ("webserver", "init", "app-init"):
             self.assertNotIn("youtube_tokens", " ".join(services[name].get("volumes", [])))
 
+    def test_nas_archive_mount_is_read_only_scheduler_only_and_disabled_by_default(self):
+        services = self.compose()["services"]
+        scheduler = services["scheduler"]
+        self.assertIn(
+            "${NAS_SYNC_HOST_DIR:?Required}:/opt/airflow/nas_sync:ro",
+            scheduler["volumes"],
+        )
+        for name, service in services.items():
+            if name == "scheduler":
+                continue
+            self.assertNotIn("nas_sync", " ".join(service.get("volumes", [])))
+
+        env = scheduler["environment"]
+        # Empty NAS_ARCHIVE_HOST is the safe default: nas_archive_dag.py treats it as disabled.
+        self.assertEqual(env["NAS_ARCHIVE_HOST"], "${NAS_ARCHIVE_HOST:-}")
+        self.assertEqual(env["NAS_ARCHIVE_PORT"], "${NAS_ARCHIVE_PORT:-22}")
+        self.assertEqual(env["NAS_ARCHIVE_USER"], "${NAS_ARCHIVE_USER:-}")
+        self.assertEqual(env["NAS_ARCHIVE_ROOT"], "${NAS_ARCHIVE_ROOT:-}")
+        self.assertEqual(env["NAS_ARCHIVE_MIN_AGE_DAYS"], "${NAS_ARCHIVE_MIN_AGE_DAYS:-14}")
+        self.assertEqual(env["NAS_ARCHIVE_SSH_DIR"], "/opt/airflow/nas_sync")
+        # nas_fetch fallback source (read-only legacy production tree); empty disables it.
+        self.assertEqual(env["NAS_FETCH_LEGACY_ROOT"], "${NAS_FETCH_LEGACY_ROOT:-}")
+        # nas_reclaim DAG's local-material grace window (ArchiveSettings.reclaim_grace_hours).
+        self.assertEqual(env["NAS_RECLAIM_GRACE_HOURS"], "${NAS_RECLAIM_GRACE_HOURS:-12}")
+
+    def test_youtube_download_proxy_has_safe_default(self):
+        env = self.compose()["services"]["scheduler"]["environment"]
+        # Empty YOUTUBE_DOWNLOAD_PROXY is the safe default: youtube_downloader.py
+        # downloads direct when unset.
+        self.assertEqual(env["YOUTUBE_DOWNLOAD_PROXY"], "${YOUTUBE_DOWNLOAD_PROXY:-}")
+
     def test_external_api_keys_come_from_environment_with_safe_default(self):
         env = self.compose()["services"]["scheduler"]["environment"]
         for key in ("OPENAI_API_KEY", "YOUTUBE_API_KEY", "REAP_API_KEY", "PIKZELS_API_KEY"):
@@ -146,8 +180,12 @@ class DevContract(unittest.TestCase):
             self.assertEqual(env["AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION"], "true")
             self.assertEqual(env["AIRFLOW__CORE__LOAD_EXAMPLES"], "false")
             self.assertEqual(env["POSTGRES_HOST"], "application")
-            self.assertEqual(env["POSTGRES_USER"], "airflow_dev")
-            self.assertEqual(env["POSTGRES_SCHEMA"], "development")
+            # Business schema and runtime role are parameterized per VPS project
+            # (issue #203 follow-up): POSTGRES_RUNTIME_ROLE/POSTGRES_SCHEMA are
+            # rendered into release.env by the infra side, defaulting to the DEV
+            # pair (airflow_dev/development) when unset.
+            self.assertEqual(env["POSTGRES_USER"], "${POSTGRES_RUNTIME_ROLE:-airflow_dev}")
+            self.assertEqual(env["POSTGRES_SCHEMA"], "${POSTGRES_SCHEMA:-development}")
             for key in (
                 "GITHUB_TOKEN",
                 "_PIP_ADDITIONAL_REQUIREMENTS",
@@ -189,8 +227,15 @@ class DevContract(unittest.TestCase):
         self.assertLessEqual(
             read, provided, f"app_init.py reads variables app-init never sets: {sorted(read - provided)}"
         )
-        # A fresh database needs the base schema files before migration 004 can run.
-        for base in ("congressional_videos_schema.sql", "youtube_chapters_schema.sql", "grant_permissions.sql"):
+        # A fresh DEV database needs the base schema files before migration 004 can run;
+        # PROD gets grant_permissions_production.sql instead (never the base schema files —
+        # see app_init._bootstrap).
+        for base in (
+            "congressional_videos_schema.sql",
+            "youtube_chapters_schema.sql",
+            "grant_permissions.sql",
+            "grant_permissions_production.sql",
+        ):
             self.assertIn(base, script)
             self.assertTrue((HERE.parent.parent / "congress_videos/sql" / base).exists(), base)
 
@@ -255,6 +300,125 @@ class DevContract(unittest.TestCase):
         self.assertIn("--require-hashes", text)
         self.assertNotIn("COPY . ", text)
         self.assertNotIn("pip install --upgrade", text)
+
+
+@unittest.skipUnless(importlib.util.find_spec("airflow"), "airflow is not installed (controller run)")
+class AppInitProvisioningSelectionTests(unittest.TestCase):
+    """Pure-function coverage for app_init._resolve_provisioning — no DB involved."""
+
+    @classmethod
+    def setUpClass(cls):
+        if str(HERE) not in sys.path:
+            sys.path.insert(0, str(HERE))
+        import app_init  # local import: only meaningful once HERE is on sys.path
+
+        cls.app_init = app_init
+
+    def test_development_pair_selects_dev_grant_script_and_owner(self):
+        with mock.patch.dict(os.environ, {"POSTGRES_SCHEMA": "development", "POSTGRES_USER": "airflow_dev"}):
+            schema, owner_role, grant_script = self.app_init._resolve_provisioning()
+        self.assertEqual(schema, "development")
+        self.assertEqual(owner_role, "airflow_dev")
+        self.assertEqual(grant_script.name, "grant_permissions.sql")
+
+    def test_production_pair_selects_production_grant_script_and_owner(self):
+        with mock.patch.dict(os.environ, {"POSTGRES_SCHEMA": "production", "POSTGRES_USER": "airflow_prod"}):
+            schema, owner_role, grant_script = self.app_init._resolve_provisioning()
+        self.assertEqual(schema, "production")
+        self.assertEqual(owner_role, "airflow_prod")
+        self.assertEqual(grant_script.name, "grant_permissions_production.sql")
+
+    def test_mismatched_schema_and_role_fails_fast(self):
+        env = {"POSTGRES_SCHEMA": "production", "POSTGRES_USER": "airflow_dev"}
+        with mock.patch.dict(os.environ, env), self.assertRaises(ValueError):
+            self.app_init._resolve_provisioning()
+
+    def test_unknown_schema_fails_fast(self):
+        env = {"POSTGRES_SCHEMA": "staging", "POSTGRES_USER": "airflow_dev"}
+        with mock.patch.dict(os.environ, env), self.assertRaises(ValueError):
+            self.app_init._resolve_provisioning()
+
+    def test_unknown_role_for_known_schema_fails_fast(self):
+        env = {"POSTGRES_SCHEMA": "development", "POSTGRES_USER": "airflow_prod"}
+        with mock.patch.dict(os.environ, env), self.assertRaises(ValueError):
+            self.app_init._resolve_provisioning()
+
+
+class _FakeCursor:
+    """Minimal cursor double: .execute() is a no-op, .fetchone() reports the
+    sentinel-table check's answer — enough to drive _table_exists without a DB."""
+
+    def __init__(self, sentinel_present: bool):
+        self._sentinel_present = sentinel_present
+
+    def execute(self, *args, **kwargs):
+        pass
+
+    def fetchone(self):
+        return (self._sentinel_present,)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+class _FakeConn:
+    def __init__(self, sentinel_present: bool):
+        self._cursor = _FakeCursor(sentinel_present)
+
+    def cursor(self):
+        return self._cursor
+
+    def commit(self):
+        pass
+
+
+@unittest.skipUnless(importlib.util.find_spec("psycopg2"), "psycopg2 is not installed (controller run)")
+class AppInitBootstrapEmptySchemaTests(unittest.TestCase):
+    """_bootstrap fails fast for a non-development schema with no restored data — no real DB.
+
+    The sentinel-table check (_table_exists) is mocked via _FakeConn/_FakeCursor; grants,
+    password statements, and schema creation all go through the same no-op fake cursor, so
+    nothing here ever reaches a real Postgres connection."""
+
+    @classmethod
+    def setUpClass(cls):
+        if str(HERE) not in sys.path:
+            sys.path.insert(0, str(HERE))
+        import app_init  # local import: only meaningful once HERE is on sys.path
+
+        cls.app_init = app_init
+
+    def test_production_with_no_restored_data_fails_fast_before_migrations(self):
+        grant_script = HERE.parent.parent / "congress_videos" / "sql" / "grant_permissions_production.sql"
+        conn = _FakeConn(sentinel_present=False)
+        env = {"POSTGRES_PASSWORD": "test-runtime-pw", "MIGRATION_POSTGRES_PASSWORD": "test-migration-pw"}
+        with mock.patch.dict(os.environ, env), self.assertRaises(self.app_init.EmptyRestoredSchemaError) as ctx:
+            self.app_init._bootstrap(conn, "production", "airflow_prod", grant_script)
+        message = str(ctx.exception)
+        self.assertIn("production", message)
+        self.assertIn("import-db", message)
+
+    def test_production_with_restored_data_does_not_raise(self):
+        grant_script = HERE.parent.parent / "congress_videos" / "sql" / "grant_permissions_production.sql"
+        conn = _FakeConn(sentinel_present=True)
+        env = {"POSTGRES_PASSWORD": "test-runtime-pw", "MIGRATION_POSTGRES_PASSWORD": "test-migration-pw"}
+        with mock.patch.dict(os.environ, env):
+            applied = self.app_init._bootstrap(conn, "production", "airflow_prod", grant_script)
+        self.assertEqual(applied, 0)  # BASE_SCHEMA_FILES never runs for a non-development schema
+
+
+class VerifyGateContractTests(unittest.TestCase):
+    """verify.py keeps DEV strict by default and only relaxes on an explicit false."""
+
+    def test_verify_reads_the_business_paused_gate_with_a_strict_default(self):
+        text = (HERE / "verify.py").read_text()
+        self.assertIn('EXPECT_BUSINESS_PAUSED_ENV = "DEPLOY_EXPECT_BUSINESS_PAUSED"', text)
+        self.assertIn('os.environ.get(EXPECT_BUSINESS_PAUSED_ENV, "true")', text)
+        self.assertIn("if expect_business_paused():", text)
+        self.assertIn('"An active business DAG is unpaused"', text)
 
 
 if __name__ == "__main__":
