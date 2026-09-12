@@ -269,6 +269,29 @@ class TestSplitLongChaptersWithVad:
         assert children[0]["end_time"] == children[1]["start_time"]
         detect.assert_not_called()  # no audio attempted without a source video
 
+    def test_video_archived_to_nas_still_splits_arithmetically(self, mocker, caplog):
+        """No local media, but a NAS archive marker exists → same arithmetic
+        fallback as the plain not-found case, with a different log message
+        pointing at nas_fetch."""
+        mocker.patch("congress_videos.modules.vad_helpers._find_source_video", return_value=None)
+        is_archived = mocker.patch(
+            "congress_videos.modules.vad_helpers.nas_fetch.is_archived_elsewhere",
+            return_value=True,
+        )
+        detect = mocker.patch("congress_videos.modules.vad_helpers.detect_speech_segments")
+        chapter = {"title": "T", "start_time": "00:00:00,000", "end_time": "01:04:00,000"}
+        scored = _scored([chapter])
+
+        with caplog.at_level("WARNING"):
+            result = split_long_chapters_with_vad(scored, target_date="2025-10-08")
+        children = result["videos"][0]["scored_chapters"]
+
+        assert len(children) == 2
+        assert children[0]["end_time"] == children[1]["start_time"]
+        detect.assert_not_called()
+        is_archived.assert_called_once()
+        assert any("nas_fetch" in record.message for record in caplog.records)
+
     def test_extract_audio_failure_falls_back_to_arithmetic(self, mocker):
         mocker.patch("congress_videos.modules.vad_helpers._find_source_video", return_value="/data/vid-1/s.mp4")
         mocker.patch(

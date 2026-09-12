@@ -33,9 +33,13 @@ import tempfile
 from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
+from airflow.exceptions import AirflowException
 from airflow.operators.python import PythonOperator
 
-from congress_videos.config.paths import DOWNLOADS_DIR
+from congress_videos.config.paths import PROJECT_DATA_DIR
+from congress_videos.config.youtube_channels import DEFAULT_CHANNEL
+from congress_videos.modules import nas_fetch
+from congress_videos.modules.nas_archive import ArchiveSettings
 from congress_videos.modules.sidecar_api_error import SidecarApiError
 from congress_videos.modules.trim_proposals import (
     _upsert_proposals,
@@ -45,34 +49,16 @@ from congress_videos.modules.trim_proposals_api import (
     api_yamnet_fn,
     check_yamnet_api_health,
 )
-from congress_videos.modules.vad_helpers import extract_audio_wav
+from congress_videos.modules.vad_helpers import (
+    _find_source_video_any_date,
+    extract_audio_wav,
+)
 from utils.postgres_helpers import PostgresConnection
 
 logger = logging.getLogger(__name__)
 
 DAG_ID = "trim_proposals"
 DEFAULT_LIMIT = 10
-
-_MEDIA_SUFFIXES = (".mp4", ".mkv", ".webm")
-
-
-def _find_source_video_any_date(video_id: str) -> str | None:
-    """Locate the source media for a video without knowing its session date.
-
-    ``speaker_turns`` carries no recording date, so scan every date folder
-    under ``DOWNLOADS_DIR`` for ``downloads/{date}/{video_id}/`` and return the
-    first real media file (mirrors ``reap_clip_preparer``'s date-less lookup).
-    """
-    if not os.path.isdir(DOWNLOADS_DIR):
-        return None
-    for date_folder in sorted(os.listdir(DOWNLOADS_DIR)):
-        video_dir = os.path.join(DOWNLOADS_DIR, date_folder, str(video_id))
-        if not os.path.isdir(video_dir):
-            continue
-        for filename in sorted(os.listdir(video_dir)):
-            if filename.endswith(_MEDIA_SUFFIXES) and "chapter_video" not in filename:
-                return os.path.join(video_dir, filename)
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -177,12 +163,29 @@ def run_turn_proposals(
 
     video_path = _find_source_video_any_date(video_id)
     if not video_path:
-        logger.warning(
-            "turn %s: no source video for video_id=%s — skipping",
-            turn_id,
-            video_id,
-        )
-        return {"status": "skipped_no_video", "turn_id": turn_id, "proposals": 0}
+        try:
+            fetch_result = nas_fetch.ensure_local_video(
+                PROJECT_DATA_DIR, DEFAULT_CHANNEL, str(video_id), ArchiveSettings.from_env()
+            )
+        except nas_fetch.NasFetchError as exc:
+            logger.error("turn %s: NAS fetch failed for video_id=%s — %s", turn_id, video_id, exc)
+            return {"status": "fetch_failed", "turn_id": turn_id, "proposals": 0}
+        if fetch_result["status"] == "in_progress":
+            logger.info(
+                "turn %s: NAS fetch for video_id=%s already in progress — deferring to the next run",
+                turn_id,
+                video_id,
+            )
+            return {"status": "fetch_in_progress", "turn_id": turn_id, "proposals": 0}
+        if fetch_result["status"] == "fetched":
+            video_path = _find_source_video_any_date(video_id)
+        if not video_path:
+            logger.warning(
+                "turn %s: no source video for video_id=%s — skipping",
+                turn_id,
+                video_id,
+            )
+            return {"status": "skipped_no_video", "turn_id": turn_id, "proposals": 0}
 
     wav_path = os.path.join(tempfile.gettempdir(), f"trim_proposals_{video_id}_{turn_id}.wav")
     try:
@@ -223,6 +226,7 @@ def _process_task(**context) -> dict:
     turns = context["ti"].xcom_pull(key="turns", task_ids="select_turns") or []
     check_yamnet_api_health()  # fail fast on outage before DB/WAV work
     summary = {"processed": 0, "skipped": 0, "proposals": 0}
+    fetch_failed_count = 0
     pg = PostgresConnection()
     proposals_table = pg.get_qualified_table("speaker_turn_trim_proposals")
     with pg.get_connection() as conn:
@@ -244,8 +248,18 @@ def _process_task(**context) -> dict:
                     summary["processed"] += 1
                     summary["proposals"] += result["proposals"]
                 else:
+                    if result["status"] == "fetch_failed":
+                        fetch_failed_count += 1
                     summary["skipped"] += 1
         conn.commit()
+
+    # design D6: every requested turn failing its NAS fetch fails the task
+    # loudly rather than silently reporting a summary of skips.
+    if turns and fetch_failed_count == len(turns):
+        raise AirflowException(
+            f"trim_proposals: NAS fetch failed for all {len(turns)} turn(s) this run — NAS/rsync appears unavailable"
+        )
+
     logger.info("Trim-proposal run summary: %s", summary)
     return summary
 
@@ -281,5 +295,7 @@ with dag:
     generate_proposals_task = PythonOperator(
         task_id="generate_proposals",
         python_callable=_process_task,
+        # No ceiling today; a hung ffmpeg/rsync would hold the slot forever (D7).
+        execution_timeout=timedelta(hours=6),
     )
     select_turns_task >> generate_proposals_task

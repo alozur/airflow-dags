@@ -126,17 +126,53 @@ class TestRunChapterTurns:
             "end_time": "00:40:00,000",
         }
 
-    def test_missing_source_video_skips(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("ensure_result", "raises", "expected_status"),
+        [
+            ({"status": "unavailable", "reason": "not_on_nas"}, False, "skipped_no_video"),
+            ({"status": "in_progress"}, False, "fetch_in_progress"),
+            (None, True, "fetch_failed"),
+        ],
+        ids=["not_on_nas-skips", "in_progress-defers", "rsync_error-fails"],
+    )
+    def test_missing_source_video_degrades_per_fetch_outcome(self, monkeypatch, ensure_result, raises, expected_status):
+        """design D6a: unavailable/in_progress degrade to skip/defer; NasFetchError degrades to fetch_failed."""
         mod = _fresh()
         monkeypatch.setattr(mod, "_find_source_video", lambda *a, **k: None)
+
+        def fake_ensure(*a, **k):
+            if raises:
+                raise mod.nas_fetch.NasFetchError("rsync failed")
+            return ensure_result
+
+        monkeypatch.setattr(mod.nas_fetch, "ensure_local_video", fake_ensure)
         detect = MagicMock()
         monkeypatch.setattr(mod, "detect_turns", detect)
 
         result = mod.run_chapter_turns(self._chapter())
 
-        assert result["status"] == "skipped_no_video"
+        assert result["status"] == expected_status
         assert result["turns"] == []
         detect.assert_not_called()
+
+    def test_missing_source_video_fetched_from_nas_proceeds(self, monkeypatch):
+        """ensure_local_video reports fetched -> the locator re-runs and processing proceeds."""
+        mod = _fresh()
+        locator = MagicMock(side_effect=[None, "/v/src.mp4"])
+        monkeypatch.setattr(mod, "_find_source_video", locator)
+        monkeypatch.setattr(mod.nas_fetch, "ensure_local_video", lambda *a, **k: {"status": "fetched"})
+        monkeypatch.setattr(mod, "extract_audio_wav", lambda *a, **k: "/tmp/c.wav")
+        monkeypatch.setattr(mod, "find_srt_for_chapter", lambda *a, **k: None)
+        turns = [object()]
+        detect = MagicMock(return_value=turns)
+        monkeypatch.setattr(mod, "detect_turns", detect)
+
+        result = mod.run_chapter_turns(self._chapter())
+
+        assert result["status"] == "ok"
+        assert result["turns"] == turns
+        assert locator.call_count == 2
+        detect.assert_called_once()
 
     def test_happy_path_returns_detected_turns(self, monkeypatch):
         """Detection returns the Turn list directly — no upsert, no cursor."""
@@ -380,16 +416,19 @@ class TestProcessTask:
         ti.xcom_pull.return_value = chapters
         return {"ti": ti}
 
-    def test_aggregates_and_skips_failures(self, monkeypatch):
-        mod = _fresh()
+    def _make_pg_mock(self, monkeypatch, mod):
         conn = MagicMock()
         conn.cursor.return_value.__enter__.return_value = MagicMock()
         pg = MagicMock()
         pg.get_qualified_table.side_effect = lambda t: f"development.{t}"
         pg.get_connection.return_value.__enter__.return_value = conn
         monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
-        # Probe must be no-op so this data-error test is not affected by infra check
         monkeypatch.setattr(mod, "check_diarize_api_health", lambda **k: None)
+        return conn
+
+    def test_aggregates_and_skips_failures(self, monkeypatch):
+        mod = _fresh()
+        conn = self._make_pg_mock(monkeypatch, mod)
         monkeypatch.setattr(mod, "_upsert_turns", MagicMock())
 
         def fake_run(chapter, **k):
@@ -406,6 +445,36 @@ class TestProcessTask:
 
         assert summary == {"processed": 1, "skipped": 2, "turns": 3}
         conn.commit.assert_called_once()
+
+    def test_all_chapters_fetch_failed_raises(self, monkeypatch):
+        """design D6: every requested chapter failing its NAS fetch fails the task."""
+        mod = _fresh()
+        self._make_pg_mock(monkeypatch, mod)
+        monkeypatch.setattr(
+            mod,
+            "run_chapter_turns",
+            lambda chapter, **k: {"status": "fetch_failed", "chapter_id": chapter["chapter_id"], "turns": []},
+        )
+
+        with pytest.raises(mod.AirflowException):
+            mod._process_task(**self._ti_with([{"chapter_id": 1}, {"chapter_id": 2}]))
+
+    def test_mixed_fetch_failed_and_ok_does_not_raise(self, monkeypatch):
+        """A batch with at least one ok chapter stays outside the D6 all-failed rule."""
+        mod = _fresh()
+        self._make_pg_mock(monkeypatch, mod)
+        monkeypatch.setattr(mod, "_upsert_turns", MagicMock())
+
+        def fake_run(chapter, **k):
+            if chapter["chapter_id"] == 1:
+                return {"status": "fetch_failed", "chapter_id": 1, "turns": []}
+            return {"status": "ok", "chapter_id": 2, "turns": [object()]}
+
+        monkeypatch.setattr(mod, "run_chapter_turns", fake_run)
+
+        summary = mod._process_task(**self._ti_with([{"chapter_id": 1}, {"chapter_id": 2}]))
+
+        assert summary == {"processed": 1, "skipped": 1, "turns": 1}
 
 
 class TestProcessTaskConnectionScope:

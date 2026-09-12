@@ -165,19 +165,80 @@ class TestTranscribeAudioFile:
         result = transcribe_audio_file(missing, use_local_whisper=False)
         assert_error_result(result, "not found")
 
-    def test_requests_post_success(self, mocker, temp_audio_file):
+    def test_requests_post_sends_srt_output_as_query_param(self, mocker, temp_audio_file):
+        """save_srt=True (the default) must request output=srt via params, not data."""
+        mock_post = mocker.patch("utils.whisper_helpers.requests.post")
+        mock_response = MagicMock()
+        mock_response.text = "1\n00:00:00,000 --> 00:00:01,000\nHola mundo\n"
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        result = transcribe_audio_file(str(temp_audio_file), language="es", use_local_whisper=False)
+
+        assert_success_result(result)
+        mock_post.assert_called_once()
+        _, kwargs = mock_post.call_args
+        assert kwargs["params"] == {"task": "transcribe", "language": "es", "output": "srt"}
+        assert "data" not in kwargs
+        assert "audio_file" in kwargs["files"]
+
+    def test_requests_post_sends_txt_output_when_save_srt_false(self, mocker, temp_audio_file):
         mock_post = mocker.patch("utils.whisper_helpers.requests.post")
         mock_response = MagicMock()
         mock_response.text = "Transcribed text content"
         mock_response.raise_for_status.return_value = None
         mock_post.return_value = mock_response
 
-        result = transcribe_audio_file(str(temp_audio_file), use_local_whisper=False)
+        result = transcribe_audio_file(str(temp_audio_file), use_local_whisper=False, save_srt=False)
 
         assert_success_result(result)
         assert result["text"] == "Transcribed text content"
         assert result["file_path"] == str(temp_audio_file)
-        mock_post.assert_called_once()
+        assert result["srt_path"] is None
+        _, kwargs = mock_post.call_args
+        assert kwargs["params"]["output"] == "txt"
+
+    def test_srt_body_is_written_and_srt_path_returned(self, mocker, temp_audio_file):
+        mock_post = mocker.patch("utils.whisper_helpers.requests.post")
+        mock_response = MagicMock()
+        mock_response.text = "1\n00:00:00,000 --> 00:00:02,000\nHola\n\n2\n00:00:02,000 --> 00:00:04,000\nmundo\n"
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        result = transcribe_audio_file(str(temp_audio_file), use_local_whisper=False, save_srt=True)
+
+        assert_success_result(result)
+        assert result["srt_path"] is not None
+        saved = Path(result["srt_path"])
+        assert saved.exists()
+        assert saved.suffix == ".srt"
+        assert saved.read_text(encoding="utf-8") == mock_response.text
+        assert result["text"] == "Hola mundo"
+
+    def test_empty_srt_body_yields_no_cues_without_crashing(self, mocker, temp_audio_file):
+        mock_post = mocker.patch("utils.whisper_helpers.requests.post")
+        mock_response = MagicMock()
+        mock_response.text = ""
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        result = transcribe_audio_file(str(temp_audio_file), use_local_whisper=False, save_srt=True)
+
+        assert_success_result(result)
+        assert result["text"] == ""
+        assert result["srt_path"] is not None
+        assert Path(result["srt_path"]).read_text(encoding="utf-8") == ""
+
+    def test_non_srt_body_returns_clear_error(self, mocker, temp_audio_file):
+        mock_post = mocker.patch("utils.whisper_helpers.requests.post")
+        mock_response = MagicMock()
+        mock_response.text = "just plain text, no cue separators"
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        result = transcribe_audio_file(str(temp_audio_file), use_local_whisper=False, save_srt=True)
+
+        assert_error_result(result, "non-SRT")
 
     def test_requests_timeout_returns_error(self, mocker, temp_audio_file):
         mock_post = mocker.patch("utils.whisper_helpers.requests.post")
@@ -198,7 +259,7 @@ class TestTranscribeAudioFile:
     def test_result_contains_duration_field(self, mocker, temp_audio_file):
         mock_post = mocker.patch("utils.whisper_helpers.requests.post")
         mock_response = MagicMock()
-        mock_response.text = "content"
+        mock_response.text = "1\n00:00:00,000 --> 00:00:01,000\ncontent\n"
         mock_response.raise_for_status.return_value = None
         mock_post.return_value = mock_response
 

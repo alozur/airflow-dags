@@ -1,29 +1,38 @@
-"""Provision the empty isolated application database once per release.
+"""Provision the isolated application database once per release.
 
 Step A runs as the bootstrap superuser (`airflow`, the same legacy role name
-grant_permissions.sql expects on the NAS): create the `development` schema,
-apply the idempotent role/grant script verbatim, set the runtime and migration
-role passwords from the container variables Compose interpolates
+grant_permissions*.sql expects on the NAS): create the target schema
+(POSTGRES_SCHEMA — `development` or `production`), apply the idempotent
+role/grant script matching that schema verbatim, set the runtime and
+migration role passwords from the container variables Compose interpolates
 (POSTGRES_PASSWORD, MIGRATION_POSTGRES_PASSWORD), create the base tables from
-the schema files on a fresh database only, and hand every object in the schema
-to the runtime owner role so migrations (which SET ROLE to it) can alter them.
-Step B runs the same migration functions the NAS `run_migrations` DAG uses,
-called directly (never via a DAG run) so verify.py's zero-DAG-run assertion
-keeps holding. Prints counts only, never credential values.
+the schema files on a fresh DEV database only (production always arrives
+pre-populated via pg_restore from the NAS — see _bootstrap), and hand every
+object in the schema to the runtime owner role so migrations (which SET ROLE
+to it) can alter them. Step B runs the same migration functions the NAS
+`run_migrations` DAG uses, called directly (never via a DAG run) so verify.py's
+zero-DAG-run assertion keeps holding. Prints counts only, never credential
+values.
 """
 
 import os
 import sys
 from pathlib import Path
 
-import psycopg2
-from psycopg2 import sql
+# psycopg2 is imported lazily inside the functions that talk to the database: the
+# static contract tests (deploy/vps-dev/test_contract.py) import this module from
+# the Ansible controller, which has no database driver, to exercise the pure
+# provisioning selection logic.
 
 DAGS_REPO_PATH = Path(os.getenv("AIRFLOW__CORE__DAGS_FOLDER", "/opt/airflow/dags/repo"))
 SQL_DIR = DAGS_REPO_PATH / "congress_videos/sql"
-GRANT_SCRIPT = SQL_DIR / "grant_permissions.sql"
-SCHEMA = "development"
-OWNER_ROLE = "airflow_dev"
+# One grant script per schema (congress_videos/sql/) — kept in lockstep with
+# utils/migrations_dag.py's SCHEMA_OWNER_ROLES, the single source of truth for
+# which runtime role owns which schema.
+GRANT_SCRIPTS = {
+    "development": "grant_permissions.sql",
+    "production": "grant_permissions_production.sql",
+}
 MIGRATION_ROLE = "airflow_migrations"
 # The base schema files are later snapshots, not the pristine initial state: they
 # are applied only while their sentinel table is absent, and the views the
@@ -34,6 +43,18 @@ BASE_SCHEMA_FILES = (
     ("congressional_videos_schema.sql", "congressional_sessions", ("uploadable_videos",)),
     ("youtube_chapters_schema.sql", "video_chapters", ("uploadable_chapters",)),
 )
+# Sentinel used to detect an empty (not yet restored) non-development schema —
+# video_chapters is common to every schema (the youtube_chapters family),
+# unlike congressional_sessions, which is development/legacy-only and absent
+# from production even after a successful restore.
+RESTORED_SCHEMA_SENTINEL = "video_chapters"
+
+
+class EmptyRestoredSchemaError(RuntimeError):
+    """A non-development schema has no data yet — the infra restore playbook
+    (pg_restore from the NAS) must run before app-init/migrations do."""
+
+
 # Sequences owned by a column follow their table and refuse a direct ALTER.
 OWNERSHIP_HANDOFF = """
 DO $$
@@ -61,6 +82,8 @@ END $$;
 
 
 def _superuser_connection():
+    import psycopg2
+
     return psycopg2.connect(
         host=os.environ["POSTGRES_HOST"],
         port=os.environ["POSTGRES_PORT"],
@@ -70,38 +93,89 @@ def _superuser_connection():
     )
 
 
+def _resolve_provisioning():
+    """Validate POSTGRES_SCHEMA/POSTGRES_USER and return (schema, owner_role, grant_script).
+
+    POSTGRES_USER carries the compose-resolved runtime role (release.env's
+    POSTGRES_RUNTIME_ROLE, interpolated by compose.yml into POSTGRES_USER) —
+    the same variable utils/postgres_helpers.py's PostgresConnection reads for
+    its own connection. Validated against utils/migrations_dag.py's
+    SCHEMA_OWNER_ROLES, the single source of truth for which role owns which
+    schema, instead of introducing a second mapping here. Fails fast (before
+    any DB connection is opened) on any other pairing.
+    """
+    from utils.migrations_dag import SCHEMA_OWNER_ROLES
+
+    schema = os.environ["POSTGRES_SCHEMA"]
+    runtime_role = os.environ["POSTGRES_USER"]
+    expected_role = SCHEMA_OWNER_ROLES.get(schema)
+    if expected_role is None or runtime_role != expected_role:
+        allowed = ", ".join(f"{s}={r}" for s, r in SCHEMA_OWNER_ROLES.items())
+        raise ValueError(
+            f"Unsupported POSTGRES_SCHEMA/POSTGRES_USER combination: {schema!r}/{runtime_role!r}. "
+            f"Allowed pairs (schema=runtime role): {allowed}."
+        )
+    return schema, expected_role, SQL_DIR / GRANT_SCRIPTS[schema]
+
+
 def _set_role_password(cur, role, password):
+    from psycopg2 import sql
+
     # ALTER ROLE ... PASSWORD does not accept bind parameters; sql.Literal quotes
     # the value safely without ever formatting it into a log line.
     cur.execute(sql.SQL("ALTER ROLE {} PASSWORD {}").format(sql.Identifier(role), sql.Literal(password)))
 
 
-def _table_exists(cur, table):
-    cur.execute("SELECT to_regclass(%s) IS NOT NULL", (f"{SCHEMA}.{table}",))
+def _table_exists(cur, schema, table):
+    cur.execute("SELECT to_regclass(%s) IS NOT NULL", (f"{schema}.{table}",))
     return cur.fetchone()[0]
 
 
-def _bootstrap(conn):
-    """Schema, roles, passwords, base tables on a fresh database, ownership handoff."""
+def _bootstrap(conn, schema, owner_role, grant_script):
+    """Schema, roles, passwords, base tables on a fresh DEV database, ownership handoff.
+
+    BASE_SCHEMA_FILES only ever runs for `development`: congressional_videos_schema.sql
+    and youtube_chapters_schema.sql hardcode `development.<table>` internally (they are
+    not schema-parameterized SQL), so applying them against any other schema would create
+    tables in `development` instead of the intended target. Every other schema (`production`)
+    never runs them either — it always arrives already populated via pg_restore from the
+    NAS, so its sentinel table is expected to exist before app-init ever runs; if it does
+    not, that restore never happened and _bootstrap fails fast here (EmptyRestoredSchemaError)
+    rather than let migrations run against an empty schema.
+    """
+    from psycopg2 import sql
+
     applied = 0
     with conn.cursor() as cur:
-        cur.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(SCHEMA)))
-        cur.execute(GRANT_SCRIPT.read_text())
-        _set_role_password(cur, OWNER_ROLE, os.environ["POSTGRES_PASSWORD"])
+        cur.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema)))
+        cur.execute(grant_script.read_text())
+        _set_role_password(cur, owner_role, os.environ["POSTGRES_PASSWORD"])
         _set_role_password(cur, MIGRATION_ROLE, os.environ["MIGRATION_POSTGRES_PASSWORD"])
     conn.commit()
-    for filename, sentinel, migration_owned_views in BASE_SCHEMA_FILES:
-        # One transaction per base file: a failure leaves the sentinel absent, so a retry re-applies it.
+    if schema == "development":
+        for filename, sentinel, migration_owned_views in BASE_SCHEMA_FILES:
+            # One transaction per base file: a failure leaves the sentinel absent, so a retry re-applies it.
+            with conn.cursor() as cur:
+                if _table_exists(cur, schema, sentinel):
+                    continue
+                cur.execute((SQL_DIR / filename).read_text())
+                for view in migration_owned_views:
+                    cur.execute(
+                        sql.SQL("DROP VIEW IF EXISTS {}.{}").format(sql.Identifier(schema), sql.Identifier(view))
+                    )
+            conn.commit()
+            applied += 1
+    else:
         with conn.cursor() as cur:
-            if _table_exists(cur, sentinel):
-                continue
-            cur.execute((SQL_DIR / filename).read_text())
-            for view in migration_owned_views:
-                cur.execute(sql.SQL("DROP VIEW IF EXISTS {}.{}").format(sql.Identifier(SCHEMA), sql.Identifier(view)))
-        conn.commit()
-        applied += 1
+            restored = _table_exists(cur, schema, RESTORED_SCHEMA_SENTINEL)
+        if not restored:
+            raise EmptyRestoredSchemaError(
+                f"schema {schema!r} is empty: {schema} data is bootstrapped by the infra "
+                f"'import-db' playbook (pg_restore from the NAS); run it first, then re-run "
+                f"app-init/apply"
+            )
     with conn.cursor() as cur:
-        cur.execute(OWNERSHIP_HANDOFF, {"schema": SCHEMA, "owner": OWNER_ROLE})
+        cur.execute(OWNERSHIP_HANDOFF, {"schema": schema, "owner": owner_role})
     conn.commit()
     return applied
 
@@ -131,9 +205,10 @@ def _report(base_files_applied):
 
 def main():
     sys.path.insert(0, str(DAGS_REPO_PATH))
+    schema, owner_role, grant_script = _resolve_provisioning()
     conn = _superuser_connection()
     try:
-        base_files_applied = _bootstrap(conn)
+        base_files_applied = _bootstrap(conn, schema, owner_role, grant_script)
     finally:
         conn.close()
     _apply_migrations()

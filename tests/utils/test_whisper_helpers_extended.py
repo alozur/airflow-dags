@@ -141,16 +141,13 @@ class TestTranscribeAudioFileWithLocalWhisper:
 class TestTranscribeAudioFileFallback:
     def test_use_local_whisper_false_uses_api_path(self, tmp_path, mocker):
         """use_local_whisper=False goes straight to Docker API path."""
-        audio_file = tmp_path / "test.webm"
+        audio_file = tmp_path / "downloads" / "2025-05-22" / "v1" / "audio_chunks" / "test.webm"
+        audio_file.parent.mkdir(parents=True)
         audio_file.write_bytes(b"\x00" * 16)
 
         mock_post = mocker.patch("utils.whisper_helpers.requests.post")
         mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "text": "Hello from API",
-            "segments": [],
-            "duration": 1.0,
-        }
+        mock_response.text = "1\n00:00:00,000 --> 00:00:01,000\nHello from API\n"
         mock_response.raise_for_status.return_value = None
         mock_post.return_value = mock_response
 
@@ -160,10 +157,13 @@ class TestTranscribeAudioFileFallback:
 
         assert result["success"] is True
         mock_post.assert_called_once()
+        _, kwargs = mock_post.call_args
+        assert kwargs["params"]["output"] == "srt"
 
     def test_local_whisper_fails_falls_back_to_api(self, tmp_path, mocker):
         """When local whisper fails, falls back to Docker API."""
-        audio_file = tmp_path / "test.webm"
+        audio_file = tmp_path / "downloads" / "2025-05-22" / "v1" / "audio_chunks" / "test.webm"
+        audio_file.parent.mkdir(parents=True)
         audio_file.write_bytes(b"\x00" * 16)
 
         mocker.patch(
@@ -173,11 +173,7 @@ class TestTranscribeAudioFileFallback:
 
         mock_post = mocker.patch("utils.whisper_helpers.requests.post")
         mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "text": "From API fallback",
-            "segments": [],
-            "duration": 2.0,
-        }
+        mock_response.text = "1\n00:00:00,000 --> 00:00:01,000\nFrom API fallback\n"
         mock_response.raise_for_status.return_value = None
         mock_post.return_value = mock_response
 

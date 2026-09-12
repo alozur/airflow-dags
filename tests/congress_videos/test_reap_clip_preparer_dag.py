@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import pytest
 from airflow.exceptions import AirflowException
@@ -251,6 +251,13 @@ class TestQueryTurns:
 
 
 class TestStageAndPretrimClip:
+    @pytest.fixture(autouse=True)
+    def _stub_nas_fetch(self, mocker):
+        """Every existing test's output_path is a placeholder never created on
+        disk; stub the NAS auto-fetch hook (design D1) to a no-op so those
+        tests are unaffected. Tests below override this to exercise the hook."""
+        return mocker.patch("congress_videos.reap_clip_preparer_dag.nas_fetch.ensure_local_video")
+
     def _params(self, **overrides):
         base = {"max_turns": 0, "pre_trim_threshold_secs": 480, "pre_trim_target_secs": 360}
         return {**base, **overrides}
@@ -404,6 +411,70 @@ class TestStageAndPretrimClip:
         ti = _make_ti()
         with pytest.raises(AirflowException, match="blocked"):
             _stage_and_pretrim_clip(ti, params=self._params(pre_trim_threshold_secs=1900))
+
+        mock_db.insert_video_short.assert_called_once()
+        assert ti.xcom_store.get("clips_queued") == 1
+
+    def test_missing_source_calls_nas_fetch_before_probe(self, mocker):
+        """design D1: a missing local source triggers ensure_local_video for
+        the turn's video_id, then the probe/insert proceed normally."""
+        from congress_videos.reap_clip_preparer_dag import DEFAULT_CHANNEL, PROJECT_DATA_DIR, _stage_and_pretrim_clip
+
+        fetch = mocker.patch("congress_videos.reap_clip_preparer_dag.nas_fetch.ensure_local_video")
+        self._patch_ffprobe(mocker, [240.0])
+        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        turn = self._default_turn()
+        mock_db.get_turn_videos_for_shorts.return_value = [turn]
+        mock_db.insert_video_short.return_value = 1
+
+        ti = _make_ti()
+        _stage_and_pretrim_clip(ti, params=self._params())
+
+        fetch.assert_called_once_with(PROJECT_DATA_DIR, DEFAULT_CHANNEL, "vid-abc", ANY)
+        mock_db.insert_video_short.assert_called_once()
+
+    def test_source_present_locally_skips_nas_fetch(self, mocker):
+        """design D1: no unnecessary fetch when the source is already local."""
+        from congress_videos.reap_clip_preparer_dag import _stage_and_pretrim_clip
+
+        fetch = mocker.patch("congress_videos.reap_clip_preparer_dag.nas_fetch.ensure_local_video")
+        mocker.patch("congress_videos.reap_clip_preparer_dag.os.path.exists", return_value=True)
+        self._patch_ffprobe(mocker, [240.0])
+        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
+        mock_db_cls.return_value.get_turn_videos_for_shorts.return_value = [self._default_turn()]
+
+        ti = _make_ti()
+        _stage_and_pretrim_clip(ti, params=self._params())
+
+        fetch.assert_not_called()
+
+    @pytest.mark.parametrize("error_kind", ["malformed_id", "fetch_failure"])
+    def test_nas_fetch_failure_preserves_block_contract_without_crashing(self, mocker, error_kind):
+        """design D6a / threat matrix: a fetch failure (malformed video_id or
+        rsync/verify error) never crashes the batch — the still-missing file
+        blocks only that turn, exactly like today's ffprobe-failure contract,
+        and the next turn in the batch still succeeds."""
+        from congress_videos.modules import nas_fetch
+        from congress_videos.reap_clip_preparer_dag import _stage_and_pretrim_clip
+
+        error = ValueError("bad id") if error_kind == "malformed_id" else nas_fetch.NasFetchError("rsync failed")
+        mocker.patch("congress_videos.reap_clip_preparer_dag.nas_fetch.ensure_local_video", side_effect=error)
+        blocked = self._default_turn(turn_id=1, output_path="/data/output/turn1.mp4", video_id="vid001")
+        good = self._default_turn(turn_id=2, output_path="/data/output/turn2.mp4", video_id="vid002")
+        # turn 1's probe fails (still missing after the fetch failure), turn 2's succeeds.
+        mocker.patch(
+            "subprocess.run",
+            side_effect=[Exception("still missing"), MagicMock(stdout=json.dumps({"format": {"duration": "240.0"}}))],
+        )
+        mock_db_cls = mocker.patch("congress_videos.reap_clip_preparer_dag.CongressionalVideoDB")
+        mock_db = mock_db_cls.return_value
+        mock_db.get_turn_videos_for_shorts.return_value = [blocked, good]
+        mock_db.insert_video_short.return_value = 1
+
+        ti = _make_ti()
+        with pytest.raises(AirflowException, match="blocked"):
+            _stage_and_pretrim_clip(ti, params=self._params())
 
         mock_db.insert_video_short.assert_called_once()
         assert ti.xcom_store.get("clips_queued") == 1
