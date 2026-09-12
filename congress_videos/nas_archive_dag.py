@@ -6,22 +6,10 @@ prunes the freed space from the VPS's local disk. Disabled by default
 (``NAS_ARCHIVE_HOST`` empty) so a stack without an archive target behaves
 exactly as before this DAG existed.
 
-A video is "complete" when every chapter and every speaker-turn video
-derived from it has cleared the YouTube upload+verification pipeline (or was
-permanently abandoned — see ``congress_videos/modules/post_upload_verification.py``)
-and nothing about it remains pending in ``uploadable_chapters``/``uploadable_turns``.
-The schema has no explicit "this turn will never be materialized" flag, so
-"every speaker-turn video uploaded AND verified" cannot be expressed as a
-literal join without risking candidates that never converge (a turn with no
-``speaker_turn_videos`` row could mean "not yet materialized" OR "filtered
-out and will never be materialized", e.g. ``is_procedural``/low
-``interest_score``). ``_query_complete_video_ids`` therefore uses the
-documented, safe fallback: chapters exist, nothing for the video is pending
-in ``uploadable_chapters``/``uploadable_turns``, and no uploaded chapter or
-turn is missing ``upload_verified_at``. A video with zero speaker turns (or
-zero uploadable chapters left) satisfies this vacuously, so it qualifies once
-its files clear the age gate — matching the "zero turns but old enough"
-case.
+A video is "complete" when nothing about it remains pending in the upload
+pipeline — see ``congress_videos/modules/nas_completeness.complete_video_ids``
+(moved there so ``nas_reclaim`` can reuse the identical gate) for the exact
+completeness definition and its documented fallback rationale.
 
 Only the single registered channel (``DEFAULT_CHANNEL``) is archived today:
 the schema carries no per-video ``channel_slug`` column, so there is no way
@@ -75,8 +63,8 @@ from congress_videos.config.paths import PROJECT_DATA_DIR
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL
 from congress_videos.modules import nas_archive
 from congress_videos.modules.nas_archive import ArchiveSettings
+from congress_videos.modules.nas_completeness import complete_video_ids
 from utils.env_loader import load_env_if_local
-from utils.postgres_helpers import PostgresConnection
 
 load_env_if_local()
 
@@ -108,61 +96,6 @@ _ITEMIZE_LOG_LINE_CAP = 50
 # ---------------------------------------------------------------------------
 
 
-def _query_complete_video_ids(pool_limit: int) -> list[str]:
-    """Return source video_ids with nothing left pending in the upload pipeline.
-
-    Relies on:
-      - ``video_chapters``       (congress_videos/sql/production_schema.sql:62)
-      - ``uploadable_chapters``  (congress_videos/sql/production_schema.sql:475,
-        migration 038 — relevance_score >= 2 AND NOT is_upload_abandoned gate)
-      - ``uploadable_turns``     (congress_videos/sql/migrations/049_freshness_bucket_turn_publish_order.sql:52,
-        cumulative view lineage documented at production_schema.sql:565)
-      - ``speaker_turns``        (congress_videos/sql/production_schema.sql:265)
-      - ``speaker_turn_videos``  (congress_videos/sql/production_schema.sql:320)
-
-    Ordered oldest-chapter-first (FIFO) so the batch drains the longest-idle
-    videos first.
-    """
-    pg = PostgresConnection()
-    chapters_table = pg.get_qualified_table("video_chapters")
-    uploadable_chapters_table = pg.get_qualified_table("uploadable_chapters")
-    uploadable_turns_table = pg.get_qualified_table("uploadable_turns")
-    turn_videos_table = pg.get_qualified_table("speaker_turn_videos")
-    turns_table = pg.get_qualified_table("speaker_turns")
-
-    query = f"""
-        SELECT vc.video_id
-        FROM {chapters_table} vc
-        WHERE NOT EXISTS (
-            SELECT 1 FROM {uploadable_chapters_table} uc WHERE uc.video_id = vc.video_id
-        )
-        AND NOT EXISTS (
-            SELECT 1 FROM {chapters_table} vc2
-            WHERE vc2.video_id = vc.video_id
-              AND vc2.is_uploaded_to_youtube = TRUE
-              AND vc2.upload_verified_at IS NULL
-        )
-        AND NOT EXISTS (
-            SELECT 1 FROM {uploadable_turns_table} ut WHERE ut.video_id = vc.video_id
-        )
-        AND NOT EXISTS (
-            SELECT 1
-            FROM {turn_videos_table} stv
-            JOIN {turns_table} st ON st.turn_id = stv.turn_id
-            JOIN {chapters_table} vc3 ON vc3.chapter_id = st.chapter_id
-            WHERE vc3.video_id = vc.video_id
-              AND stv.is_uploaded_to_youtube = TRUE
-              AND stv.upload_verified_at IS NULL
-        )
-        GROUP BY vc.video_id
-        ORDER BY MIN(vc.created_at) ASC
-        LIMIT %s
-    """
-    with pg.get_connection() as conn, conn.cursor() as cur:
-        cur.execute(query, (pool_limit,))
-        return [row["video_id"] for row in cur.fetchall()]
-
-
 def _newest_mtime(paths: list[Path]) -> float | None:
     """Return the newest mtime (epoch seconds) across every file under ``paths``."""
     newest: float | None = None
@@ -190,7 +123,7 @@ def select_archive_candidates(settings: ArchiveSettings, project_dir: Path, chan
     early-sync/late-prune rationale).
     """
     min_age = timedelta(days=settings.min_age_days)
-    pool_video_ids = _query_complete_video_ids(NAS_ARCHIVE_SYNC_BATCH * _CANDIDATE_POOL_MULTIPLIER)
+    pool_video_ids = complete_video_ids(NAS_ARCHIVE_SYNC_BATCH * _CANDIDATE_POOL_MULTIPLIER)
     logger.info("nas_archive: %d complete video_id candidate(s) from DB", len(pool_video_ids))
 
     candidates: list[dict] = []
@@ -399,21 +332,41 @@ def archive_one_video(
 
 
 def _run_archive_videos(**context) -> dict:
+    """Sync/verify/prune every candidate; one failing video isolates, not aborts.
+
+    Mirrors ``nas_fetch_dag._run_fetch_videos``'s per-video isolation: a
+    failure in ``archive_one_video`` (remote mkdir, rsync, or verification —
+    see its docstring) is caught, logged, and recorded in
+    ``summary["failed"]`` instead of failing the whole task, so one broken
+    video no longer aborts every other already-eligible candidate in the
+    batch. Only when EVERY requested candidate failed does the task raise,
+    naming the failed video_ids — an empty candidate list is a normal,
+    successful no-op run, not an all-failed one.
+    """
     settings = ArchiveSettings.from_env()
     candidates = context["ti"].xcom_pull(key="candidates", task_ids="select_candidates") or []
     project_dir = Path(PROJECT_DATA_DIR)
 
-    summary = {"synced": 0, "pruned": 0, "bytes_freed": 0}
+    summary = {"synced": 0, "pruned": 0, "bytes_freed": 0, "failed": []}
     for candidate in candidates:
-        result = archive_one_video(
-            settings, project_dir, candidate["channel_slug"], candidate["video_id"], candidate["prune"]
-        )
+        video_id = candidate["video_id"]
+        try:
+            result = archive_one_video(settings, project_dir, candidate["channel_slug"], video_id, candidate["prune"])
+        except (AirflowException, FileNotFoundError, ValueError, subprocess.SubprocessError, OSError) as exc:
+            logger.error("nas_archive: video_id=%s aborted — %s", video_id, exc)
+            summary["failed"].append({"video_id": video_id, "error": str(exc)})
+            continue
         summary["synced"] += 1
         if result["pruned"]:
             summary["pruned"] += 1
         summary["bytes_freed"] += result["bytes_freed"]
 
     logger.info("nas_archive: run complete — %s", summary)
+
+    if summary["failed"] and summary["synced"] == 0:
+        failures = "; ".join(f"video_id={f['video_id']}: {f['error']}" for f in summary["failed"])
+        raise AirflowException(f"nas_archive: all {len(summary['failed'])} candidate video(s) failed — {failures}")
+
     return summary
 
 

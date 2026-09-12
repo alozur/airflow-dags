@@ -136,6 +136,11 @@ services:
       # read-only pre-migration production tree, only consulted when a video
       # has no local .nas_archived.json marker. Empty disables the fallback.
       NAS_FETCH_LEGACY_ROOT: ${NAS_FETCH_LEGACY_ROOT:-}
+      # nas_reclaim DAG (congress_videos/nas_reclaim_dag.py): minimum local
+      # age (hours) of a video's newest fetched/refreshed mtime before it may
+      # be reclaimed, even after the NAS-verified and DB-completeness gates
+      # both pass (ArchiveSettings.reclaim_grace_hours).
+      NAS_RECLAIM_GRACE_HOURS: ${NAS_RECLAIM_GRACE_HOURS:-12}
       # utils/youtube_downloader.py: HTTP proxy carrying only yt-dlp/pytubefix
       # media downloads (never the YouTube Data API or OAuth clients). Empty
       # disables it, so a stack without a configured proxy downloads direct.

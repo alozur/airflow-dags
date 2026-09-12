@@ -31,8 +31,8 @@ Compose is rendered from three `--env-file` sources supplied by Ansible:
   `UI_UPSTREAM`, `EGRESS_SUBNET`, `EGRESS_INTERNAL`, `YOUTUBE_TOKENS_HOST_DIR`,
   `NAS_SYNC_HOST_DIR`, `NAS_ARCHIVE_HOST`, `NAS_ARCHIVE_PORT`,
   `NAS_ARCHIVE_USER`, `NAS_ARCHIVE_ROOT`, `NAS_ARCHIVE_MIN_AGE_DAYS`,
-  `NAS_FETCH_LEGACY_ROOT`, `YOUTUBE_DOWNLOAD_PROXY`, `POSTGRES_SCHEMA`,
-  `POSTGRES_RUNTIME_ROLE`).
+  `NAS_FETCH_LEGACY_ROOT`, `NAS_RECLAIM_GRACE_HOURS`, `YOUTUBE_DOWNLOAD_PROXY`,
+  `POSTGRES_SCHEMA`, `POSTGRES_RUNTIME_ROLE`).
 
 `POSTGRES_SCHEMA` and `POSTGRES_RUNTIME_ROLE` select the business schema per
 VPS project: `development`/`airflow_dev` (the default when unset, matching
@@ -125,6 +125,14 @@ run syncs it into `NAS_ARCHIVE_ROOT` (and prunes it locally once it ages past
 the retention window). The legacy copy is never touched, so the video exists
 under both roots until the legacy tree is merged or retired. This is the
 intended hand-over, not a leak.
+
+`NAS_RECLAIM_GRACE_HOURS` (`release.env`, default 12) configures
+`ArchiveSettings.reclaim_grace_hours` — the minimum local age, in hours, of a
+video's newest fetched/refreshed media mtime before the `nas_reclaim` DAG may
+delete it, even once its NAS copy is verified and the DB-completeness query
+reports nothing pending for it. This is a separate, tighter window than
+`NAS_ARCHIVE_MIN_AGE_DAYS`: `nas_reclaim` re-prunes ephemeral local material
+every 4 hours, so its grace window is measured in hours, not days.
 
 `YOUTUBE_DOWNLOAD_PROXY` (`release.env`) points `utils/youtube_downloader.py`
 at an HTTP proxy for every yt-dlp/pytubefix media download — the path

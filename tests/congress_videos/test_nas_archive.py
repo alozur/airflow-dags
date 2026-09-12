@@ -139,6 +139,25 @@ class TestArchiveSettingsFromEnv:
         with pytest.raises(ValueError, match="NAS_FETCH_LEGACY_ROOT"):
             ArchiveSettings.from_env(env)
 
+    def test_reclaim_grace_hours_defaults_to_12(self):
+        settings = ArchiveSettings.from_env({})
+        assert settings.reclaim_grace_hours == 12
+
+    def test_reclaim_grace_hours_parses_from_env(self, tmp_path):
+        ssh_dir = _make_ssh_dir(tmp_path)
+        env = _enabled_env(ssh_dir)
+        env["NAS_RECLAIM_GRACE_HOURS"] = "6"
+        settings = ArchiveSettings.from_env(env)
+        assert settings.reclaim_grace_hours == 6
+
+    def test_invalid_reclaim_grace_hours_raises(self):
+        with pytest.raises(ValueError, match="NAS_RECLAIM_GRACE_HOURS"):
+            ArchiveSettings.from_env({"NAS_RECLAIM_GRACE_HOURS": "abc"})
+
+    def test_negative_reclaim_grace_hours_raises(self):
+        with pytest.raises(ValueError, match=">= 0"):
+            ArchiveSettings.from_env({"NAS_RECLAIM_GRACE_HOURS": "-1"})
+
 
 # ---------------------------------------------------------------------------
 # validate_video_id
