@@ -13,32 +13,41 @@ design D3) lives in ``congress_videos.modules.nas_reclaim`` and is tested
 directly by ``test_nas_reclaim.py``. This DAG module is thin wiring only:
 resolve settings/paths, pull a DB candidate pool, aggregate outcomes.
 
-Pipeline (this commit)::
+Pipeline::
 
     check_enabled       (ShortCircuitOperator: NAS_ARCHIVE_HOST + ssh keys present)
       → select_candidates  (DB completeness pool -> advisory gate pre-check, batch-capped)
+          → reclaim_videos (per candidate, INSIDE the fetch lock: re-check every
+                             gate -> verify_synced -> prune_local -> write marker)
 
-The deletion step (``reclaim_videos``, re-checking every gate inside the
-fetch lock immediately before ``verify_synced``/``prune_local``) is wired in
-a follow-up commit — this commit only wires enablement and DB-backed
-candidate selection, so no candidate is ever reclaimed yet.
+``reclaim_one_video`` never raises for a normal gate outcome: ``"blocked"``
+(grace window / no local material / unverified) and ``"skipped"`` (fetch
+lock busy) are expected non-deletions, not failures — a run where every
+candidate is blocked/skipped is a quiet, successful no-op. Only an
+unexpected error (e.g. ``prune_local``'s protected-path guard) is isolated
+per candidate into ``summary["failed"]``; only when EVERY candidate errors
+does the task raise, naming the failed video_ids (mirrors ``nas_archive``'s
+all-failed rule, design D6).
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from airflow import DAG
+from airflow.exceptions import AirflowException
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
 from congress_videos.config.paths import PROJECT_DATA_DIR
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL
 from congress_videos.modules.nas_archive import ArchiveSettings
 from congress_videos.modules.nas_completeness import complete_video_ids
-from congress_videos.modules.nas_reclaim import select_reclaim_candidates
+from congress_videos.modules.nas_fetch import RSYNC_TIMEOUT_SECS
+from congress_videos.modules.nas_reclaim import reclaim_one_video, select_reclaim_candidates
 from utils.env_loader import load_env_if_local
 
 load_env_if_local()
@@ -55,6 +64,10 @@ NAS_RECLAIM_BATCH = int(os.getenv("NAS_RECLAIM_BATCH", "3"))
 # filters each id through the grace-window and lock-free gates in Python,
 # after the SQL completeness filter, so not every DB candidate clears.
 _CANDIDATE_POOL_MULTIPLIER = 5
+
+# congress_videos.modules.nas_fetch.RSYNC_TIMEOUT_SECS is the single source of
+# truth for the subprocess ceiling (design D7).
+_RSYNC_TIMEOUT_SECS = RSYNC_TIMEOUT_SECS
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +110,49 @@ def _run_select_candidates(**context) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# reclaim_videos — per-candidate isolation + all-failed raise
+# ---------------------------------------------------------------------------
+
+
+def _subprocess_runner(command: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(command, capture_output=True, text=True, timeout=_RSYNC_TIMEOUT_SECS, check=False)
+
+
+def _run_reclaim_videos(**context) -> dict:
+    """Reclaim every candidate; one failing video isolates, not aborts (see module docstring)."""
+    settings = ArchiveSettings.from_env()
+    candidates = context["ti"].xcom_pull(key="candidates", task_ids="select_candidates") or []
+    project_dir = Path(PROJECT_DATA_DIR)
+    now = datetime.now(UTC)
+
+    summary = {"reclaimed": 0, "blocked": 0, "skipped": 0, "failed": []}
+    for candidate in candidates:
+        video_id = candidate["video_id"]
+        try:
+            result = reclaim_one_video(
+                settings,
+                project_dir,
+                candidate["channel_slug"],
+                video_id,
+                runner=_subprocess_runner,
+                now=now,
+            )
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            logger.error("nas_reclaim: video_id=%s aborted — %s", video_id, exc)
+            summary["failed"].append({"video_id": video_id, "error": str(exc)})
+            continue
+        summary[result["status"]] += 1
+
+    logger.info("nas_reclaim: run complete — %s", summary)
+
+    if candidates and len(summary["failed"]) == len(candidates):
+        failures = "; ".join(f"video_id={f['video_id']}: {f['error']}" for f in summary["failed"])
+        raise AirflowException(f"nas_reclaim: all {len(summary['failed'])} candidate video(s) failed — {failures}")
+
+    return summary
+
+
+# ---------------------------------------------------------------------------
 # DAG definition
 # ---------------------------------------------------------------------------
 
@@ -131,4 +187,9 @@ with DAG(
         python_callable=_run_select_candidates,
     )
 
-    t0_check_enabled >> t1_select_candidates
+    t2_reclaim_videos = PythonOperator(
+        task_id="reclaim_videos",
+        python_callable=_run_reclaim_videos,
+    )
+
+    t0_check_enabled >> t1_select_candidates >> t2_reclaim_videos

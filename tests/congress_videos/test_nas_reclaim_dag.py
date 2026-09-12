@@ -11,6 +11,9 @@ from __future__ import annotations
 import importlib
 import sys
 
+import pytest
+from airflow.exceptions import AirflowException
+
 MODULE = "congress_videos.nas_reclaim_dag"
 
 
@@ -20,12 +23,27 @@ def _fresh():
     return importlib.import_module(MODULE)
 
 
+def _reclaim_by_id(results_by_id: dict):
+    """Fake ``reclaim_one_video`` returning a pre-built result keyed by video_id."""
+
+    def _fake(settings, project_dir, channel_slug, video_id, *, runner, now):
+        return results_by_id[video_id]
+
+    return _fake
+
+
 def _fake_settings(monkeypatch, mod) -> None:
     monkeypatch.setattr(mod, "ArchiveSettings", type("S", (), {"from_env": staticmethod(lambda: object())}))
 
 
+TWO_CANDIDATES = [
+    {"channel_slug": "congreso-es-tv", "video_id": "abc123"},
+    {"channel_slug": "congreso-es-tv", "video_id": "def456"},
+]
+
+
 # ---------------------------------------------------------------------------
-# DAG load + task graph shape (this commit: check_enabled -> select_candidates)
+# DAG load + task graph shape
 # ---------------------------------------------------------------------------
 
 
@@ -57,13 +75,15 @@ class TestDagLoads:
     def test_expected_task_ids_present(self):
         mod = _fresh()
         task_ids = {t.task_id for t in mod.dag.tasks}
-        assert task_ids == {"check_enabled", "select_candidates"}
+        assert task_ids == {"check_enabled", "select_candidates", "reclaim_videos"}
 
     def test_task_order(self):
         mod = _fresh()
         check_enabled = mod.dag.get_task("check_enabled")
         select_candidates = mod.dag.get_task("select_candidates")
+        reclaim_videos = mod.dag.get_task("reclaim_videos")
         assert select_candidates.task_id in check_enabled.downstream_task_ids
+        assert reclaim_videos.task_id in select_candidates.downstream_task_ids
 
 
 # ---------------------------------------------------------------------------
@@ -132,3 +152,92 @@ class TestRunSelectCandidates:
             == result
             == [{"channel_slug": "congreso-es-tv", "video_id": "abc123"}]
         )
+
+
+# ---------------------------------------------------------------------------
+# _run_reclaim_videos — per-candidate isolation + all-failed raise
+# ---------------------------------------------------------------------------
+
+
+class TestRunReclaimVideos:
+    def test_aggregates_summary_by_status(self, monkeypatch, mock_task_instance):
+        mod = _fresh()
+        candidates = [*TWO_CANDIDATES, {"channel_slug": "congreso-es-tv", "video_id": "ghi789"}]
+        mock_task_instance.xcom_store["candidates"] = candidates
+        _fake_settings(monkeypatch, mod)
+
+        results_by_id = {
+            "abc123": {"status": "reclaimed", "video_id": "abc123", "removed": ["video.mp4"]},
+            "def456": {"status": "blocked", "reason": "grace_window", "video_id": "def456"},
+            "ghi789": {"status": "skipped", "reason": "locked", "video_id": "ghi789"},
+        }
+        monkeypatch.setattr(mod, "reclaim_one_video", _reclaim_by_id(results_by_id))
+
+        summary = mod._run_reclaim_videos(ti=mock_task_instance)
+
+        assert summary == {"reclaimed": 1, "blocked": 1, "skipped": 1, "failed": []}
+
+    def test_isolates_per_candidate_failure(self, monkeypatch, mock_task_instance):
+        """One candidate raising an unexpected error (e.g. prune_local's
+        protected-path guard) must not abort the batch — it is recorded in
+        summary["failed"] and the rest still proceed."""
+        mod = _fresh()
+        mock_task_instance.xcom_store["candidates"] = TWO_CANDIDATES
+        _fake_settings(monkeypatch, mod)
+
+        def _reclaim_one_video(settings, project_dir, channel_slug, video_id, *, runner, now):
+            if video_id == "abc123":
+                raise ValueError("refusing to prune protected path")
+            return {"status": "reclaimed", "video_id": video_id, "removed": ["video.mp4"]}
+
+        monkeypatch.setattr(mod, "reclaim_one_video", _reclaim_one_video)
+
+        summary = mod._run_reclaim_videos(ti=mock_task_instance)
+
+        assert summary == {
+            "reclaimed": 1,
+            "blocked": 0,
+            "skipped": 0,
+            "failed": [{"video_id": "abc123", "error": "refusing to prune protected path"}],
+        }
+
+    def test_raises_when_every_candidate_fails(self, monkeypatch, mock_task_instance):
+        mod = _fresh()
+        mock_task_instance.xcom_store["candidates"] = TWO_CANDIDATES
+        _fake_settings(monkeypatch, mod)
+
+        def _reclaim_one_video(settings, project_dir, channel_slug, video_id, *, runner, now):
+            raise ValueError(f"refusing to prune protected path for video_id={video_id}")
+
+        monkeypatch.setattr(mod, "reclaim_one_video", _reclaim_one_video)
+
+        with pytest.raises(AirflowException, match="all 2 candidate video"):
+            mod._run_reclaim_videos(ti=mock_task_instance)
+
+    def test_all_blocked_or_skipped_is_not_treated_as_all_failed(self, monkeypatch, mock_task_instance):
+        """Blocked/skipped are normal gate outcomes, not errors — a run where
+        every candidate is blocked or skipped is a quiet, successful no-op,
+        not an all-failed run (mirrors D6: only real failures raise)."""
+        mod = _fresh()
+        mock_task_instance.xcom_store["candidates"] = TWO_CANDIDATES
+        _fake_settings(monkeypatch, mod)
+
+        results_by_id = {
+            "abc123": {"status": "blocked", "reason": "grace_window", "video_id": "abc123"},
+            "def456": {"status": "skipped", "reason": "locked", "video_id": "def456"},
+        }
+        monkeypatch.setattr(mod, "reclaim_one_video", _reclaim_by_id(results_by_id))
+
+        summary = mod._run_reclaim_videos(ti=mock_task_instance)
+
+        assert summary == {"reclaimed": 0, "blocked": 1, "skipped": 1, "failed": []}
+
+    def test_succeeds_with_empty_candidate_list(self, monkeypatch, mock_task_instance):
+        """Zero candidates must not be misclassified as an all-failed run."""
+        mod = _fresh()
+        mock_task_instance.xcom_store["candidates"] = []
+        _fake_settings(monkeypatch, mod)
+
+        summary = mod._run_reclaim_videos(ti=mock_task_instance)
+
+        assert summary == {"reclaimed": 0, "blocked": 0, "skipped": 0, "failed": []}
