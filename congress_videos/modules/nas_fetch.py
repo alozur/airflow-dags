@@ -46,15 +46,19 @@ Fetch-back lifecycle:
                             ``(project_dir, channel_slug, video_id)`` can ask
                             "is this video's source on the NAS only?" without
                             importing ``nas_archive`` directly.
+8. ``fetch_lock``        — non-blocking per-video lock guarding the fetch
+                            lifecycle (design D2).
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import shlex
-from datetime import datetime
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 from congress_videos.modules import nas_archive
@@ -136,12 +140,16 @@ def read_marker(project_dir: Path | str, channel_slug: str, video_id: str) -> di
 
     Raises:
         FileNotFoundError: If no marker exists for this video.
-        ValueError: If the marker is not valid JSON, or its ``synced`` field
-            is missing, empty, not a list, or contains an unsafe path (see
-            :func:`_validate_safe_relative_dir` — a bare ``video_id`` entry,
-            from the legacy top-level scheme, is accepted alongside
-            ``downloads/...`` and ``{channel_slug}/...``).
+        ValueError: If ``video_id``/``channel_slug`` fail format checks (see
+            :func:`nas_archive.validate_video_id` /
+            :func:`_validate_channel_slug`), or if the marker is not valid
+            JSON, or its ``synced`` field is missing, empty, not a list, or
+            contains an unsafe path (see :func:`_validate_safe_relative_dir`
+            — a bare ``video_id`` entry, from the legacy top-level scheme, is
+            accepted alongside ``downloads/...`` and ``{channel_slug}/...``).
     """
+    nas_archive.validate_video_id(video_id)
+    _validate_channel_slug(channel_slug)
     marker_path = Path(project_dir) / channel_slug / video_id / _MARKER_NAME
     if not marker_path.is_file():
         raise FileNotFoundError(
@@ -175,6 +183,8 @@ def remove_marker(project_dir: Path | str, channel_slug: str, video_id: str) -> 
         ``True`` if a marker was removed, ``False`` if none existed (a no-op,
         not an error — the caller may be re-running after a partial fetch).
     """
+    nas_archive.validate_video_id(video_id)
+    _validate_channel_slug(channel_slug)
     marker_path = Path(project_dir) / channel_slug / video_id / _MARKER_NAME
     if not marker_path.is_file():
         return False
@@ -452,3 +462,119 @@ def refresh_retention(paths: list[Path | str], now: datetime) -> list[Path]:
             touched.append(media_file)
 
     return touched
+
+
+# ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+
+class NasFetchError(RuntimeError):
+    """Raised by ``ensure_local_video`` on rsync/verification failure (module can't raise ``AirflowException``, D1)."""
+
+
+class FetchLockBusy(RuntimeError):
+    """Raised by :func:`fetch_lock` when another holder's lock is not stale (design D2)."""
+
+
+# ---------------------------------------------------------------------------
+# Per-video fetch lock (design D2)
+# ---------------------------------------------------------------------------
+
+_LOCK_NAME = ".nas_fetch.lock"
+
+# A lock older than this (seconds) is abandoned and may be broken/reacquired.
+_STALE_LOCK_AFTER_SECS = RSYNC_TIMEOUT_SECS + 600
+
+
+def _lock_path(project_dir: Path | str, channel_slug: str, video_id: str) -> Path:
+    # Validated here too (fetch_lock is public) — before its mkdir/open.
+    nas_archive.validate_video_id(video_id)
+    _validate_channel_slug(channel_slug)
+    # Same directory as .nas_archived.json — survives nas_archive.prune_local.
+    return Path(project_dir) / channel_slug / video_id / _LOCK_NAME
+
+
+def _write_lock_payload(lock_path: Path, token: str, now: datetime) -> None:
+    """Atomically create ``lock_path`` with a JSON payload, or raise ``FileExistsError``."""
+    payload = json.dumps({"token": token, "pid": os.getpid(), "acquired_at": now.isoformat()})
+    fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    try:
+        os.write(fd, payload.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def _read_lock_payload(lock_path: Path) -> dict | None:
+    try:
+        return json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _lock_is_stale(lock_path: Path, now: datetime, stale_after: float) -> bool:
+    payload = _read_lock_payload(lock_path)
+    if payload is None:
+        return True  # unreadable/corrupt lock: never wedge a video forever
+    try:
+        acquired_at = datetime.fromisoformat(payload["acquired_at"])
+    except (KeyError, TypeError, ValueError):
+        return True
+    return (now - acquired_at).total_seconds() > stale_after
+
+
+@contextlib.contextmanager
+def fetch_lock(
+    project_dir: Path | str,
+    channel_slug: str,
+    video_id: str,
+    *,
+    now: datetime | None = None,
+    stale_after: float = _STALE_LOCK_AFTER_SECS,
+):
+    """Acquire an atomic, non-blocking per-video lock at ``{channel_slug}/{video_id}/.nas_fetch.lock`` (design D2).
+
+    Never waits: a fresh contended lock raises immediately. Release (normal
+    exit or exception) unlinks the file only if its on-disk ``token`` matches.
+
+    Args:
+        now:         Instant for staleness/``acquired_at``, default ``datetime.now(UTC)``.
+        stale_after: Seconds before a lock is abandoned, default ``RSYNC_TIMEOUT_SECS + 600``.
+
+    Yields:
+        The ``uuid4`` token this holder acquired the lock with.
+
+    Raises:
+        FetchLockBusy: Another process holds a fresh lock, or a race to break a stale one was lost.
+    """
+    now = now or datetime.now(UTC)
+    lock_path = _lock_path(project_dir, channel_slug, video_id)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    token = str(uuid.uuid4())
+
+    try:
+        _write_lock_payload(lock_path, token, now)
+    except FileExistsError:
+        if not _lock_is_stale(lock_path, now, stale_after):
+            raise FetchLockBusy(
+                f"nas_fetch: lock busy for channel_slug={channel_slug!r} video_id={video_id!r}"
+            ) from None
+        # Stale: break it and retry once. A racing breaker just loses this
+        # O_EXCL write and defers to its next run, like ordinary contention.
+        with contextlib.suppress(FileNotFoundError):
+            lock_path.unlink()
+        try:
+            _write_lock_payload(lock_path, token, now)
+        except FileExistsError:
+            raise FetchLockBusy(
+                f"nas_fetch: lock busy for channel_slug={channel_slug!r} video_id={video_id!r} "
+                "(lost the race to break a stale lock)"
+            ) from None
+
+    try:
+        yield token
+    finally:
+        current = _read_lock_payload(lock_path)
+        if current is not None and current.get("token") == token:
+            with contextlib.suppress(FileNotFoundError):
+                lock_path.unlink()
