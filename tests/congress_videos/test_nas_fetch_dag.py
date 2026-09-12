@@ -528,7 +528,8 @@ class TestRunFetchVideos:
         monkeypatch.setattr(mod, "PROJECT_DATA_DIR", tmp_path)
 
         channel_slug = "congreso-es-tv"
-        video_ids = ["vid1", "vid2", "vid3"]
+        # 6+ chars — must satisfy nas_archive._VIDEO_ID_PATTERN like a real YouTube id.
+        video_ids = ["vid001", "vid002", "vid003"]
         for video_id in video_ids:
             write_marker(
                 tmp_path / channel_slug / video_id,
@@ -542,7 +543,7 @@ class TestRunFetchVideos:
             )
 
         def fake_runner(command):
-            if "vid2" in " ".join(command):
+            if "vid002" in " ".join(command):
                 raise subprocess.TimeoutExpired(cmd=command, timeout=mod._RSYNC_TIMEOUT_SECS)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -556,8 +557,8 @@ class TestRunFetchVideos:
 
         restored_ids = {r["video_id"] for r in summary["restored"]}
         failed_ids = {f["video_id"] for f in summary["failed"]}
-        assert restored_ids == {"vid1", "vid3"}
-        assert failed_ids == {"vid2"}
+        assert restored_ids == {"vid001", "vid003"}
+        assert failed_ids == {"vid002"}
 
-        marker_path = tmp_path / channel_slug / "vid2" / ".nas_archived.json"
-        assert marker_path.exists(), "vid2's marker must stay in place after an aborted fetch"
+        marker_path = tmp_path / channel_slug / "vid002" / ".nas_archived.json"
+        assert marker_path.exists(), "vid002's marker must stay in place after an aborted fetch"

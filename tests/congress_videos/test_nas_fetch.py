@@ -16,6 +16,7 @@ Covers:
   precedence (archive root before legacy root), legacy root pull-only.
 - refresh_retention: only media files get their mtime bumped to `now`;
   non-media sidecars are left untouched; files outside `paths` are untouched.
+- fetch_lock: lock acquisition + staleness (D2).
 
 No Airflow imports, no subprocess, no network — everything I/O-adjacent is
 either a real tmp_path filesystem op or an injected callable.
@@ -23,10 +24,11 @@ either a real tmp_path filesystem op or an injected callable.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -35,9 +37,12 @@ import pytest
 
 from congress_videos.modules.nas_archive import ArchiveSettings, ssh_command, write_marker
 from congress_videos.modules.nas_fetch import (
+    RSYNC_TIMEOUT_SECS,
+    FetchLockBusy,
     discover_fetch_source,
     discover_remote_dirs,
     ensure_local_dir,
+    fetch_lock,
     fetch_rsync_command,
     is_archived_elsewhere,
     read_marker,
@@ -610,3 +615,106 @@ class TestRefreshRetention:
         missing = tmp_path / "nope"
         now = datetime(2026, 9, 10, tzinfo=UTC)
         assert refresh_retention([missing], now) == []
+
+
+# ---------------------------------------------------------------------------
+# fetch_lock
+# ---------------------------------------------------------------------------
+
+
+def _lock_path(tmp_path: Path, channel_slug: str = "congreso-es-tv", video_id: str = "abc123") -> Path:
+    return tmp_path / channel_slug / video_id / ".nas_fetch.lock"
+
+
+def _write_lock(lock_path: Path, token: str, acquired_at: datetime) -> None:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(
+        json.dumps({"token": token, "pid": 999999, "acquired_at": acquired_at.isoformat()}), encoding="utf-8"
+    )
+
+
+class TestFetchLock:
+    def test_first_acquisition_creates_lock_and_releases_on_exit(self, tmp_path):
+        lock_path = _lock_path(tmp_path)
+
+        with fetch_lock(tmp_path, "congreso-es-tv", "abc123") as token:
+            payload = json.loads(lock_path.read_text(encoding="utf-8"))
+            assert payload["token"] == token
+            assert payload["pid"] == os.getpid()
+            assert "acquired_at" in payload
+
+        assert not lock_path.exists()
+
+    def test_contended_lock_raises_busy_without_blocking(self, tmp_path):
+        with (
+            fetch_lock(tmp_path, "congreso-es-tv", "abc123"),
+            pytest.raises(FetchLockBusy),
+            fetch_lock(tmp_path, "congreso-es-tv", "abc123"),
+        ):
+            pass  # pragma: no cover — must never be entered
+
+    @pytest.mark.parametrize(
+        ("offset_secs", "expect_busy"),
+        [
+            pytest.param(RSYNC_TIMEOUT_SECS + 599, True, id="not_yet_stale"),
+            pytest.param(RSYNC_TIMEOUT_SECS + 601, False, id="past_stale_threshold"),
+        ],
+    )
+    def test_staleness_threshold_gates_break_and_reacquire(self, tmp_path, offset_secs, expect_busy):
+        lock_path = _lock_path(tmp_path)
+        acquired_at = datetime(2026, 1, 1, tzinfo=UTC)
+        _write_lock(lock_path, "other-holder-token", acquired_at)
+        now = acquired_at + timedelta(seconds=offset_secs)
+
+        if expect_busy:
+            with pytest.raises(FetchLockBusy), fetch_lock(tmp_path, "congreso-es-tv", "abc123", now=now):
+                pass  # pragma: no cover — must never be entered
+            return
+
+        with fetch_lock(tmp_path, "congreso-es-tv", "abc123", now=now) as token:
+            assert token != "other-holder-token"
+            payload = json.loads(lock_path.read_text(encoding="utf-8"))
+            assert payload["token"] == token
+
+    def test_release_is_a_noop_when_the_on_disk_token_no_longer_matches(self, tmp_path):
+        lock_path = _lock_path(tmp_path)
+
+        with fetch_lock(tmp_path, "congreso-es-tv", "abc123"):
+            # A foreign holder broke this (stale, from its view) lock and
+            # reacquired it while we still think we own it.
+            _write_lock(lock_path, "foreign-token", datetime.now(UTC))
+
+        assert lock_path.exists()
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
+        assert payload["token"] == "foreign-token"
+
+
+# ---------------------------------------------------------------------------
+# fetch_lock — unvalidated video_id/channel_slug must never reach a
+# filesystem path (path-traversal / absolute-path injection).
+# ---------------------------------------------------------------------------
+
+
+def _snapshot(tmp_path: Path) -> set[Path]:
+    return set(tmp_path.rglob("*"))
+
+
+_UNSAFE_IDS = [
+    pytest.param("congreso-es-tv", None, id="absolute_video_id"),  # video_id filled in with a canary below
+    pytest.param("congreso-es-tv", "../../evil", id="traversal_video_id"),
+    pytest.param("not-a-slug!", "abc123", id="invalid_channel_slug"),
+]
+
+
+class TestPathInjectionDefenceInDepth:
+    @pytest.mark.parametrize(("channel_slug", "video_id"), _UNSAFE_IDS)
+    def test_fetch_lock_rejects_unsafe_ids_before_touching_disk(self, tmp_path, channel_slug, video_id):
+        canary = tmp_path / "canary" / "evil"
+        video_id = str(canary) if video_id is None else video_id
+        before = _snapshot(tmp_path)
+
+        with pytest.raises(ValueError), fetch_lock(tmp_path, channel_slug, video_id):
+            pass  # pragma: no cover — must never be entered
+
+        assert not canary.exists()
+        assert _snapshot(tmp_path) == before
