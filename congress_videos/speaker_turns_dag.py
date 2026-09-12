@@ -41,6 +41,7 @@ from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
+from airflow.exceptions import AirflowException
 from airflow.operators.python import PythonOperator
 
 # Import the id from config.constants, NOT from the sibling DAG module: importing
@@ -52,6 +53,7 @@ from congress_videos.config.constants import (
 from congress_videos.config.paths import PROJECT_DATA_DIR
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL
 from congress_videos.modules import nas_fetch
+from congress_videos.modules.nas_archive import ArchiveSettings
 from congress_videos.modules.participants_db import lookup_participant_fuzzy
 from congress_videos.modules.sidecar_api_error import SidecarApiError
 from congress_videos.modules.speaker_turns import (
@@ -165,23 +167,30 @@ def run_chapter_turns(
 
     video_path = _find_source_video(session_date, video_id)
     if not video_path:
-        if nas_fetch.is_archived_elsewhere(PROJECT_DATA_DIR, DEFAULT_CHANNEL, str(video_id)):
+        try:
+            fetch_result = nas_fetch.ensure_local_video(
+                PROJECT_DATA_DIR, DEFAULT_CHANNEL, str(video_id), ArchiveSettings.from_env()
+            )
+        except nas_fetch.NasFetchError as exc:
+            logger.error("chapter %s: NAS fetch failed for video_id=%s — %s", chapter_id, video_id, exc)
+            return {"status": "fetch_failed", "chapter_id": chapter_id, "turns": []}
+        if fetch_result["status"] == "in_progress":
+            logger.info(
+                "chapter %s: NAS fetch for video_id=%s already in progress — deferring to the next run",
+                chapter_id,
+                video_id,
+            )
+            return {"status": "fetch_in_progress", "chapter_id": chapter_id, "turns": []}
+        if fetch_result["status"] == "fetched":
+            video_path = _find_source_video(session_date, video_id)
+        if not video_path:
             logger.warning(
-                "chapter %s: source video %s/%s archived to the NAS; trigger the nas_fetch DAG "
-                "with video_id=%s before reprocessing",
+                "chapter %s: no source video for %s/%s — skipping",
                 chapter_id,
                 session_date,
                 video_id,
-                video_id,
             )
-            return {"status": "skipped_archived", "chapter_id": chapter_id, "turns": []}
-        logger.warning(
-            "chapter %s: no source video for %s/%s — skipping",
-            chapter_id,
-            session_date,
-            video_id,
-        )
-        return {"status": "skipped_no_video", "chapter_id": chapter_id, "turns": []}
+            return {"status": "skipped_no_video", "chapter_id": chapter_id, "turns": []}
 
     start_secs = parse_timestamp(chapter["start_time"])
     end_secs = parse_timestamp(chapter["end_time"])
@@ -249,6 +258,7 @@ def _process_task(**context) -> dict:
     chapters = context["ti"].xcom_pull(key="chapters", task_ids="select_chapters") or []
     check_diarize_api_health()  # fail fast on outage before DB/WAV work
     summary = {"processed": 0, "skipped": 0, "turns": 0}
+    fetch_failed_count = 0
     pg = PostgresConnection()
     turns_table = pg.get_qualified_table("speaker_turns")
     vc_table = pg.get_qualified_table("video_chapters")
@@ -265,6 +275,9 @@ def _process_task(**context) -> dict:
             logger.exception("chapter %s failed — skipping", chapter.get("chapter_id"))
             summary["skipped"] += 1
             continue
+
+        if result["status"] == "fetch_failed":
+            fetch_failed_count += 1
 
         if result["status"] != "ok":
             summary["skipped"] += 1
@@ -285,6 +298,15 @@ def _process_task(**context) -> dict:
 
         summary["processed"] += 1
         summary["turns"] += len(result["turns"])
+
+    # design D6: every requested chapter failing its NAS fetch fails the task
+    # loudly rather than silently reporting a summary of skips.
+    if chapters and fetch_failed_count == len(chapters):
+        raise AirflowException(
+            f"speaker_turns: NAS fetch failed for all {len(chapters)} chapter(s) this run — "
+            "NAS/rsync appears unavailable"
+        )
+
     logger.info("Speaker-turn run summary: %s", summary)
     return summary
 
@@ -335,6 +357,8 @@ with dag:
     process_chapters_task = PythonOperator(
         task_id="process_chapters",
         python_callable=_process_task,
+        # No ceiling today; a hung ffmpeg/rsync would hold the slot forever (D7).
+        execution_timeout=timedelta(hours=6),
     )
     trigger_materialize_task = PythonOperator(
         task_id="trigger_materialize",
