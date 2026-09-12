@@ -24,8 +24,12 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 
 from congress_videos.config.constants import SPEAKER_TURN_PREPARE_DAG_ID
+from congress_videos.config.paths import PROJECT_DATA_DIR
+from congress_videos.config.youtube_channels import DEFAULT_CHANNEL
+from congress_videos.modules import nas_fetch
 from congress_videos.modules.database import CongressionalVideoDB
 from congress_videos.modules.monologue_speaker_window import resolve_monologue_speaker
+from congress_videos.modules.nas_archive import ArchiveSettings
 from congress_videos.modules.participants_db import CongressParticipantsDB
 from congress_videos.modules.speaker_placeholders import is_placeholder
 from congress_videos.modules.speaker_resolution import (
@@ -362,6 +366,15 @@ def _prepare_turn_artifacts(db, turn, turn_id, output_path) -> None:
         # Step 1: Write subtitles.srt sidecar (window narrowed by VAD offsets).
         _write_turn_sidecars(turn, trim_start_secs=trim_start, trim_end_secs=trim_end)
 
+        # Step 1.5: NAS auto-fetch when the source is missing locally (design
+        # D1/D6a). Any outcome/exception is caught by this function's own
+        # except below — a still-missing file just fails the decode check
+        # exactly as before this hook existed.
+        if not os.path.exists(output_path):
+            nas_fetch.ensure_local_video(
+                PROJECT_DATA_DIR, DEFAULT_CHANNEL, str(turn.get("video_id")), ArchiveSettings.from_env()
+            )
+
         # Step 2: ffmpeg decode integrity check (validates trimmed or original MP4).
         rc = _run_ffmpeg_decode_check(output_path)
         if rc != 0:
@@ -542,4 +555,6 @@ with DAG(
         python_callable=_prepare_turns_callable,
         pool="nas_ffmpeg",
         pool_slots=1,
+        # No ceiling today; a hung ffmpeg/rsync would hold the slot forever (D7).
+        execution_timeout=timedelta(hours=2),
     )

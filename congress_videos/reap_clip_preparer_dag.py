@@ -21,7 +21,10 @@ from airflow.exceptions import AirflowException
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 
 from congress_videos.config.paths import PROJECT_DATA_DIR
+from congress_videos.config.youtube_channels import DEFAULT_CHANNEL
+from congress_videos.modules import nas_fetch
 from congress_videos.modules.database import CongressionalVideoDB
+from congress_videos.modules.nas_archive import ArchiveSettings
 from congress_videos.modules.video_splitter import (
     build_ffmpeg_cut_cmd,
     compute_ffmpeg_timeout,
@@ -82,6 +85,18 @@ def _probe_duration_secs(path: str) -> float:
     return float(probe["format"]["duration"])
 
 
+def _restore_missing_source(turn_id, video_id: str) -> None:
+    """Inline NAS restore for a turn's missing local source (design D1/D6a).
+
+    Non-fatal: the caller re-probes ``output_path`` right after this call, so
+    a still-missing file fails exactly as it did before this hook existed.
+    """
+    try:
+        nas_fetch.ensure_local_video(PROJECT_DATA_DIR, DEFAULT_CHANNEL, str(video_id), ArchiveSettings.from_env())
+    except (ValueError, nas_fetch.NasFetchError) as exc:
+        logging.warning("turn %s: NAS fetch did not restore video_id=%s — %s", turn_id, video_id, exc)
+
+
 with DAG(
     "congress_reap_clip_preparer",
     default_args=default_args,
@@ -133,6 +148,9 @@ with DAG(
             chapter_id = turn["chapter_id"]
             video_id = turn["video_id"]
             output_path = turn["output_path"]
+
+            if not os.path.exists(output_path):
+                _restore_missing_source(turn_id, video_id)
 
             try:
                 actual_secs = _probe_duration_secs(output_path)
@@ -229,6 +247,8 @@ with DAG(
     t2 = PythonOperator(
         task_id="extract_and_pretrim_clip",
         python_callable=_stage_and_pretrim_clip,
+        # No ceiling today; a hung ffmpeg/rsync would hold the slot forever (D7).
+        execution_timeout=timedelta(hours=2),
     )
 
     def _log_queue_summary(ti, **context):
