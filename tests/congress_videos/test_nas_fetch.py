@@ -16,7 +16,8 @@ Covers:
   precedence (archive root before legacy root), legacy root pull-only.
 - refresh_retention: only media files get their mtime bumped to `now`;
   non-media sidecars are left untouched; files outside `paths` are untouched.
-- fetch_lock: lock acquisition + staleness (D2).
+- fetch_lock / ensure_local_video: lock acquisition + staleness (D2), and
+  the shared helper's fetched/in_progress/unavailable branches (D1).
 
 No Airflow imports, no subprocess, no network — everything I/O-adjacent is
 either a real tmp_path filesystem op or an injected callable.
@@ -42,6 +43,7 @@ from congress_videos.modules.nas_fetch import (
     discover_fetch_source,
     discover_remote_dirs,
     ensure_local_dir,
+    ensure_local_video,
     fetch_lock,
     fetch_rsync_command,
     is_archived_elsewhere,
@@ -690,8 +692,68 @@ class TestFetchLock:
 
 
 # ---------------------------------------------------------------------------
-# fetch_lock — unvalidated video_id/channel_slug must never reach a
-# filesystem path (path-traversal / absolute-path injection).
+# ensure_local_video
+# ---------------------------------------------------------------------------
+
+
+def _write_video_marker(tmp_path: Path, channel_slug: str = "congreso-es-tv") -> Path:
+    channel_dir = tmp_path / channel_slug / "abc123"
+    write_marker(channel_dir, _valid_payload(channel_slug))
+    return channel_dir
+
+
+def _ok_runner(command):
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+class TestEnsureLocalVideo:
+    def test_fetched_via_marker_refreshes_retention_and_removes_marker(self, settings, tmp_path):
+        channel_dir = _write_video_marker(tmp_path)
+
+        result = ensure_local_video(
+            tmp_path, "congreso-es-tv", "abc123", settings, runner=_ok_runner, now=datetime.now(UTC)
+        )
+
+        assert result["status"] == "fetched"
+        assert result["source"] == "marker"
+        assert result["restored"] == ["downloads/2026-08-20/abc123", "congreso-es-tv/abc123"]
+        assert not (channel_dir / ".nas_archived.json").exists()
+
+    def test_unavailable_not_on_nas_when_no_marker_and_nothing_discovered(self, settings, tmp_path):
+        result = ensure_local_video(tmp_path, "congreso-es-tv", "abc123", settings, runner=_ok_runner)
+
+        assert result == {
+            "status": "unavailable",
+            "reason": "not_on_nas",
+            "video_id": "abc123",
+            "channel_slug": "congreso-es-tv",
+        }
+
+    def test_unavailable_disabled_when_nas_archive_host_is_unset(self, tmp_path):
+        result = ensure_local_video(tmp_path, "congreso-es-tv", "abc123", ArchiveSettings.from_env({}))
+
+        assert result == {
+            "status": "unavailable",
+            "reason": "disabled",
+            "video_id": "abc123",
+            "channel_slug": "congreso-es-tv",
+        }
+
+    def test_in_progress_when_another_holder_already_has_the_lock(self, settings, tmp_path):
+        _write_video_marker(tmp_path)
+
+        def fail_runner(command):  # pragma: no cover — must never be called while locked
+            raise AssertionError("runner must not be invoked while the lock is held elsewhere")
+
+        with fetch_lock(tmp_path, "congreso-es-tv", "abc123"):
+            result = ensure_local_video(tmp_path, "congreso-es-tv", "abc123", settings, runner=fail_runner)
+
+        assert result == {"status": "in_progress", "video_id": "abc123", "channel_slug": "congreso-es-tv"}
+
+
+# ---------------------------------------------------------------------------
+# fetch_lock / ensure_local_video — unvalidated video_id/channel_slug must
+# never reach a filesystem path (path-traversal / absolute-path injection).
 # ---------------------------------------------------------------------------
 
 
@@ -715,6 +777,20 @@ class TestPathInjectionDefenceInDepth:
 
         with pytest.raises(ValueError), fetch_lock(tmp_path, channel_slug, video_id):
             pass  # pragma: no cover — must never be entered
+
+        assert not canary.exists()
+        assert _snapshot(tmp_path) == before
+
+    @pytest.mark.parametrize(("channel_slug", "video_id"), _UNSAFE_IDS)
+    def test_ensure_local_video_rejects_unsafe_ids_before_touching_disk(
+        self, settings, tmp_path, channel_slug, video_id
+    ):
+        canary = tmp_path / "canary" / "evil"
+        video_id = str(canary) if video_id is None else video_id
+        before = _snapshot(tmp_path)
+
+        with pytest.raises(ValueError):
+            ensure_local_video(tmp_path, channel_slug, video_id, settings)
 
         assert not canary.exists()
         assert _snapshot(tmp_path) == before
