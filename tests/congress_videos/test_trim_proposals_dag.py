@@ -49,33 +49,52 @@ class TestRunTurnProposals:
             "end_seconds": 700.0,
         }
 
-    def test_missing_source_video_skips(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("ensure_result", "raises", "expected_status"),
+        [
+            ({"status": "unavailable", "reason": "not_on_nas"}, False, "skipped_no_video"),
+            ({"status": "in_progress"}, False, "fetch_in_progress"),
+            (None, True, "fetch_failed"),
+        ],
+        ids=["not_on_nas-skips", "in_progress-defers", "rsync_error-fails"],
+    )
+    def test_missing_source_video_degrades_per_fetch_outcome(self, monkeypatch, ensure_result, raises, expected_status):
+        """design D6a: unavailable/in_progress degrade to skip/defer; NasFetchError degrades to fetch_failed."""
         mod = _fresh()
         monkeypatch.setattr(mod, "_find_source_video_any_date", lambda *a, **k: None)
-        monkeypatch.setattr(mod.nas_fetch, "is_archived_elsewhere", lambda *a, **k: False)
+
+        def fake_ensure(*a, **k):
+            if raises:
+                raise mod.nas_fetch.NasFetchError("rsync failed")
+            return ensure_result
+
+        monkeypatch.setattr(mod.nas_fetch, "ensure_local_video", fake_ensure)
         generate = MagicMock()
         monkeypatch.setattr(mod, "generate_trim_proposals", generate)
         cursor = MagicMock()
 
         result = mod.run_turn_proposals(self._turn(), cursor)
 
-        assert result["status"] == "skipped_no_video"
+        assert result["status"] == expected_status
         generate.assert_not_called()
 
-    def test_missing_source_video_archived_on_nas_skips_with_distinct_status(self, monkeypatch):
+    def test_missing_source_video_fetched_from_nas_proceeds(self, monkeypatch):
+        """ensure_local_video reports fetched -> the locator re-runs and processing proceeds."""
         mod = _fresh()
-        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda *a, **k: None)
-        is_archived = MagicMock(return_value=True)
-        monkeypatch.setattr(mod.nas_fetch, "is_archived_elsewhere", is_archived)
-        generate = MagicMock()
+        locator = MagicMock(side_effect=[None, "/v/src.mp4"])
+        monkeypatch.setattr(mod, "_find_source_video_any_date", locator)
+        monkeypatch.setattr(mod.nas_fetch, "ensure_local_video", lambda *a, **k: {"status": "fetched"})
+        monkeypatch.setattr(mod, "extract_audio_wav", lambda *a, **k: None)
+        generate = MagicMock(return_value=[])
         monkeypatch.setattr(mod, "generate_trim_proposals", generate)
+        monkeypatch.setattr(mod, "_upsert_proposals", MagicMock(return_value=0))
         cursor = MagicMock()
 
         result = mod.run_turn_proposals(self._turn(), cursor)
 
-        assert result["status"] == "skipped_archived"
-        generate.assert_not_called()
-        is_archived.assert_called_once_with(mod.PROJECT_DATA_DIR, mod.DEFAULT_CHANNEL, "abc123")
+        assert result["status"] == "ok"
+        assert locator.call_count == 2
+        generate.assert_called_once()
 
     def test_happy_path_generates_and_upserts(self, monkeypatch):
         from congress_videos.modules.trim_proposals import TrimProposal
@@ -207,15 +226,18 @@ class TestProcessTask:
         ti.xcom_pull.return_value = turns
         return {"ti": ti}
 
-    def test_aggregates_and_skips_failures(self, monkeypatch):
-        mod = _fresh()
+    def _make_pg_mock(self, monkeypatch, mod):
         conn = MagicMock()
         conn.cursor.return_value.__enter__.return_value = MagicMock()
         pg = MagicMock()
         pg.get_connection.return_value.__enter__.return_value = conn
         monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
-        # Probe must be no-op so this data-error test is not affected by infra check
         monkeypatch.setattr(mod, "check_yamnet_api_health", lambda **k: None)
+        return conn
+
+    def test_aggregates_and_skips_failures(self, monkeypatch):
+        mod = _fresh()
+        conn = self._make_pg_mock(monkeypatch, mod)
 
         def fake_run(turn, cursor, **k):
             tid = turn["turn_id"]
@@ -231,6 +253,33 @@ class TestProcessTask:
 
         assert summary == {"processed": 1, "skipped": 2, "proposals": 3}
         conn.commit.assert_called_once()
+
+    def test_all_turns_fetch_failed_raises(self, monkeypatch):
+        """design D6: every requested turn failing its NAS fetch fails the task."""
+        mod = _fresh()
+        self._make_pg_mock(monkeypatch, mod)
+        monkeypatch.setattr(
+            mod, "run_turn_proposals", lambda turn, cursor, **k: {"status": "fetch_failed", "proposals": 0}
+        )
+
+        with pytest.raises(mod.AirflowException):
+            mod._process_task(**self._ti_with([{"turn_id": 1}, {"turn_id": 2}]))
+
+    def test_mixed_fetch_failed_and_ok_does_not_raise(self, monkeypatch):
+        """A batch with at least one ok turn stays outside the D6 all-failed rule."""
+        mod = _fresh()
+        self._make_pg_mock(monkeypatch, mod)
+
+        def fake_run(turn, cursor, **k):
+            if turn["turn_id"] == 1:
+                return {"status": "fetch_failed", "proposals": 0}
+            return {"status": "ok", "proposals": 2}
+
+        monkeypatch.setattr(mod, "run_turn_proposals", fake_run)
+
+        summary = mod._process_task(**self._ti_with([{"turn_id": 1}, {"turn_id": 2}]))
+
+        assert summary == {"processed": 1, "skipped": 1, "proposals": 2}
 
 
 class TestProcessTaskFailFast:
