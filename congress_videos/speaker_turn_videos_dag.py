@@ -49,6 +49,7 @@ from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.api.common.trigger_dag import trigger_dag as trigger_dag_api
+from airflow.exceptions import AirflowException
 from airflow.operators.python import PythonOperator
 
 # Import the id from config.constants, NOT from the sibling DAG module: importing
@@ -69,6 +70,7 @@ from congress_videos.modules.materialization import (
     plan_turn_materialization,
 )
 from congress_videos.modules.materialization_executor import execute_plan
+from congress_videos.modules.nas_archive import ArchiveSettings
 from congress_videos.modules.vad_helpers import _find_source_video_any_date
 from congress_videos.srt_helpers import _window_srt_text, score_turn_interest
 from utils.codec_detection import get_cached_codec
@@ -249,6 +251,44 @@ def _score_plan_turns(conn, pg, plan, video_id: str) -> None:
             )
 
 
+def _resolve_missing_source(video_id: str, plan, summary: dict) -> str | None:
+    """Try an inline NAS fetch for a plan's missing source video (design D1/D6a).
+
+    Mutates ``summary``'s fetch/skip counters. Returns the local source path
+    to proceed with, or ``None`` when the caller must skip this plan.
+    """
+    try:
+        fetch_result = nas_fetch.ensure_local_video(
+            PROJECT_DATA_DIR, DEFAULT_CHANNEL, video_id, ArchiveSettings.from_env()
+        )
+    except nas_fetch.NasFetchError as exc:
+        logger.error(
+            "speaker_turn_videos: NAS fetch failed for video_id=%s — %s; skipping plan turn_ids=%s",
+            video_id,
+            exc,
+            plan.turn_ids,
+        )
+        summary["fetch_failed"] += len(plan.turn_ids)
+        return None
+    if fetch_result["status"] == "in_progress":
+        logger.info(
+            "speaker_turn_videos: NAS fetch for video_id=%s already in progress — deferring plan turn_ids=%s",
+            video_id,
+            plan.turn_ids,
+        )
+        summary["fetch_in_progress"] += len(plan.turn_ids)
+        return None
+    source_path = _find_source_video_any_date(video_id) if fetch_result["status"] == "fetched" else None
+    if not source_path:
+        logger.warning(
+            "speaker_turn_videos: no source video for video_id=%s — skipping plan turn_ids=%s",
+            video_id,
+            plan.turn_ids,
+        )
+        summary["skipped"] += len(plan.turn_ids)
+    return source_path
+
+
 def _materialize_task(**context) -> dict:
     """Plan and execute materialization for each pending turn.
 
@@ -274,7 +314,16 @@ def _materialize_task(**context) -> dict:
     "no source video anywhere" case).
     """
     turns = context["ti"].xcom_pull(key="turns", task_ids="select_turns") or []
-    summary = {"materialized": 0, "skipped": 0, "skipped_archived": 0, "dropped_procedural": 0}
+    # skipped_archived stays at 0 (design D6a retires is_archived_elsewhere) —
+    # kept so the summary's shape is unchanged for any XCom consumer.
+    summary = {
+        "materialized": 0,
+        "skipped": 0,
+        "skipped_archived": 0,
+        "dropped_procedural": 0,
+        "fetch_in_progress": 0,
+        "fetch_failed": 0,
+    }
 
     if not turns:
         logger.info("speaker_turn_videos: no turns to materialize")
@@ -310,23 +359,9 @@ def _materialize_task(**context) -> dict:
 
             source_path = _find_source_video_any_date(video_id)
             if not source_path:
-                if nas_fetch.is_archived_elsewhere(PROJECT_DATA_DIR, DEFAULT_CHANNEL, video_id):
-                    logger.warning(
-                        "speaker_turn_videos: source video_id=%s archived to the NAS; trigger the "
-                        "nas_fetch DAG with video_id=%s before reprocessing plan turn_ids=%s",
-                        video_id,
-                        video_id,
-                        plan.turn_ids,
-                    )
-                    summary["skipped_archived"] += len(plan.turn_ids)
+                source_path = _resolve_missing_source(video_id, plan, summary)
+                if not source_path:
                     continue
-                logger.warning(
-                    "speaker_turn_videos: no source video for video_id=%s — skipping plan turn_ids=%s",
-                    video_id,
-                    plan.turn_ids,
-                )
-                summary["skipped"] += len(plan.turn_ids)
-                continue
 
             # Canonical date-free output path keyed on stable DB identifiers.
             # chapter_id is typed int (non-optional dataclass field) and is
@@ -402,6 +437,14 @@ def _materialize_task(**context) -> dict:
                 [t["turn_id"] for t in dropped_turns],
             )
 
+    # design D6: every requested turn failing its NAS fetch fails the task
+    # loudly rather than silently reporting a summary of skips.
+    if turns and summary["fetch_failed"] == len(turns):
+        raise AirflowException(
+            f"speaker_turn_videos: NAS fetch failed for all {len(turns)} turn(s) this run — "
+            "NAS/rsync appears unavailable"
+        )
+
     context["ti"].xcom_push(key="summary", value=summary)
     logger.info("speaker_turn_videos: run complete summary=%s", summary)
     return summary
@@ -473,6 +516,8 @@ with dag:
         python_callable=_materialize_task,
         pool="nas_ffmpeg",
         pool_slots=1,
+        # No ceiling today; a hung ffmpeg/rsync would hold the slot forever (D7).
+        execution_timeout=timedelta(hours=6),
     )
     collect_results_task = PythonOperator(
         task_id="collect_results",
