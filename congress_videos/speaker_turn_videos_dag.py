@@ -251,16 +251,28 @@ def _score_plan_turns(conn, pg, plan, video_id: str) -> None:
             )
 
 
-def _resolve_missing_source(video_id: str, plan, summary: dict) -> str | None:
+def _resolve_missing_source(video_id: str, plan, summary: dict, fetch_failed_ids: list[str]) -> str | None:
     """Try an inline NAS fetch for a plan's missing source video (design D1/D6a).
 
-    Mutates ``summary``'s fetch/skip counters. Returns the local source path
-    to proceed with, or ``None`` when the caller must skip this plan.
+    Mutates ``summary``'s fetch/skip counters and appends to ``fetch_failed_ids``
+    on a NAS fetch failure. Returns the local source path to proceed with, or
+    ``None`` when the caller must skip this plan.
     """
     try:
         fetch_result = nas_fetch.ensure_local_video(
             PROJECT_DATA_DIR, DEFAULT_CHANNEL, video_id, ArchiveSettings.from_env()
         )
+    except ValueError as exc:
+        # video_id/channel_slug failed ensure_local_video's own format validation —
+        # malformed input, not a NAS/rsync failure. One bad plan must not sink the run.
+        logger.warning(
+            "speaker_turn_videos: invalid video_id=%s for NAS fetch — %s; skipping plan turn_ids=%s",
+            video_id,
+            exc,
+            plan.turn_ids,
+        )
+        summary["skipped"] += len(plan.turn_ids)
+        return None
     except nas_fetch.NasFetchError as exc:
         logger.error(
             "speaker_turn_videos: NAS fetch failed for video_id=%s — %s; skipping plan turn_ids=%s",
@@ -269,6 +281,7 @@ def _resolve_missing_source(video_id: str, plan, summary: dict) -> str | None:
             plan.turn_ids,
         )
         summary["fetch_failed"] += len(plan.turn_ids)
+        fetch_failed_ids.append(video_id)
         return None
     if fetch_result["status"] == "in_progress":
         logger.info(
@@ -334,6 +347,7 @@ def _materialize_task(**context) -> dict:
     trims_table = pg.get_qualified_table("speaker_turn_trim_proposals")
     stv_table = pg.get_qualified_table("speaker_turn_videos")
     codec_cache: dict = {}
+    fetch_failed_ids: list[str] = []
 
     with pg.get_connection() as conn:
         with conn.cursor() as cur:
@@ -359,7 +373,7 @@ def _materialize_task(**context) -> dict:
 
             source_path = _find_source_video_any_date(video_id)
             if not source_path:
-                source_path = _resolve_missing_source(video_id, plan, summary)
+                source_path = _resolve_missing_source(video_id, plan, summary, fetch_failed_ids)
                 if not source_path:
                     continue
 
@@ -441,8 +455,8 @@ def _materialize_task(**context) -> dict:
     # loudly rather than silently reporting a summary of skips.
     if turns and summary["fetch_failed"] == len(turns):
         raise AirflowException(
-            f"speaker_turn_videos: NAS fetch failed for all {len(turns)} turn(s) this run — "
-            "NAS/rsync appears unavailable"
+            f"speaker_turn_videos: NAS fetch failed for all {len(turns)} turn(s) this run "
+            f"(video_ids={', '.join(fetch_failed_ids)}) — NAS/rsync appears unavailable"
         )
 
     context["ti"].xcom_push(key="summary", value=summary)

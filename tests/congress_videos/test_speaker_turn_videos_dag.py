@@ -706,6 +706,29 @@ class TestMaterializeTurns:
         assert result["fetch_failed"] >= 1
         assert result["materialized"] >= 1
 
+    def test_malformed_video_id_is_skipped_not_raised(self, monkeypatch):
+        """A malformed video_id/channel_slug fails ensure_local_video's own validation with
+        ValueError before any fetch runs -> counted as skipped (same as unavailable), the
+        remaining plan in the batch still materializes, and the task does not crash."""
+        mod = _fresh()
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: "/data/src.mp4" if vid == "vid2" else None)
+        monkeypatch.setattr(mod.nas_fetch, "ensure_local_video", MagicMock(side_effect=ValueError("bad id")))
+        execute_plan = MagicMock()
+        monkeypatch.setattr(mod, "execute_plan", execute_plan)
+        monkeypatch.setattr(mod, "get_cached_codec", lambda *a, **k: "h264")
+        monkeypatch.setattr(mod, "plan_turn_materialization", lambda turns, trims: [self._plan(1), self._plan(2)])
+        self._pg_mock(monkeypatch, mod)
+
+        ti = MagicMock()
+        ti.xcom_pull.return_value = [self._turn(turn_id=1, video_id="vid1"), self._turn(turn_id=2, video_id="vid2")]
+
+        result = mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        assert result["skipped"] >= 1
+        assert result["fetch_failed"] == 0
+        assert result["materialized"] >= 1
+        execute_plan.assert_called_once()
+
     def test_inserts_row_on_success(self, monkeypatch):
         mod = _fresh()
         monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: "/data/src.mp4")
