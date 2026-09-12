@@ -144,6 +144,8 @@ class DevContract(unittest.TestCase):
         self.assertEqual(env["NAS_ARCHIVE_SSH_DIR"], "/opt/airflow/nas_sync")
         # nas_fetch fallback source (read-only legacy production tree); empty disables it.
         self.assertEqual(env["NAS_FETCH_LEGACY_ROOT"], "${NAS_FETCH_LEGACY_ROOT:-}")
+        # nas_reclaim DAG's local-material grace window (ArchiveSettings.reclaim_grace_hours).
+        self.assertEqual(env["NAS_RECLAIM_GRACE_HOURS"], "${NAS_RECLAIM_GRACE_HOURS:-12}")
 
     def test_youtube_download_proxy_has_safe_default(self):
         env = self.compose()["services"]["scheduler"]["environment"]

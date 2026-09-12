@@ -6,6 +6,8 @@ All I/O collaborators (DB, subprocess, filesystem) are mocked or monkeypatched
 Test organisation:
   TestDagLoads             — DAG import smoke test, schedule, task graph shape.
   TestCheckEnabled          — check_enabled ShortCircuitOperator callable.
+  TestQueryCompleteVideoIds — approval test pinning complete_video_ids()'s SQL
+                              shape/return value (moved to modules/nas_completeness.py).
   TestSelectArchiveCandidates — eligibility pool -> filtered candidate batch.
   TestArchiveOneVideo       — sync -> verify -> prune -> marker happy path and
                               the abort-before-delete failure path.
@@ -20,6 +22,8 @@ from unittest.mock import MagicMock
 
 import pytest
 from airflow.exceptions import AirflowException
+
+from congress_videos.modules import nas_completeness
 
 MODULE = "congress_videos.nas_archive_dag"
 
@@ -123,6 +127,62 @@ class TestCheckEnabled:
 
 
 # ---------------------------------------------------------------------------
+# complete_video_ids (approval test — pins behavior before the move to
+# congress_videos/modules/nas_completeness.py)
+# ---------------------------------------------------------------------------
+
+
+class TestQueryCompleteVideoIds:
+    """Approval test: pins the query shape and return value unchanged across
+    the move into ``modules/nas_completeness.py``. References the imported
+    ``complete_video_ids`` name on the DAG module, not a private helper."""
+
+    def _pg_mock(self, monkeypatch, rows):
+        cur = MagicMock()
+        cur.fetchall.return_value = [{"video_id": vid} for vid in rows]
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+        pg = MagicMock()
+        pg.get_qualified_table.side_effect = lambda name: f"test.{name}"
+        pg.get_connection.return_value.__enter__.return_value = conn
+        monkeypatch.setattr(nas_completeness, "PostgresConnection", lambda: pg)
+        return cur
+
+    def test_returns_video_ids_from_query_result(self, monkeypatch):
+        mod = _fresh()
+        cur = self._pg_mock(monkeypatch, ["abc123", "def456"])
+
+        result = mod.complete_video_ids(50)
+
+        assert result == ["abc123", "def456"]
+        cur.execute.assert_called_once()
+        (query, params) = cur.execute.call_args.args
+        assert params == (50,)
+
+    def test_query_references_every_completeness_table(self, monkeypatch):
+        mod = _fresh()
+        cur = self._pg_mock(monkeypatch, [])
+
+        mod.complete_video_ids(10)
+
+        query = cur.execute.call_args.args[0]
+        for table in (
+            "test.video_chapters",
+            "test.uploadable_chapters",
+            "test.uploadable_turns",
+            "test.speaker_turn_videos",
+            "test.speaker_turns",
+        ):
+            assert table in query
+
+    def test_empty_result_returns_empty_list(self, monkeypatch):
+        mod = _fresh()
+        self._pg_mock(monkeypatch, [])
+
+        assert mod.complete_video_ids(10) == []
+
+
+# ---------------------------------------------------------------------------
 # select_archive_candidates
 # ---------------------------------------------------------------------------
 
@@ -147,7 +207,7 @@ class TestSelectArchiveCandidates:
 
     def test_skips_already_archived_videos(self, monkeypatch, tmp_path):
         mod = _fresh()
-        monkeypatch.setattr(mod, "_query_complete_video_ids", lambda limit: ["abc123"])
+        monkeypatch.setattr(mod, "complete_video_ids", lambda limit: ["abc123"])
         monkeypatch.setattr(mod.nas_archive, "is_archived", lambda channel_dir: True)
 
         candidates = mod.select_archive_candidates(self._settings(tmp_path), tmp_path, "congreso-es-tv")
@@ -156,7 +216,7 @@ class TestSelectArchiveCandidates:
 
     def test_skips_videos_with_no_local_paths(self, monkeypatch, tmp_path):
         mod = _fresh()
-        monkeypatch.setattr(mod, "_query_complete_video_ids", lambda limit: ["abc123"])
+        monkeypatch.setattr(mod, "complete_video_ids", lambda limit: ["abc123"])
         monkeypatch.setattr(mod.nas_archive, "is_archived", lambda channel_dir: False)
 
         def _raise(*a, **k):
@@ -180,7 +240,7 @@ class TestSelectArchiveCandidates:
         fresh_file = video_dir / "video.mp4"
         fresh_file.write_bytes(b"data")
 
-        monkeypatch.setattr(mod, "_query_complete_video_ids", lambda limit: ["abc123"])
+        monkeypatch.setattr(mod, "complete_video_ids", lambda limit: ["abc123"])
         monkeypatch.setattr(mod.nas_archive, "is_archived", lambda channel_dir: False)
         monkeypatch.setattr(mod.nas_archive, "video_paths", lambda *a, **k: [video_dir])
         monkeypatch.setattr(mod, "_newest_mtime", lambda paths: time.time())  # brand new
@@ -195,7 +255,7 @@ class TestSelectArchiveCandidates:
         import time
 
         mod = _fresh()
-        monkeypatch.setattr(mod, "_query_complete_video_ids", lambda limit: ["abc123"])
+        monkeypatch.setattr(mod, "complete_video_ids", lambda limit: ["abc123"])
         monkeypatch.setattr(mod.nas_archive, "is_archived", lambda channel_dir: False)
         monkeypatch.setattr(
             mod.nas_archive, "video_paths", lambda project_dir, channel, video_id: [tmp_path / video_id]
@@ -214,7 +274,7 @@ class TestSelectArchiveCandidates:
 
         mod = _fresh()
         monkeypatch.setattr(mod, "NAS_ARCHIVE_SYNC_BATCH", 1)
-        monkeypatch.setattr(mod, "_query_complete_video_ids", lambda limit: ["abc123", "def456"])
+        monkeypatch.setattr(mod, "complete_video_ids", lambda limit: ["abc123", "def456"])
         monkeypatch.setattr(mod.nas_archive, "is_archived", lambda channel_dir: False)
         monkeypatch.setattr(
             mod.nas_archive, "video_paths", lambda project_dir, channel, video_id: [tmp_path / video_id]
@@ -236,7 +296,7 @@ class TestSelectArchiveCandidates:
 
         mod = _fresh()
         monkeypatch.setattr(mod, "NAS_ARCHIVE_BATCH", 1)
-        monkeypatch.setattr(mod, "_query_complete_video_ids", lambda limit: ["abc123", "def456"])
+        monkeypatch.setattr(mod, "complete_video_ids", lambda limit: ["abc123", "def456"])
         monkeypatch.setattr(mod.nas_archive, "is_archived", lambda channel_dir: False)
         monkeypatch.setattr(
             mod.nas_archive, "video_paths", lambda project_dir, channel, video_id: [tmp_path / video_id]
@@ -421,7 +481,62 @@ class TestArchiveOneVideo:
 
         summary = mod._run_archive_videos(ti=mock_task_instance)
 
-        assert summary == {"synced": 2, "pruned": 1, "bytes_freed": 200}
+        assert summary == {"synced": 2, "pruned": 1, "bytes_freed": 200, "failed": []}
+
+    def test_run_archive_videos_isolates_per_candidate_failure(self, monkeypatch, mock_task_instance):
+        """One candidate raising AirflowException must not abort the batch —
+        it is recorded in summary["failed"] and the rest still proceed
+        (mirrors nas_fetch_dag._run_fetch_videos' per-video isolation)."""
+        mod = _fresh()
+        candidates = [
+            {"channel_slug": "congreso-es-tv", "video_id": "abc123", "prune": True},
+            {"channel_slug": "congreso-es-tv", "video_id": "def456", "prune": False},
+        ]
+        mock_task_instance.xcom_store["candidates"] = candidates
+        monkeypatch.setattr(mod, "ArchiveSettings", MagicMock())
+
+        def _archive_one_video(settings, project_dir, channel_slug, video_id, prune):
+            if video_id == "abc123":
+                raise AirflowException("nas_archive: verification failed for video_id=abc123")
+            return {"video_id": video_id, "synced": [], "removed": [], "bytes_freed": 100, "pruned": prune}
+
+        monkeypatch.setattr(mod, "archive_one_video", _archive_one_video)
+
+        summary = mod._run_archive_videos(ti=mock_task_instance)
+
+        assert summary == {
+            "synced": 1,
+            "pruned": 0,
+            "bytes_freed": 100,
+            "failed": [{"video_id": "abc123", "error": "nas_archive: verification failed for video_id=abc123"}],
+        }
+
+    def test_run_archive_videos_raises_when_every_candidate_fails(self, monkeypatch, mock_task_instance):
+        mod = _fresh()
+        candidates = [
+            {"channel_slug": "congreso-es-tv", "video_id": "abc123", "prune": True},
+            {"channel_slug": "congreso-es-tv", "video_id": "def456", "prune": True},
+        ]
+        mock_task_instance.xcom_store["candidates"] = candidates
+        monkeypatch.setattr(mod, "ArchiveSettings", MagicMock())
+
+        def _archive_one_video(settings, project_dir, channel_slug, video_id, prune):
+            raise AirflowException(f"nas_archive: rsync failed for video_id={video_id}")
+
+        monkeypatch.setattr(mod, "archive_one_video", _archive_one_video)
+
+        with pytest.raises(AirflowException, match="all 2 candidate video"):
+            mod._run_archive_videos(ti=mock_task_instance)
+
+    def test_run_archive_videos_succeeds_with_empty_candidate_list(self, monkeypatch, mock_task_instance):
+        """Zero candidates must not be misclassified as an all-failed run."""
+        mod = _fresh()
+        mock_task_instance.xcom_store["candidates"] = []
+        monkeypatch.setattr(mod, "ArchiveSettings", MagicMock())
+
+        summary = mod._run_archive_videos(ti=mock_task_instance)
+
+        assert summary == {"synced": 0, "pruned": 0, "bytes_freed": 0, "failed": []}
 
 
 # ---------------------------------------------------------------------------

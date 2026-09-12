@@ -50,6 +50,7 @@ _REQUIRED_SSH_FILES = ("id_ed25519", "known_hosts")
 
 _DEFAULT_PORT = "22"
 _DEFAULT_MIN_AGE_DAYS = "14"
+_DEFAULT_RECLAIM_GRACE_HOURS = "12"
 _DEFAULT_SSH_DIR = "/opt/airflow/nas_sync"
 
 
@@ -79,6 +80,10 @@ class ArchiveSettings:
                        ``nas_fetch`` as a fallback source when a video has no
                        local archive marker — never written to. See
                        ``nas_fetch.discover_fetch_source``.
+        reclaim_grace_hours: Minimum local age (hours) of a video's newest
+                       fetched/refreshed mtime before ``nas_reclaim`` may
+                       delete it, even after the NAS-verified and
+                       DB-completeness gates both pass — see design D3.
     """
 
     host: str
@@ -88,6 +93,7 @@ class ArchiveSettings:
     min_age_days: int
     ssh_dir: Path
     legacy_root: str = ""
+    reclaim_grace_hours: int = 12
 
     @property
     def enabled(self) -> bool:
@@ -138,6 +144,11 @@ class ArchiveSettings:
         )
         if min_age_days < 0:
             raise ValueError(f"NAS_ARCHIVE_MIN_AGE_DAYS must be >= 0, got {min_age_days}")
+        reclaim_grace_hours = _parse_int(
+            "NAS_RECLAIM_GRACE_HOURS", source.get("NAS_RECLAIM_GRACE_HOURS", _DEFAULT_RECLAIM_GRACE_HOURS)
+        )
+        if reclaim_grace_hours < 0:
+            raise ValueError(f"NAS_RECLAIM_GRACE_HOURS must be >= 0, got {reclaim_grace_hours}")
         ssh_dir = Path(source.get("NAS_ARCHIVE_SSH_DIR", _DEFAULT_SSH_DIR))
 
         settings = cls(
@@ -148,6 +159,7 @@ class ArchiveSettings:
             min_age_days=min_age_days,
             ssh_dir=ssh_dir,
             legacy_root=legacy_root,
+            reclaim_grace_hours=reclaim_grace_hours,
         )
         settings.validate()
         return settings
