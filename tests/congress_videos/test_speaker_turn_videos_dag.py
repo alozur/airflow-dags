@@ -595,55 +595,139 @@ class TestMaterializeTurns:
             f"execute_plan={execute_plan_positional_output_path!r} vs INSERT={output_path!r}"
         )
 
-    def test_missing_source_video_skips_without_ffmpeg(self, monkeypatch):
-        mod = _fresh()
-        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: None)
-        monkeypatch.setattr(mod.nas_fetch, "is_archived_elsewhere", lambda *a, **k: False)
-        execute_plan = MagicMock()
-        monkeypatch.setattr(mod, "execute_plan", execute_plan)
-
-        ti = MagicMock()
-        ti.xcom_pull.return_value = [self._turn()]
-
+    def _pg_mock(self, monkeypatch, mod):
         pg = MagicMock()
         conn = MagicMock()
         cur = MagicMock()
+        cur.fetchall.return_value = []
         conn.cursor.return_value.__enter__.return_value = cur
         pg.get_connection.return_value.__enter__.return_value = conn
         pg.get_qualified_table.side_effect = lambda n: f"test.{n}"
         monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
+        return pg, conn, cur
+
+    @pytest.mark.parametrize(
+        ("ensure_result", "expected_key"),
+        [
+            ({"status": "unavailable", "reason": "not_on_nas"}, "skipped"),
+            ({"status": "in_progress"}, "fetch_in_progress"),
+        ],
+        ids=["not_on_nas-skips", "in_progress-defers"],
+    )
+    def test_missing_source_video_degrades_per_fetch_outcome(self, monkeypatch, ensure_result, expected_key):
+        """design D6a: unavailable/in_progress degrade to the matching summary counter, not a failure."""
+        mod = _fresh()
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: None)
+        monkeypatch.setattr(mod.nas_fetch, "ensure_local_video", lambda *a, **k: ensure_result)
+        execute_plan = MagicMock()
+        monkeypatch.setattr(mod, "execute_plan", execute_plan)
+        self._pg_mock(monkeypatch, mod)
+
+        ti = MagicMock()
+        ti.xcom_pull.return_value = [self._turn()]
 
         result = mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
 
         execute_plan.assert_not_called()
+        assert result[expected_key] >= 1
+        assert result["fetch_failed"] == 0
+
+    def test_missing_source_video_fetched_from_nas_proceeds(self, monkeypatch):
+        """ensure_local_video reports fetched -> the locator re-runs and materialization proceeds."""
+        mod = _fresh()
+        locator = MagicMock(side_effect=[None, "/data/src.mp4"])
+        monkeypatch.setattr(mod, "_find_source_video_any_date", locator)
+        monkeypatch.setattr(mod.nas_fetch, "ensure_local_video", lambda *a, **k: {"status": "fetched"})
+
+        plan_mock = MagicMock()
+        plan_mock.turn_ids = (7,)
+        plan_mock.keep_intervals = (MagicMock(start=600.0, end=700.0),)
+        plan_mock.needs_reencode = False
+        plan_mock.output_turn_id = 7
+        plan_mock.chapter_id = 3
+        monkeypatch.setattr(mod, "plan_turn_materialization", lambda turns, trims: [plan_mock])
+        execute_plan = MagicMock()
+        monkeypatch.setattr(mod, "execute_plan", execute_plan)
+        monkeypatch.setattr(mod, "get_cached_codec", lambda *a, **k: "h264")
+        self._pg_mock(monkeypatch, mod)
+
+        ti = MagicMock()
+        ti.xcom_pull.return_value = [self._turn(video_id="abc123")]
+
+        result = mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        execute_plan.assert_called_once()
+        assert result["materialized"] == 1
+        assert locator.call_count == 2
+
+    def _plan(self, turn_id):
+        plan_mock = MagicMock(turn_ids=(turn_id,), keep_intervals=(MagicMock(start=600.0, end=700.0),))
+        plan_mock.output_turn_id = turn_id
+        plan_mock.chapter_id = 3
+        return plan_mock
+
+    def test_all_turns_fetch_failed_raises(self, monkeypatch):
+        """design D6: every requested turn failing its NAS fetch fails the task."""
+        mod = _fresh()
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: None)
+
+        def raise_fetch_error(*a, **k):
+            raise mod.nas_fetch.NasFetchError("rsync failed")
+
+        monkeypatch.setattr(mod.nas_fetch, "ensure_local_video", raise_fetch_error)
+        monkeypatch.setattr(mod, "plan_turn_materialization", lambda turns, trims: [self._plan(1), self._plan(2)])
+        self._pg_mock(monkeypatch, mod)
+
+        ti = MagicMock()
+        ti.xcom_pull.return_value = [self._turn(turn_id=1, video_id="vid1"), self._turn(turn_id=2, video_id="vid2")]
+
+        with pytest.raises(mod.AirflowException):
+            mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
+    def test_missing_source_video_fetch_failed_status(self, monkeypatch):
+        """A rsync/verify failure for one of two turns -> fetch_failed counter; batch does not raise (D6)."""
+        mod = _fresh()
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: "/data/src.mp4" if vid == "vid2" else None)
+
+        def raise_fetch_error(*a, **k):
+            raise mod.nas_fetch.NasFetchError("rsync failed")
+
+        monkeypatch.setattr(mod.nas_fetch, "ensure_local_video", raise_fetch_error)
+        monkeypatch.setattr(mod, "execute_plan", MagicMock())
+        monkeypatch.setattr(mod, "get_cached_codec", lambda *a, **k: "h264")
+        monkeypatch.setattr(mod, "plan_turn_materialization", lambda turns, trims: [self._plan(1), self._plan(2)])
+        self._pg_mock(monkeypatch, mod)
+
+        ti = MagicMock()
+        ti.xcom_pull.return_value = [self._turn(turn_id=1, video_id="vid1"), self._turn(turn_id=2, video_id="vid2")]
+
+        result = mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
+        assert result["fetch_failed"] >= 1
+        assert result["materialized"] >= 1
+
+    def test_malformed_video_id_is_skipped_not_raised(self, monkeypatch):
+        """A malformed video_id/channel_slug fails ensure_local_video's own validation with
+        ValueError before any fetch runs -> counted as skipped (same as unavailable), the
+        remaining plan in the batch still materializes, and the task does not crash."""
+        mod = _fresh()
+        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: "/data/src.mp4" if vid == "vid2" else None)
+        monkeypatch.setattr(mod.nas_fetch, "ensure_local_video", MagicMock(side_effect=ValueError("bad id")))
+        execute_plan = MagicMock()
+        monkeypatch.setattr(mod, "execute_plan", execute_plan)
+        monkeypatch.setattr(mod, "get_cached_codec", lambda *a, **k: "h264")
+        monkeypatch.setattr(mod, "plan_turn_materialization", lambda turns, trims: [self._plan(1), self._plan(2)])
+        self._pg_mock(monkeypatch, mod)
+
+        ti = MagicMock()
+        ti.xcom_pull.return_value = [self._turn(turn_id=1, video_id="vid1"), self._turn(turn_id=2, video_id="vid2")]
+
+        result = mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
+
         assert result["skipped"] >= 1
-        assert result["skipped_archived"] == 0
-
-    def test_missing_source_video_archived_on_nas_skips_with_distinct_counter(self, monkeypatch):
-        mod = _fresh()
-        monkeypatch.setattr(mod, "_find_source_video_any_date", lambda vid: None)
-        is_archived = MagicMock(return_value=True)
-        monkeypatch.setattr(mod.nas_fetch, "is_archived_elsewhere", is_archived)
-        execute_plan = MagicMock()
-        monkeypatch.setattr(mod, "execute_plan", execute_plan)
-
-        ti = MagicMock()
-        ti.xcom_pull.return_value = [self._turn()]
-
-        pg = MagicMock()
-        conn = MagicMock()
-        cur = MagicMock()
-        conn.cursor.return_value.__enter__.return_value = cur
-        pg.get_connection.return_value.__enter__.return_value = conn
-        pg.get_qualified_table.side_effect = lambda n: f"test.{n}"
-        monkeypatch.setattr(mod, "PostgresConnection", lambda: pg)
-
-        result = mod._materialize_task(ti=ti, dag_run=MagicMock(conf={}))
-
-        execute_plan.assert_not_called()
-        assert result["skipped"] == 0
-        assert result["skipped_archived"] >= 1
-        is_archived.assert_called_once_with(mod.PROJECT_DATA_DIR, mod.DEFAULT_CHANNEL, "vid1")
+        assert result["fetch_failed"] == 0
+        assert result["materialized"] >= 1
+        execute_plan.assert_called_once()
 
     def test_inserts_row_on_success(self, monkeypatch):
         mod = _fresh()
