@@ -46,17 +46,19 @@ Fetch-back lifecycle:
                             ``(project_dir, channel_slug, video_id)`` can ask
                             "is this video's source on the NAS only?" without
                             importing ``nas_archive`` directly.
-8. ``fetch_lock``        — non-blocking per-video lock guarding the fetch
-                            lifecycle (design D2).
+8. ``fetch_lock`` / ``ensure_local_video`` — non-blocking per-video lock
+                            (D2) and the shared entrypoint running 1-6 under it (D1).
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import re
 import shlex
+import subprocess
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -64,11 +66,15 @@ from pathlib import Path, PurePosixPath
 from congress_videos.modules import nas_archive
 from congress_videos.modules.nas_archive import ArchiveSettings, rsync_itemized_clean, ssh_command
 
+logger = logging.getLogger(__name__)
+
 # rsync/ssh subprocess timeout (seconds). Raw downloads are multi-GB, so this
 # is a generous ceiling matching nas_archive's own transfer timeout. This
 # module is the single source of truth (design D7); congress_videos.nas_fetch_dag
 # imports this constant rather than redefining it.
 RSYNC_TIMEOUT_SECS = 3600
+
+_ITEMIZE_LOG_LINE_CAP = 50
 
 # Marker filename must match congress_videos.modules.nas_archive._MARKER_NAME
 # exactly. Duplicated here (rather than importing a private name across a
@@ -578,3 +584,131 @@ def fetch_lock(
         if current is not None and current.get("token") == token:
             with contextlib.suppress(FileNotFoundError):
                 lock_path.unlink()
+
+
+# ---------------------------------------------------------------------------
+# Shared fetch orchestration entrypoint (design D1)
+# ---------------------------------------------------------------------------
+
+
+def _default_runner(command: list[str]) -> subprocess.CompletedProcess:
+    """Production ``subprocess.run`` wrapper — ``ensure_local_video``'s default when no ``runner`` is injected."""
+    return subprocess.run(command, capture_output=True, text=True, timeout=RSYNC_TIMEOUT_SECS, check=False)
+
+
+def _log_itemized(stdout: str, video_id: str, remote_relative_dir: str) -> None:
+    lines = stdout.splitlines()
+    for line in lines[:_ITEMIZE_LOG_LINE_CAP]:
+        logger.info("nas_fetch: video_id=%s %s: %s", video_id, remote_relative_dir, line)
+    if len(lines) > _ITEMIZE_LOG_LINE_CAP:
+        logger.info(
+            "nas_fetch: video_id=%s %s: ... (%d more line(s) truncated)",
+            video_id,
+            remote_relative_dir,
+            len(lines) - _ITEMIZE_LOG_LINE_CAP,
+        )
+
+
+def ensure_local_video(
+    project_dir: Path | str,
+    channel_slug: str,
+    video_id: str,
+    settings: ArchiveSettings,
+    *,
+    runner=None,
+    now: datetime | None = None,
+) -> dict:
+    """Idempotent, concurrency-safe inline restore of one video's local material (design D1).
+
+    Shared by ``nas_fetch_dag.fetch_one_video`` and every inline consumer
+    DAG. Acquires :func:`fetch_lock` non-blockingly, then runs the
+    marker/discovery -> rsync pull -> verify -> refresh -> remove-marker
+    lifecycle. Never raises for a "nothing to fetch" outcome (design D6a).
+
+    Args:
+        runner: Injectable ``subprocess.run``-shaped callable, default :func:`_default_runner`.
+        now:    Instant for lock/retention timestamps, default ``datetime.now(UTC)``.
+
+    Returns:
+        ``{"status": "fetched"|"in_progress"|"unavailable", ...}`` — see design's Interfaces contract.
+
+    Raises:
+        NasFetchError: The rsync pull or verification failed.
+        ValueError: ``video_id``/``channel_slug`` fail format checks (both
+            are unvalidated DAG conf), or a malformed/unsafe marker or
+            discovery failure.
+    """
+    nas_archive.validate_video_id(video_id)
+    _validate_channel_slug(channel_slug)
+
+    if not settings.enabled:
+        return {"status": "unavailable", "reason": "disabled", "video_id": video_id, "channel_slug": channel_slug}
+
+    runner = runner or _default_runner
+    now = now or datetime.now(UTC)
+
+    try:
+        with fetch_lock(project_dir, channel_slug, video_id, now=now):
+            return _fetch_locked(project_dir, channel_slug, video_id, settings, runner, now)
+    except FetchLockBusy:
+        return {"status": "in_progress", "video_id": video_id, "channel_slug": channel_slug}
+
+
+def _fetch_locked(
+    project_dir: Path | str,
+    channel_slug: str,
+    video_id: str,
+    settings: ArchiveSettings,
+    runner,
+    now: datetime,
+) -> dict:
+    """Run the fetch lifecycle for one video. MUST be called with the per-video lock held."""
+    try:
+        marker = read_marker(project_dir, channel_slug, video_id)
+        source_root = settings.root
+        synced_dirs: list[str] = marker["synced"]
+        source = "marker"
+    except FileNotFoundError:
+        try:
+            source_root, synced_dirs = discover_fetch_source(settings, channel_slug, video_id, runner=runner)
+        except FileNotFoundError:
+            return {
+                "status": "unavailable",
+                "reason": "not_on_nas",
+                "video_id": video_id,
+                "channel_slug": channel_slug,
+            }
+        source = "archive-root" if source_root == settings.root else "legacy-root"
+
+    restored: list[str] = []
+    for remote_relative_dir in synced_dirs:
+        local_path = Path(project_dir) / remote_relative_dir
+        ensure_local_dir(local_path)
+
+        rsync_cmd = fetch_rsync_command(settings, source_root, remote_relative_dir, local_path, dry_run=False)
+        rsync_result = runner(rsync_cmd)
+        _log_itemized(getattr(rsync_result, "stdout", "") or "", video_id, remote_relative_dir)
+        if getattr(rsync_result, "returncode", 0) != 0:
+            raise NasFetchError(
+                f"nas_fetch: rsync failed (exit={rsync_result.returncode}) for video_id={video_id} "
+                f"dir={remote_relative_dir}: {(getattr(rsync_result, 'stderr', '') or '').strip()}"
+            )
+
+        if not verify_fetched(settings, source_root, remote_relative_dir, local_path, runner):
+            raise NasFetchError(
+                f"nas_fetch: verification failed for video_id={video_id} dir={remote_relative_dir} — "
+                "local copy is not byte-identical to the NAS"
+            )
+        restored.append(remote_relative_dir)
+
+    refresh_retention([Path(project_dir) / d for d in restored], now)
+    if source == "marker":
+        remove_marker(project_dir, channel_slug, video_id)
+
+    return {
+        "status": "fetched",
+        "video_id": video_id,
+        "channel_slug": channel_slug,
+        "restored": restored,
+        "source": source,
+    }
