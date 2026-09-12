@@ -61,7 +61,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from airflow import DAG
@@ -72,7 +72,7 @@ from congress_videos.config.paths import PROJECT_DATA_DIR
 from congress_videos.config.youtube_channels import DEFAULT_CHANNEL
 from congress_videos.modules import nas_fetch
 from congress_videos.modules.nas_archive import ArchiveSettings
-from congress_videos.modules.nas_fetch import RSYNC_TIMEOUT_SECS
+from congress_videos.modules.nas_fetch import RSYNC_TIMEOUT_SECS, NasFetchError
 from utils.env_loader import load_env_if_local
 
 load_env_if_local()
@@ -85,7 +85,6 @@ _SSH_TIMEOUT_SECS = 30
 # congress_videos.modules.nas_fetch.RSYNC_TIMEOUT_SECS is the single source of
 # truth (design D7); this local alias keeps the existing call sites unchanged.
 _RSYNC_TIMEOUT_SECS = RSYNC_TIMEOUT_SECS
-_ITEMIZE_LOG_LINE_CAP = 50
 
 
 # ---------------------------------------------------------------------------
@@ -114,117 +113,64 @@ def _subprocess_runner(command: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(command, capture_output=True, text=True, timeout=_RSYNC_TIMEOUT_SECS, check=False)
 
 
-def _log_itemized(stdout: str, video_id: str, remote_relative_dir: str) -> None:
-    lines = stdout.splitlines()
-    for line in lines[:_ITEMIZE_LOG_LINE_CAP]:
-        logger.info("nas_fetch: video_id=%s %s: %s", video_id, remote_relative_dir, line)
-    if len(lines) > _ITEMIZE_LOG_LINE_CAP:
-        logger.info(
-            "nas_fetch: video_id=%s %s: ... (%d more line(s) truncated)",
-            video_id,
-            remote_relative_dir,
-            len(lines) - _ITEMIZE_LOG_LINE_CAP,
-        )
-
-
 def fetch_one_video(settings: ArchiveSettings, project_dir: Path, channel_slug: str, video_id: str) -> dict:
     """Restore one archived video's local material from the NAS.
 
-    Reads the local marker to recover exactly which directories were pushed
-    and which root to pull from (``settings.root``, marker mode). When no
-    marker exists, falls back to a single SSH discovery command against
-    ``settings.root`` and, if configured, ``settings.legacy_root`` (see
-    ``nas_fetch.discover_fetch_source``) — the first root with a match wins.
-
-    Either way, this recreates each local destination directory (it may have
-    been pruned entirely, or never existed locally at all in fallback mode),
-    pulls and verifies each one, refreshes the fetched media files' mtime so
-    the video gets a fresh full retention window, then — marker mode only —
-    removes the marker. Fallback mode never had a marker to remove, and never
-    writes, deletes, or rsync-pushes anything to ``settings.legacy_root``
-    (pull only).
-
-    Nothing about this video is deleted anywhere: a failure at any step
-    aborts before the marker is removed, leaving the video's archived state
-    exactly as it was (see the module docstring for why this differs from
-    ``nas_archive.archive_one_video``'s whole-batch abort).
+    Delegates the entire fetch lifecycle to the shared
+    ``nas_fetch.ensure_local_video`` (design D1), also used inline by every
+    consumer DAG, then converts every non-``fetched`` outcome into an
+    exception (design D6a) — an operator-triggered run names an explicit
+    ``video_id``, so ``_run_fetch_videos``' ``summary["restored"]`` can
+    never contain a video whose material is not actually local.
 
     Returns:
         A summary dict including ``"source"``: ``"marker"``,
         ``"archive-root"``, or ``"legacy-root"``.
 
     Raises:
-        FileNotFoundError: No archive marker exists for this video AND
-            neither ``settings.root`` nor ``settings.legacy_root`` has any
-            remote directory for it.
-        ValueError: The marker is malformed or unsafe (see
-            ``nas_fetch.read_marker``), or remote discovery failed (see
-            ``nas_fetch.discover_fetch_source``).
-        AirflowException: On any rsync failure or post-fetch verification
-            mismatch.
-        subprocess.SubprocessError: E.g. ``TimeoutExpired`` from
-            ``_subprocess_runner`` (rsync exceeding ``_RSYNC_TIMEOUT_SECS``).
-        OSError: From ``nas_fetch.remove_marker``/``refresh_retention``
-            (filesystem errors touching the marker or fetched media).
-        All of the above abort before the marker is removed, same as the
-        AirflowException paths above — ``_run_fetch_videos`` catches all of
-        them per video (see its docstring).
+        FileNotFoundError: Neither the marker nor remote discovery found this
+            video (``unavailable``/``not_on_nas``).
+        NasFetchError: Fetch disabled, a concurrent lock holder
+            (``in_progress``), or the rsync pull/verification failed.
+        ValueError: A malformed/unsafe marker or a discovery failure other
+            than "nothing found".
+        All abort before the marker is removed; ``_run_fetch_videos`` catches
+        every one of them per video.
     """
-    try:
-        marker = nas_fetch.read_marker(project_dir, channel_slug, video_id)
-        source_root = settings.root
-        synced_dirs: list[str] = marker["synced"]
-        source = "marker"
-    except FileNotFoundError:
-        source_root, synced_dirs = nas_fetch.discover_fetch_source(
-            settings, channel_slug, video_id, runner=_subprocess_runner
+    result = nas_fetch.ensure_local_video(project_dir, channel_slug, video_id, settings, runner=_subprocess_runner)
+    status = result["status"]
+
+    if status == "fetched":
+        logger.info(
+            "nas_fetch: video_id=%s restored from %s — %d dir(s) fetched",
+            video_id,
+            result["source"],
+            len(result["restored"]),
         )
-        source = "archive-root" if source_root == settings.root else "legacy-root"
+        return {
+            "video_id": video_id,
+            "channel_slug": channel_slug,
+            "restored": result["restored"],
+            "source": result["source"],
+        }
 
-    restored: list[str] = []
-    for remote_relative_dir in synced_dirs:
-        local_path = project_dir / remote_relative_dir
-
-        nas_fetch.ensure_local_dir(local_path)
-
-        rsync_cmd = nas_fetch.fetch_rsync_command(settings, source_root, remote_relative_dir, local_path, dry_run=False)
-        rsync_result = _subprocess_runner(rsync_cmd)
-        _log_itemized(rsync_result.stdout, video_id, remote_relative_dir)
-        if rsync_result.returncode != 0:
-            raise AirflowException(
-                f"nas_fetch: rsync failed (exit={rsync_result.returncode}) for video_id={video_id} "
-                f"dir={remote_relative_dir}: {rsync_result.stderr.strip()}"
-            )
-
-        fetched = nas_fetch.verify_fetched(
-            settings, source_root, remote_relative_dir, local_path, runner=_subprocess_runner
+    if status == "unavailable" and result.get("reason") == "not_on_nas":
+        # Today's exact message shape (design D6a) — the existing catch tuple
+        # and per-video isolation in _run_fetch_videos depend on it unchanged.
+        raise FileNotFoundError(
+            f"nas_fetch: no remote directories found for video_id={video_id!r} channel_slug={channel_slug!r} "
+            "under the archive root or legacy root"
         )
-        if not fetched:
-            raise AirflowException(
-                f"nas_fetch: verification failed for video_id={video_id} dir={remote_relative_dir} — "
-                "local copy is not byte-identical to the NAS; marker was NOT removed"
-            )
-        restored.append(remote_relative_dir)
 
-    touched = nas_fetch.refresh_retention([project_dir / d for d in restored], datetime.now(UTC))
-    if source == "marker":
-        nas_fetch.remove_marker(project_dir, channel_slug, video_id)
+    if status == "unavailable":  # reason == "disabled"
+        raise NasFetchError(f"nas_fetch: NAS archive fetch is disabled while restoring video_id={video_id!r}")
 
-    logger.info(
-        "nas_fetch: video_id=%s restored from %s — %d dir(s) fetched, %d media file(s) refreshed%s",
-        video_id,
-        source,
-        len(restored),
-        len(touched),
-        ", marker removed" if source == "marker" else "",
-    )
-    return {
-        "video_id": video_id,
-        "channel_slug": channel_slug,
-        "restored": restored,
-        "media_refreshed": len(touched),
-        "source": source,
-    }
+    if status == "in_progress":
+        raise NasFetchError(
+            f"nas_fetch: another fetch already in progress for video_id={video_id!r} — try again next run"
+        )
+
+    raise NasFetchError(f"nas_fetch: unexpected ensure_local_video status {status!r} for video_id={video_id!r}")
 
 
 def _requested_video_ids(conf: dict) -> list[str]:
@@ -263,7 +209,16 @@ def _run_fetch_videos(**context) -> dict:
         # OSError (e.g. from remove_marker/refresh_retention) must isolate the same
         # as the other three: without them here, one slow/broken video kills the
         # whole batch, contradicting the per-video isolation documented above.
-        except (FileNotFoundError, ValueError, AirflowException, subprocess.SubprocessError, OSError) as exc:
+        # NasFetchError (design D6a): ensure_local_video's in_progress/disabled
+        # statuses and its own rsync/verify failures all surface through it.
+        except (
+            FileNotFoundError,
+            ValueError,
+            AirflowException,
+            NasFetchError,
+            subprocess.SubprocessError,
+            OSError,
+        ) as exc:
             logger.error("nas_fetch: video_id=%s aborted — %s", video_id, exc)
             summary["failed"].append({"video_id": video_id, "error": str(exc)})
             continue
